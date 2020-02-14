@@ -1502,9 +1502,8 @@ void UCharacterMovementComponent::SimulatedTick(float DeltaSeconds)
 
 #if !(UE_BUILD_SHIPPING)
 			// debug
-			if (false)
+			if (CharacterOwner && false)
 			{
-				checkSlow(CharacterOwner != nullptr);
 				const FRotator OldRotation = OldRotationQuat.Rotator();
 				const FRotator NewRotation = UpdatedComponent->GetComponentRotation();
 				const FVector NewLocation = UpdatedComponent->GetComponentLocation();
@@ -1564,7 +1563,7 @@ void UCharacterMovementComponent::SimulatedTick(float DeltaSeconds)
 		PerformMovement(DeltaSeconds);
 
 		// After movement correction, smooth out error in position if any.
-		if( bCorrectedToServer )
+		if( bCorrectedToServer || CurrentRootMotion.NeedsSimulatedSmoothing() )
 		{
 			SmoothCorrection(OldLocation, OldRotation, UpdatedComponent->GetComponentLocation(), UpdatedComponent->GetComponentQuat());
 		}
@@ -2443,6 +2442,16 @@ void UCharacterMovementComponent::PerformMovement(float DeltaSeconds)
 
 			// Root Motion has been used, clear
 			RootMotionParams.Clear();
+		}
+		else if (CurrentRootMotion.HasActiveRootMotionSources())
+		{
+			FQuat RootMotionRotationQuat;
+			if (CurrentRootMotion.GetOverrideRootMotionRotation(DeltaSeconds, *CharacterOwner, *this, RootMotionRotationQuat))
+			{
+				const FQuat OldActorRotationQuat = UpdatedComponent->GetComponentQuat();
+				const FQuat NewActorRotationQuat = RootMotionRotationQuat * OldActorRotationQuat;
+				MoveUpdatedComponent(FVector::ZeroVector, NewActorRotationQuat, true);
+			}
 		}
 
 		// consume path following requested velocity
@@ -9313,9 +9322,8 @@ void UCharacterMovementComponent::ClientAdjustPosition_Implementation
 		
 		// We had an unresolved base from the server
 		// If walking, we'd like to continue walking if possible, to avoid falling for a frame, so try to find a base where we moved to.
-		if (PreviousBase)
+		if (PreviousBase && UpdatedComponent)
 		{
-			checkSlow(UpdatedComponent != nullptr);
 			FindFloor(UpdatedComponent->GetComponentLocation(), CurrentFloor, false);
 			if (CurrentFloor.IsWalkableFloor())
 			{

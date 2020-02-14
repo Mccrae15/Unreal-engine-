@@ -19,6 +19,7 @@
 #include "Engine/Selection.h"
 #include "Editor.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "EdGraphSchema_K2.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "AssetRegistryModule.h"
@@ -33,8 +34,6 @@
 
 #define LOCTEXT_NAMESPACE "CreateBlueprintFromActorDialog"
 
-TWeakObjectPtr<AActor> FCreateBlueprintFromActorDialog::ActorOverride = nullptr;
-
 class SSCreateBlueprintPicker : public SCompoundWidget
 {
 public:
@@ -42,7 +41,7 @@ public:
 	{}
 
 	SLATE_ARGUMENT(TSharedPtr<SWindow>, ParentWindow)
-		SLATE_ARGUMENT(FClassViewerInitializationOptions, Options)
+		SLATE_ARGUMENT(AActor*, ActorOverride)
 		SLATE_ARGUMENT(ECreateBlueprintFromActorMode, CreateMode)
 		SLATE_END_ARGS()
 
@@ -83,8 +82,11 @@ public:
 		if (NewCheckedState == ECheckBoxState::Checked) 
 		{ 
 			CreateMode = InCreateMode; 
+			ClassViewer->Refresh();
 		} 	
 	};
+
+	FText GetCreateMethodTooltip(ECreateBlueprintFromActorMode InCreateMode, bool bEnabled) const;
 
 	FSlateColor GetCreateModeTextColor(ECreateBlueprintFromActorMode InCreateMode) const
 	{ 
@@ -106,6 +108,9 @@ public:
 	/** The class that was last clicked on */
 	UClass* ChosenClass;
 
+	/** The actor that was passed in */
+	TWeakObjectPtr<AActor> ActorOverride;
+
 	/** The path the asset should be created at */
 	FString AssetPath;
 
@@ -122,23 +127,8 @@ public:
 	bool bIsReportingError;
 };
 
-void SSCreateBlueprintPicker::Construct(const FArguments& InArgs)
+ECreateBlueprintFromActorMode FCreateBlueprintFromActorDialog::GetValidCreationMethods()
 {
-	WeakParentWindow = InArgs._ParentWindow;
-
-	bPressedOk = false;
-	ChosenClass = nullptr;
-	CreateMode = InArgs._CreateMode;
-
-	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
-	FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
-	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
-
-	ClassViewer = StaticCastSharedRef<SClassViewer>(ClassViewerModule.CreateClassViewer(InArgs._Options, FOnClassPicked::CreateSP(this, &SSCreateBlueprintPicker::OnClassPicked)));
-
-	FString PackageName;
-	AssetPath = ContentBrowserModule.Get().GetCurrentPath();
-
 	int32 NumSelectedActors = 0;
 
 	bool bCanHarvestComponents = false;
@@ -152,24 +142,179 @@ void SSCreateBlueprintPicker::Construct(const FArguments& InArgs)
 		{
 			if (NumSelectedActors == 0)
 			{
-				AssetName += Actor->GetActorLabel();
-				AssetName += TEXT("_");
-
 				bCanSubclass = FKismetEditorUtilities::CanCreateBlueprintOfClass(Actor->GetClass());
 			}
 
-			if (Actor->GetClass()->HasAnyClassFlags(CLASS_NotPlaceable))
+			if (bCanCreatePrefab && Actor->GetClass()->HasAnyClassFlags(CLASS_NotPlaceable))
 			{
 				bCanCreatePrefab = false;
 			}
 
-			bCanHarvestComponents = true;
+			if (!bCanHarvestComponents)
+			{
+				for (UActorComponent* Component : Actor->GetComponents())
+				{
+					if (Component && FKismetEditorUtilities::IsClassABlueprintSpawnableComponent(Component->GetClass()))
+					{
+						bCanHarvestComponents = true;
+						break;
+					}
+				}
+			}
+		}
+		++NumSelectedActors;
+	}
 
-			++NumSelectedActors;
+	ECreateBlueprintFromActorMode ValidCreationMethods = ECreateBlueprintFromActorMode::None;
+	if (NumSelectedActors > 0)
+	{
+		if (bCanHarvestComponents)
+		{ 
+			ValidCreationMethods |= ECreateBlueprintFromActorMode::Harvest;
+		}
+		if (bCanCreatePrefab)
+		{
+			ValidCreationMethods |= ECreateBlueprintFromActorMode::ChildActor;
+		}
+		if (bCanSubclass && NumSelectedActors == 1)
+		{
+			ValidCreationMethods |= ECreateBlueprintFromActorMode::Subclass;
 		}
 	}
 
-	bCanSubclass = bCanSubclass && NumSelectedActors == 1;
+	return ValidCreationMethods;
+}
+
+FText SSCreateBlueprintPicker::GetCreateMethodTooltip(ECreateBlueprintFromActorMode InCreateMode, bool bEnabled) const
+{
+	if (!bEnabled)
+	{
+		switch (InCreateMode)
+		{
+		case ECreateBlueprintFromActorMode::Subclass:
+		{
+			int32 NumSelectedActors = 0;
+			UClass* SelectedActorClass = nullptr;
+			for (FSelectionIterator Iter(*GEditor->GetSelectedActors()); Iter; ++Iter)
+			{
+				if (AActor* Actor = Cast<AActor>(*Iter))
+				{
+					SelectedActorClass = Actor->GetClass();
+				}
+				++NumSelectedActors;
+			}
+
+			if (NumSelectedActors == 1)
+			{
+				return FText::Format(LOCTEXT("SubClassDisabled_InvalidBlueprintType", "Cannot create blueprint subclass of '{0}'."), (SelectedActorClass ? SelectedActorClass->GetDisplayNameText() : FText::GetEmpty()));
+			}
+			else
+			{
+				return LOCTEXT("SubClassDisabled_MultipleSelection", "Cannot subclass when multiple actors are selected.");
+			}
+		}
+
+		case ECreateBlueprintFromActorMode::Harvest:
+			return LOCTEXT("HavestDisabled", "No harvestable components in selected actors.");
+
+		}
+	}
+
+	return FText::GetEmpty();
+}
+
+void SSCreateBlueprintPicker::Construct(const FArguments& InArgs)
+{
+	WeakParentWindow = InArgs._ParentWindow;
+
+	bPressedOk = false;
+	ChosenClass = nullptr;
+	CreateMode = InArgs._CreateMode;
+
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
+	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+
+	ActorOverride = InArgs._ActorOverride;
+
+	FClassViewerInitializationOptions ClassViewerOptions;
+	ClassViewerOptions.Mode = EClassViewerMode::ClassPicker;
+	ClassViewerOptions.DisplayMode = EClassViewerDisplayMode::TreeView;
+	ClassViewerOptions.bShowObjectRootClass = true;
+	ClassViewerOptions.bIsPlaceableOnly = true;
+	ClassViewerOptions.bIsBlueprintBaseOnly = true;
+	ClassViewerOptions.bShowUnloadedBlueprints = true;
+	ClassViewerOptions.bEnableClassDynamicLoading = true;
+	ClassViewerOptions.NameTypeToDisplay = EClassViewerNameTypeToDisplay::Dynamic;
+
+	if (ActorOverride == nullptr)
+	{
+		USelection* SelectedActors = GEditor->GetSelectedActors();
+		if (SelectedActors->Num() == 1)
+		{
+			ActorOverride = CastChecked<AActor>(SelectedActors->GetSelectedObject(0));
+		}
+	}
+
+	class FBlueprintFromActorParentFilter : public IClassViewerFilter
+	{
+	public:
+		FBlueprintFromActorParentFilter(UClass* InAllowedClass, ECreateBlueprintFromActorMode& InCreateModeRef)
+			: CreateModeRef(InCreateModeRef)
+		{
+			AllowedClass.Add(InAllowedClass);
+		}
+
+		TSet<const UClass*> AllowedClass;
+		const ECreateBlueprintFromActorMode& CreateModeRef;
+
+		virtual bool IsClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const UClass* InClass, TSharedRef< FClassViewerFilterFuncs > InFilterFuncs) override
+		{
+			return CreateModeRef != ECreateBlueprintFromActorMode::Subclass || InFilterFuncs->IfInChildOfClassesSet(AllowedClass, InClass) == EFilterReturn::Passed;
+		}
+
+		virtual bool IsUnloadedClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const TSharedRef< const IUnloadedBlueprintData > InUnloadedClassData, TSharedRef< FClassViewerFilterFuncs > InFilterFuncs) override
+		{
+			return CreateModeRef != ECreateBlueprintFromActorMode::Subclass || InFilterFuncs->IfInChildOfClassesSet(AllowedClass, InUnloadedClassData) == EFilterReturn::Passed;
+		}
+	};
+
+	if (ActorOverride.IsValid())
+	{
+		TSharedPtr<FBlueprintFromActorParentFilter> Filter = MakeShareable(new FBlueprintFromActorParentFilter(ActorOverride->GetClass(), CreateMode));
+		ClassViewerOptions.ClassFilter = Filter;
+	}
+
+	if (CreateMode == ECreateBlueprintFromActorMode::Subclass)
+	{
+		ClassViewerOptions.InitiallySelectedClass = ActorOverride->GetClass();
+	}
+	else
+	{
+		ClassViewerOptions.InitiallySelectedClass = AActor::StaticClass();
+	}
+
+	ClassViewer = StaticCastSharedRef<SClassViewer>(ClassViewerModule.CreateClassViewer(ClassViewerOptions, FOnClassPicked::CreateSP(this, &SSCreateBlueprintPicker::OnClassPicked)));
+
+	FString PackageName;
+	AssetPath = ContentBrowserModule.Get().GetCurrentPath();
+
+	ECreateBlueprintFromActorMode ValidCreateMethods = FCreateBlueprintFromActorDialog::GetValidCreationMethods();
+
+	const bool bCanHarvestComponents = !!(ValidCreateMethods & ECreateBlueprintFromActorMode::Harvest);
+	const bool bCanSubclass = !!(ValidCreateMethods & ECreateBlueprintFromActorMode::Subclass);
+	const bool bCanCreatePrefab = !!(ValidCreateMethods & ECreateBlueprintFromActorMode::ChildActor);
+
+	for (FSelectionIterator Iter(*GEditor->GetSelectedActors()); Iter; ++Iter)
+	{
+		AActor* Actor = Cast<AActor>(*Iter);
+		if (Actor)
+		{
+			AssetName += Actor->GetActorLabel();
+			AssetName += TEXT("_");
+			break;
+		}
+	}
 
 	AssetName = UPackageTools::SanitizePackageName(AssetName + TEXT("Blueprint"));
 
@@ -209,6 +354,7 @@ void SSCreateBlueprintPicker::Construct(const FArguments& InArgs)
 			.IsEnabled(CreateModeDetails[Index].bEnabled)
 			.IsChecked_Raw(this, &SSCreateBlueprintPicker::IsCreateModeChecked, CreateModeDetails[Index].CreateMode)
 			.OnCheckStateChanged(this, &SSCreateBlueprintPicker::OnCreateModeChanged, CreateModeDetails[Index].CreateMode)
+			.ToolTipText_Raw(this, &SSCreateBlueprintPicker::GetCreateMethodTooltip, CreateModeDetails[Index].CreateMode, CreateModeDetails[Index].bEnabled)
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
@@ -571,10 +717,19 @@ void SSCreateBlueprintPicker::UpdateFilenameStatus()
 
 EVisibility SSCreateBlueprintPicker::GetSelectButtonVisibility() const
 {
-	EVisibility ButtonVisibility = EVisibility::Hidden;
-	if (ChosenClass != nullptr && !bIsReportingError)
+	EVisibility ButtonVisibility = EVisibility::Visible;
+	if (ChosenClass == nullptr || bIsReportingError)
 	{
-		ButtonVisibility = EVisibility::Visible;
+		ButtonVisibility = EVisibility::Hidden;
+	}
+	else if (CreateMode == ECreateBlueprintFromActorMode::Subclass)
+	{
+		UObject* SelectedActor = GEditor->GetSelectedActors()->GetSelectedObject(0);
+
+		if (SelectedActor == nullptr || !ChosenClass->IsChildOf(SelectedActor->GetClass()))
+		{
+			ButtonVisibility = EVisibility::Hidden;
+		}
 	}
 	return ButtonVisibility;
 }
@@ -601,46 +756,7 @@ FReply SSCreateBlueprintPicker::OnKeyDown(const FGeometry& MyGeometry, const FKe
 
 void FCreateBlueprintFromActorDialog::OpenDialog(ECreateBlueprintFromActorMode CreateMode, AActor* InActorOverride )
 {
-	ActorOverride = InActorOverride;
-
-	FClassViewerInitializationOptions ClassViewerOptions;
-	ClassViewerOptions.Mode = EClassViewerMode::ClassPicker;
-	ClassViewerOptions.DisplayMode = EClassViewerDisplayMode::TreeView;
-	ClassViewerOptions.bShowObjectRootClass = true;
-	ClassViewerOptions.bIsPlaceableOnly = true;
-	ClassViewerOptions.bIsBlueprintBaseOnly = true;
-	ClassViewerOptions.bShowUnloadedBlueprints = true;
-	ClassViewerOptions.bEnableClassDynamicLoading = true;
-	ClassViewerOptions.NameTypeToDisplay = EClassViewerNameTypeToDisplay::Dynamic;
-
-	if (InActorOverride)
-	{
-		class FBlueprintFromActorParentFilter : public IClassViewerFilter
-		{
-		public:
-			TSet<const UClass*> AllowedClass;
-
-			virtual bool IsClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const UClass* InClass, TSharedRef< FClassViewerFilterFuncs > InFilterFuncs) override
-			{
-				return InFilterFuncs->IfInChildOfClassesSet(AllowedClass, InClass) == EFilterReturn::Passed;
-			}
-
-			virtual bool IsUnloadedClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const TSharedRef< const IUnloadedBlueprintData > InUnloadedClassData, TSharedRef< FClassViewerFilterFuncs > InFilterFuncs) override
-			{
-				return InFilterFuncs->IfInChildOfClassesSet(AllowedClass, InUnloadedClassData) == EFilterReturn::Passed;
-			}
-		};
-
-		TSharedPtr<FBlueprintFromActorParentFilter> Filter = MakeShareable(new FBlueprintFromActorParentFilter);
-		ClassViewerOptions.ClassFilter = Filter;
-		Filter->AllowedClass.Add(InActorOverride->GetClass());
-
-		ClassViewerOptions.InitiallySelectedClass = InActorOverride->GetClass();
-	}
-	else
-	{
-		ClassViewerOptions.InitiallySelectedClass = AActor::StaticClass();
-	}
+	TWeakObjectPtr<AActor> ActorOverride(InActorOverride);
 
 	// Create the window to pick the class
 	TSharedRef<SWindow> PickerWindow = SNew(SWindow)
@@ -652,62 +768,59 @@ void FCreateBlueprintFromActorDialog::OpenDialog(ECreateBlueprintFromActorMode C
 
 	TSharedRef<SSCreateBlueprintPicker> ClassPickerDialog = SNew(SSCreateBlueprintPicker)
 		.ParentWindow(PickerWindow)
-		.Options(ClassViewerOptions)
+		.ActorOverride(InActorOverride)
 		.CreateMode(CreateMode);
 
 	PickerWindow->SetContent(ClassPickerDialog);
-
-//	FSlateApplication::Get().AddWindow(PickerWindow);
+		
 	GEditor->EditorAddModalWindow(PickerWindow);
 
 	if (ClassPickerDialog->bPressedOk)
 	{
 		FString NewAssetName = ClassPickerDialog->AssetPath / ClassPickerDialog->AssetName;
 
-		OnCreateBlueprint(NewAssetName, ClassPickerDialog->ChosenClass, ClassPickerDialog->CreateMode);
+		OnCreateBlueprint(NewAssetName, ClassPickerDialog->ChosenClass, ClassPickerDialog->CreateMode, ActorOverride.Get());
 	}
 }
 
-void FCreateBlueprintFromActorDialog::OnCreateBlueprint(const FString& InAssetPath, UClass* ParentClass, ECreateBlueprintFromActorMode CreateMode)
+void FCreateBlueprintFromActorDialog::OnCreateBlueprint(const FString& InAssetPath, UClass* ParentClass, ECreateBlueprintFromActorMode CreateMode, AActor* ActorToUse)
 {
 	UBlueprint* Blueprint = nullptr;
 
 	switch (CreateMode) 
 	{
 		case ECreateBlueprintFromActorMode::Harvest:
-	{
-		TArray<AActor*> Actors;
-
-		USelection* SelectedActors = GEditor->GetSelectedActors();
-		for(FSelectionIterator Iter(*SelectedActors); Iter; ++Iter)
 		{
-			// We only care about actors that are referenced in the world for literals, and also in the same level as this blueprint
-				if (AActor* Actor = Cast<AActor>(*Iter))
+			TArray<AActor*> Actors;
+
+			USelection* SelectedActors = GEditor->GetSelectedActors();
+			for(FSelectionIterator Iter(*SelectedActors); Iter; ++Iter)
 			{
-				Actors.Add(Actor);
+				// We only care about actors that are referenced in the world for literals, and also in the same level as this blueprint
+					if (AActor* Actor = Cast<AActor>(*Iter))
+				{
+					Actors.Add(Actor);
+				}
 			}
-		}
 
 			const bool bReplaceActor = true;
 			Blueprint = FKismetEditorUtilities::HarvestBlueprintFromActors(InAssetPath, Actors, bReplaceActor, ParentClass);
-	}
+		}
 		break;
 
 		case ECreateBlueprintFromActorMode::Subclass:
-	{
-		AActor* ActorToUse = ActorOverride.Get();
-
-		if( !ActorToUse )
 		{
-			TArray< UObject* > SelectedActors;
-			GEditor->GetSelectedActors()->GetSelectedObjects(AActor::StaticClass(), SelectedActors);
+			if (!ActorToUse)
+			{
+				TArray<UObject*> SelectedActors;
+				GEditor->GetSelectedActors()->GetSelectedObjects(AActor::StaticClass(), SelectedActors);
 				check(SelectedActors.Num() == 1);
-			ActorToUse =  Cast<AActor>(SelectedActors[0]);
-		}
+				ActorToUse = Cast<AActor>(SelectedActors[0]);
+			}
 
-		const bool bReplaceActor = true;
-		Blueprint = FKismetEditorUtilities::CreateBlueprintFromActor(InAssetPath, ActorToUse, bReplaceActor, false, ParentClass);
-	}
+			const bool bReplaceActor = true;
+			Blueprint = FKismetEditorUtilities::CreateBlueprintFromActor(InAssetPath, ActorToUse, bReplaceActor, false, ParentClass);
+		}
 		break;
 
 		case ECreateBlueprintFromActorMode::ChildActor:
@@ -730,7 +843,7 @@ void FCreateBlueprintFromActorDialog::OnCreateBlueprint(const FString& InAssetPa
 		break;
 	}
 
-	if(Blueprint)
+	if (Blueprint)
 	{
 		// Select the newly created blueprint in the content browser, but don't activate the browser
 		TArray<UObject*> Objects;

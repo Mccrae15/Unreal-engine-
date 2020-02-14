@@ -17,6 +17,8 @@
 #include "Chaos/PerParticlePBDUpdateFromDeltaPosition.h"
 #include "ChaosStats.h"
 
+//PRAGMA_DISABLE_OPTIMIZATION
+
 namespace Chaos
 {
 	DECLARE_CYCLE_STAT(TEXT("MinEvolution::AdvanceOneTimeStep"), STAT_MinEvolution_AdvanceOneTimeStep, STATGROUP_Chaos);
@@ -163,8 +165,9 @@ namespace Chaos
 					TAABB<FReal, 3> WorldSpaceBounds = LocalBounds.TransformedAABB(FRigidTransform3(Particle.P(), Particle.Q()));
 					WorldSpaceBounds.ThickenSymmetrically(WorldSpaceBounds.Extents() * BoundsExtension);
 
-					//TAABB<FReal, 3> PrevWorldSpaceBounds = LocalBounds.TransformedAABB(FRigidTransform3(Particle.X(), Particle.R()));
-					//WorldSpaceBounds.GrowToInclude(PrevWorldSpaceBounds);
+					// Dynamic bodies may get pulled back into their old positions by joints - make sure we find collisions that may prevent this
+					// We could add the AABB at X/R here, but I'm avoiding another call to TransformedAABB. Hopefully this is good enough.
+					WorldSpaceBounds.GrowByVector(Particle.X() - Particle.P());
 
 					Particle.SetWorldSpaceInflatedBounds(WorldSpaceBounds);
 				}
@@ -296,12 +299,17 @@ namespace Chaos
 	{
 		SCOPE_CYCLE_COUNTER(STAT_MinEvolution_ApplyConstraints);
 
-		// @todo(ccaulfield): track whether we are sufficiently solved and can early-out
 		for (int32 i = 0; i < NumApplyIterations; ++i)
 		{
+			bool bNeedsAnotherIteration = false;
 			for (FSimpleConstraintRule* ConstraintRule : PrioritizedConstraintRules)
 			{
-				ConstraintRule->ApplyConstraints(Dt, i, NumApplyIterations);
+				bNeedsAnotherIteration |= ConstraintRule->ApplyConstraints(Dt, i, NumApplyIterations);
+			}
+
+			if (!bNeedsAnotherIteration)
+			{
+				break;
 			}
 		}
 	}
@@ -321,16 +329,17 @@ namespace Chaos
 	{
 		SCOPE_CYCLE_COUNTER(STAT_MinEvolution_ApplyPushOut);
 
-		bool bNeedsAnotherIteration = true;
-		for (int32 It = 0; bNeedsAnotherIteration && (It < NumApplyPushOutIterations); ++It)
+		for (int32 It = 0; It < NumApplyPushOutIterations; ++It)
 		{
-			bNeedsAnotherIteration = false;
+			bool bNeedsAnotherIteration = false;
 			for (FSimpleConstraintRule* ConstraintRule : PrioritizedConstraintRules)
 			{
-				if (ConstraintRule->ApplyPushOut(Dt, It, NumApplyPushOutIterations))
-				{
-					bNeedsAnotherIteration = true;
-				}
+				bNeedsAnotherIteration |= ConstraintRule->ApplyPushOut(Dt, It, NumApplyPushOutIterations);
+			}
+
+			if (!bNeedsAnotherIteration)
+			{
+				break;
 			}
 		}
 	}

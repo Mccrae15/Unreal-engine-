@@ -201,7 +201,7 @@ public:
 	FString ShaderName;
 	FORCEINLINE const TCHAR* GetShaderName() const { return *ShaderName; }
 #else
-	FORCEINLINE const TCHAR* GetShaderName() const { TEXT(""); }
+	FORCEINLINE const TCHAR* GetShaderName() const { return TEXT(""); }
 #endif
 
 	explicit FRHIShader(EShaderFrequency InFrequency)
@@ -996,6 +996,8 @@ public:
 	virtual bool Poll(FRHIGPUMask GPUMask) const { return Poll(); }
 
 	const FName& GetFName() const { return FenceName; }
+
+	FThreadSafeCounter NumPendingWriteCommands;
 
 protected:
 	FName FenceName;

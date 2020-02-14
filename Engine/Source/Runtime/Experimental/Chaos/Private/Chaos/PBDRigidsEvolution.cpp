@@ -7,6 +7,12 @@
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/SpatialAccelerationCollection.h"
 
+int32 ChaosRigidsEvolutionApplyAllowEarlyOutCVar = 1;
+FAutoConsoleVariableRef CVarChaosRigidsEvolutionApplyAllowEarlyOut(TEXT("p.ChaosRigidsEvolutionApplyAllowEarlyOut"), ChaosRigidsEvolutionApplyAllowEarlyOutCVar, TEXT("Allow Chaos Rigids Evolution apply iterations to early out when resolved.[def:1]"));
+
+int32 ChaosRigidsEvolutionApplyPushoutAllowEarlyOutCVar = 1;
+FAutoConsoleVariableRef CVarChaosRigidsEvolutionApplyPushoutAllowEarlyOut(TEXT("p.ChaosRigidsEvolutionApplyPushoutAllowEarlyOut"), ChaosRigidsEvolutionApplyPushoutAllowEarlyOutCVar, TEXT("Allow Chaos Rigids Evolution apply-pushout iterations to early out when resolved.[def:1]"));
+
 namespace Chaos
 {
 	CHAOS_API int32 FixBadAccelerationStructureRemoval = 1;
@@ -287,11 +293,11 @@ namespace Chaos
 		{
 			if (!bIsSingleThreaded)
 			{
-			// This operation is slow!
-			SCOPE_CYCLE_COUNTER(STAT_CopyAccelerationStructure);
-			AccelerationStructureCopy = AsUniqueSpatialAccelerationChecked<FAccelerationStructure>(AccelerationStructure->Copy());
+				// This operation is slow!
+				SCOPE_CYCLE_COUNTER(STAT_CopyAccelerationStructure);
+				AccelerationStructureCopy = AsUniqueSpatialAccelerationChecked<FAccelerationStructure>(AccelerationStructure->Copy());
+			}
 		}
-	}
 	}
 
 	template<class FPBDRigidsEvolution, class FPBDCollisionConstraint, class T, int d>
@@ -471,8 +477,7 @@ namespace Chaos
 				}
 				bExternalReady = true;
 			}
-
-			// we run the task for both starting a new accel structure as well as for the timeslicing
+			
 			// we run the task for both starting a new accel structure as well as for the timeslicing
 			AccelerationStructureTaskComplete = TGraphTask<FChaosAccelerationStructureTask>::CreateTask().ConstructAndDispatchWhenReady(*SpatialCollectionFactory, SpatialAccelerationCache, AsyncInternalAcceleration, AsyncExternalAcceleration, ForceFullBuild, bIsSingleThreaded);
 
