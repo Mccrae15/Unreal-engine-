@@ -3,8 +3,9 @@
 #pragma once
 
 #include "Misc/Build.h"
+#include "Trace/Config.h"
 
-#if !IS_PROGRAM && !UE_BUILD_SHIPPING
+#if UE_TRACE_ENABLED && !IS_PROGRAM && !UE_BUILD_SHIPPING
 #define SOURCE_FILTER_TRACE_ENABLED 1
 #else
 #define SOURCE_FILTER_TRACE_ENABLED 0
@@ -13,7 +14,6 @@
 #if SOURCE_FILTER_TRACE_ENABLED
 
 #include "CoreTypes.h"
-#include "Trace/Config.h"
 #include "Trace/Trace.h"
 #include "UObject/ObjectKey.h"
 #include "Templates/SubclassOf.h"
@@ -93,6 +93,9 @@ protected:
 
 #define TRACE_WORLD_OPERATION(Instance, Operation, Parameter) \
 	FSourceFilterTrace::OutputWorldOperation(Instance, Operation, Parameter);
+
+#define TRACE_FILTER_IDENTIFIER(Object) \
+	FObjectTrace::GetObjectId(Object)
 #else
 
 #define TRACE_FILTER_CLASS(Class)
@@ -103,5 +106,7 @@ protected:
 
 #define TRACE_WORLD_INSTANCE(World)
 #define TRACE_WORLD_OPERATION(Instance, Operation, Parameter)
+
+#define TRACE_FILTER_IDENTIFIER(Object) 0
 
 #endif
