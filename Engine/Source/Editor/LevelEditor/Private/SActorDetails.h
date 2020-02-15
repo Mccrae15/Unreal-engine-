@@ -51,7 +51,7 @@ public:
 	 *
 	 * @param InFilter	The filter to use or nullptr to remove the active filter
 	 */
-	void SetActorDetailsFilter(TSharedPtr<FDetailsViewObjectFilter> InFilter);
+	void SetActorDetailsRootCustomization(TSharedPtr<FDetailsViewObjectFilter> ActorDetailsObjectFilter, TSharedPtr<class IDetailRootObjectCustomization> ActorDetailsRootCustomization);
 private:
 	AActor* GetSelectedActorInEditor() const;
 	AActor* GetActorContext() const;

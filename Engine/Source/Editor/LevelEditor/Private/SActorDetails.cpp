@@ -31,7 +31,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "Subsystems/PanelExtensionSubsystem.h"
 #include "DetailsViewObjectFilter.h"
-
+#include "IDetailRootObjectCustomization.h"
 
 IConsoleVariable* SActorDetails::ShowComponents = IConsoleManager::Get().RegisterConsoleVariable(TEXT("ShowFlag.DetailsPanelComponents"), true, TEXT("Show components in editor details panel."), ECVF_Cheat);
 
@@ -319,9 +319,11 @@ void SActorDetails::PostRedo(bool bSuccess)
 	PostUndo(bSuccess);
 }
 
-void SActorDetails::SetActorDetailsFilter(TSharedPtr<FDetailsViewObjectFilter> InFilter)
+void SActorDetails::SetActorDetailsRootCustomization(TSharedPtr<FDetailsViewObjectFilter> ActorDetailsObjectFilter, TSharedPtr<IDetailRootObjectCustomization> ActorDetailsRootCustomization)
 {
-	DetailsView->SetObjectFilter(InFilter);
+	DetailsView->SetObjectFilter(ActorDetailsObjectFilter);
+	DetailsView->SetRootObjectCustomizationInstance(ActorDetailsRootCustomization);
+	DetailsView->ForceRefresh();
 }
 
 void SActorDetails::OnComponentsEditedInWorld()
