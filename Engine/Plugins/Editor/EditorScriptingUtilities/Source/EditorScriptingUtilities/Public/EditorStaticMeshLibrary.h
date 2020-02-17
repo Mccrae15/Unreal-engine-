@@ -171,7 +171,22 @@ public:
 	 *			A negative value indicates that the LOD was not set. See log for explanation.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
-	static int32 SetLodFromStaticMesh(UStaticMesh* DestinationStaticMesh, int32 DestinationLodIndex, UStaticMesh* SourceStaticMesh, int32 SourceLodIndex, bool bReuseExistingMaterialSlots);
+	 static int32 SetLodFromStaticMesh(UStaticMesh* DestinationStaticMesh, int32 DestinationLodIndex, UStaticMesh* SourceStaticMesh, int32 SourceLodIndex, bool bReuseExistingMaterialSlots);
+
+	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
+		 static void SetLODProps(UStaticMesh* StaticMesh, int32 Android_LOD = 2, int32 PS4_LOD = 1, int32 DefaultValue = 0, int32 LODForOccluderMesh = -1);
+
+	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | AnimationAsset")
+	 static void SetPreviewMeshForAnimAsset(USkeletalMesh * PreviewMesh, UAnimationAsset* AnimationAsset);
+
+	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
+	 static FEditorScriptingMeshReductionOptions GetModelReductionSettings(UStaticMesh * StaticMesh);
+	 
+	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
+	 static void SetLODScreenSizeProps(UStaticMesh * StaticMesh, TMap<int32, float> ScreenSize, FName Platform, bool PropagateToDefaults = false);
+
+	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
+	 static void SetDistanceFieldResolutionScalePerLOD(UStaticMesh * StaticMesh, TMap<int32, float> DistanceResolutionScale);
 
 	/**
 	 * Get number of LODs present on a static mesh.
