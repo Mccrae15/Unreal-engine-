@@ -1091,6 +1091,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "StaticMesh")
 	ENGINE_API UMaterialInterface* GetMaterial(int32 MaterialIndex) const;
 
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "StaticMesh")
+	ENGINE_API	int32 GetLODForOccluderMesh() const ;
+
 	/**
 	 * Adds a new material and return its slot name
 	 */
