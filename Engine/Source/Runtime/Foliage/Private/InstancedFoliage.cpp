@@ -2881,6 +2881,35 @@ void AInstancedFoliageActor::MoveSelectedInstancesToLevel(ULevel* InTargetLevel)
 	}
 }
 
+
+TArray<FSelectedFoliage> AInstancedFoliageActor::GetSelectedInstancesInfo()
+{
+	TArray<FSelectedFoliage> ret_val;
+
+	for (auto& MeshPair : FoliageInfos)
+	{	
+		FFoliageInfo& MeshInfo = *MeshPair.Value;
+		UFoliageType* FoliageType = MeshPair.Key;
+		UStaticMesh* InstanceStaticMesh = (UStaticMesh*)FoliageType->GetSource();
+		TArray<FTransform> InstanceTransform;
+		if (MeshInfo.SelectedIndices.Num() > 0) {
+			for (auto& i : MeshInfo.SelectedIndices) {
+				if (&MeshInfo.Instances[i]) {
+					FFoliageInstance& Instance = MeshInfo.Instances[i];
+					FTransform InstanceTransform2 = Instance.GetInstanceWorldTransform();
+					 InstanceTransform.Add(InstanceTransform2);
+				}
+			}
+			MeshInfo.RemoveInstances(this, MeshInfo.SelectedIndices.Array(), true);
+		}
+		if (InstanceStaticMesh && InstanceTransform.Num() > 0) {
+			ret_val.Add(FSelectedFoliage(InstanceStaticMesh, InstanceTransform));
+		}
+	}
+	while (FoliageInfos.Remove(nullptr)) {}	//remove entries from the map
+	return ret_val;
+}
+
 void AInstancedFoliageActor::MoveAllInstancesToLevel(ULevel* InTargetLevel)
 {
 	if (InTargetLevel == GetLevel())
