@@ -22,8 +22,8 @@
         "Win64",
         "Linux",
         "Mac"
-      ]
-	  "BlacklistTargets" : [ "Server" ]
+      ],
+	  "BlacklistTargets": [ "Server" ]
     }
   ]
 }
