@@ -244,6 +244,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Cooking)
 	uint8 bIsEditorOnly:1;
 
+	UFUNCTION(BlueprintCallable, Category = "Components")
+	void setIsEditorOnly(bool newValue) {
+		bIsEditorOnly = newValue ? 1: 0;
+	};
+
 #if WITH_EDITORONLY_DATA
 private:
 	/** True if this component is only used for visualization, usually a sprite or text */

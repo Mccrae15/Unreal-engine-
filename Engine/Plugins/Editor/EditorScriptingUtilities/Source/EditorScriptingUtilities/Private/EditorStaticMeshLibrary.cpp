@@ -153,6 +153,190 @@ namespace InternalEditorMeshLibrary
 		return true;
 	}
 }
+void UEditorStaticMeshLibrary::SetLODProps(UStaticMesh* StaticMesh, int32 Android_LOD, int32 PS4_LOD, int32 DefaultValue, int32 LODForOccluderMesh) {
+	FPerPlatformInt newValue = FPerPlatformInt(FMath::Max(DefaultValue , 0));
+	if (Android_LOD > -1) {
+		newValue.PerPlatform.Add(FName("Android"), Android_LOD);
+	}
+	if (PS4_LOD > -1) {
+		newValue.PerPlatform.Add(FName("PS4"), PS4_LOD);
+	}
+	StaticMesh->MinLOD = newValue;
+	if (LODForOccluderMesh != StaticMesh->LODForOccluderMesh) {
+		StaticMesh->LODForOccluderMesh = LODForOccluderMesh;
+	}
+	StaticMesh->PostEditChange();
+}
+
+void UEditorStaticMeshLibrary::SetPreviewMeshForAnimAsset(USkeletalMesh* PreviewMesh, UAnimationAsset* AnimationAsset)
+{
+	AnimationAsset->SetPreviewMesh(PreviewMesh);
+}
+
+FEditorScriptingMeshReductionOptions UEditorStaticMeshLibrary::GetModelReductionSettings(UStaticMesh* StaticMesh)
+{
+	FEditorScriptingMeshReductionOptions ReductionOptions;
+	if (StaticMesh)
+	{
+		for (int i = 0; i < StaticMesh->GetNumSourceModels(); i++) {
+			FEditorScriptingMeshReductionSettings singleSetting;
+			singleSetting.PercentTriangles = StaticMesh->GetSourceModel(i).ReductionSettings.PercentTriangles;
+			singleSetting.ScreenSize = StaticMesh->GetSourceModel(i).ScreenSize.Default;
+			ReductionOptions.ReductionSettings.Add(singleSetting);
+		}
+		ReductionOptions.bAutoComputeLODScreenSize = StaticMesh->bAutoComputeLODScreenSize;
+	}
+	return ReductionOptions;
+}
+
+void UEditorStaticMeshLibrary::SetLODScreenSizeProps(UStaticMesh* StaticMesh, TMap<int32,float> ScreenSize, FName Platform, bool PropagateToDefaults) {
+
+	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	{
+		return;
+	}
+
+	if (StaticMesh == nullptr)
+	{
+		UE_LOG(LogEditorScripting, Error, TEXT("GetLodScreenSizes: The StaticMesh is null."));
+		return ;
+	}
+
+	// Close the mesh editor to prevent crashing. If changes are applied, reopen it after the mesh has been built.
+	bool bStaticMeshIsEdited = false;
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (AssetEditorSubsystem->FindEditorForAsset(StaticMesh, false))
+	{
+		AssetEditorSubsystem->CloseAllEditorsForAsset(StaticMesh);
+		bStaticMeshIsEdited = true;
+	}
+
+	bool defaultsOnly = Platform == FName("Default");
+
+		if (StaticMesh->RenderData.IsValid())
+		{
+			TArray<int32> IdexesToUpdate;
+			for (auto& Elem : ScreenSize)
+			{
+				if (StaticMesh->RenderData->ScreenSize[Elem.Key].Default) 
+				{
+					if (!defaultsOnly)
+					{
+						if (StaticMesh->GetSourceModel(Elem.Key).ScreenSize.PerPlatform.Contains(Platform))
+						{
+							if (*StaticMesh->GetSourceModel(Elem.Key).ScreenSize.PerPlatform.Find(Platform) != Elem.Value)
+							{
+								IdexesToUpdate.Add(Elem.Key);
+							}
+						}
+						else
+						{
+							IdexesToUpdate.Add(Elem.Key);
+						}
+					}
+					else
+					{
+						if (StaticMesh->GetSourceModel(Elem.Key).ScreenSize.Default != Elem.Value)
+						{
+							IdexesToUpdate.Add(Elem.Key);
+						}
+					}
+				}
+			}
+			if (IdexesToUpdate.Num() > 0)
+			{
+				for (auto& Elem : IdexesToUpdate)
+				{
+					if (!defaultsOnly)
+					{
+						StaticMesh->GetSourceModel(Elem).ScreenSize.PerPlatform.Add(Platform, *ScreenSize.Find(Elem));
+					}
+					if (PropagateToDefaults || defaultsOnly)
+					{
+						StaticMesh->GetSourceModel(Elem).ScreenSize.Default = *ScreenSize.Find(Elem);
+					}
+					if (!(PropagateToDefaults || defaultsOnly))
+					{
+						StaticMesh->GetSourceModel(Elem).ScreenSize.Default = StaticMesh->RenderData->ScreenSize[Elem].Default;
+					}
+				}
+			}
+
+			bool bAutoComputeLODScreenSizeChanged = false;
+			if (StaticMesh->bAutoComputeLODScreenSize == true)
+			{
+				bAutoComputeLODScreenSizeChanged = true;
+				StaticMesh->bAutoComputeLODScreenSize = false;
+			}
+
+			
+			if ((IdexesToUpdate.Num() > 0) || bAutoComputeLODScreenSizeChanged)
+			{
+				StaticMesh->PostEditChange();
+				StaticMesh->MarkPackageDirty();
+			}
+			
+		}
+		else
+		{
+			UE_LOG(LogEditorScripting, Warning, TEXT("GetLodScreenSizes: The RenderData is invalid") );
+		}
+
+		// Reopen MeshEditor on this mesh if the MeshEditor was previously opened in it
+		if (bStaticMeshIsEdited)
+		{
+			AssetEditorSubsystem->OpenEditorForAsset(StaticMesh);
+		}
+	
+
+		return;
+}
+
+void UEditorStaticMeshLibrary::SetDistanceFieldResolutionScalePerLOD(UStaticMesh* StaticMesh, TMap<int32, float> DistanceResolutionScale)
+{
+	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	{
+		return;
+	}
+
+	if (StaticMesh == nullptr)
+	{
+		UE_LOG(LogEditorScripting, Error, TEXT("SetDistanceFieldResolutionScalePerLOD: The StaticMesh is null."));
+		return;
+	}
+
+	// Close the mesh editor to prevent crashing. If changes are applied, reopen it after the mesh has been built.
+	bool bStaticMeshIsEdited = false;
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (AssetEditorSubsystem->FindEditorForAsset(StaticMesh, false))
+	{
+		AssetEditorSubsystem->CloseAllEditorsForAsset(StaticMesh);
+		bStaticMeshIsEdited = true;
+	}
+
+
+	bool NeedsResave = false;
+	for (auto& Elem : DistanceResolutionScale)
+	{
+		if (StaticMesh->GetSourceModel(Elem.Key).BuildSettings.DistanceFieldResolutionScale != Elem.Value)
+		{
+			StaticMesh->GetSourceModel(Elem.Key).BuildSettings.DistanceFieldResolutionScale = Elem.Value;
+			NeedsResave = true;
+		};
+	}
+
+	if (NeedsResave)
+	{
+		// Request re-building of mesh with new LODs
+		StaticMesh->PostEditChange();
+
+		// Reopen MeshEditor on this mesh if the MeshEditor was previously opened in it
+		if (bStaticMeshIsEdited)
+		{
+			AssetEditorSubsystem->OpenEditorForAsset(StaticMesh);
+		}
+	}
+}
 
 int32 UEditorStaticMeshLibrary::SetLodsWithNotification(UStaticMesh* StaticMesh, const FEditorScriptingMeshReductionOptions& ReductionOptions, bool bApplyChanges)
 {
