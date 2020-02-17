@@ -103,7 +103,10 @@ public:
 	 *			A negative value indicates that the LOD was not set. See log for explanation.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
-	static int32 SetLodFromStaticMesh(UStaticMesh* DestinationStaticMesh, int32 DestinationLodIndex, UStaticMesh* SourceStaticMesh, int32 SourceLodIndex, bool bReuseExistingMaterialSlots);
+	 static int32 SetLodFromStaticMesh(UStaticMesh* DestinationStaticMesh, int32 DestinationLodIndex, UStaticMesh* SourceStaticMesh, int32 SourceLodIndex, bool bReuseExistingMaterialSlots);
+
+	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
+		 static void SetLODProps(UStaticMesh* StaticMesh, int32 Android_LOD = 2, int32 PS4_LOD = 1, int32 LODForOccluderMesh = -1);
 
 	/**
 	 * Get number of LODs present on a static mesh.
