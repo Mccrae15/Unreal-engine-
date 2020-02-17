@@ -60,7 +60,7 @@ public:
 };
 
 /** This asset acts as a proxy to a static mesh for ALODActors to display */
-UCLASS()
+UCLASS(BlueprintType)
 class ENGINE_API UHLODProxy : public UObject
 {
 	GENERATED_BODY()

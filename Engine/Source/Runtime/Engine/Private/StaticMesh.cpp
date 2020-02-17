@@ -4739,6 +4739,14 @@ UMaterialInterface* UStaticMesh::GetMaterial(int32 MaterialIndex) const
 	return NULL;
 }
 
+int32 UStaticMesh::GetLODForOccluderMesh() const
+{
+#if WITH_EDITORONLY_DATA
+	return LODForOccluderMesh;
+#endif
+	return -1;
+}
+
 int32 UStaticMesh::GetMaterialIndex(FName MaterialSlotName) const
 {
 	for (int32 MaterialIndex = 0; MaterialIndex < StaticMaterials.Num(); ++MaterialIndex)

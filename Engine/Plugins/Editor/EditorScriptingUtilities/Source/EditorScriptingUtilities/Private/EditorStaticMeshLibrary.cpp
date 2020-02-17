@@ -152,6 +152,20 @@ namespace InternalEditorMeshLibrary
 		return true;
 	}
 }
+void UEditorStaticMeshLibrary::SetLODProps(UStaticMesh* StaticMesh, int32 Android_LOD, int32 PS4_LOD, int32 LODForOccluderMesh) {
+	FPerPlatformInt newValue;
+	if (Android_LOD > -1) {
+		newValue.PerPlatform.Add(FName("Android"), Android_LOD);
+	}
+	if (PS4_LOD > -1) {
+		newValue.PerPlatform.Add(FName("PS4"), PS4_LOD);
+	}
+	StaticMesh->MinLOD = newValue;
+	if (LODForOccluderMesh != StaticMesh->LODForOccluderMesh) {
+		StaticMesh->LODForOccluderMesh = LODForOccluderMesh;
+	}
+	StaticMesh->PostEditChange();
+}
 
 int32 UEditorStaticMeshLibrary::SetLods(UStaticMesh* StaticMesh, const FEditorScriptingMeshReductionOptions& ReductionOptions)
 {
