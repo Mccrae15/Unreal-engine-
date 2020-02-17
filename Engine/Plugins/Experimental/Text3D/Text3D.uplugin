@@ -23,6 +23,7 @@
         "Linux",
         "Mac"
       ]
+	  "BlacklistTargets" : [ "Server" ]
     }
   ]
 }
