@@ -58,7 +58,7 @@ struct FAutoCompleteNode
 /**
  * A basic command line console that accepts most commands.
  */
-UCLASS(Within=GameViewportClient, config=Input, transient)
+UCLASS(Within=GameViewportClient, config=Engine, transient)
 class ENGINE_API UConsole
 	: public UObject
 	, public FOutputDevice
