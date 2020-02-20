@@ -14,6 +14,7 @@
 #include "Parameterization/DataprepParameterization.h"
 #include "SelectionSystem/DataprepFetcher.h"
 #include "SelectionSystem/DataprepFilter.h"
+#include "SelectionSystem/DataprepSelectionTransform.h"
 
 // Engine include
 #include "ActorEditorUtils.h"
@@ -79,6 +80,19 @@ UDataprepActionAsset::~UDataprepActionAsset()
 #endif //WITH_EDITOR
 }
 
+void UDataprepActionAsset::PostTransacted(const FTransactionObjectEvent& TransactionEvent)
+{
+	Super::PostTransacted(TransactionEvent);
+
+	if (TransactionEvent.GetEventType() == ETransactionObjectEventType::UndoRedo)
+	{
+		if (TransactionEvent.GetChangedProperties().Contains(TEXT("Steps")))
+		{
+			OnStepsOrderChanged.Broadcast();
+		}
+	}
+}
+
 void UDataprepActionAsset::Execute(const TArray<UObject*>& InObjects)
 {
 	ContextPtr = MakeShareable( new FDataprepActionContext() );
@@ -110,6 +124,13 @@ void UDataprepActionAsset::Execute(const TArray<UObject*>& InObjects)
 			{
 				UDataprepFilter* Filter = static_cast<UDataprepFilter*>( StepObject );
 				OperationContext->Context->Objects = Filter->FilterObjects( OperationContext->Context->Objects );
+			}
+			else if ( StepType == UDataprepSelectionTransform::StaticClass() )
+			{
+				UDataprepSelectionTransform* SelectionTransform = static_cast<UDataprepSelectionTransform*>(StepObject);
+				TArray<UObject*> TransformResult;
+				SelectionTransform->Execute(OperationContext->Context->Objects, TransformResult);
+				OperationContext->Context->Objects = TransformResult;
 			}
 		}
 	}
@@ -145,7 +166,18 @@ int32 UDataprepActionAsset::AddStep(TSubclassOf<UDataprepParameterizableObject> 
 			ActionStep->PathOfStepObjectClass = ActionStep->StepObject->GetClass();
 			ActionStep->bIsEnabled = true;
 			Steps.Add(ActionStep);
-			OnStepsChanged.Broadcast();
+			OnStepsOrderChanged.Broadcast();
+			return Steps.Num() - 1;
+		}
+		if ( ValidRootClass == UDataprepSelectionTransform::StaticClass() )
+		{
+			Modify();
+			UDataprepActionStep* ActionStep = NewObject< UDataprepActionStep >(this, UDataprepActionStep::StaticClass(), NAME_None, RF_Transactional);
+			ActionStep->StepObject = NewObject< UDataprepSelectionTransform >(ActionStep, StepType.Get(), NAME_None, RF_Transactional);
+			ActionStep->PathOfStepObjectClass = ActionStep->StepObject->GetClass();
+			ActionStep->bIsEnabled = true;
+			Steps.Add(ActionStep);
+			OnStepsOrderChanged.Broadcast();
 			return Steps.Num() - 1;
 		}
 		else if ( ValidRootClass == UDataprepFetcher::StaticClass() )
@@ -160,7 +192,7 @@ int32 UDataprepActionAsset::AddStep(TSubclassOf<UDataprepParameterizableObject> 
 				ActionStep->PathOfStepObjectClass = ActionStep->StepObject->GetClass();
 				ActionStep->bIsEnabled = true;
 				Steps.Add( ActionStep );
-				OnStepsChanged.Broadcast();
+				OnStepsOrderChanged.Broadcast();
 				return Steps.Num() - 1;
 			}
 			else
@@ -184,8 +216,9 @@ int32 UDataprepActionAsset::AddStep(const UDataprepActionStep* InActionStep)
 	{
 		Modify();
 		UDataprepActionStep* ActionStep = DuplicateObject<UDataprepActionStep>( InActionStep, this );
+		ActionStep->SetFlags(EObjectFlags::RF_Transactional);
 		Steps.Add( ActionStep );
-		OnStepsChanged.Broadcast();
+		OnStepsOrderChanged.Broadcast();
 		return Steps.Num() - 1;
 	}
 
@@ -208,11 +241,12 @@ int32 UDataprepActionAsset::AddSteps(const TArray<const UDataprepActionStep*>& I
 			if(InActionStep)
 			{
 				UDataprepActionStep* ActionStep = DuplicateObject<UDataprepActionStep>( InActionStep, this );
+				ActionStep->SetFlags(EObjectFlags::RF_Transactional);
 				Steps.Add( ActionStep );
 			}
 		}
 
-		OnStepsChanged.Broadcast();
+		OnStepsOrderChanged.Broadcast();
 		return Steps.Num() - 1;
 	}
 
@@ -236,7 +270,7 @@ int32 UDataprepActionAsset::AddStep(const UDataprepParameterizableObject* StepOb
 		ActionStep->PathOfStepObjectClass = ActionStep->StepObject->GetClass();
 		ActionStep->bIsEnabled = true;
 		Steps.Add(ActionStep);
-		OnStepsChanged.Broadcast();
+		OnStepsOrderChanged.Broadcast();
 		return Steps.Num() - 1;
 	}
 	else
@@ -261,8 +295,9 @@ bool UDataprepActionAsset::InsertStep(const UDataprepActionStep* InActionStep, i
 	{
 		Modify();
 		UDataprepActionStep* ActionStep = DuplicateObject<UDataprepActionStep>( InActionStep, this);
+		ActionStep->SetFlags(EObjectFlags::RF_Transactional);
 		Steps.Insert( ActionStep, Index );
-		OnStepsChanged.Broadcast();
+		OnStepsOrderChanged.Broadcast();
 		return true;
 	}
 
@@ -292,11 +327,12 @@ bool UDataprepActionAsset::InsertSteps(const TArray<const UDataprepActionStep*>&
 			if(InActionStep)
 			{
 				UDataprepActionStep* ActionStep = DuplicateObject<UDataprepActionStep>( InActionStep, this );
+				ActionStep->SetFlags(EObjectFlags::RF_Transactional);
 				Steps.Insert( ActionStep, Index );
 			}
 		}
 
-		OnStepsChanged.Broadcast();
+		OnStepsOrderChanged.Broadcast();
 		return true;
 	}
 
@@ -363,7 +399,7 @@ bool UDataprepActionAsset::MoveStep(int32 StepIndex, int32 DestinationIndex)
 
 	if ( DataprepCorePrivateUtils::MoveArrayElement( Steps, StepIndex, DestinationIndex ) )
 	{
-		OnStepsChanged.Broadcast();
+		OnStepsOrderChanged.Broadcast();
 		return true;
 	}
 
@@ -392,7 +428,7 @@ bool UDataprepActionAsset::SwapSteps(int32 FirstIndex, int32 SecondIndex)
 		UDataprepActionStep* FirstStep = Steps[FirstIndex];
 		Steps[FirstIndex] = Steps[SecondIndex];
 		Steps[SecondIndex] = FirstStep;
-		OnStepsChanged.Broadcast();
+		OnStepsOrderChanged.Broadcast();
 		return true;
 	}
 
@@ -416,10 +452,38 @@ bool UDataprepActionAsset::RemoveStep(int32 Index)
 {
 	if ( Steps.IsValidIndex( Index ) )
 	{
-		Modify();
+		return RemoveSteps({ Index });
+	}
 
-		if ( UDataprepAsset* DataprepAsset = FDataprepCoreUtils::GetDataprepAssetOfObject( this ) )
+	UE_LOG( LogDataprepCore, Error, TEXT("UDataprepActionAsset::RemoveStep: The Index is out of range") );
+	return false;
+}
+
+bool UDataprepActionAsset::RemoveSteps(const TArray<int32>& Indices)
+{
+	if(Indices.Num() == 0)
+	{
+		UE_LOG( LogDataprepCore, Error, TEXT("UDataprepActionAsset::RemoveSteps: Empty array") );
+		return false;
+	}
+
+	UDataprepAsset* DataprepAsset = FDataprepCoreUtils::GetDataprepAssetOfObject( this );
+	if(DataprepAsset == nullptr)
+	{
+		UE_LOG( LogDataprepCore, Error, TEXT("UDataprepActionAsset::RemoveSteps: No Dataprep asset") );
+		return false;
+	}
+
+	bool bSuccesfulRemoval = false;
+
+	Modify();
+
+	for(int32 Index : Indices)
+	{
+		if ( Steps.IsValidIndex( Index ) )
 		{
+			bSuccesfulRemoval = true;
+
 			if ( UDataprepParameterization* Parameterization = DataprepAsset->GetDataprepParameterization() )
 			{
 				TArray< UObject* > Objects;
@@ -436,20 +500,35 @@ bool UDataprepActionAsset::RemoveStep(int32 Index)
 
 				Parameterization->RemoveBindingFromObjects( ParameterizableObjects );
 			}
-		}
 
-		Steps.RemoveAt( Index );
-		OnStepsChanged.Broadcast();
+			OnStepsAboutToBeRemoved.Broadcast( Steps[Index]->GetStepObject() );
+			Steps.RemoveAt( Index );
+		}
+	}
+
+	if(bSuccesfulRemoval)
+	{
+		OnStepsOrderChanged.Broadcast();
 		return true;
 	}
 
-	UE_LOG( LogDataprepCore, Error, TEXT("UDataprepActionAsset::RemoveStep: The Index is out of range") );
+	UE_LOG( LogDataprepCore, Error, TEXT("UDataprepActionAsset::RemoveSteps: Invalid array of step indices") );
 	return false;
 }
 
 FOnStepsOrderChanged& UDataprepActionAsset::GetOnStepsOrderChanged()
 {
-	return OnStepsChanged;
+	return OnStepsOrderChanged;
+}
+
+FOnStepAboutToBeRemoved& UDataprepActionAsset::GetOnStepAboutToBeRemoved()
+{
+	return OnStepsAboutToBeRemoved;
+}
+
+FOnStepWasEdited& UDataprepActionAsset::GetOnStepWasEdited()
+{
+	return OnStepWasEdited;
 }
 
 void UDataprepActionAsset::NotifyDataprepSystemsOfRemoval()
@@ -522,6 +601,13 @@ void UDataprepActionAsset::ExecuteAction(const TSharedPtr<FDataprepActionContext
 		{
 			UDataprepFilter* Filter = static_cast<UDataprepFilter*>( StepObject );
 			SelectedObjects = Filter->FilterObjects( SelectedObjects );
+		}
+		else if ( StepType == UDataprepSelectionTransform::StaticClass() )
+		{
+			UDataprepSelectionTransform* SelectionTransform = static_cast<UDataprepSelectionTransform*>(StepObject);
+			TArray<UObject*> TransformResult;
+			SelectionTransform->Execute(SelectedObjects, TransformResult);
+			SelectedObjects = TransformResult;
 		}
 	};
 

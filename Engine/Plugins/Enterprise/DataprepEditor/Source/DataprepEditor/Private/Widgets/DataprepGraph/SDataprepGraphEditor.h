@@ -18,6 +18,7 @@
 #include "Widgets/Layout/SConstraintCanvas.h"
 #include "Widgets/SWidget.h"
 
+class FUICommandList;
 class SDataprepGraphActionNode;
 class SDataprepGraphTrackNode;
 class SDataprepGraphTrackWidget;
@@ -71,12 +72,48 @@ public:
 	static void RegisterFactories();
 	static void UnRegisterFactories();
 
+	/** Set of methods necessary for copy/paste of action nodes*/
+	void OnRenameNode();
+	bool CanRenameNode() const;
+
+	bool CanSelectAllNodes() const { return true; }
+
+	void DeleteSelectedNodes();
+	bool CanDeleteNodes() const;
+
+	void CopySelectedNodes();
+	bool CanCopyNodes() const;
+
+	void CutSelectedNodes();
+	bool CanCutNodes() const;
+
+	void PasteNodes();
+	bool CanPasteNodes() const;
+
+	void DuplicateNodes();
+	bool CanDuplicateNodes() const;
+
+	void DeleteSelectedDuplicatableNodes();
+	/** End of set of methods necessary for copy/paste of action nodes*/
+
+	/** Set of callbacks to rename an action node */
+	bool OnNodeVerifyTitleCommit(const FText& NewText, UEdGraphNode* NodeBeingChanged, FText& OutErrorMessage);
+	void OnNodeTitleCommitted(const FText& NewText, ETextCommit::Type CommitInfo, UEdGraphNode* NodeBeingChanged);
+
+	/** Callback to create contextual menu on graph panel */
+	FActionMenuContent OnCreateActionMenu(UEdGraph* InGraph, const FVector2D& InNodePosition, const TArray<UEdGraphPin*>& InDraggedPins, bool bAutoExpand, SGraphEditor::FActionMenuClosed InOnMenuClosed);
+
+	/** Callback to create contextual menu for graph nodes in graph panel */
+	FActionMenuContent OnCreateNodeOrPinMenu(UEdGraph* CurrentGraph, const UEdGraphNode* InGraphNode, const UEdGraphPin* InGraphPin, FMenuBuilder* MenuBuilder, bool bIsDebugging);
+
 private:
 	/** Recompute the layout of the displayed graph after a pan, resize and/or zoom */
 	void UpdateLayout( const FVector2D& LocalSize, const FVector2D& Location, float ZoomAmount );
 
 	/** Recompute the boundaries of a the displayed graph */
 	void UpdateBoundaries(const FVector2D& LocalSize, float ZoomAmount);
+
+	void BuildCommandList();
 
 private:
 	/** When false, indicates the graph editor has not been drawn yet */
@@ -106,6 +143,9 @@ private:
 	/** Size of graph being displayed */
 	mutable TWeakPtr<SDataprepGraphTrackNode> TrackGraphNodePtr;
 
+	/** Command list associated with this graph editor */
+	TSharedPtr<FUICommandList> GraphEditorCommands;
+
 	bool bCachedControlKeyDown;
 
 	/** Padding used on the borders of the canvas */
@@ -116,6 +156,7 @@ private:
 
 	/** Factory to create the associated SGraphNode classes for Dataprep graph's UEdGraph classes */
 	static TSharedPtr<SDataprepGraphEditorNodeFactory> NodeFactory;
+
 
 	friend SDataprepGraphTrackNode;
 };

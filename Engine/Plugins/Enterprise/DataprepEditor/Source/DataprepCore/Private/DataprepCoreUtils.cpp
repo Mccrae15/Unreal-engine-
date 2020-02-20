@@ -6,6 +6,7 @@
 #include "DataprepAssetUserData.h"
 #endif
 
+#include "DataprepActionAsset.h"
 #include "DataprepAsset.h"
 #include "DataprepAssetInterface.h"
 #include "DataprepContentConsumer.h"
@@ -17,6 +18,7 @@
 #include "IDataprepProgressReporter.h"
 #include "SelectionSystem/DataprepFetcher.h"
 #include "SelectionSystem/DataprepFilter.h"
+#include "SelectionSystem/DataprepSelectionTransform.h"
 
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
@@ -51,6 +53,20 @@ UDataprepAsset* FDataprepCoreUtils::GetDataprepAssetOfObject(UObject* Object)
 		if ( UDataprepAsset::StaticClass() == Object->GetClass() )
 		{
 			return static_cast<UDataprepAsset*>( Object );
+		}
+		Object = Object->GetOuter();
+	}
+
+	return nullptr;
+}
+
+UDataprepActionAsset* FDataprepCoreUtils::GetDataprepActionAssetOf(UObject* Object)
+{
+	while (Object)
+	{
+		if (UDataprepActionAsset::StaticClass() == Object->GetClass())
+		{
+			return static_cast<UDataprepActionAsset*>(Object);
 		}
 		Object = Object->GetOuter();
 	}
@@ -354,6 +370,7 @@ bool FDataprepCoreUtils::IsClassValidForStepCreation(const TSubclassOf<UDataprep
 	UClass* DataprepTopLevelClass = UDataprepParameterizableObject::StaticClass();
 	UClass* DataprepOperationClass = UDataprepOperation::StaticClass();
 	UClass* DataprepFetcherClass = UDataprepFetcher::StaticClass();
+	UClass* DataprepTransformClass = UDataprepSelectionTransform::StaticClass();
 
 	while ( Class )
 	{
@@ -381,6 +398,12 @@ bool FDataprepCoreUtils::IsClassValidForStepCreation(const TSubclassOf<UDataprep
 			return true;
 		}
 
+		if ( Class == DataprepTransformClass )
+		{
+			OutValidRootClass = DataprepTransformClass;
+			return true;
+		}
+
 		Class = Class->GetSuperClass();
 	}
 
@@ -393,11 +416,13 @@ UClass* FDataprepCoreUtils::GetTypeOfActionStep(const UDataprepParameterizableOb
 
 	const UClass* DataprepFilterClass = UDataprepFilter::StaticClass();
 	const UClass* DataprepOperationClass = UDataprepOperation::StaticClass();
+	const UClass* DataprepTransformClass = UDataprepSelectionTransform::StaticClass();
 
 	while ( CurrentClass )
 	{
 		if ( CurrentClass == DataprepFilterClass
 			|| CurrentClass == DataprepOperationClass
+			|| CurrentClass == DataprepTransformClass
 			)
 		{
 			break;
@@ -627,6 +652,25 @@ void FDataprepCoreUtils::BuildAssets(const TArray<TWeakObjectPtr<UObject>>& Asse
 		Task.ReportNextStep(FText::Format(LOCTEXT( "BuildAssets_Building_Meshes", "Building static meshes ({0} / {1})" ), AssetBuiltCount, AssetToBuildCount), 1.0f);
 		return true;
 	});
+}
+
+bool FDataprepCoreUtils::RemoveSteps(UDataprepActionAsset* ActionAsset, const TArray<int32>& Indices, int32& ActionIndex)
+{
+	ActionIndex = INDEX_NONE;
+
+	UDataprepAsset* DataprepAsset = FDataprepCoreUtils::GetDataprepAssetOfObject(ActionAsset);
+	check(DataprepAsset);
+
+	if(ActionAsset->GetStepsCount() == Indices.Num())
+	{
+		// Find index of source action 
+		ActionIndex = DataprepAsset->GetActionIndex(ActionAsset);
+		ensure(ActionIndex != INDEX_NONE);
+
+		return DataprepAsset->RemoveAction(ActionIndex);
+	}
+
+	return ActionAsset->RemoveSteps( Indices );
 }
 
 #undef LOCTEXT_NAMESPACE

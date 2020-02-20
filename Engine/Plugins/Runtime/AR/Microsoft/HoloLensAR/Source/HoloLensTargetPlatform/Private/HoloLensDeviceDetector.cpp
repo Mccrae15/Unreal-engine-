@@ -163,7 +163,8 @@ void FHoloLensDeviceDetector::StartDeviceDetection()
 
 	HRESULT hr;
 
-	::RoInitialize(RO_INIT_MULTITHREADED);
+	hr = ::RoInitialize(RO_INIT_MULTITHREADED);
+	if (FAILED(hr)) { return; }
 
 	ComPtr <IDeviceInformationStatics2> DeviceInformationStatics2;
 	hr = GetActivationFactory(HStringReference(RuntimeClass_Windows_Devices_Enumeration_DeviceInformation).Get(), &DeviceInformationStatics2);
@@ -343,7 +344,7 @@ void FHoloLensDeviceDetector::OnDeviceWatcherDeviceAdded(IDeviceInformation* Inf
 		if (FAILED(hr)) { return; }
 
 		hr = PropertyValue->GetStringArray(&uiValue, &pArrayString);
-		if (FAILED(hr)) { return; }
+		if (FAILED(hr) || pArrayString == nullptr) { return; }
 
 		if (uiValue == 0) { return; }
 

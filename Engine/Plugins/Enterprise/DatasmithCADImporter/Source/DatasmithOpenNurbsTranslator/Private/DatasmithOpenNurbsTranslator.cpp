@@ -265,7 +265,7 @@ namespace DatasmithOpenNurbsTranslatorUtils
 		FVector2D UVCoords[3];
 	};
 
-	bool TranslateMesh(const ON_Mesh *Mesh, FMeshDescription& MeshDescription, bool& bHasNormal, double ScalingFactor)
+	bool TranslateMesh(const ON_Mesh *Mesh, FMeshDescription& MeshDescription, bool& bHasNormal, double ScalingFactor, const ON_3dVector& Offset)
 	{
 		// Ref. GP3DMVisitorImpl::visitMesh
 		// Ref. FGPureMeshInterface::CreateMesh
@@ -296,7 +296,7 @@ namespace DatasmithOpenNurbsTranslatorUtils
 
 		for (int Index = 0; Index < VertexCount; ++Index)
 		{
-			ON_3fPoint p1 = Mesh->m_V[Index];
+			ON_3fPoint p1 = Mesh->m_V[Index] + ON_3fVector(Offset);
 			Nodes.Add(FNode(p1.x * ScalingFactor, p1.y * ScalingFactor, p1.z * ScalingFactor));
 		}
 
@@ -371,27 +371,6 @@ namespace DatasmithOpenNurbsTranslatorUtils
 
 		if (bHasUVData)
 		{
-			// Reorient UV along V axis
-			float vMin = FLT_MAX;
-			float vMax = -FLT_MAX;
-
-			for (FVector2D& uvTextCoord : UvCoords)
-			{
-				if (uvTextCoord[1] < vMin)
-				{
-					vMin = uvTextCoord[1];
-				}
-				if (uvTextCoord[1] > vMax)
-				{
-					vMax = uvTextCoord[1];
-				}
-			}
-
-			for (FVector2D& uvTextCoord : UvCoords)
-			{
-				uvTextCoord[1] = vMin + vMax - uvTextCoord[1];
-			}
-
 			for (int Index = 0; Index < Faces.Num(); ++Index)
 			{
 				FFace& Face = Faces[Index];
@@ -435,11 +414,10 @@ namespace DatasmithOpenNurbsTranslatorUtils
 
 			// Fill the vertex array
 			FVertexID AddedVertexId = MeshDescription.CreateVertex();
-			VertexPositions[AddedVertexId] = FVector(-Pos.X, Pos.Y, Pos.Z);
+			VertexPositions[AddedVertexId] = FVector(- Pos.X, Pos.Y, Pos.Z);
 		}
 
 		int32 VertexIndices[3];
-		FBox UVBBox(FVector(MAX_FLT), FVector(-MAX_FLT));
 
 		const int32 CornerCount = 3; // only triangles
 		FVector CornerPositions[3];
@@ -495,8 +473,8 @@ namespace DatasmithOpenNurbsTranslatorUtils
 					const FVector2D& UVValues = Face.UVCoords[CornerIndex];
 					if (!UVValues.ContainsNaN())
 					{
-						UVBBox += FVector(UVValues, 0.0f);
-						VertexInstanceUVs.Set(CornerVertexInstanceIDs[CornerIndex], 0, UVValues);
+						// Convert UVs - bottom-left Rhino's texture origin to Unreal's top-left
+						VertexInstanceUVs.Set(CornerVertexInstanceIDs[CornerIndex], 0, FVector2D(UVValues[0], 1.f - UVValues[1]));
 					}
 				}
 			}
@@ -682,6 +660,22 @@ private:
 
 	bool TranslateBRep(ON_Brep* brep, const ON_3dmObjectAttributes& Attributes, FMeshDescription& OutMesh, const TSharedRef< IDatasmithMeshElement >& MeshElement, const FString& Name, bool& bHasNormal);
 
+	
+	bool ComputeObjectGeometryCenter(const FOpenNurbsObjectWrapper& Object, ON_3dVector& OutGeometryCenter);
+	bool ComputeGeometryCenter(ON_Geometry* Geometry, ON_3dVector& OutCenter);
+
+	// Returns vector to shift geometry to its bounding box center
+	// done before tessellating or creating MeshDescription
+	ON_3dVector GetGeometryOffset(TSharedRef<IDatasmithMeshElement> MeshElement)
+	{
+		ON_3dVector Offset = ON_3fVector::ZeroVector;
+		if (ON_3dVector* OffsetPtr = MeshElementToGeometryCenter.Find(MeshElement))
+		{
+			Offset = *OffsetPtr;
+		}
+		return -Offset;
+	}
+
 private:
 	TArray<FOpenNurbsTranslatorImpl*> ChildTranslators;
 	TSharedRef<IDatasmithScene> Scene;
@@ -768,6 +762,8 @@ private:
 
 	/** OpenNurbs objects to Datasmith mesh elements */
 	TMap<const FOpenNurbsObjectWrapper* , TSharedPtr< IDatasmithMeshElement > > ObjectToMeshElementMap;
+
+	TMap< TSharedPtr< IDatasmithMeshElement >, ON_3dVector > MeshElementToGeometryCenter;
 
 	TArray<FString> MissingRenderMeshes;
 };
@@ -980,10 +976,25 @@ void FOpenNurbsTranslatorImpl::TranslateMaterialTable(const ON_ObjectArray<ON_Ma
 				FVector RotationAngles = Transform.GetRotation().Euler();
 
 				UVParameters.UVTiling.X = Tiling.X;
-				UVParameters.UVOffset.X = Translation.X;
 
 				UVParameters.UVTiling.Y = Tiling.Y;
-				UVParameters.UVOffset.Y = -Translation.Y; // V-coordinate is inverted in Unreal
+
+				if (!Tiling.IsNearlyZero())
+				{
+					UVParameters.UVOffset.X = Translation.X / Tiling.X;
+
+					// Recomputing offset from Rhino to Unreal, taking into account how tiling Pivot is set in SetupUVEdit: 
+					// P = pivot, C - input uv, T - tiling, O - offset
+					// Texture coordinate transformed like this: UV = T*(C+O-P)+P (ignoring mirror/rotation)
+					// P is 0.5 (for V), so  UV = T*(C+O - 0.5) + 0.5 = T*C + T*O - T*0.5 + 0.5
+					// Also, for Rhino we P` = 1 (Rhino image origin bottom-left),
+					// so tiling in Rhino is defined as  UV = T`*(C` + O` - 1) + 1
+					// T`*C + T`*O` - T`*1 + 1 = T*C + T*O - T*0.5 + 0.5
+					// T` = T, reducing further and get:
+					// O` = O + 0.5 - 0.5 / T
+					// #ueent_todo: this could be simplified if we were able to pass custom Tiling Pivot
+					UVParameters.UVOffset.Y = -(Translation.Y / Tiling.Y + 0.5f - 0.5f / Tiling.Y); // V-coordinate is inverted in Unreal
+				}
 
 				// Rotation angle is reversed because V-axis points down in Unreal while it points up in OpenNurbs
 				UVParameters.RotationAngle = -RotationAngles.Z;
@@ -1430,6 +1441,7 @@ void FOpenNurbsTranslatorImpl::TranslateInstanceDefinitionTable(const TArray<ON_
 						// Propagate data from child to parent translator for use by the "root" translator
 						MeshElementToTranslatorMap.Append(LinkedFileTranslator->MeshElementToTranslatorMap);
 						MeshElementToObjectMap.Append(LinkedFileTranslator->MeshElementToObjectMap);
+						MeshElementToGeometryCenter.Append(LinkedFileTranslator->MeshElementToGeometryCenter);
 
 						// Merge ChildScene with ParentScene
 						int32 NumActors = ChildScene->GetActorsCount();
@@ -1487,7 +1499,7 @@ void FOpenNurbsTranslatorImpl::TranslateObjectTable(const ON_ClassArray<FOpenNur
 	for (int Index = 0; Index < NumObjects; ++Index)
 	{
 		const FOpenNurbsObjectWrapper& Object = *InObjectTable.At(Index);
-		if (!Object.ObjectPtr->IsKindOf(&ON_InstanceRef::m_ON_InstanceRef_class_rtti))
+		if (!ON_InstanceRef::Cast(Object.ObjectPtr))
 		{
 			TranslateNonInstanceObject(Object);
 		}
@@ -1775,8 +1787,7 @@ bool FOpenNurbsTranslatorImpl::TranslateInstance(const FOpenNurbsObjectWrapper& 
 
 	// Ref. FDatasmithCADImporter::SetWorldTransform
 	FTransform Transform(Matrix);
-	const FTransform RightHanded = FTransform(FRotator(0.0f, 0.0f, 0.0f), FVector(0.0f, 0.0f, 0.0f), FVector(-1.0f, 1.0f, 1.0f));
-	FTransform CorrectedTransform = RightHanded * Transform * RightHanded;
+	FTransform CorrectedTransform = FDatasmithUtils::ConvertTransform(FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded, Transform);
 
 	ContainerElement->SetTranslation(CorrectedTransform.GetTranslation() * ScalingFactor);
 	ContainerElement->SetScale(CorrectedTransform.GetScale3D());
@@ -1885,6 +1896,14 @@ TSharedPtr<IDatasmithMeshActorElement> FOpenNurbsTranslatorImpl::GetMeshActorEle
 
 	ActorElement->SetLabel(*ActorLabel);
 	ActorElement->SetStaticMeshPathName(MeshElement->GetName());
+
+	ON_3dVector GeometryCenter;
+	if (ComputeObjectGeometryCenter(Object, GeometryCenter))
+	{
+		MeshElementToGeometryCenter.Add(MeshElement.ToSharedRef(), GeometryCenter);
+		FVector ActorOffset = ScalingFactor * FDatasmithUtils::ConvertVector(FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded, GeometryCenter);
+		ActorElement->SetTranslation(ActorOffset);
+	}
 
 	// TODO: TBD if need to set Material Override
 
@@ -2992,6 +3011,8 @@ bool FOpenNurbsTranslatorImpl::TranslateBRep(ON_Brep* Brep, const ON_3dmObjectAt
 		return false;
 	}
 
+	ON_3dVector Offset = GetGeometryOffset(MeshElement);
+
 	// No tessellation if CAD library is not present...
 #ifdef CAD_LIBRARY
 	if (OpenNurbsOptions.Geometry == EDatasmithOpenNurbsBrepTessellatedSource::UseUnrealNurbsTessellation)
@@ -3004,7 +3025,7 @@ bool FOpenNurbsTranslatorImpl::TranslateBRep(ON_Brep* Brep, const ON_3dmObjectAt
 
 		LocalSession->ClearData();
 
-		Result = LocalSession->AddBRep(*Brep);
+		Result = LocalSession->AddBRep(*Brep, Offset);
 
 		FString Filename = FString::Printf(TEXT("%s.ct"), *Name);
 		FString FilePath = FPaths::Combine(OutputPath, Filename);
@@ -3048,7 +3069,7 @@ bool FOpenNurbsTranslatorImpl::TranslateBRep(ON_Brep* Brep, const ON_3dmObjectAt
 			BRepMesh.Append(AnyMeshes.Count(), AnyMeshes.Array());
 		}
 
-		if (!DatasmithOpenNurbsTranslatorUtils::TranslateMesh(&BRepMesh, OutMesh, bHasNormal, ScalingFactor))
+		if (!DatasmithOpenNurbsTranslatorUtils::TranslateMesh(&BRepMesh, OutMesh, bHasNormal, ScalingFactor, Offset))
 		{
 			return false;
 		}
@@ -3057,7 +3078,74 @@ bool FOpenNurbsTranslatorImpl::TranslateBRep(ON_Brep* Brep, const ON_3dmObjectAt
 	}
 }
 
-TOptional< FMeshDescription > FOpenNurbsTranslatorImpl::GetMeshDescription(TSharedRef< IDatasmithMeshElement > MeshElement)
+bool FOpenNurbsTranslatorImpl::ComputeGeometryCenter(ON_Geometry* Geometry, ON_3dVector& OutCenter)
+{
+	if (Geometry == nullptr)
+	{
+		return false;
+	}
+
+	double BoxMin[3];
+	double BoxMax[3];
+	if (!Geometry->GetBBox(BoxMin, BoxMax))
+	{
+		return false;
+	}
+
+	OutCenter = (ON_3dVector(BoxMin[0], BoxMin[1], BoxMin[2]) + ON_3dVector(BoxMax[0], BoxMax[1], BoxMax[2])) * 0.5f;
+
+	return true;
+}
+
+bool FOpenNurbsTranslatorImpl::ComputeObjectGeometryCenter(const FOpenNurbsObjectWrapper& Object, ON_3dVector& OutGeometryCenter)
+{
+	bool bIsValid = false;
+	ON_3dVector GeometryCenter;
+	GeometryCenter.Zero();
+	if (Object.ObjectPtr->IsKindOf(&ON_Mesh::m_ON_Mesh_class_rtti))
+	{
+		bIsValid = ComputeGeometryCenter(ON_Mesh::Cast(Object.ObjectPtr), GeometryCenter);
+	}
+	else if (Object.ObjectPtr->IsKindOf(&ON_Brep::m_ON_Brep_class_rtti))
+	{
+		bIsValid = ComputeGeometryCenter(ON_Brep::Cast(Object.ObjectPtr), GeometryCenter);
+	}
+	else if (Object.ObjectPtr->IsKindOf(&ON_Extrusion::m_ON_Extrusion_class_rtti))
+	{
+		const ON_Extrusion* extrusion = ON_Extrusion::Cast(Object.ObjectPtr);
+		ON_Brep brep;
+		if (extrusion != nullptr && extrusion->BrepForm(&brep) != nullptr)
+		{
+			bIsValid = ComputeGeometryCenter(&brep, GeometryCenter);
+		}
+	}
+	else if (Object.ObjectPtr->IsKindOf(&ON_Hatch::m_ON_Hatch_class_rtti))
+	{
+		const ON_Hatch* hatch = ON_Hatch::Cast(Object.ObjectPtr);
+		ON_Brep brep;
+		if (hatch != nullptr && hatch->BrepForm(&brep) != nullptr)
+		{
+			bIsValid = ComputeGeometryCenter(&brep, GeometryCenter);
+		}
+	}
+	else if (Object.ObjectPtr->IsKindOf(&ON_PlaneSurface::m_ON_PlaneSurface_class_rtti))
+	{
+		// 
+	}
+	else if (Object.ObjectPtr->IsKindOf(&ON_LineCurve::m_ON_LineCurve_class_rtti))
+	{
+		// Not supported
+	}
+
+	if (bIsValid)
+	{
+		OutGeometryCenter = GeometryCenter;
+		return true;
+	}
+	return false;
+}
+
+TOptional<FMeshDescription> FOpenNurbsTranslatorImpl::GetMeshDescription(TSharedRef<IDatasmithMeshElement> MeshElement)
 {
 	// Ref. visitNonInstanceObject (mesh collection part)
 	const FOpenNurbsObjectWrapper** ObjectPtr = MeshElementToObjectMap.Find(&MeshElement.Get());
@@ -3088,7 +3176,8 @@ TOptional< FMeshDescription > FOpenNurbsTranslatorImpl::GetMeshDescription(TShar
 	bool bIsValid = false;
 	if (Object.ObjectPtr->IsKindOf(&ON_Mesh::m_ON_Mesh_class_rtti))
 	{
-		bIsValid = DatasmithOpenNurbsTranslatorUtils::TranslateMesh(ON_Mesh::Cast(Object.ObjectPtr), MeshDescription, bHasNormal, SelectedTranslator->ScalingFactor);
+		ON_3dVector Offset = GetGeometryOffset(MeshElement);
+		bIsValid = DatasmithOpenNurbsTranslatorUtils::TranslateMesh(ON_Mesh::Cast(Object.ObjectPtr), MeshDescription, bHasNormal, SelectedTranslator->ScalingFactor, Offset);
 	}
 	else if (Object.ObjectPtr->IsKindOf(&ON_Brep::m_ON_Brep_class_rtti) )
 	{
@@ -3203,29 +3292,21 @@ void FDatasmithOpenNurbsTranslator::UnloadScene()
 
 bool FDatasmithOpenNurbsTranslator::LoadStaticMesh(const TSharedRef<IDatasmithMeshElement> MeshElement, FDatasmithMeshElementPayload& OutMeshPayload)
 {
-	if ( TOptional< FMeshDescription > Mesh = Translator->GetMeshDescription( MeshElement ) )
+	if (TOptional< FMeshDescription > Mesh = Translator->GetMeshDescription(MeshElement))
 	{
 		OutMeshPayload.LodMeshes.Add(MoveTemp(Mesh.GetValue()));
 
 #ifdef CAD_LIBRARY
-		// Store CoreTech additional data if provided
-		const TCHAR* CoretechFile = MeshElement->GetFile();
-		if (FPaths::FileExists(CoretechFile))
-		{
-			TArray<uint8> ByteArray;
-			if (FFileHelper::LoadFileToArray(ByteArray, CoretechFile))
-			{
-				UCoreTechParametricSurfaceData* CoreTechData = Datasmith::MakeAdditionalData<UCoreTechParametricSurfaceData>();
-				CoreTechData->SourceFile = CoretechFile;
-				CoreTechData->RawData = MoveTemp(ByteArray);
-				CoreTechData->SceneParameters.ModelCoordSys = uint8(FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded);
-				CoreTechData->SceneParameters.ScaleFactor = Translator->GetScalingFactor();
-				CoreTechData->SceneParameters.MetricUnit = Translator->GetMetricUnit();
-				CoreTechData->LastTessellationOptions = OpenNurbsOptions;
-				OutMeshPayload.AdditionalData.Add(CoreTechData);
-			}
-		}
+		CADLibrary::FImportParameters ImportParameters;
+		ImportParameters.ModelCoordSys = CADLibrary::EModelCoordSystem::ZUp_RightHanded;
+		ImportParameters.MetricUnit = Translator->GetMetricUnit();
+		ImportParameters.ScaleFactor = Translator->GetScalingFactor();
+
+		CADLibrary::FMeshParameters MeshParameters;
+
+		DatasmithCoreTechParametricSurfaceData::AddCoreTechSurfaceDataForMesh(MeshElement, ImportParameters, MeshParameters, OpenNurbsOptions, OutMeshPayload);
 #endif // CAD_LIBRARY
+
 	}
 
 	return OutMeshPayload.LodMeshes.Num() > 0;

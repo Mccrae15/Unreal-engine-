@@ -110,8 +110,10 @@ namespace DatasmithImporterImpl
 
 		if ( !ExistingAsset )
 		{
-			FString DestinationPackagePath = UPackageTools::SanitizePackageName( FPaths::Combine( DestinationPath, SourceAsset->GetName() ) );
-			FString DestinationAssetPath = DestinationPackagePath + TEXT(".") + UPackageTools::SanitizePackageName( SourceAsset->GetName() );
+			const FString AssetName = SourceAsset->GetName();
+			bool bPathIsComplete = AssetName == FPaths::GetBaseFilename( DestinationPath );
+			FString DestinationPackagePath = UPackageTools::SanitizePackageName( bPathIsComplete ? DestinationPath : FPaths::Combine( DestinationPath, AssetName ) );
+			FString DestinationAssetPath = DestinationPackagePath + TEXT(".") + UPackageTools::SanitizePackageName( AssetName );
 
 			ExistingAsset = FDatasmithImporterUtils::FindObject<UObject>( nullptr, DestinationAssetPath );
 
@@ -887,6 +889,61 @@ namespace DatasmithImporterImpl
 			AssetTools.ConvertVirtualTextures(TexturesToConvertList, true, &MaterialsToRefreshAfterVirtualTextureConversion);
 		}
 	}
+
+	/**
+	 * Helper struct used to manage and validate the actor's state when modifying it during the finalization.
+	 */
+	struct FScopedFinalizeActorChanges
+	{
+		FDatasmithImportContext& ImportContext;
+		AActor* FinalizedActor;
+
+		FScopedFinalizeActorChanges(AActor* InFinalizedActor, FDatasmithImportContext& InImportContext)
+			: ImportContext(InImportContext)
+			, FinalizedActor(InFinalizedActor)
+		{
+			// In order to allow modification on components owned by ExistingActor, unregister all of them
+			FinalizedActor->UnregisterAllComponents( /* bForReregister = */true);
+		}
+
+		~FScopedFinalizeActorChanges()
+		{
+			for (UActorComponent* Component : FinalizedActor->GetComponents())
+			{
+				if (Component->IsRegistered())
+				{
+					ensureMsgf(false, TEXT("All components should still be unregistered at this point. Otherwise some datasmith templates might not have been applied properly."));
+					break;
+				}
+			}
+			
+			const FQuat PreviousRotation(FinalizedActor->GetRootComponent()->GetRelativeTransform().GetRotation());
+			FinalizedActor->PostEditChange();
+			FinalizedActor->RegisterAllComponents();
+
+			const bool bHasPostEditChangeModifiedRotation = !PreviousRotation.Equals(FinalizedActor->GetRootComponent()->GetRelativeTransform().GetRotation());
+			if (bHasPostEditChangeModifiedRotation)
+			{
+				//SingularityThreshold value is comming from the FQuat::Rotator() function, but is more permissive because the rotation is already diverging before the singularity threshold is reached.
+				const float SingularityThreshold = 0.4999f;
+				const float SingularityTest = PreviousRotation.Z * PreviousRotation.X - PreviousRotation.W * PreviousRotation.Y;
+				const AActor* RootSceneActor = ImportContext.ActorsContext.ImportSceneActor;
+
+				if (FinalizedActor != RootSceneActor
+					&& FMath::Abs(SingularityTest) > SingularityThreshold)
+				{
+					//This is a warning to explain the edge-case of UE-75467 while it's being fixed.
+					FFormatNamedArguments FormatArgs;
+					FormatArgs.Add(TEXT("ActorName"), FText::FromName(FinalizedActor->GetFName()));
+					ImportContext.LogWarning(FText::GetEmpty())
+						->AddToken(FUObjectToken::Create(FinalizedActor))
+						->AddToken(FTextToken::Create(FText::Format(LOCTEXT("UnsupportedRotationValueError", "The actor '{ActorName}' has a rotation value pointing to either (0, 90, 0) or (0, -90, 0)."
+							"This is an edge case that is not well supported in Unreal and can cause incorrect results."
+							"In those cases, it is recommended to bake the actor's transform into the mesh at export."), FormatArgs)));
+				}
+			}
+		}
+	};
 }
 
 void FDatasmithImporter::ImportStaticMeshes( FDatasmithImportContext& ImportContext )
@@ -1257,9 +1314,9 @@ void FDatasmithImporter::ImportMaterials( FDatasmithImportContext& ImportContext
 
 		ImportContext.AssetsContext.MaterialsRequirements.Empty( ImportContext.FilteredScene->GetMaterialsCount() );
 
-		for ( int32 MaterialIndex = 0; MaterialIndex < ImportContext.FilteredScene->GetMaterialsCount(); ++MaterialIndex )
+		for (FDatasmithImporterUtils::FDatasmithMaterialImportIterator It(ImportContext); It; ++It)
 		{
-			TSharedRef< IDatasmithBaseMaterialElement > MaterialElement = ImportContext.FilteredScene->GetMaterial( MaterialIndex ).ToSharedRef();
+			TSharedRef< IDatasmithBaseMaterialElement > MaterialElement = It.Value().ToSharedRef();
 
 			UMaterialInterface* ExistingMaterial = nullptr;
 
@@ -1455,6 +1512,8 @@ void FDatasmithImporter::ImportActors( FDatasmithImportContext& ImportContext )
 	{
 		ImportContext.Hierarchy.Push( ImportSceneActor->GetRootComponent() );
 
+		FDatasmithActorUniqueLabelProvider UniqueNameProvider;
+
 		for (int32 i = 0; i < ActorsCount && !ImportContext.bUserCancelled; ++i)
 		{
 			ImportContext.bUserCancelled |= DatasmithImporterImpl::HasUserCancelledTask( ImportContext.FeedbackContext );
@@ -1467,7 +1526,7 @@ void FDatasmithImporter::ImportActors( FDatasmithImportContext& ImportContext )
 
 				if ( ActorElement->IsAComponent() )
 				{
-					ImportActorAsComponent( ImportContext, ActorElement.ToSharedRef(), ImportSceneActor );
+					ImportActorAsComponent( ImportContext, ActorElement.ToSharedRef(), ImportSceneActor, UniqueNameProvider );
 				}
 				else
 				{
@@ -1517,11 +1576,13 @@ AActor* FDatasmithImporter::ImportActor( FDatasmithImportContext& ImportContext,
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDatasmithImporter::ImportActor);
 
+	FDatasmithActorUniqueLabelProvider UniqueNameProvider;
+
 	AActor* ImportedActor = nullptr;
 	if (ActorElement->IsA(EDatasmithElementType::HierarchicalInstanceStaticMesh))
 	{
 		TSharedRef< IDatasmithHierarchicalInstancedStaticMeshActorElement > HISMActorElement = StaticCastSharedRef< IDatasmithHierarchicalInstancedStaticMeshActorElement >( ActorElement );
-		ImportedActor =  FDatasmithActorImporter::ImportHierarchicalInstancedStaticMeshAsActor( ImportContext, HISMActorElement );
+		ImportedActor =  FDatasmithActorImporter::ImportHierarchicalInstancedStaticMeshAsActor( ImportContext, HISMActorElement, UniqueNameProvider );
 	}
 	else if (ActorElement->IsA(EDatasmithElementType::StaticMeshActor))
 	{
@@ -1542,7 +1603,7 @@ AActor* FDatasmithImporter::ImportActor( FDatasmithImportContext& ImportContext,
 	}
 	else if (ActorElement->IsA(EDatasmithElementType::CustomActor))
 	{
-		ImportedActor = FDatasmithActorImporter::ImportCustomActor( ImportContext, StaticCastSharedRef< IDatasmithCustomActorElement >(ActorElement) );
+		ImportedActor = FDatasmithActorImporter::ImportCustomActor( ImportContext, StaticCastSharedRef< IDatasmithCustomActorElement >(ActorElement), UniqueNameProvider );
 	}
 	else if (ActorElement->IsA(EDatasmithElementType::Landscape))
 	{
@@ -1582,7 +1643,7 @@ AActor* FDatasmithImporter::ImportActor( FDatasmithImportContext& ImportContext,
 			}
 			else if ( ImportedActor ) // Don't import the components of an actor that we didn't import
 			{
-				ImportActorAsComponent( ImportContext, ChildActorElement.ToSharedRef(), ImportedActor );
+				ImportActorAsComponent( ImportContext, ChildActorElement.ToSharedRef(), ImportedActor, UniqueNameProvider );
 			}
 		}
 	}
@@ -1595,7 +1656,7 @@ AActor* FDatasmithImporter::ImportActor( FDatasmithImportContext& ImportContext,
 	return ImportedActor;
 }
 
-void FDatasmithImporter::ImportActorAsComponent(FDatasmithImportContext& ImportContext, const TSharedRef< IDatasmithActorElement >& ActorElement, AActor* InRootActor)
+void FDatasmithImporter::ImportActorAsComponent(FDatasmithImportContext& ImportContext, const TSharedRef< IDatasmithActorElement >& ActorElement, AActor* InRootActor, FDatasmithActorUniqueLabelProvider& UniqueNameProvider)
 {
 	if (!InRootActor)
 	{
@@ -1607,12 +1668,12 @@ void FDatasmithImporter::ImportActorAsComponent(FDatasmithImportContext& ImportC
 	if (ActorElement->IsA(EDatasmithElementType::HierarchicalInstanceStaticMesh))
 	{
 		TSharedRef< IDatasmithHierarchicalInstancedStaticMeshActorElement > HierarchicalInstancedStaticMeshElement = StaticCastSharedRef< IDatasmithHierarchicalInstancedStaticMeshActorElement >(ActorElement);
-		SceneComponent = FDatasmithActorImporter::ImportHierarchicalInstancedStaticMeshComponent(ImportContext, HierarchicalInstancedStaticMeshElement, InRootActor);
+		SceneComponent = FDatasmithActorImporter::ImportHierarchicalInstancedStaticMeshComponent(ImportContext, HierarchicalInstancedStaticMeshElement, InRootActor, UniqueNameProvider);
 	}
 	else if (ActorElement->IsA(EDatasmithElementType::StaticMeshActor))
 	{
 		TSharedRef< IDatasmithMeshActorElement > MeshActorElement = StaticCastSharedRef< IDatasmithMeshActorElement >(ActorElement);
-		SceneComponent = FDatasmithActorImporter::ImportStaticMeshComponent(ImportContext, MeshActorElement, InRootActor);
+		SceneComponent = FDatasmithActorImporter::ImportStaticMeshComponent(ImportContext, MeshActorElement, InRootActor, UniqueNameProvider);
 	}
 	else if (ActorElement->IsA(EDatasmithElementType::Light))
 	{
@@ -1621,7 +1682,7 @@ void FDatasmithImporter::ImportActorAsComponent(FDatasmithImportContext& ImportC
 			return;
 		}
 
-		SceneComponent = FDatasmithLightImporter::ImportLightComponent(StaticCastSharedRef< IDatasmithLightActorElement >(ActorElement), ImportContext, InRootActor);
+		SceneComponent = FDatasmithLightImporter::ImportLightComponent(StaticCastSharedRef< IDatasmithLightActorElement >(ActorElement), ImportContext, InRootActor, UniqueNameProvider);
 	}
 	else if (ActorElement->IsA(EDatasmithElementType::Camera))
 	{
@@ -1630,11 +1691,11 @@ void FDatasmithImporter::ImportActorAsComponent(FDatasmithImportContext& ImportC
 			return;
 		}
 
-		SceneComponent = FDatasmithCameraImporter::ImportCineCameraComponent(StaticCastSharedRef< IDatasmithCameraActorElement >(ActorElement), ImportContext, InRootActor);
+		SceneComponent = FDatasmithCameraImporter::ImportCineCameraComponent(StaticCastSharedRef< IDatasmithCameraActorElement >(ActorElement), ImportContext, InRootActor, UniqueNameProvider);
 	}
 	else
 	{
-		SceneComponent = FDatasmithActorImporter::ImportBaseActorAsComponent(ImportContext, ActorElement, InRootActor);
+		SceneComponent = FDatasmithActorImporter::ImportBaseActorAsComponent(ImportContext, ActorElement, InRootActor, UniqueNameProvider);
 	}
 
 	if (SceneComponent)
@@ -1654,7 +1715,7 @@ void FDatasmithImporter::ImportActorAsComponent(FDatasmithImportContext& ImportC
 			ImportContext.Hierarchy.Push(SceneComponent);
 		}
 
-		ImportActorAsComponent(ImportContext, ActorElement->GetChild(i).ToSharedRef(), InRootActor);
+		ImportActorAsComponent(ImportContext, ActorElement->GetChild(i).ToSharedRef(), InRootActor, UniqueNameProvider);
 
 		if (SceneComponent)
 		{
@@ -1840,95 +1901,69 @@ AActor* FDatasmithImporter::FinalizeActor( FDatasmithImportContext& ImportContex
 		ExistingActor = nullptr;
 	}
 
-	// Backup hierarchy
 	TArray< AActor* > Children;
-	if ( ExistingActor )
-	{
-		ExistingActor->GetAttachedActors( Children );
-
-		// In order to allow modification on components owned by ExistingActor, unregister all of them
-		ExistingActor->UnregisterAllComponents( /* bForReregister = */true );
-	}
-
 	AActor* DestinationActor = ExistingActor;
 	if ( !DestinationActor )
 	{
 		DestinationActor = ImportContext.ActorsContext.FinalWorld->SpawnActor( SourceActor.GetClass() );
+	}
+	else
+	{
+		// Backup hierarchy
+		ExistingActor->GetAttachedActors( Children );
 	}
 
 	// Update label to match the source actor's
 	DestinationActor->SetActorLabel( ImportContext.ActorsContext.UniqueNameProvider.GenerateUniqueName( SourceActor.GetActorLabel() ) );
 
 	check( DestinationActor );
-	ReferencesToRemap.Add( &SourceActor ) = DestinationActor;
-
-	TArray< FMigratedTemplatePairType > MigratedTemplates = MigrateTemplates(
-		&SourceActor,
-		ExistingActor,
-		&ReferencesToRemap,
-		true
-	);
-
-	// Copy actor data
 	{
-		TArray< uint8 > Bytes;
-		FActorWriter ObjectWriter( &SourceActor, Bytes );
-		FObjectReader ObjectReader( DestinationActor, Bytes );
-	}
+		// Setup the actor to allow modifications.
+		FScopedFinalizeActorChanges ScopedFinalizedActorChanges(DestinationActor, ImportContext);
+		
+		ReferencesToRemap.Add( &SourceActor ) = DestinationActor;
 
-	FixReferencesForObject( DestinationActor, ReferencesToRemap );
+		TArray< FMigratedTemplatePairType > MigratedTemplates = MigrateTemplates(
+			&SourceActor,
+			ExistingActor,
+			&ReferencesToRemap,
+			true
+		);
 
-	DatasmithImporterImpl::FinalizeComponents( ImportContext, SourceActor, *DestinationActor, ReferencesToRemap );
-
-	// The templates for the actor need to be applied after the components were created.
-	ApplyMigratedTemplates( MigratedTemplates, DestinationActor );
-
-	// Restore hierarchy
-	for ( AActor* Child : Children )
-	{
-		Child->AttachToActor( DestinationActor, FAttachmentTransformRules::KeepWorldTransform );
-	}
-
-	// Hotfix for UE-69555
-	TInlineComponentArray<UHierarchicalInstancedStaticMeshComponent*> HierarchicalInstancedStaticMeshComponents;
-	DestinationActor->GetComponents(HierarchicalInstancedStaticMeshComponents);
-	for (UHierarchicalInstancedStaticMeshComponent* HierarchicalInstancedStaticMeshComponent : HierarchicalInstancedStaticMeshComponents )
-	{
-		HierarchicalInstancedStaticMeshComponent->BuildTreeIfOutdated( true, true );
-	}
-
-	if ( ALandscape* Landscape = Cast< ALandscape >( DestinationActor ) )
-	{
-		FPropertyChangedEvent MaterialPropertyChangedEvent( FindFieldChecked< FProperty >( Landscape->GetClass(), FName("LandscapeMaterial") ) );
-		Landscape->PostEditChangeProperty( MaterialPropertyChangedEvent );
-	}
-
-	FQuat PreviousRotation = DestinationActor->GetRootComponent()->GetRelativeTransform().GetRotation();
-	DestinationActor->PostEditChange();
-
-	const bool bHasPostEditChangeModifiedRotation = !PreviousRotation.Equals(DestinationActor->GetRootComponent()->GetRelativeTransform().GetRotation());
-	if (bHasPostEditChangeModifiedRotation)
-	{
-		const float SingularityTest = PreviousRotation.Z * PreviousRotation.X - PreviousRotation.W * PreviousRotation.Y;
-		//SingularityThreshold value is comming from the FQuat::Rotator() function, but is more permissive because the rotation is already diverging before the singularity threshold is reached.
-		const float SingularityThreshold = 0.4999f; 
-
-		AActor* RootSceneActor = ImportContext.ActorsContext.ImportSceneActor;
-		if (DestinationActor != RootSceneActor
-			&& FMath::Abs(SingularityTest) > SingularityThreshold)
+		// Copy actor data
 		{
-			//This is a warning to explain the edge-case of UE-75467 while it's being fixed.
-			FFormatNamedArguments FormatArgs;
-			FormatArgs.Add(TEXT("ActorName"), FText::FromName(DestinationActor->GetFName()));
-			ImportContext.LogWarning(FText::GetEmpty())
-				->AddToken(FUObjectToken::Create(DestinationActor))
-				->AddToken(FTextToken::Create(FText::Format(LOCTEXT("UnsupportedRotationValueError", "The actor '{ActorName}' has a rotation value pointing to either (0, 90, 0) or (0, -90, 0)."
-					"This is an edge case that is not well supported in Unreal and can cause incorrect results."
-					"In those cases, it is recommended to bake the actor's transform into the mesh at export."), FormatArgs)));
+			TArray< uint8 > Bytes;
+			FActorWriter ObjectWriter( &SourceActor, Bytes );
+			FObjectReader ObjectReader( DestinationActor, Bytes );
+		}
+
+		FixReferencesForObject( DestinationActor, ReferencesToRemap );
+
+		DatasmithImporterImpl::FinalizeComponents( ImportContext, SourceActor, *DestinationActor, ReferencesToRemap );
+
+		// The templates for the actor need to be applied after the components were created.
+		ApplyMigratedTemplates( MigratedTemplates, DestinationActor );
+
+		// Restore hierarchy
+		for ( AActor* Child : Children )
+		{
+			Child->AttachToActor( DestinationActor, FAttachmentTransformRules::KeepWorldTransform );
+		}
+
+		// Hotfix for UE-69555
+		TInlineComponentArray<UHierarchicalInstancedStaticMeshComponent*> HierarchicalInstancedStaticMeshComponents;
+		DestinationActor->GetComponents(HierarchicalInstancedStaticMeshComponents);
+		for (UHierarchicalInstancedStaticMeshComponent* HierarchicalInstancedStaticMeshComponent : HierarchicalInstancedStaticMeshComponents )
+		{
+			HierarchicalInstancedStaticMeshComponent->BuildTreeIfOutdated( true, true );
+		}
+
+		if ( ALandscape* Landscape = Cast< ALandscape >( DestinationActor ) )
+		{
+			FPropertyChangedEvent MaterialPropertyChangedEvent( FindFieldChecked< FProperty >( Landscape->GetClass(), FName("LandscapeMaterial") ) );
+			Landscape->PostEditChangeProperty( MaterialPropertyChangedEvent );
 		}
 	}
-
-	DestinationActor->RegisterAllComponents();
 
 	return DestinationActor;
 }

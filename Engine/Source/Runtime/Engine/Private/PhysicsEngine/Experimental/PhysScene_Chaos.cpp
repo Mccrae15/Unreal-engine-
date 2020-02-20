@@ -745,10 +745,10 @@ void RemovePhysicsProxy(ObjectType* InObject, Chaos::FPhysicsSolver* InSolver, F
 	const bool bDedicatedThread = PhysDispatcher->GetMode() == Chaos::EThreadingMode::DedicatedThread;
 
 	// Remove the object from the solver
-	PhysDispatcher->EnqueueCommandImmediate([InObject, InSolver, bDedicatedThread](Chaos::FPersistentPhysicsTask* PhysThread)
+	PhysDispatcher->EnqueueCommandImmediate(InSolver, [InObject, bDedicatedThread](Chaos::FPBDRigidsSolver* InnerSolver)
 	{
 #if CHAOS_PARTICLEHANDLE_TODO
-		InSolver->UnregisterObject(InObject);
+		InnerSolver->UnregisterObject(InObject);
 #endif
 		InObject->OnRemoveFromScene();
 
@@ -1794,10 +1794,16 @@ void FPhysScene_ChaosInterface::ApplyWorldOffset(FVector InOffset)
 	check(InOffset.Size() == 0);
 }
 
-void FPhysScene_ChaosInterface::SetUpForFrame(const FVector* NewGrav, float InDeltaSeconds /*= 0.0f*/, float InMaxPhysicsDeltaTime /*= 0.0f*/)
+void FPhysScene_ChaosInterface::SetUpForFrame(const FVector* NewGrav, float InDeltaSeconds /*= 0.0f*/, float InMaxPhysicsDeltaTime /*= 0.0f*/, float InMaxSubstepDeltaTime /*= 0.0f*/, int32 InMaxSubsteps)
 {
 	SetGravity(*NewGrav);
-	MDeltaTime = InDeltaSeconds < InMaxPhysicsDeltaTime ? InDeltaSeconds : InMaxPhysicsDeltaTime;
+	MDeltaTime = InMaxPhysicsDeltaTime > 0.f ? FMath::Min(InDeltaSeconds, InMaxPhysicsDeltaTime) : InDeltaSeconds;
+
+	if (Chaos::FPhysicsSolver* Solver = GetSolver())
+	{
+		Solver->SetMaxDeltaTime(InMaxSubstepDeltaTime);
+		Solver->SetMaxSubSteps(InMaxSubsteps);
+	}
 }
 
 void FPhysScene_ChaosInterface::StartFrame()
@@ -1927,7 +1933,7 @@ int32 FPhysScene_ChaosInterface::DirtyElementCount(Chaos::ISpatialAccelerationCo
 		}
 		else if (const auto AABBTreeBV = SubStructure->template As<TAABBTree<TAccelerationStructureHandle<FReal, 3>, TBoundingVolume<TAccelerationStructureHandle<FReal, 3>, FReal, 3>, FReal>>())
 		{
-			DirtyElements += AABBTree->NumDirtyElements();
+			DirtyElements += AABBTreeBV->NumDirtyElements();
 		}
 	}
 	return DirtyElements;

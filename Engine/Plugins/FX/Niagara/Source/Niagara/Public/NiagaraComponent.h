@@ -98,6 +98,9 @@ private:
 	/** The desired age of the System instance.  This is only relevant when using the DesiredAge age update mode. */
 	float DesiredAge;
 
+	/** The last desired age value that was handled by the tick function.  This is only relevant when using the DesiredAgeNoSeek age update mode. */
+	float LastHandledDesiredAge;
+
 	/** Whether or not the component can render while seeking to the desired age. */
 	bool bCanRenderWhileSeeking;
 
@@ -171,7 +174,8 @@ public:
 	void DeactivateInternal(bool bIsScalabilityCull);
 	void DeactivateImmediateInternal(bool bIsScalabilityCull);
 
-	bool RegisterWithScalabilityManagerOrPreCull();
+	bool ShouldPreCull();
+	void RegisterWithScalabilityManager();
 	void UnregisterWithScalabilityManager();
 
 	public:
@@ -529,6 +533,9 @@ private:
 
 	/** True if this component is allowed to perform scalability checks and potentially be culled etc. Occasionally it is useful to disable this for specific components. E.g. Effects on the local player. */
 	uint32 bAllowScalability : 1;
+
+	/** True if this component has been culled by the scalability manager. */
+	uint32 bIsCulledByScalability : 1;
 
 	/** Flag to mark us as currently changing auto attachment as part of Activate/Deactivate so we don't reset in the OnAttachmentChanged() callback. */
 	//uint32 bIsChangingAutoAttachment : 1;

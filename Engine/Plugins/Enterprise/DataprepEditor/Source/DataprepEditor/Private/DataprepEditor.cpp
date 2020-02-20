@@ -431,6 +431,7 @@ void FDataprepEditor::InitDataprepEditor(const EToolkitMode::Type Mode, const TS
 	TempDir = FPaths::Combine( GetRootTemporaryDir(), FString::FromInt( FPlatformProcess::GetCurrentProcessId() ), SessionID);
 	IFileManager::Get().MakeDirectory(*TempDir);
 
+#ifndef NO_BLUEPRINT
 	// Temp code for the nodes development
 	if(Blueprint != nullptr)
 	{
@@ -439,11 +440,12 @@ void FDataprepEditor::InitDataprepEditor(const EToolkitMode::Type Mode, const TS
 
 		// Necessary step to regenerate blueprint generated class
 		// Note that this compilation will always succeed as Dataprep node does not have real body
-		{
-			FKismetEditorUtilities::CompileBlueprint( DataprepRecipeBPPtr.Get(), EBlueprintCompileOptions::None, nullptr );
-		}
+		//{
+		//	FKismetEditorUtilities::CompileBlueprint( DataprepRecipeBPPtr.Get(), EBlueprintCompileOptions::None, nullptr );
+		//}
 	}
 	// End temp code for the nodes development
+#endif
 
 	GEditor->RegisterForUndo(this);
 
@@ -566,8 +568,14 @@ void FDataprepEditor::OnBuildWorld()
 		return;
 	}
 
-	CachedAssets.Reset();
-	CachedAssets.Append( Assets );
+	CachedAssets.Empty(Assets.Num());
+	for(TWeakObjectPtr<UObject>& WeakObject : Assets)
+	{
+		if(UObject* Object = WeakObject.Get())
+		{
+			CachedAssets.Emplace( Object );
+		}
+	}
 
 	TakeSnapshot();
 
@@ -642,16 +650,17 @@ void FDataprepEditor::CleanPreviewWorld()
 	// Delete assets which are still in the transient content folder
 	const FString TransientContentFolder( GetTransientContentFolder() );
 	TArray<UObject*> ObjectsToDelete;
-	for( TWeakObjectPtr<UObject>& Asset : CachedAssets )
+	for( FSoftObjectPath& SoftObjectPath : CachedAssets )
 	{
-		if( UObject* ObjectToDelete = Asset.Get() )
+		if(SoftObjectPath.GetLongPackageName().StartsWith(TransientContentFolder))
 		{
-			FString PackagePath = ObjectToDelete->GetOutermost()->GetName();
-			if( PackagePath.StartsWith( TransientContentFolder ) )
-			{
-				FDataprepCoreUtils::MoveToTransientPackage( ObjectToDelete );
-				ObjectsToDelete.Add( ObjectToDelete );
-			}
+			FSoftObjectPath PackagePath(SoftObjectPath.GetLongPackageName());
+			UPackage* Package = Cast<UPackage>(PackagePath.ResolveObject());
+
+			UObject* ObjectToDelete = StaticFindObjectFast(nullptr, Package, *SoftObjectPath.GetAssetName());
+
+			FDataprepCoreUtils::MoveToTransientPackage( ObjectToDelete );
+			ObjectsToDelete.Add( ObjectToDelete );
 		}
 	}
 
@@ -696,10 +705,16 @@ void FDataprepEditor::OnExecutePipeline()
 		TGuardValue<bool> IgnoreCloseRequestGuard(bIgnoreCloseRequest, true);
 
 		TSharedPtr< FDataprepCoreUtils::FDataprepFeedbackContext > FeedbackContext(new FDataprepCoreUtils::FDataprepFeedbackContext);
+
+		FFeedbackContext* OldGWarn = GWarn;
+		GWarn = FeedbackContext.Get();
+
 		ActionsContext->SetProgressReporter( TSharedPtr< IDataprepProgressReporter >( new FDataprepCoreUtils::FDataprepProgressUIReporter( FeedbackContext.ToSharedRef() ) ) );
 		ActionsContext->SetWorld( PreviewWorld.Get() ).SetAssets( Assets );
 
 		DataprepAssetInterfacePtr->ExecuteRecipe( ActionsContext );
+
+		GWarn = OldGWarn;
 
 		// Update list of assets with latest ones
 		Assets = ActionsContext->Assets.Array();
@@ -718,7 +733,7 @@ void FDataprepEditor::OnExecutePipeline()
 	{
 		if( Asset.IsValid() )
 		{
-			CachedAssets.Add( Asset );
+			CachedAssets.Emplace( Asset.Get() );
 		}
 	}
 
@@ -773,6 +788,11 @@ void FDataprepEditor::OnCommitWorld()
 	if( !DataprepAssetInterfacePtr->RunConsumer( Context ) )
 	{
 		UE_LOG( LogDataprepEditor, Error, TEXT("Consumer failed...") );
+
+		// Restore 3D viewport
+		SceneViewportView->UpdateScene();
+
+		return;
 	}
 
 	ResetBuildWorld();

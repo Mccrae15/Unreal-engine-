@@ -283,6 +283,11 @@ UObject* UFbxFactory::FactoryCreateFile
 		}
 		ImportUI = OverrideImportUI;
 	}
+	else if(AssetImportTask && AssetImportTask->Options)
+	{
+		UE_LOG(LogFbx, Warning, TEXT("The options set in the Asset Import Task are not of type UFbxImportUI and will be ignored"));
+	}
+
 	//We are not re-importing
 	ImportUI->bIsReimport = false;
 	ImportUI->ReimportMesh = nullptr;
@@ -601,13 +606,9 @@ UObject* UFbxFactory::FactoryCreateFile
 							{
 								FName OutputName = FbxImporter->MakeNameForMesh(Name.ToString(), SkelMeshNodeArray[0]);
 
-								TArray<FbxNode*> SkeletonNodeArray;
-								FbxImporter->FillFbxSkeletonArray(RootNodeToImport, SkeletonNodeArray);
-
 								UnFbx::FFbxImporter::FImportSkeletalMeshArgs ImportSkeletalMeshArgs;
 								ImportSkeletalMeshArgs.InParent = InParent;
 								ImportSkeletalMeshArgs.NodeArray = SkelMeshNodeArray;
-								ImportSkeletalMeshArgs.BoneNodeArray = SkeletonNodeArray;
 								ImportSkeletalMeshArgs.Name = OutputName;
 								ImportSkeletalMeshArgs.Flags = Flags;
 								ImportSkeletalMeshArgs.TemplateImportData = ImportUI->SkeletalMeshImportData;

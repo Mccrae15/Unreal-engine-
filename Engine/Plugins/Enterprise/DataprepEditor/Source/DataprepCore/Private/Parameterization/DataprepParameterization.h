@@ -15,9 +15,11 @@
 
 #include "DataprepParameterization.generated.h"
 
-class UDataprepParameterizableObject;
-class FProperty;
 class FFieldClass;
+class FProperty;
+class FTransactionObjectEvent;
+class UDataprepParameterizableObject;
+class UDataprepActionAsset;
 
 struct FValueTypeValidationData
 {
@@ -60,14 +62,6 @@ struct FValueTypeValidationData
 	}
 };
 
-//template<> struct TStructOpsTypeTraits<FValueTypeValidationData> : public TStructOpsTypeTraitsBase2<FValueTypeValidationData>
-//{
-//	enum
-//	{
-//		WithSerializer = true
-//	};
-//};
-
 /**
  * The parameterization binding is a struct that hold an object and the property path to the parameterized property
  * It also hold a array to validate the that value type of the parameterized property didn't change since it's creation
@@ -101,16 +95,6 @@ struct FDataprepParameterizationBinding
 	// Value Type Validation Array. This is the result of a depth first search on the parametrized property
 	//UPROPERTY() // @todo FProp: do we need this to be an FProp? (is this struct being serialized)
 	FValueTypeValidationData ValueTypeValidationData;
-
-	bool Serialize(FArchive& Ar);
-};
-
-template<> struct TStructOpsTypeTraits<FDataprepParameterizationBinding> : public TStructOpsTypeTraitsBase2<FDataprepParameterizationBinding>
-{
-	enum
-	{
-		WithSerializer = true
-	};
 };
 
 uint32 GetTypeHash(const FDataprepParameterizationBinding& Binding);
@@ -192,6 +176,11 @@ public:
 	bool HasBindingsForParameter(const FName& ParameterName) const;
 
 	/**
+	 * Does the data structure has some bindings from the specified object
+	 */
+	bool HasBindingsFromObject(UDataprepParameterizableObject* Object) const;
+
+	/**
 	 * Add a binding and map it to the parameter
 	 */
 	void Add(const TSharedRef<FDataprepParameterizationBinding>& Binding, const FName& ParameterName, FSetOfBinding& OutBindingsContainedByNewBinding);
@@ -214,6 +203,8 @@ public:
 	TSharedPtr<FDataprepParameterizationBinding> GetContainingBinding(const TSharedRef<FDataprepParameterizationBinding>& Binding) const;
 
 	const FBindingToParameterNameMap& GetBindingToParameterName() const;
+
+	TArray<UDataprepParameterizableObject*> GetParameterizedObjects() const;
 
 	// UObject interface
 	virtual void Serialize(FArchive& Ar) override;
@@ -252,14 +243,14 @@ public:
 	GENERATED_BODY()
 
 	UDataprepParameterization();
-	~UDataprepParameterization();
+	virtual ~UDataprepParameterization();
 
 	// UObject interface
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
 	virtual void Serialize(FArchive& Ar) override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
-	virtual void PostEditUndo() override;
+	virtual void PostTransacted(const FTransactionObjectEvent& TransactionEvent) override;
 	// End of UObject interface
 
 	void OnObjectModified(UObject* Object);
@@ -275,8 +266,6 @@ public:
 	void RemoveBindedObjectProperty(UDataprepParameterizableObject* Object, const TArray<FDataprepPropertyLink>& PropertyChain);
 
 	void RemoveBindingFromObjects(TArray<UDataprepParameterizableObject*> Objects);
-
-	void OnObjectPostEdit(UDataprepParameterizableObject* Object, const TArray<FDataprepPropertyLink>& PropertyChain, EPropertyChangeType::Type ChangeType);
 
 	void GetExistingParameterNamesForType(FProperty* Property, bool bIsDescribingFullProperty, TSet<FString>& OutValidExistingNames, TSet<FString>& OutInvalidNames) const;
 
@@ -335,6 +324,16 @@ private:
 	 */
 	bool RemoveBinding(const TSharedRef<FDataprepParameterizationBinding>& Binding, bool& bOutClassNeedUpdate);
 
+	/**
+	 * Functions for the tracking of the post edit change
+	 */
+	void OnParameterizationDefaultObjectPostEdit(UDataprepParameterizableObject& Object, FPropertyChangedChainEvent& PropertyChangedChainEvent);
+	void OnParameterizedObjectPostEdit(UDataprepParameterizableObject& Object, FPropertyChangedChainEvent& PropertyChangedChainEvent);
+	void OnAddedBindingToPostEditOfParameterizableObject(UDataprepParameterizableObject& Object, const FDelegateHandle& Handle);
+	void OnRemovedBindingToPostEditOfParameterizableObject(UDataprepParameterizableObject& Object, const FDelegateHandle& Handle);
+	void AddBindingToPostEditOfParameterizableObject(UDataprepParameterizableObject& Object, bool bShouldAddToTransaction);
+	void RemoveBindingToPostEditOfParameterizableObject(UDataprepParameterizableObject& Object, bool bShouldAddToTransaction);
+
 public:
 
 	/**
@@ -343,14 +342,18 @@ public:
 	 */
 	bool OnAssetRename(ERenameFlags Flags);
 
-
-	static const FName MetadataClassGeneratorName;
-
 private:
-
 	// The containers for the bindings
 	UPROPERTY()
 	UDataprepParameterizationBindings* BindingsContainer;
+
+	/**
+	* Mapping of the observed object to their delegate handle
+	* The name are relative to the dataprep asset
+	*/
+	TMap<UDataprepParameterizableObject*, FDelegateHandle> ObservedObjects;
+
+	//TMap<UDataprepActionAsset*, TPair<FDelegateHandle, uint32> ObservedAction;
 
 	TMap<FName, FProperty*> NameToParameterizationProperty;
 
@@ -358,7 +361,7 @@ private:
 	UClass* CustomContainerClass;
 
 	UPROPERTY(Transient, NonTransactional)
-	UObject* DefaultParameterisation;
+	UDataprepParameterizableObject* DefaultParameterisation;
 
 	/** 
 	 * This is used only to store a serialization of the values of the parameterization since we can't save our custom container class
@@ -380,6 +383,8 @@ private:
 	friend class UDataprepParameterizationInstance;
 
 	FDelegateHandle OnObjectModifiedHandle;
+
+	FDelegateHandle OnParameterizationDefaultObjectPostEditHandle;
 };
 
 
@@ -390,7 +395,7 @@ public:
 	GENERATED_BODY()
 
 	UDataprepParameterizationInstance();
-	~UDataprepParameterizationInstance();
+	virtual ~UDataprepParameterizationInstance();
 
 	// UObject interface
 	virtual void PostLoad() override;

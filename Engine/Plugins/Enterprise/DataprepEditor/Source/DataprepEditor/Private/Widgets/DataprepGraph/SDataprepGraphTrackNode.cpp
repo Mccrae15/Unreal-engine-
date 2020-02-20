@@ -136,6 +136,7 @@ public:
 	int32 DragIndex;
 	FVector2D LastDragPosition;
 	FVector2D AbscissaRange;
+	FVector2D TrackOffset;
 	bool bIsCopying;
 
 	static float SlotSpacing;
@@ -189,12 +190,14 @@ void SDataprepGraphTrackNode::UpdateGraphNode()
 		const int32 ActionsCount = DataprepAsset->GetActionCount();
 		ActionNodes.Empty(ActionsCount);
 		ActionNodes.SetNum(ActionsCount);
+		EdGraphActionNodes.Reset(ActionsCount);
 
-		for(int32 Index = 0; Index < DataprepAsset->GetActionCount(); ++Index)
+		for(int32 Index = 0; Index < ActionsCount; ++Index)
 		{
 			if(UDataprepActionAsset* ActionAsset = DataprepAsset->GetAction(Index))
 			{
-				UDataprepGraphActionNode* NewActionNode = NewObject<UDataprepGraphActionNode>( EdGraph, UDataprepGraphActionNode::StaticClass(), NAME_None, RF_Transactional );
+				EdGraphActionNodes.Emplace(NewObject<UDataprepGraphActionNode>( EdGraph, UDataprepGraphActionNode::StaticClass(), NAME_None, RF_Transactional ));
+				UDataprepGraphActionNode* NewActionNode = EdGraphActionNodes.Last().Get();
 
 				NewActionNode->CreateNewGuid();
 				NewActionNode->PostPlacedNewNode();
@@ -313,10 +316,12 @@ bool SDataprepGraphTrackNode::RefreshLayout()
 	{
 		ensure(TrackWidgetPtr.IsValid());
 
-		FVector2D TrackWidgetOrigin = TrackWidgetPtr->GetCachedGeometry().LocalToAbsolute(FVector2D::ZeroVector);
-		FVector2D TrackNodeOrigin = GetCachedGeometry().LocalToAbsolute(FVector2D::ZeroVector);
+		const FVector2D TrackWidgetOrigin = TrackWidgetPtr->GetCachedGeometry().LocalToAbsolute(FVector2D::ZeroVector);
+		const FVector2D TrackNodeOrigin = GetCachedGeometry().LocalToAbsolute(FVector2D::ZeroVector);
 
-		TrackWidgetOffset = TrackWidgetOrigin - TrackNodeOrigin;
+		// Weird: Ultimate offset between track widget and node is 5 but it may take more draw call to stabilize
+		//		  Forcing 5.
+		TrackWidgetPtr->TrackOffset = FVector2D(5.f)/*TrackWidgetOrigin - TrackNodeOrigin*/ + GetPosition();
 
 		TrackWidgetPtr->RefreshLayout(OwnerGraphPanelPtr.Pin().Get());
 
@@ -411,14 +416,6 @@ FVector2D SDataprepGraphTrackNode::Update(const FVector2D& LocalSize, float Zoom
 	return FVector2D(SDataprepGraphTrackWidget::NodeDesiredWidth);
 }
 
-FVector2D SDataprepGraphTrackNode::ComputeActionNodePosition(const FVector2D& InPosition)
-{
-	ensure(TrackWidgetPtr);
-
-	const float NewAbscissa = TrackWidgetPtr->ValidateNodeAbscissa(InPosition.X - NodePadding.Left - TrackWidgetOffset.X);
-	return FVector2D( NewAbscissa + NodePadding.Left + TrackWidgetOffset.X, GraphNode->NodePosY + TrackWidgetOffset.Y);
-}
-
 void SDataprepGraphTrackNode::OnStartNodeDrag(const TSharedRef<SDataprepGraphActionNode>& ActionNode)
 {
 	bNodeDragging = true;
@@ -429,7 +426,6 @@ void SDataprepGraphTrackNode::OnStartNodeDrag(const TSharedRef<SDataprepGraphAct
 	LastDragScreenSpacePosition = FSlateApplication::Get().GetCursorPos();
 	const FGeometry& DesktopGeometry = GetOwnerPanel()->GetPersistentState().DesktopGeometry;
 	FVector2D DragLocalPosition = DesktopGeometry.AbsoluteToLocal( LastDragScreenSpacePosition );
-	DragOrdinate = DragLocalPosition.Y;
 
 	SGraphPanel* GraphPanel = OwnerGraphPanelPtr.Pin().Get();
 	ensure(GraphPanel);
@@ -560,7 +556,7 @@ void SDataprepGraphTrackWidget::Construct(const FArguments& InArgs, TSharedPtr<S
 
 	TrackCanvas->AddSlot()
 	.Anchors( FAnchors( 0.f, 0.f, 1.f, 0.f ) )
-	.Offset( FMargin(0.f, 5.f, 0.f, 0.f) )
+	.Offset( FMargin(0.f, 10.f, 0.f, 0.f) )
 	.AutoSize(true)
 	.Alignment(FVector2D::ZeroVector)
 	.ZOrder(1)
@@ -609,7 +605,7 @@ void SDataprepGraphTrackWidget::Construct(const FArguments& InArgs, TSharedPtr<S
 			{
 				SConstraintCanvas::FSlot& Slot = TrackCanvas->AddSlot()
 				.Anchors( FAnchors( 0., 0.f, 0.f, 0.f ) )
-				.Offset( FMargin(LeftOffset, 5.f, SlotSpacing, TrackDesiredHeight ) )
+				.Offset( FMargin(LeftOffset, 10.f, SlotSpacing, TrackDesiredHeight ) )
 				.Alignment(FVector2D::ZeroVector)
 				.ZOrder(2)
 				[
@@ -792,6 +788,9 @@ void SDataprepGraphTrackWidget::RefreshLayout(SGraphPanel* GraphPanel)
 		[
 			ActionNode
 		];
+
+		// Update action's proxy node registered to graph panel
+		StaticCastSharedRef<SDataprepGraphActionNode>(ActionNode)->UpdateProxyNode(FVector2D(DropSlotOffset.Left, 0.f) + TrackOffset);
 
 		const FVector2D Size = GetNodeSize(ActionNode);
 

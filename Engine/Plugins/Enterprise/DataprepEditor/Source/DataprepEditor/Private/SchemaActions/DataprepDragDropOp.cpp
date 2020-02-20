@@ -5,6 +5,7 @@
 #include "BlueprintNodes/K2Node_DataprepAction.h"
 #include "DataprepActionAsset.h"
 #include "DataprepAsset.h"
+#include "DataprepCoreUtils.h"
 #include "DataprepEditorLogCategory.h"
 #include "DataprepGraph/DataprepGraph.h"
 #include "DataprepGraph/DataprepGraphActionNode.h"
@@ -440,7 +441,8 @@ FReply FDataprepDragDropOp::DoDropOnActionStep(UDataprepGraphActionStepNode* Tar
 						{
 							if(!bCopyRequested)
 							{
-								bTransactionSuccessful &= SourceActionAsset->RemoveStep( StepIndex );
+								int32 ActionIndex = INDEX_NONE;
+								bTransactionSuccessful &= FDataprepCoreUtils::RemoveStep(SourceActionAsset, StepIndex, ActionIndex);
 							}
 
 							bTransactionSuccessful &= TargetActionAsset->InsertStep( SourceActionStepPtr.Get(), TargetActionStepNode->GetStepIndex() );
@@ -493,32 +495,56 @@ FReply FDataprepDragDropOp::DoDropOnTrack(UDataprepAsset* TargetDataprepAsset, i
 
 	if(DraggedSteps.Num() > 0)
 	{
+		FModifierKeysState ModifierKeyState = FSlateApplication::Get().GetModifierKeys();
+		bool bCopySteps = ModifierKeyState.IsControlDown() || ModifierKeyState.IsCommandDown();
+
 		TArray<const UDataprepActionStep*> Steps;
 		Steps.Reserve(DraggedSteps.Num());
+
+		TArray<TStrongObjectPtr<UDataprepActionStep>> StepsStrongPtr;
+		StepsStrongPtr.Reserve(DraggedSteps.Num());
+
+		TMap<UDataprepActionAsset*, TArray<int32>> ActionAssetMap;
 
 		for(FDraggedStepEntry& DraggedStepEntry : DraggedSteps)
 		{
 			if(DraggedStepEntry.Get<2>().IsValid())
 			{
 				Steps.Add(DraggedStepEntry.Get<2>().Get());
+
+				// If copy is not active, hold onto the steps and build list of steps to remove
+				if(!bCopySteps)
+				{
+					StepsStrongPtr.Emplace(DraggedStepEntry.Get<2>().Get());
+					ActionAssetMap.FindOrAdd(DraggedStepEntry.Get<0>().Get()).Add(DraggedStepEntry.Get<1>());
+				}
 			}
 		}
 
 		if(Steps.Num() > 0)
 		{
-			FModifierKeysState ModifierKeyState = FSlateApplication::Get().GetModifierKeys();
-			bool bOnlyOneRequested = ModifierKeyState.IsControlDown() || ModifierKeyState.IsCommandDown();
-
 			FScopedTransaction Transaction( LOCTEXT("DropOnTrack", "Add Dataprep Action") );
 			bool bTransactionSuccessful = true;
 
+			if(!bCopySteps)
+			{
+				int32 ActionIndex;
+				for(TPair<UDataprepActionAsset*, TArray<int32>>& Entry : ActionAssetMap)
+				{
+					if(Entry.Key)
+					{
+						bTransactionSuccessful &= FDataprepCoreUtils::RemoveSteps(Entry.Key, Entry.Value, ActionIndex);
+					}
+				}
+			}
+
 			if(InsertIndex >= 0 && InsertIndex < TargetDataprepAsset->GetActionCount())
 			{
-				TargetDataprepAsset->InsertActions(Steps, InsertIndex, bOnlyOneRequested);
+				TargetDataprepAsset->InsertActions(Steps, InsertIndex);
 			}
 			else
 			{
-				TargetDataprepAsset->AddActions(Steps, bOnlyOneRequested);
+				TargetDataprepAsset->AddActions(Steps);
 			}
 		}
 
@@ -606,18 +632,19 @@ FReply FDataprepDragDropOp::DoDropOnActionAsset(UDataprepGraphActionNode* Target
 					{
 						if(!bCopyRequested)
 						{
-							SourceActionAsset->RemoveStep( StepIndex );
+							int32 ActionIndex = INDEX_NONE;
+							bTransactionSuccessful &= FDataprepCoreUtils::RemoveStep(SourceActionAsset, StepIndex, ActionIndex);
 						}
 
-						TargetActionAsset->AddStep( SourceActionStepPtr.Get() );
+						bTransactionSuccessful &= TargetActionAsset->AddStep( SourceActionStepPtr.Get() ) != INDEX_NONE;
 					}
 					else if(bCopyRequested)
 					{
-						TargetActionAsset->AddStep( SourceActionStepPtr.Get() );
+						bTransactionSuccessful &= TargetActionAsset->AddStep( SourceActionStepPtr.Get() ) != INDEX_NONE;
 					}
 					else
 					{
-						TargetActionAsset->MoveStep( StepIndex, TargetActionAsset->GetStepsCount() - 1 );
+						bTransactionSuccessful &= TargetActionAsset->MoveStep( StepIndex, TargetActionAsset->GetStepsCount() - 1 );
 					}
 				}
 

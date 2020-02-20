@@ -202,6 +202,9 @@ void UDataprepMergeActorsOperation::OnExecution_Implementation(const FDataprepCo
 	TArray<UObject*> ObjectsToDelete;
 	ObjectsToDelete.Reserve( ComponentsToMerge.Num() + ActorsToMerge.Num() );
 
+	// Sort merged components to detach children first
+	ComponentsToMerge.Sort([](const USceneComponent &A, const USceneComponent &B) -> bool { return A.IsAttachedTo(&B); });
+
 	// Simple way to delete the actors: detach the merged components if it's safe to do so
 	for (UPrimitiveComponent* Component : ComponentsToMerge)
 	{
@@ -603,6 +606,42 @@ void UDataprepCompactSceneGraphOperation::OnExecution_Implementation(const FData
 	}
 
 	DeleteObjects(ObjectsToDelete);
+}
+
+void UDataprepSpawnActorsAtLocation::OnExecution_Implementation(const FDataprepContext& InContext)
+{
+#ifdef LOG_TIME
+	DataprepEditingOperationTime::FTimeLogger TimeLogger(TEXT("SpawnActorsAtLocation"), [&](FText Text) { this->LogInfo(Text); });
+#endif
+
+	if (!StaticMesh)
+	{
+		UE_LOG(LogDataprep, Log, TEXT("No mesh was selected"));
+		return;
+	}
+
+	for (UObject* Object : InContext.Objects)
+	{
+		if (!ensure(Object) || Object->IsPendingKill())
+		{
+			continue;
+		}
+
+		if (AActor* Actor = Cast<AActor>(Object))
+		{
+			AStaticMeshActor* NewActor = Cast<AStaticMeshActor>( CreateActor(AStaticMeshActor::StaticClass(), Actor->GetName()) );
+			check(NewActor);
+
+			NewActor->GetStaticMeshComponent()->SetStaticMesh(StaticMesh);
+			NewActor->SetActorTransform(Actor->GetActorTransform());
+			NewActor->SetActorLabel(Actor->GetActorLabel() + TEXT("_SA"));
+
+			if (Actor->GetParentActor())
+			{
+				NewActor->AttachToActor(Actor->GetParentActor(), FAttachmentTransformRules::KeepRelativeTransform);
+			}
+		}
+	}
 }
 
 bool UDataprepCompactSceneGraphOperation::IsActorVisible(AActor* Actor, TMap<AActor*, bool>& VisibilityMap)
