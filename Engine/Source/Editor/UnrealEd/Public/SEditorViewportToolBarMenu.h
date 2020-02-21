@@ -12,6 +12,8 @@
 #include "SViewportToolBar.h"
 #include "Framework/SlateDelegates.h"
 #include "Styling/SlateTypes.h"
+#include "EditorStyleSet.h"
+#include "Styling/SlateWidgetStyleAsset.h"
 
 class SMenuAnchor;
 struct FSlateBrush;

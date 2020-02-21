@@ -600,7 +600,9 @@ EFlattenMaterialProperties FMeshMergeUtilities::NewToOldProperty(int32 NewProper
 		EFlattenMaterialProperties::Metallic,
 		EFlattenMaterialProperties::Specular,
 		EFlattenMaterialProperties::Roughness,
+		EFlattenMaterialProperties::Anisotropy,
 		EFlattenMaterialProperties::Normal,
+		EFlattenMaterialProperties::Tangent,
 		EFlattenMaterialProperties::NumFlattenMaterialProperties,
 		EFlattenMaterialProperties::NumFlattenMaterialProperties,
 		EFlattenMaterialProperties::NumFlattenMaterialProperties,
@@ -866,9 +868,8 @@ void FMeshMergeUtilities::MergeFlattenedMaterials(TArray<struct FFlattenMaterial
 	OutUVTransforms.Reserve(InMaterialList.Num());
 
 	// Fill output UV transforms with invalid values
-	for (auto Material : InMaterialList)
+	for (auto& Material : InMaterialList)
 	{
-
 		// Invalid UV transform
 		FUVOffsetScalePair UVTransform;
 		UVTransform.Key = FVector2D::ZeroVector;
