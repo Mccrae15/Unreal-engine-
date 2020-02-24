@@ -79,6 +79,9 @@ namespace Chaos
 					auto& GeomCollectionParticles = MSolver->GetEvolution()->GetParticles().GetGeometryCollectionParticles();
 					Obj->FieldParameterUpdateCallback(MSolver, GeomCollectionParticles, Strains, 
 						PositionTarget, PositionTargetedParticles, /*AnimatedPositions,*/ MSolver->GetSolverTime());
+					auto& ClusteredParticles = MSolver->GetEvolution()->GetParticles().GetClusteredParticles();
+					Obj->FieldParameterUpdateCallback(MSolver, ClusteredParticles, Strains,
+						PositionTarget, PositionTargetedParticles, /*AnimatedPositions,*/ MSolver->GetSolverTime());
 				}
 			}
 
@@ -113,6 +116,8 @@ namespace Chaos
 					{
 						auto& GeomCollectionParticles = MSolver->GetEvolution()->GetParticles().GetGeometryCollectionParticles();
 						Obj->FieldForcesUpdateCallback(MSolver, GeomCollectionParticles, Forces, Torques, MSolver->GetSolverTime());
+						auto& ClusteredParticles = MSolver->GetEvolution()->GetParticles().GetClusteredParticles();
+						Obj->FieldForcesUpdateCallback(MSolver, ClusteredParticles, Forces, Torques, MSolver->GetSolverTime());
 					}
 					MSolver->GetEvolution()->AdvanceOneTimeStep(DeltaTime);
 				}
@@ -121,6 +126,10 @@ namespace Chaos
 				// If time remains, then log why we have lost energy over the timestep.
 				if (TimeRemaining > 0.f)
 				{
+					auto& GeomCollectionParticles = MSolver->GetEvolution()->GetParticles().GetGeometryCollectionParticles();
+					Obj->FieldForcesUpdateCallback(MSolver, GeomCollectionParticles, Forces, Torques, MSolver->GetSolverTime());
+					auto& ClusteredParticles = MSolver->GetEvolution()->GetParticles().GetClusteredParticles();
+					Obj->FieldForcesUpdateCallback(MSolver, ClusteredParticles, Forces, Torques, MSolver->GetSolverTime());
 					if (StepsRemaining == 0)
 					{
 						UE_LOG(LogPBDRigidsSolver, Warning, TEXT("AdvanceOneTimeStepTask::DoWork() - Energy lost over %fs due to too many substeps over large timestep"), TimeRemaining);
@@ -426,20 +435,23 @@ namespace Chaos
 		InProxy->Initialize();
 		InProxy->InitializeBodiesGT();
 		InProxy->NewData(); // Buffers data on the proxy.
+		FParticlesType* InParticles = &GetParticles();
 
 		// Finish registration on the physics thread...
 		FChaosSolversModule::GetModule()->GetDispatcher()->EnqueueCommandImmediate(this,
-			[this, InProxy](FPBDRigidsSolver* Solver)
+			[InParticles, InProxy](FPBDRigidsSolver* Solver)
 		{
 			UE_LOG(LogPBDRigidsSolver, Verbose, 
 				TEXT("FPBDRigidsSolver::RegisterObject(FGeometryCollectionPhysicsProxy*)"));
-			InProxy->InitializeBodiesPT(Solver, Particles);
+			check(InParticles);
+			InProxy->InitializeBodiesPT(Solver, *InParticles);
 			InProxy->PushToPhysicsState(nullptr); // Uses buffer on proxy for transport, not ProxyData.
 		});
 	}
 
 	bool FPBDRigidsSolver::UnregisterObject(FGeometryCollectionPhysicsProxy* InProxy)
 	{
+		InProxy->OnRemoveFromSolver(this);
 		InProxy->SetSolver(static_cast<FPBDRigidsSolver*>(nullptr));
 		return GeometryCollectionPhysicsProxies.Remove(InProxy) != 0;
 	}
@@ -454,7 +466,7 @@ namespace Chaos
 
 		FChaosSolversModule::GetModule()->GetDispatcher()->EnqueueCommandImmediate(
 			this,
-			[this, InProxy, ProxyData](FPBDRigidsSolver* Solver)
+			[InProxy, ProxyData](FPBDRigidsSolver* Solver)
 			{
 				UE_LOG(LogPBDRigidsSolver, Verbose,
 					TEXT("FPBDRigidsSolver::RegisterObject(FFieldSystemPhysicsProxy*)"));
@@ -656,7 +668,8 @@ namespace Chaos
 		auto Cmd = [Proxy, Solver](Chaos::FPersistentPhysicsTask* PhysThread)
 		{
 			auto* Evolution = Solver->GetEvolution();
-			TManagedArray<Chaos::TPBDGeometryCollectionParticleHandle<float,3>*>& Handles = Proxy->GetSolverParticleHandles();
+			TManagedArray<Chaos::TPBDRigidClusteredParticleHandle<float, 3>*>& Handles = 
+				Proxy->GetSolverParticleHandles();
 			for (auto* Handle : Handles)
 			{
 				if (Handle)
@@ -755,6 +768,9 @@ namespace Chaos
 				case Chaos::EParticleType::GeometryCollection:
 					ActiveGC.AddUnique((FGeometryCollectionPhysicsProxy*)(ActiveObject.GTGeometryParticle()->Proxy));
 					break;
+				case Chaos::EParticleType::Clustered:
+					ActiveGC.AddUnique((FGeometryCollectionPhysicsProxy*)(Proxy));
+					break;
 				default:
 					check(false);
 				}
@@ -793,6 +809,9 @@ namespace Chaos
 				case Chaos::EParticleType::GeometryCollection:
 					ActiveGC.AddUnique((FGeometryCollectionPhysicsProxy*)(ActiveObject.GTGeometryParticle()->Proxy));
 					break;
+				case Chaos::EParticleType::Clustered:
+					ActiveGC.AddUnique((FGeometryCollectionPhysicsProxy*)(Proxy));
+					break;
 				default:
 					check(false);
 				}
@@ -805,6 +824,9 @@ namespace Chaos
 		}
 	}
 
+	// This function is not called.  FPhysScene_ChaosInterface::EndFrame() calls 
+	// FPhysScene_ChaosInterface::SyncBodies() instead, and then immediately afterwards 
+	// calls FPBDRigidsSovler::SyncEvents_GameThread().
 	void FPBDRigidsSolver::UpdateGameThreadStructures()
 	{
 		//ensure(IsInGameThread());
@@ -830,6 +852,9 @@ namespace Chaos
 					break;
 				case Chaos::EParticleType::GeometryCollection:
 					ActiveGC.AddUnique((FGeometryCollectionPhysicsProxy*)(ActiveObject.GTGeometryParticle()->Proxy));
+					break;
+				case Chaos::EParticleType::Clustered:
+					ActiveGC.AddUnique((FGeometryCollectionPhysicsProxy*)(Proxy));
 					break;
 				default:
 					check(false);

@@ -383,9 +383,9 @@ TSharedRef<FShaderCommonCompileJob, ESPMode::ThreadSafe> FNiagaraShaderType::Beg
 	NewJob->Input.Environment.SetDefine(TEXT("DISKELMESH_BONE_INFLUENCES"), 0);
 	NewJob->Input.Environment.IncludeVirtualPathToContentsMap.Add(TEXT("/Engine/Generated/NiagaraEmitterInstance.ush"), Script->HlslOutput);
 
-	static const auto UseShaderStagesCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("fx.UseShaderStages"));
-	NewJob->Input.Environment.SetDefine(TEXT("USE_SHADER_STAGES"), UseShaderStagesCVar->GetInt());
 	
+	NewJob->Input.Environment.SetDefine(TEXT("USE_SIMULATION_STAGES"), Script->GetUseSimStagesDefine());
+
 	AddReferencedUniformBufferIncludes(NewJob->Input.Environment, NewJob->Input.SourceFilePrefix, (EShaderPlatform)Target.Platform);
 	
 	FShaderCompilerEnvironment& ShaderEnvironment = NewJob->Input.Environment;
@@ -1312,8 +1312,8 @@ void FNiagaraShader::BindParams(const TArray<FNiagaraDataInterfaceGPUParamInfo>&
 
 	NumSpawnedInstancesParam.Bind(ParameterMap, TEXT("SpawnedInstances"));
 	UpdateStartInstanceParam.Bind(ParameterMap, TEXT("UpdateStartInstance"));
-	DefaultShaderStageIndexParam.Bind(ParameterMap, TEXT("DefaultShaderStageIndex"));
-	ShaderStageIndexParam.Bind(ParameterMap, TEXT("ShaderStageIndex"));
+	DefaultSimulationStageIndexParam.Bind(ParameterMap, TEXT("DefaultSimulationStageIndex"));
+	SimulationStageIndexParam.Bind(ParameterMap, TEXT("SimulationStageIndex"));
 	IterationInterfaceCount.Bind(ParameterMap, TEXT("IterationInterfaceCount"));
 
 	ComponentBufferSizeReadParam.Bind(ParameterMap, TEXT("ComponentBufferSizeRead"));
@@ -1390,10 +1390,13 @@ void FNiagaraDataInterfaceParamRef::Bind(const FNiagaraDataInterfaceGPUParamInfo
 	if (Base)
 	{
 		DIType = TIndexedPtr<UNiagaraDataInterfaceBase>(Base); // TODO - clean up TIndexedPtr::operator=()
-		Parameters = Base->ConstructComputeParameters();
-		checkf(Parameters != nullptr, TEXT("Niagara type '%s' is missing ComputeParameters, missing a IMPLEMENT_NIAGARA_DI_PARAMETER?"), *InParameterInfo.DIClassName);
-		Parameters->DIType = DIType;
-		Base->BindParameters(Parameters, InParameterInfo, ParameterMap);
+		Parameters = Base->CreateComputeParameters();
+		if (Parameters)
+		{
+			checkf(Base->GetComputeParametersTypeDesc(), TEXT("Missing TypeDesc for compute parameters for class %s"), *InParameterInfo.DIClassName);
+			Parameters->DIType = DIType;
+			Base->BindParameters(Parameters, InParameterInfo, ParameterMap);
+		}
 	}
 }
 

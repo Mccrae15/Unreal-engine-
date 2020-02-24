@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Styling/SlateStyle.h"
+#include "Styling/SlateTypes.h"
 
 class FEventFilterStyle
 {
@@ -22,4 +23,5 @@ private:
 
 	/** Singleton instances of this style. */
 	static TSharedPtr< class FSlateStyleSet > StyleSet;	
+	static FTextBlockStyle NormalText;
 };

@@ -3,6 +3,7 @@
 #include "Materials/MaterialInstance.h"
 #include "Stats/StatsMisc.h"
 #include "EngineGlobals.h"
+#include "EngineModule.h"
 #include "BatchedElements.h"
 #include "Engine/Font.h"
 #include "UObject/UObjectHash.h"
@@ -1202,6 +1203,26 @@ bool UMaterialInstance::GetRefractionSettings(float& OutBiasValue) const
 	{
 		return false;
 	}
+}
+
+int32 UMaterialInstance::GetLayerParameterIndex(EMaterialParameterAssociation Association, UMaterialFunctionInterface* LayerFunction) const
+{
+	check(Association != GlobalParameter);
+
+	int32 Index = INDEX_NONE;
+	for (const FStaticMaterialLayersParameter& LayersParam : GetStaticParameters().MaterialLayersParameters)
+	{
+		if (LayersParam.bOverride)
+		{
+			if (Association == BlendParameter) Index = LayersParam.Value.Blends.Find(LayerFunction);
+			else if (Association == LayerParameter) Index = LayersParam.Value.Layers.Find(LayerFunction);
+		}
+	}
+	if (Index == INDEX_NONE && Parent)
+	{
+		Index = Parent->GetLayerParameterIndex(Association, LayerFunction);
+	}
+	return Index;
 }
 
 void UMaterialInstance::GetTextureExpressionValues(const FMaterialResource* MaterialResource, TArray<UTexture*>& OutTextures, TArray< TArray<int32> >* OutIndices) const
@@ -3035,8 +3056,8 @@ void UMaterialInstance::CacheShadersForResources(EShaderPlatform ShaderPlatform,
 {
 	UMaterial* BaseMaterial = GetMaterial();
 #if WITH_EDITOR
-	BaseMaterial->UpdateCachedExpressionData();
-	UpdateCachedLayerParameters();
+	check(!HasAnyFlags(RF_NeedPostLoad));
+	check(!BaseMaterial->HasAnyFlags(RF_NeedPostLoad));
 #endif
 
 	for (int32 ResourceIndex = 0; ResourceIndex < ResourcesToCache.Num(); ResourceIndex++)
@@ -4183,6 +4204,17 @@ void UMaterialInstance::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 	}
 
 	UpdateCachedLayerParameters();
+
+	if (GIsEditor)
+	{
+		// Update virtual textures if necessary
+		//todo[vt]: With many streaming virtual textures this will be slow. Add a flush for runtime virtual texture only? Or maybe work out which primitives or runtime virtual textures are affected flush only affected VT pages?
+		const UMaterial* BaseMaterial = GetMaterial();
+		if (BaseMaterial != nullptr && (BaseMaterial->MaterialDomain == EMaterialDomain::MD_RuntimeVirtualTexture || BaseMaterial->GetCachedExpressionData().bHasRuntimeVirtualTextureOutput))
+		{
+			ENQUEUE_RENDER_COMMAND(FlushVTCommand)([ResourcePtr = Resource](FRHICommandListImmediate& RHICmdList) {	GetRendererModule().FlushVirtualTextureCache();	});
+		}
+	}
 }
 
 #endif // WITH_EDITOR

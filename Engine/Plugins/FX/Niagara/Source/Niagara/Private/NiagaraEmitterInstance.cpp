@@ -14,6 +14,7 @@
 #include "NiagaraParameterCollection.h"
 #include "NiagaraScriptExecutionContext.h"
 #include "NiagaraWorldManager.h"
+#include "NiagaraSimulationStageBase.h"
 
 DECLARE_DWORD_COUNTER_STAT(TEXT("Num Custom Events"), STAT_NiagaraNumCustomEvents, STATGROUP_Niagara);
 
@@ -358,6 +359,11 @@ void FNiagaraEmitterInstance::Init(int32 InEmitterIdx, FNiagaraSystemInstanceID 
 
 			SpawnExecContext.Parameters.Bind(&GPUExecContext->CombinedParamStore);
 			UpdateExecContext.Parameters.Bind(&GPUExecContext->CombinedParamStore);
+
+			for (int32 i = 0; i < CachedEmitter->GetSimulationStages().Num(); i++)
+			{
+				CachedEmitter->GetSimulationStages()[i]->Script->RapidIterationParameters.Bind(&GPUExecContext->CombinedParamStore);
+			}
 		}
 	
 		EventExecContexts.SetNum(CachedEmitter->GetEventHandlers().Num());
@@ -709,6 +715,11 @@ void FNiagaraEmitterInstance::BindParameters(bool bExternalOnly)
 		{
 			SpawnExecContext.Parameters.Bind(&GPUExecContext->CombinedParamStore);
 			UpdateExecContext.Parameters.Bind(&GPUExecContext->CombinedParamStore);
+
+			for (int32 i = 0; i < CachedEmitter->GetSimulationStages().Num(); i++)
+			{
+				CachedEmitter->GetSimulationStages()[i]->Script->RapidIterationParameters.Bind(&GPUExecContext->CombinedParamStore);
+			}
 		}
 	}
 }
@@ -1441,9 +1452,10 @@ void FNiagaraEmitterInstance::Tick(float DeltaSeconds)
 		}
 	}
 
-	// The spawn count and ID acquire tag in FNiagaraDataBuffer are currently only used by the GPU path,
-	// but we'll set them here anyway, to prevent surprises in case someone sees them and decides to use them.
-	Data.GetDestinationDataChecked().SetNumSpawnedInstances(Data.GetSpawnedIDsTable().Num());
+	int32 NumAfterSpawn = Data.GetCurrentDataChecked().GetNumInstances();
+	int32 TotalNumSpawned = NumAfterSpawn - NumBeforeSpawn;
+
+	Data.GetDestinationDataChecked().SetNumSpawnedInstances(TotalNumSpawned);
 	Data.GetDestinationDataChecked().SetIDAcquireTag(Data.GetIDAcquireTag());
 
 	//We're done with this simulation pass.
@@ -1466,8 +1478,6 @@ void FNiagaraEmitterInstance::Tick(float DeltaSeconds)
 
 	//Now pull out any debug info we need.
 #if WITH_EDITORONLY_DATA
-	int32 NumAfterSpawn = Data.GetCurrentDataChecked().GetNumInstances();
-	int32 TotalNumSpawned = NumAfterSpawn - NumBeforeSpawn;
 	if (ParentSystemInstance->ShouldCaptureThisFrame())
 	{
 		//Pull out update data.

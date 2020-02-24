@@ -64,7 +64,7 @@ void STraceSourceFilteringWidget::Construct(const FArguments& InArgs)
 	[
 		SNew(SBorder)
 		.Padding(4.0f)
-		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+		.BorderImage(FSourceFilterStyle::GetBrush("SourceFilter.GroupBorder"))
 		[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot()
@@ -167,7 +167,14 @@ void STraceSourceFilteringWidget::ConstructMenuBox()
 		.OnGetMenuContent(FOnGetContent::CreateLambda([OnFilterClassPicked, this]()
 		{
 			FMenuBuilder MenuBuilder(true, TSharedPtr<FUICommandList>(), SessionFilterService->GetExtender());
-			MenuBuilder.AddWidget(SessionFilterService->GetFilterPickerWidget(FOnFilterClassPicked::CreateLambda(OnFilterClassPicked)), FText::GetEmpty(), true, false);
+			
+			MenuBuilder.BeginSection(FName("FilterPicker"));
+			{
+				MenuBuilder.AddWidget(SessionFilterService->GetFilterPickerWidget(FOnFilterClassPicked::CreateLambda(OnFilterClassPicked)), FText::GetEmpty(), true, false);
+			}
+			MenuBuilder.EndSection();
+			
+
 			return MenuBuilder.MakeWidget();
 		}))
 		.ButtonContent()
@@ -179,7 +186,7 @@ void STraceSourceFilteringWidget::ConstructMenuBox()
 			[
 				SNew(STextBlock)
 				.TextStyle(FSourceFilterStyle::Get(), "SourceFilter.TextStyle")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.9"))
+				.Font(FSourceFilterStyle::Get().GetFontStyle("FontAwesome.9"))
 				.Text(FText::FromString(FString(TEXT("\xf0fe"))) /*fa-filter*/)
 			]
 			+ SHorizontalBox::Slot()
@@ -214,7 +221,7 @@ void STraceSourceFilteringWidget::ConstructMenuBox()
 			[
 				SNew(STextBlock)
 				.TextStyle(FSourceFilterStyle::Get(), "SourceFilter.TextStyle")
-				.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.9"))
+				.Font(FSourceFilterStyle::Get().GetFontStyle("FontAwesome.9"))
 				.Text(FText::FromString(FString(TEXT("\xf0b0"))) /*fa-filter*/)
 			]
 			+SHorizontalBox::Slot()

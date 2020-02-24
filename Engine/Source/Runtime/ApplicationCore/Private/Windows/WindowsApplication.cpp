@@ -2,8 +2,6 @@
 
 #include "Windows/WindowsApplication.h"
 
-#if WINDOWS_USE_FEATURE_APPLICATION
-
 #include "Containers/StringConv.h"
 #include "CoreGlobals.h"
 #include "Internationalization/Text.h"
@@ -394,6 +392,8 @@ static TSharedPtr< FWindowsWindow > FindWindowByHWND(const TArray< TSharedRef< F
 
 bool FWindowsApplication::IsCursorDirectlyOverSlateWindow() const
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_STAT_IsCursorDirectlyOverSlateWindow);
+
 	POINT CursorPos;
 	BOOL bGotPoint = ::GetCursorPos(&CursorPos);
 	if (bGotPoint)
@@ -2823,4 +2823,3 @@ TSharedRef<FTaskbarList> FTaskbarList::Create()
 
 #include "Windows/HideWindowsPlatformTypes.h"
 
-#endif

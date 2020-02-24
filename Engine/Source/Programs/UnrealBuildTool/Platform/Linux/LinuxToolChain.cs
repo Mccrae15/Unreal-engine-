@@ -67,6 +67,9 @@ namespace UnrealBuildTool
 		/** Whether or not to preserve the portable symbol file produced by dump_syms */
 		bool bPreservePSYM = false;
 
+		/** Pass --gdb-index option to linker to generate .gdb_index section. */
+		protected bool bGdbIndexSection = true;
+
 		/** Platform SDK to use */
 		protected LinuxPlatformSDK PlatformSDK;
 
@@ -184,6 +187,9 @@ namespace UnrealBuildTool
 			// trust lld only for clang 5.x and above (FIXME: also find if present on the system?)
 			// NOTE: with early version you can run into errors like "failed to compute relocation:" and others
 			bUseLld = (CompilerVersionMajor >= 5);
+
+			// Add --gdb-index for Clang 9.0 and higher
+			bGdbIndexSection = (CompilerVersionMajor >= 9);
 		}
 
 		public LinuxToolChain(UnrealTargetPlatform InPlatform, string InArchitecture, LinuxPlatformSDK InSDK, bool InPreservePSYM = false, LinuxToolChainOptions InOptions = LinuxToolChainOptions.None)
@@ -727,8 +733,14 @@ namespace UnrealBuildTool
 			// bCreateDebugInfo is normally set for all configurations, including Shipping - this is needed to enable callstack in Shipping builds (proper resolution: UEPLAT-205, separate files with debug info)
 			if (CompileEnvironment.bCreateDebugInfo)
 			{
-				// libdwarf (from elftoolchain 0.6.1) doesn't support DWARF4. If we need to go back to depending on elftoolchain revert this back to dwarf-3
 				Result += " -gdwarf-4";
+
+				if (bGdbIndexSection)
+				{
+					// Generate .debug_pubnames and .debug_pubtypes sections in a format suitable for conversion into a
+					// GDB index. This option is only useful with a linker that can produce GDB index version 7.
+					Result += " -ggnu-pubnames";
+				}
 			}
 
 			// optimization level
@@ -911,7 +923,7 @@ namespace UnrealBuildTool
 		{
 			string Result = "";
 
-			if (UsingLld(LinkEnvironment.Architecture) && !LinkEnvironment.bIsBuildingDLL)
+			if (UsingLld(LinkEnvironment.Architecture) && (!LinkEnvironment.bIsBuildingDLL || (CompilerVersionMajor >= 9)))
 			{
 				Result += (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64) ? " -fuse-ld=lld.exe" : " -fuse-ld=lld";
 			}
@@ -966,6 +978,13 @@ namespace UnrealBuildTool
 					Result += string.Format(" -Wl,-rpath=\"{0}/lib/clang/{1}.{2}.{3}/lib/linux\"",
 							BaseLinuxPath, CompilerVersionMajor, CompilerVersionMinor, CompilerVersionPatch);
 				}
+			}
+
+			if (UsingLld(Architecture) && LinkEnvironment.bCreateDebugInfo && bGdbIndexSection)
+			{
+				// Generate .gdb_index section. On my machine, this cuts symbol loading time (breaking at main) from 45
+				// seconds to 17 seconds (with gdb v8.3.1).
+				Result += " -Wl,--gdb-index";
 			}
 
 			// RPATH for third party libs
@@ -1441,7 +1460,7 @@ namespace UnrealBuildTool
 
 		bool UsingLld(string Architecture)
 		{
-			return bUseLld && Architecture.StartsWith("x86_64");
+			return bUseLld && (Architecture.StartsWith("x86_64") || (CompilerVersionMajor >= 9));
 		}
 
 		/// <summary>

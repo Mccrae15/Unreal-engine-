@@ -6,9 +6,10 @@
 #include "USDGeomMeshTranslator.h"
 #include "USDGeomXformableTranslator.h"
 #include "USDListener.h"
+#include "USDLog.h"
 #include "USDPrimConversion.h"
-#include "USDSchemasModule.h"
 #include "USDSchemaTranslator.h"
+#include "USDSchemasModule.h"
 #include "USDSkelRootTranslator.h"
 #include "USDTypesConversion.h"
 #include "UnrealUSDWrapper.h"
@@ -57,8 +58,6 @@
 #endif // #if USE_USD_SDK
 
 #define LOCTEXT_NAMESPACE "USDStageActor"
-
-DEFINE_LOG_CATEGORY( LogUsdStage );
 
 static const EObjectFlags DefaultObjFlag = EObjectFlags::RF_Transactional | EObjectFlags::RF_Transient;
 
@@ -209,7 +208,7 @@ AUsdStageActor::AUsdStageActor()
 					const pxr::SdfChangeList::Entry::_Flags& Flags = Change.second.flags;
 					if (Flags.didReloadContent)
 					{
-						UE_LOG(LogUsdStage, Verbose, TEXT("Reloading animations because layer '%s' reloaded"), *UsdToUnreal::ConvertPath(Change.first));
+						UE_LOG(LogUsd, Verbose, TEXT("Reloading animations because layer '%s' reloaded"), *UsdToUnreal::ConvertPath(Change.first));
 						ReloadAnimations();
 						return;
 					}
@@ -459,7 +458,6 @@ void AUsdStageActor::Clear()
 {
 	PrimPathsToAssets.Reset();
 	ObjectsToWatch.Reset();
-	SubLayerLevelSequencesByIdentifier.Reset();
 }
 
 void AUsdStageActor::OpenUsdStage()
@@ -565,7 +563,7 @@ void AUsdStageActor::LoadUsdStage()
 	int ElapsedMin = int(ElapsedSeconds / 60.0);
 	ElapsedSeconds -= 60.0 * (double)ElapsedMin;
 
-	UE_LOG( LogUsdStage, Log, TEXT("%s %s in [%d min %.3f s]"), TEXT("Stage loaded"), *FPaths::GetBaseFilename( RootLayer.FilePath ), ElapsedMin, ElapsedSeconds );
+	UE_LOG( LogUsd, Log, TEXT("%s %s in [%d min %.3f s]"), TEXT("Stage loaded"), *FPaths::GetBaseFilename( RootLayer.FilePath ), ElapsedMin, ElapsedSeconds );
 #endif // #if USE_USD_SDK
 }
 
@@ -588,10 +586,13 @@ void AUsdStageActor::ReloadAnimations()
 
 	if ( HasAutorithyOverStage() )
 	{
-		LevelSequenceHelper.InitLevelSequence(UsdStage);
-
 		// The sequencer won't update on its own, so let's at least force it closed
 		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(LevelSequence);
+
+		LevelSequence = nullptr;
+		SubLayerLevelSequencesByIdentifier.Reset();
+
+		LevelSequenceHelper.InitLevelSequence(UsdStage);
 	}
 #endif // #if USE_USD_SDK
 }
