@@ -841,8 +841,11 @@ void RunCrashReportClient(const TCHAR* CommandLine)
 
 					if (bReportCrashAnalyticInfo)
 					{
-						// If analytics is enabled make sure they are submitted now.
-						FCrashReportAnalytics::GetProvider().BlockUntilFlushed(5.0f);
+						if (FCrashReportAnalytics::IsAvailable())
+						{
+							// If analytics is enabled make sure they are submitted now.
+							FCrashReportAnalytics::GetProvider().BlockUntilFlushed(5.0f);
+						}
 						FCrashReportAnalytics::Shutdown();
 					}
 				}
