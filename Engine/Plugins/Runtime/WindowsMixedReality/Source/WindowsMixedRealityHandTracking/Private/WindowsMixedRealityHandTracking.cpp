@@ -12,6 +12,7 @@
 #include "Features/IModularFeatures.h"
 #include "IWindowsMixedRealityHandTrackingPlugin.h"
 #include "ILiveLinkClient.h"
+#include "HeadMountedDisplayFunctionLibrary.h"
 
 #if WITH_INPUT_SIMULATION
 #include "WindowsMixedRealityInputSimulationEngineSubsystem.h"
@@ -355,26 +356,33 @@ bool FWindowsMixedRealityHandTracking::IsHandTrackingStateValid() const
 
 bool FWindowsMixedRealityHandTracking::GetKeypointTransform(EControllerHand Hand, EWMRHandKeypoint Keypoint, FTransform& OutTransform) const
 {
+	bool gotTransform = false;
+ 
 #if WITH_INPUT_SIMULATION
-	auto* InputSim = GEngine->GetEngineSubsystem<UWindowsMixedRealityInputSimulationEngineSubsystem>();
-	if (InputSim && InputSim->IsInputSimulationEnabled())
+	if (auto* InputSim = UWindowsMixedRealityInputSimulationEngineSubsystem::GetInputSimulationIfEnabled())
 	{
-		return InputSim->GetHandJointTransform(Hand, Keypoint, OutTransform);
+		gotTransform = InputSim->GetHandJointTransform(Hand, Keypoint, OutTransform);
 	}
 	else
 #endif
 	{
 		const FWindowsMixedRealityHandTracking::FHandState& HandState = (Hand == EControllerHand::Left) ? GetLeftHandState() : GetRightHandState();
-
-		return HandState.GetTransform(Keypoint, OutTransform);
+		gotTransform = HandState.GetTransform(Keypoint, OutTransform);
+		// Rotate to match UE space conventions (positive-x forward, positive-y right, positive-z up)
+		OutTransform.SetRotation(OutTransform.GetRotation() * FQuat(FVector::RightVector, PI));
 	}
+	if (gotTransform)
+	{
+		// Convert to UE world space
+		OutTransform *= UHeadMountedDisplayFunctionLibrary::GetTrackingToWorldTransform(GWorld);
+	}
+	return gotTransform;
 }
 
 bool FWindowsMixedRealityHandTracking::GetKeypointRadius(EControllerHand Hand, EWMRHandKeypoint Keypoint, float& OutRadius) const
 {
 #if WITH_INPUT_SIMULATION
-	auto* InputSim = GEngine->GetEngineSubsystem<UWindowsMixedRealityInputSimulationEngineSubsystem>();
-	if (InputSim)
+	if (auto* InputSim = UWindowsMixedRealityInputSimulationEngineSubsystem::GetInputSimulationIfEnabled())
 	{
 		return InputSim->GetHandJointRadius(Hand, Keypoint, OutRadius);
 	}

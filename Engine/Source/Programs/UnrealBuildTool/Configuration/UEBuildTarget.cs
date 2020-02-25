@@ -859,7 +859,7 @@ namespace UnrealBuildTool
 			// Throw an exception if they don't match
 			if(!bFieldsMatch)
 			{
-				throw new BuildException("{0} modifies the value of {1}. This is not allowed, as {0} has build products in common with {2}.\nRemove the modified setting, change {0} to use a unique build environment by setting 'BuildEnvironment = TargetBuildEnvironment.Unique;' in the {3} constructor, or set bOverrideSharedBuildEnvironment = true to force this setting on.", ThisTargetName, FieldName, BaseTargetName, RulesType.Name);
+				throw new BuildException("{0} modifies the value of {1}. This is not allowed, as {0} has build products in common with {2}.\nRemove the modified setting, change {0} to use a unique build environment by setting 'BuildEnvironment = TargetBuildEnvironment.Unique;' in the {3} constructor, or set bOverrideBuildEnvironment = true to force this setting on.", ThisTargetName, FieldName, BaseTargetName, RulesType.Name);
 			}
 		}
 
@@ -1715,7 +1715,7 @@ namespace UnrealBuildTool
 			List<UEBuildBinary> BuildBinaries = Binaries;
 			if (SingleFileToCompile != null)
 			{
-				BuildBinaries = Binaries.Where(x => x.Modules.Any(y => SingleFileToCompile.IsUnderDirectory(y.ModuleDirectory))).ToList();
+				BuildBinaries = Binaries.Where(x => x.Modules.Any(y => y.ContainsFile(SingleFileToCompile))).ToList();
 				if (BuildBinaries.Count == 0)
 				{
 					throw new BuildException("Couldn't find any module containing {0} in {1}.", SingleFileToCompile, TargetName);
@@ -2067,24 +2067,7 @@ namespace UnrealBuildTool
 			FileItem SourceFileItem = FileItem.GetItemByFileReference(SourceFile);
 			FileItem TargetFileItem = FileItem.GetItemByFileReference(TargetFile);
 
-			Action CopyAction = new Action(ActionType.BuildProject);
-			CopyAction.CommandDescription = "Copy";
-			CopyAction.CommandPath = BuildHostPlatform.Current.Shell;
-			if(BuildHostPlatform.Current.ShellType == ShellType.Cmd)
-			{
-				CopyAction.CommandArguments = String.Format("/C \"copy /Y \"{0}\" \"{1}\" 1>nul\"", SourceFile, TargetFile);
-			}
-			else
-			{
-				CopyAction.CommandArguments = String.Format("-c 'cp -f \"{0}\" \"{1}\"'", SourceFile.FullName, TargetFile.FullName);
-			}
-			CopyAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
-			CopyAction.PrerequisiteItems.Add(SourceFileItem);
-			CopyAction.ProducedItems.Add(TargetFileItem);
-			CopyAction.DeleteItems.Add(TargetFileItem);
-			CopyAction.StatusDescription = TargetFileItem.Location.GetFileName();
-			CopyAction.bCanExecuteRemotely = false;
-			Actions.Add(CopyAction);
+			Actions.Add(Action.CreateCopyAction(SourceFileItem, TargetFileItem));
 
 			return TargetFileItem;
 		}
@@ -2205,11 +2188,14 @@ namespace UnrealBuildTool
 				Writer.WriteArrayEnd();
 
 				Writer.WriteObjectStart("Modules");
-				foreach(UEBuildModule Module in Modules.Values)
+				foreach (UEBuildBinary Binary in Binaries)
 				{
-					Writer.WriteObjectStart(Module.Name);
-					Module.ExportJson(Module.Binary?.OutputDir, GetExecutableDir(), Writer);
-					Writer.WriteObjectEnd();
+					foreach (UEBuildModule Module in Binary.Modules)
+					{
+						Writer.WriteObjectStart(Module.Name);
+						Module.ExportJson(Binary.OutputDir, GetExecutableDir(), Writer);
+						Writer.WriteObjectEnd();
+					}
 				}
 				Writer.WriteObjectEnd();
 
@@ -2231,7 +2217,7 @@ namespace UnrealBuildTool
 			List<string> Definitions = new List<string>(GlobalCompileEnvironment.Definitions);
 			foreach(UEBuildModule Module in Binary.Modules)
 			{
-				Module.AddModuleToCompileEnvironment(null, new HashSet<DirectoryReference>(), new HashSet<DirectoryReference>(), Definitions, new List<UEBuildFramework>(), false);
+				Module.AddModuleToCompileEnvironment(null, new HashSet<DirectoryReference>(), new HashSet<DirectoryReference>(), Definitions, new List<UEBuildFramework>(), new List<FileItem>(), false);
 			}
 
 			// Write the header
@@ -3965,7 +3951,7 @@ namespace UnrealBuildTool
 						);
 
 				case ModuleRules.ModuleType.External:
-					return new UEBuildModuleExternal(RulesObject);
+					return new UEBuildModuleExternal(RulesObject, GetModuleIntermediateDirectory(RulesObject));
 
 				default:
 					throw new BuildException("Unrecognized module type specified by 'Rules' object {0}", RulesObject.ToString());

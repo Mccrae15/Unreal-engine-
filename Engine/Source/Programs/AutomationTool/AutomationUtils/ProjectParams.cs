@@ -280,6 +280,7 @@ namespace AutomationTool
             this.RunTimeoutSeconds = InParams.RunTimeoutSeconds;
 			this.Clean = InParams.Clean;
 			this.Pak = InParams.Pak;
+			this.TryUsePaksFromDifferentCookSource = InParams.TryUsePaksFromDifferentCookSource;
 			this.IoStore = InParams.IoStore;
 			this.SignPak = InParams.SignPak;
 			this.SignedPak = InParams.SignedPak;
@@ -455,6 +456,7 @@ namespace AutomationTool
 			bool? NoXGE = null,
 			bool? Package = null,
 			bool? Pak = null,
+			bool? TryUsePaksFromDifferentCookSource = null,
 			bool? IoStore = null,
 			bool? SkipIoStore = null,
 			bool? Prereqs = null,
@@ -629,6 +631,7 @@ namespace AutomationTool
 			}
 			this.PakAlignForMemoryMapping = GetParamValueIfNotSpecified(Command, PakAlignForMemoryMapping, this.PakAlignForMemoryMapping, "PakAlignForMemoryMapping");
 			this.Pak = GetParamValueIfNotSpecified(Command, Pak, this.Pak, "pak");
+			this.TryUsePaksFromDifferentCookSource = GetParamValueIfNotSpecified(Command, TryUsePaksFromDifferentCookSource, this.TryUsePaksFromDifferentCookSource, "TryUsePaksFromDifferentCookSource");
 			this.IoStore = GetParamValueIfNotSpecified(Command, IoStore, this.IoStore, "iostore");
 			this.SkipIoStore = GetParamValueIfNotSpecified(Command, IoStore, this.SkipIoStore, "skipiostore");
 			this.SkipPak = GetParamValueIfNotSpecified(Command, SkipPak, this.SkipPak, "skippak");
@@ -1191,6 +1194,13 @@ namespace AutomationTool
 		public bool Pak { private set; get; }
 
 		/// <summary>
+		/// Stage: True if we should try and re-use pak files from another staged build when we've specified a different cook source platform
+		/// </summary>
+		[Help("pak", "reuse pak files from the alternate cook source folder, if specified")]
+		public bool TryUsePaksFromDifferentCookSource { get { return TryUsePaksFromDifferentCookSourceInternal; } private set { TryUsePaksFromDifferentCookSourceInternal = value; } }
+		private bool TryUsePaksFromDifferentCookSourceInternal = true;
+
+		/// <summary>
 		/// Shared: True if container file(s) should be generated with ZenPak.
 		/// </summary>
 		[Help("iostore", "generate I/O store container file(s)")]
@@ -1712,6 +1722,11 @@ namespace AutomationTool
 		/// Stage: Specifies a list of extra targets that should be staged along with a client
 		/// </summary>
 		public ParamList<string> ExtraTargetsToStageWithClient = new ParamList<string>();
+
+        /// <summary>
+        /// Stage: Optional callback that a build script can use to modify a deployment context before it is applied
+        /// </summary>
+        public Action<ProjectParams, DeploymentContext> ModifyDeploymentContextCallback = null;
 
         /// <summary>
         /// On Windows, adds an executable to the root of the staging directory which checks for prerequisites being 
@@ -2813,6 +2828,7 @@ namespace AutomationTool
 				CommandUtils.LogLog("MapsToCook={0}", MapsToCook.ToString());
 				CommandUtils.LogLog("MapIniSectionsToCook={0}", MapIniSectionsToCook.ToString());
 				CommandUtils.LogLog("Pak={0}", Pak);
+				CommandUtils.LogLog("TryUsePaksFromDifferentCookSource={0}", TryUsePaksFromDifferentCookSource);
 				CommandUtils.LogLog("IoStore={0}", IoStore);
 				CommandUtils.LogLog("SkipIoStore={0}", SkipIoStore);
 				CommandUtils.LogLog("Package={0}", Package);

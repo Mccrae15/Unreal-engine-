@@ -23,6 +23,11 @@ namespace UnrealBuildTool
 		public readonly ModuleRules Rules;
 
 		/// <summary>
+		/// The directory for this module's object files
+		/// </summary>
+		public readonly DirectoryReference IntermediateDirectory;
+
+		/// <summary>
 		/// The name that uniquely identifies the module.
 		/// </summary>
 		public string Name
@@ -165,9 +170,11 @@ namespace UnrealBuildTool
 		/// Constructor
 		/// </summary>
 		/// <param name="Rules">Rules for this module</param>
-		public UEBuildModule(ModuleRules Rules)
+		/// <param name="IntermediateDirectory">Intermediate directory for this module</param>
+		public UEBuildModule(ModuleRules Rules, DirectoryReference IntermediateDirectory)
 		{
 			this.Rules = Rules;
+			this.IntermediateDirectory = IntermediateDirectory;
 
 			ModuleApiDefine = Name.ToUpperInvariant() + "_API";
 
@@ -234,6 +241,16 @@ namespace UnrealBuildTool
 
 			// cache the results (it will always at least have the ModuleDirectory)
 			ModuleDirectories = MergedDirectories.ToArray();
+		}
+
+		/// <summary>
+		/// Determines if a file is part of the given module
+		/// </summary>
+		/// <param name="Location">Path to the file</param>
+		/// <returns>True if the file is part of this module</returns>
+		public virtual bool ContainsFile(FileReference Location)
+		{
+			return Location.IsUnderDirectory(ModuleDirectory);
 		}
 
 		/// <summary>
@@ -482,6 +499,7 @@ namespace UnrealBuildTool
 			HashSet<DirectoryReference> SystemIncludePaths,
 			List<string> Definitions,
 			List<UEBuildFramework> AdditionalFrameworks,
+			List<FileItem> AdditionalPrerequisites,
 			bool bLegacyPublicIncludePaths
 			)
 		{
@@ -527,6 +545,16 @@ namespace UnrealBuildTool
 
 			// Add the additional frameworks so that the compiler can know about their #include paths
 			AdditionalFrameworks.AddRange(PublicAdditionalFrameworks);
+
+			// Add any generated type library headers
+			if (Rules.TypeLibraries.Count > 0)
+			{
+				IncludePaths.Add(IntermediateDirectory);
+				foreach (ModuleRules.TypeLibrary TypeLibrary in Rules.TypeLibraries)
+				{
+					AdditionalPrerequisites.Add(FileItem.GetItemByFileReference(FileReference.Combine(IntermediateDirectory, TypeLibrary.Header)));
+				}
+			}
 		}
 
 		/// <summary>
@@ -537,6 +565,7 @@ namespace UnrealBuildTool
 			HashSet<DirectoryReference> SystemIncludePaths,
 			List<string> Definitions,
 			List<UEBuildFramework> AdditionalFrameworks,
+			List<FileItem> AdditionalPrerequisites,
 			bool bWithLegacyPublicIncludePaths
 			)
 		{
@@ -556,7 +585,7 @@ namespace UnrealBuildTool
 			// Now set up the compile environment for the modules in the original order that we encountered them
 			foreach (UEBuildModule Module in ModuleToIncludePathsOnlyFlag.Keys)
 			{
-				Module.AddModuleToCompileEnvironment(Binary, IncludePaths, SystemIncludePaths, Definitions, AdditionalFrameworks, bWithLegacyPublicIncludePaths);
+				Module.AddModuleToCompileEnvironment(Binary, IncludePaths, SystemIncludePaths, Definitions, AdditionalFrameworks, AdditionalPrerequisites, bWithLegacyPublicIncludePaths);
 			}
 		}
 
@@ -757,7 +786,17 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Compiles the module, and returns a list of files output by the compiler.
 		/// </summary>
-		public abstract List<FileItem> Compile(ReadOnlyTargetRules Target, UEToolChain ToolChain, CppCompileEnvironment CompileEnvironment, FileReference SingleFileToCompile, ISourceFileWorkingSet WorkingSet, TargetMakefile Makefile);
+		public virtual List<FileItem> Compile(ReadOnlyTargetRules Target, UEToolChain ToolChain, CppCompileEnvironment CompileEnvironment, FileReference SingleFileToCompile, ISourceFileWorkingSet WorkingSet, TargetMakefile Makefile)
+		{
+			// Generate type libraries for Windows
+			foreach(ModuleRules.TypeLibrary TypeLibrary in Rules.TypeLibraries)
+			{
+				FileReference OutputFile = FileReference.Combine(IntermediateDirectory, TypeLibrary.Header);
+				ToolChain.GenerateTypeLibraryHeader(CompileEnvironment, TypeLibrary, OutputFile, Makefile.Actions);
+			}
+
+			return new List<FileItem>();
+		}
 
 		// Object interface.
 		public override string ToString()
