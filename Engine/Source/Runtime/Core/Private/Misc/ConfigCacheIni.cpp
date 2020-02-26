@@ -3585,6 +3585,11 @@ void FConfigCacheIni::InitializeConfigSystem()
 	}
 
 	FConfigCacheIni::LoadGlobalIniFile(GGameIni, TEXT("Game"));
+
+#define USECARBONINPUTSWITCHER 0 
+
+#if USECARBONINPUTSWITCHER
+
 	int Option;
 	GConfig->GetInt(TEXT("/Script/Carbon_VR_Template.MyDeveloperSettings"), TEXT("CurrentControllSet"), Option, GGameIni);
 	switch (Option)
@@ -3639,9 +3644,10 @@ void FConfigCacheIni::InitializeConfigSystem()
 			UE_LOG(LogConfig, Warning, TEXT("Loaded Default Inputdasda"));
 			break;
 	}
+#else
+	FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
+#endif
 
-
-	//FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
 #if WITH_EDITOR
 	// load some editor specific .ini files
 
