@@ -1093,6 +1093,15 @@ void FSteamVRHMD::OnEndPlay(FWorldContext& InWorldContext)
 
 const FName FSteamVRHMD::SteamSystemName(TEXT("SteamVR"));
 
+FString  FSteamVRHMD::GetHMDModel() const
+{
+	if (VRSystem == nullptr)
+	{
+		return FString();
+	}
+
+	return GetFStringTrackedDeviceProperty(VRSystem, vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_ModelNumber_String);
+}
 FString FSteamVRHMD::GetVersionString() const
 {
 	if (VRSystem == nullptr)

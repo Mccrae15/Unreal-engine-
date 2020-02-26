@@ -114,3 +114,28 @@ FString USteamVRFunctionLibrary::GetControllerName(int32 DeviceIndex)
 
 	return FString();
 }
+FString USteamVRFunctionLibrary::GetHMDModel()
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->GetHMDModel();
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+	return FString();
+}
+
+FVector USteamVRFunctionLibrary::GetBasePosition()
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->GetBasePosition();
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+	return FVector::ZeroVector;
+}
