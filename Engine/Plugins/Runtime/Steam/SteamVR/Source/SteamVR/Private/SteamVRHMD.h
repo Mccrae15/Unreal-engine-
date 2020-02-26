@@ -79,6 +79,7 @@ public:
 	{
 		return SteamSystemName;
 	}
+	FString GetHMDModel() const;
 	virtual FString GetVersionString() const override;
 	virtual FString GetControllerName(uint32 DeviceIndex) const;
 

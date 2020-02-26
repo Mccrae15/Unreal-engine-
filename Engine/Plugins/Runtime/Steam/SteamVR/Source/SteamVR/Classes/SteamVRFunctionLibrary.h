@@ -67,6 +67,13 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "SteamVR")
 	static FString GetControllerName(int32 DeviceIndex);
+
+	UFUNCTION(BlueprintPure, Category = "SteamVR")
+	static 	FString GetHMDModel();
+
+	UFUNCTION(BlueprintPure, Category = "SteamVR")
+	static FVector GetBasePosition();
+	
 };
 
 	
