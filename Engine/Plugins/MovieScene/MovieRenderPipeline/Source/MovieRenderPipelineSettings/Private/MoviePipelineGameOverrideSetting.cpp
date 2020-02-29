@@ -63,7 +63,7 @@ void UMoviePipelineGameOverrideSetting::ApplyCVarSettings(const bool bRestoreOld
 
 			// Create a copy and override to the maximum level for each Scalability category
 			Scalability::FQualityLevels QualityLevels = PreviousQualityLevels;
-			PreviousQualityLevels.SetFromSingleQualityLevelRelativeToMax(0);
+			QualityLevels.SetFromSingleQualityLevelRelativeToMax(0);
 
 			// Apply
 			Scalability::SetQualityLevels(QualityLevels);
@@ -104,7 +104,8 @@ void UMoviePipelineGameOverrideSetting::ApplyCVarSettings(const bool bRestoreOld
 	if (bUseLODZero)
 	{
 		STORE_AND_OVERRIDE_INT_SETTING(PreviousForceLOD, TEXT("r.ForceLOD"), 0, bRestoreOldValues);
-		STORE_AND_OVERRIDE_INT_SETTING(PreviousSkeletalMeshBias, TEXT("r.SkeletalMeshLODBias"), -4, bRestoreOldValues);
+		STORE_AND_OVERRIDE_INT_SETTING(PreviousSkeletalMeshBias, TEXT("r.SkeletalMeshLODBias"), -10, bRestoreOldValues);
+		STORE_AND_OVERRIDE_INT_SETTING(PreviousParticleLODBias, TEXT("r.ParticleLODBias"), -10, bRestoreOldValues);
 	}
 
 	if (bDisableHLODs)

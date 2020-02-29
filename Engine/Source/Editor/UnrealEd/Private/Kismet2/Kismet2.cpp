@@ -1598,7 +1598,12 @@ UBlueprint* FKismetEditorUtilities::CreateBlueprintFromActors(const FName Bluepr
 			CAC->SetChildActorClass(Actor->GetClass(), Actor);
 
 			// Clear any properties that can't be on the template
-			CAC->GetChildActorTemplate()->SetActorRelativeTransform(FTransform::Identity);
+			if (USceneComponent* RootComponent = CAC->GetChildActorTemplate()->GetRootComponent())
+			{
+				RootComponent->SetRelativeLocation_Direct(FVector::ZeroVector);
+				RootComponent->SetRelativeRotation_Direct(FRotator::ZeroRotator);
+				RootComponent->SetRelativeScale3D_Direct(FVector::OneVector);
+			}
 
 			CAC->SetWorldTransform(Actor->GetTransform());
 			if (ParentComponent)
@@ -1623,6 +1628,13 @@ UBlueprint* FKismetEditorUtilities::CreateBlueprintFromActors(const FName Bluepr
 		}
 
 		FKismetEditorUtilities::AddComponentsToBlueprint(AssemblyProps.Blueprint, ChildActorComponents, /*bHarvesting=*/ true, AssemblyProps.RootNodeOverride);
+
+		// Since the names we create are well defined relative to the SCS but created in the transient package, we could end up reusing objects
+		// unless we rename these temporary components out of the way
+		for (UActorComponent* CAC : ChildActorComponents)
+		{
+			CAC->Rename(nullptr, nullptr, REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+		}
 	};
 	
 	UBlueprint* Blueprint = nullptr;

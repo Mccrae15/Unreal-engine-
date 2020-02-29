@@ -78,8 +78,6 @@ void FRenderResource::InitResource()
 	check(IsInRenderingThread());
 	if (ListIndex == INDEX_NONE)
 	{
-		check(!IsEngineExitRequested());
-
 		TArray<FRenderResource*>& ResourceList = GetResourceList();
 		TArray<int32>& FreeIndicesList = GetFreeIndicesList();
 
@@ -797,4 +795,37 @@ void FMipBiasFade::SetNewMipCount( float ActualMipCount, float TargetMipCount, d
 			MipCountFadingRate = -1.0f / (GMipFadeSettings[FadeSetting].FadeOutSpeed * MipCountDelta);
 		}
 	}
+}
+
+class FTextureSamplerStateCache : public FRenderResource
+{
+public:
+	TMap<FSamplerStateInitializerRHI, FRHISamplerState*> Samplers;
+
+	virtual void ReleaseRHI() override
+	{
+		for (auto Pair : Samplers)
+		{
+			Pair.Value->Release();
+		}
+		Samplers.Empty();
+	}
+};
+
+TGlobalResource<FTextureSamplerStateCache> GTextureSamplerStateCache;
+
+FRHISamplerState* FTexture::GetOrCreateSamplerState(const FSamplerStateInitializerRHI& Initializer)
+{
+	FRHISamplerState** Found = GTextureSamplerStateCache.Samplers.Find(Initializer);
+	if (Found)
+	{
+		return *Found;
+	}
+	
+	FSamplerStateRHIRef NewState = RHICreateSamplerState(Initializer);
+	
+	// Add an extra reference so we don't have TRefCountPtr in the maps
+	NewState->AddRef();
+	GTextureSamplerStateCache.Samplers.Add(Initializer, NewState);
+	return NewState;
 }

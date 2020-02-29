@@ -3060,7 +3060,7 @@ void FSceneRenderer::PreVisibilityFrameSetup(FRHICommandListImmediate& RHICmdLis
 		const EWorldType::Type WorldType = Views[0].Family->Scene->GetWorld()->WorldType;
 		const FShaderDrawDebugData* ShaderDrawData = &Views[0].ShaderDrawData;
 		auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
-		RunHairStrandsInterpolation(RHICmdList, WorldType, ShaderDrawData, ShaderMap, EHairStrandsInterpolationType::SimulationStrands, nullptr);
+		RunHairStrandsInterpolation(RHICmdList, WorldType, Scene->GetGPUSkinCache(), ShaderDrawData, ShaderMap, EHairStrandsInterpolationType::SimulationStrands, nullptr);
 	}
 
 	// Notify the FX system that the scene is about to perform visibility checks.
@@ -4118,9 +4118,6 @@ void FSceneRenderer::PostVisibilityFrameSetup(FILCUpdatePrimTaskData& OutILCTask
 			{
 				VisibleLightViewInfo.bInViewFrustum = true;
 
-				static const auto MobileMSAAVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileMSAA"));
-				bool bNotMobileMSAA = !(MobileMSAAVar ? MobileMSAAVar->GetValueOnRenderThread() > 1 : false);
-
 				// Setup single sun-shaft from direction lights for mobile.
 				if(bCheckLightShafts && LightSceneInfo->bEnableLightShaftBloom)
 				{
@@ -4141,7 +4138,7 @@ void FSceneRenderer::PostVisibilityFrameSetup(FILCUpdatePrimTaskData& OutILCTask
 						&& (LightSceneInfo->Proxy->GetLightType() == LightType_Directional 
 							|| DistanceToBlurOrigin < LightSceneInfo->Proxy->GetRadius() * PointLightRadiusFadeFactor))
 					{
-						View.bLightShaftUse = bNotMobileMSAA;
+						View.bLightShaftUse = true;
 						View.LightShaftCenter.X = ProjectedBlurOrigin.X / ProjectedBlurOrigin.W;
 						View.LightShaftCenter.Y = ProjectedBlurOrigin.Y / ProjectedBlurOrigin.W;
 						// TODO: Might want to hookup different colors for these.

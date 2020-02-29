@@ -5397,7 +5397,9 @@ bool FEngineLoop::AppInit( )
 			// Check if any of the project or plugin modules are out of date, and the user wants to compile them.
 			TArray<FString> IncompatibleFiles;
 			ProjectManager.CheckModuleCompatibility(IncompatibleFiles);
-			PluginManager.CheckModuleCompatibility(IncompatibleFiles);
+
+			TArray<FString> IncompatibleEngineFiles;
+			PluginManager.CheckModuleCompatibility(IncompatibleFiles, IncompatibleEngineFiles);
 
 			if (IncompatibleFiles.Num() > 0)
 			{
@@ -5420,16 +5422,23 @@ bool FEngineLoop::AppInit( )
 					ModulesList += FString::Printf(TEXT("  (+%d others, see log for details)\n"), IncompatibleFiles.Num() - NumModulesToDisplay);
 				}
 
-				ModulesList += TEXT("\nWould you like to rebuild them now?");
-
 				// If we're running with -stdout, assume that we're a non interactive process and about to fail
 				if (FApp::IsUnattended() || FParse::Param(FCommandLine::Get(), TEXT("stdout")))
 				{
 					return false;
 				}
 
+				// If there are any engine modules that need building, force the user to build through the IDE
+				if(IncompatibleEngineFiles.Num() > 0)
+				{
+					FString CompileForbidden = ModulesList + TEXT("\nEngine modules cannot be compiled at runtime. Please build through your IDE.");
+					FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *CompileForbidden, TEXT("Missing Modules"));
+					return false;
+				}
+
 				// Ask whether to compile before continuing
-				if (FPlatformMisc::MessageBoxExt(EAppMsgType::YesNo, *ModulesList, *FString::Printf(TEXT("Missing %s Modules"), FApp::GetProjectName())) == EAppReturnType::No)
+				FString CompilePrompt = ModulesList + TEXT("\nWould you like to rebuild them now?");
+				if (FPlatformMisc::MessageBoxExt(EAppMsgType::YesNo, *CompilePrompt, *FString::Printf(TEXT("Missing %s Modules"), FApp::GetProjectName())) == EAppReturnType::No)
 				{
 					return false;
 				}
@@ -5453,7 +5462,8 @@ bool FEngineLoop::AppInit( )
 			// Try to compile it
 			FFeedbackContext *Context = (FFeedbackContext*)FDesktopPlatformModule::Get()->GetNativeFeedbackContext();
 			Context->BeginSlowTask(FText::FromString(TEXT("Starting build...")), true, true);
-			bool bCompileResult = FDesktopPlatformModule::Get()->CompileGameProject(FPaths::RootDir(), FPaths::GetProjectFilePath(), Context);
+			ECompilationResult::Type CompilationResult = ECompilationResult::Unknown;
+			bool bCompileResult = FDesktopPlatformModule::Get()->CompileGameProject(FPaths::RootDir(), FPaths::GetProjectFilePath(), Context, &CompilationResult);
 			Context->EndSlowTask();
 
 			// Check if we're running the wrong executable now
@@ -5462,10 +5472,19 @@ bool FEngineLoop::AppInit( )
 				return false;
 			}
 
+			// Check if we needed to modify engine files
+			if (!bCompileResult && CompilationResult == ECompilationResult::FailedDueToEngineChange)
+			{
+				FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, TEXT("Engine modules are out of date, and cannot be compiled while the engine is running. Please build through your IDE."), TEXT("Missing Modules"));
+				return false;
+			}
+
 			// Get a list of modules which are still incompatible
 			TArray<FString> StillIncompatibleFiles;
 			ProjectManager.CheckModuleCompatibility(StillIncompatibleFiles);
-			PluginManager.CheckModuleCompatibility(StillIncompatibleFiles);
+
+			TArray<FString> StillIncompatibleEngineFiles;
+			PluginManager.CheckModuleCompatibility(StillIncompatibleFiles, StillIncompatibleEngineFiles);
 
 			if(!bCompileResult || StillIncompatibleFiles.Num() > 0)
 			{

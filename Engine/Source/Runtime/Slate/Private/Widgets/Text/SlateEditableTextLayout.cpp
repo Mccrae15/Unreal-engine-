@@ -3064,7 +3064,12 @@ void FSlateEditableTextLayout::MakeUndoState(SlateEditableTextTypes::FUndoState&
 
 bool FSlateEditableTextLayout::CanExecuteUndo() const
 {
-	return !OwnerWidget->IsTextReadOnly() && UndoStates.Num() > 0 && !TextInputMethodContext->IsComposing();
+	// Previously, if UndoStates was empty then the event would bubble up back to the Editor and trigger an undo.
+	// Now, the editable text always catches the undo event so that it never bubbles up. This prevents bugs such
+	// as undo-ing in a search box triggering an undo, and various issues related to undo-ing property changes
+	// while focused in to the property widget being undone.
+	// Note that these cases are all still checked in the actual Undo method.
+	return !OwnerWidget->IsTextReadOnly()/* && UndoStates.Num() > 0*/ && !TextInputMethodContext->IsComposing();
 }
 
 void FSlateEditableTextLayout::Undo()
@@ -3119,7 +3124,8 @@ void FSlateEditableTextLayout::Undo()
 
 bool FSlateEditableTextLayout::CanExecuteRedo() const
 {
-	return !OwnerWidget->IsTextReadOnly() && CurrentUndoLevel != INDEX_NONE && !TextInputMethodContext->IsComposing();
+	// See comment in CanExecuteUndo
+	return !OwnerWidget->IsTextReadOnly() /*&& CurrentUndoLevel != INDEX_NONE*/ && !TextInputMethodContext->IsComposing();
 }
 
 void FSlateEditableTextLayout::Redo()

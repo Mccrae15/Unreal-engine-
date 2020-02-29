@@ -2610,14 +2610,10 @@ FReply SClassViewer::OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& In
 
 FReply SClassViewer::OnFocusReceived( const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent )
 {
-	if (RootTreeItems.Num() > 0)
+	if (InFocusEvent.GetCause() == EFocusCause::Navigation)
 	{
-		ClassTree->SetItemSelection(RootTreeItems[0], true, ESelectInfo::OnMouseClick);
-		ClassTree->SetItemExpansion(RootTreeItems[0], true);
-		OnClassViewerSelectionChanged(RootTreeItems[0],ESelectInfo::OnMouseClick);
+		FSlateApplication::Get().SetKeyboardFocus(SearchBox.ToSharedRef(), EFocusCause::SetDirectly);
 	}
-
-	FSlateApplication::Get().SetKeyboardFocus(SearchBox.ToSharedRef(), EFocusCause::SetDirectly);
 	
 	return FReply::Unhandled();
 }
@@ -2670,6 +2666,13 @@ void SClassViewer::Tick( const FGeometry& AllottedGeometry, const double InCurre
 		if (InitOptions.bExpandRootNodes)
 		{
 			ExpandRootNodes();
+		}
+
+		// Scroll the first item into view if applicable
+		const TArray<TSharedPtr<FClassViewerNode>> SelectedItems = GetSelectedItems();
+		if (SelectedItems.Num() > 0)
+		{
+			ClassTree->RequestScrollIntoView(SelectedItems[0]);
 		}
 	}
 

@@ -265,6 +265,9 @@ void INiagaraModule::StartupModule()
 	{
 		return new NiagaraEmitterInstanceBatcher(InFeatureLevel, InShaderPlatform, InGPUSortManager);
 	}));
+
+	// Needed for NiagaraDataInterfaceAudioSpectrum
+	FModuleManager::Get().LoadModule(TEXT("SignalProcessing"));
 }
 
 void INiagaraModule::ShutdownRenderingResources()
@@ -427,6 +430,8 @@ UEnum* FNiagaraTypeDefinition::SimulationTargetEnum;
 UEnum* FNiagaraTypeDefinition::ExecutionStateSourceEnum;
 UEnum* FNiagaraTypeDefinition::ScriptUsageEnum;
 
+UEnum* FNiagaraTypeDefinition::ParameterScopeEnum;
+
 FNiagaraTypeDefinition FNiagaraTypeDefinition::ParameterMapDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::IDDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::NumericDef;
@@ -543,6 +548,8 @@ void FNiagaraTypeDefinition::Init()
 	ExecutionStateSourceEnum = StaticEnum<ENiagaraExecutionStateSource>();
 	SimulationTargetEnum = StaticEnum<ENiagaraSimTarget>();
 	ScriptUsageEnum = StaticEnum<ENiagaraScriptUsage>();
+
+	ParameterScopeEnum = StaticEnum<ENiagaraParameterScope>();
 	
 	RecreateUserDefinedTypeRegistry();
 }

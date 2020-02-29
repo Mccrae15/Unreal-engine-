@@ -386,6 +386,7 @@ public:
 
 #if WITH_EDITOR
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnScriptCompiled, UNiagaraScript*);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPropertyChanged, FPropertyChangedEvent& /* PropertyChangedEvent */)
 #endif
 
 private:
@@ -466,6 +467,7 @@ public:
 	NIAGARA_API const FNiagaraVMExecutableDataId& GetComputedVMCompilationId() const { return CachedScriptVMId; }
 #endif
 
+
 	void SetUsage(ENiagaraScriptUsage InUsage) { Usage = InUsage; }
 	ENiagaraScriptUsage GetUsage() const { return Usage; }
 
@@ -526,6 +528,7 @@ public:
 	static bool NIAGARA_API ConvertUsageToGroup(ENiagaraScriptUsage InUsage, ENiagaraScriptGroup& OutGroup);
 
 #if WITH_EDITORONLY_DATA
+	NIAGARA_API TArray<ENiagaraParameterScope> GetUnsupportedParameterScopes() const;
 	NIAGARA_API TArray<ENiagaraScriptUsage> GetSupportedUsageContexts() const;
 	static NIAGARA_API TArray<ENiagaraScriptUsage> GetSupportedUsageContextsForBitmask(int32 InModuleUsageBitmask);
 #endif
@@ -567,16 +570,15 @@ public:
 	void CacheShadersForResources(EShaderPlatform ShaderPlatform, FNiagaraShaderScript *ResourceToCache, bool bApplyCompletedShaderMapForRendering, bool bForceRecompile = false, bool bCooking=false);
 #endif // WITH_EDITOR
 	FNiagaraShaderScript* AllocateResource();
-	FNiagaraShaderScript *GetRenderThreadScript()
-	{
-		return &ScriptResource;
-	}
-	const FNiagaraShaderScript *GetRenderThreadScript() const
+	FNiagaraShaderScript* GetRenderThreadScript()
 	{
 		return &ScriptResource;
 	}
 
-	
+	const FNiagaraShaderScript* GetRenderThreadScript() const
+	{
+		return &ScriptResource;
+	}
 
 	FComputeShaderRHIRef GetScriptShader() 
 	{
@@ -642,6 +644,9 @@ public:
 
 	/** Callback issued whenever a GPU script compilation successfully happened (even if the results are a script that cannot be executed due to errors)*/
 	NIAGARA_API FOnScriptCompiled& OnGPUScriptCompiled();
+
+	/** Callback issues whenever post edit changed is called on this script. */
+	NIAGARA_API FOnPropertyChanged& OnPropertyChanged();
 
 	/** External call used to identify the values for a successful VM script compilation. OnVMScriptCompiled will be issued in this case.*/
 	void SetVMCompilationResults(const FNiagaraVMExecutableDataId& InCompileId, FNiagaraVMExecutableData& InScriptVM, FNiagaraCompileRequestDataBase* InRequestData);
@@ -714,6 +719,7 @@ private:
 	/** A multicast delegate which is called whenever the script has been compiled (successfully or not). */
 	FOnScriptCompiled OnVMScriptCompiledDelegate;
 	FOnScriptCompiled OnGPUScriptCompiledDelegate;
+	FOnPropertyChanged OnPropertyChangedDelegate;
 
 	mutable FNiagaraVMExecutableDataId LastReportedVMId;
 

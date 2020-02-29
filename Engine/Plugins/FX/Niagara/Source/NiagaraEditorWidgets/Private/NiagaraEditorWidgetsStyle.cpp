@@ -243,13 +243,27 @@ TSharedRef< FSlateStyleSet > FNiagaraEditorWidgetsStyle::Create()
 		.SetFont(ScratchPadLargeHeaderFont);
 	Style->Set("NiagaraEditor.ScratchPad.LargeHeaderText", ScratchPadLargeHeaderText);
 
-	FSlateFontInfo ScratchPadSmallHeaderFont = DEFAULT_FONT("Bold", 9);
+	FSlateFontInfo ScratchPadSmallHeaderFont = DEFAULT_FONT("Bold", 10);
 	FTextBlockStyle ScratchPadSmallHeaderText = FTextBlockStyle(NormalText)
 		.SetFont(ScratchPadSmallHeaderFont);
 	Style->Set("NiagaraEditor.ScratchPad.SmallHeaderText", ScratchPadSmallHeaderText);
 
-	Style->Set("NiagaraEditor.ScratchPad.HeaderColor", FLinearColor(FColor(48, 48, 48)));
+	FSlateBrush ScratchPadCategoryBrush = BOX_PLUGIN_BRUSH("Icons/CategoryRow", FMargin(2.0f / 8.0f), FLinearColor(FColor(48, 48, 48)));
+	FSlateBrush ScratchPadHoveredCategoryBrush = BOX_PLUGIN_BRUSH("Icons/CategoryRow", FMargin(2.0f / 8.0f), FLinearColor(FColor(38, 38, 38)));
+	Style->Set("NiagaraEditor.ScratchPad.CategoryRow", FTableRowStyle(NormalTableRowStyle)
+		.SetEvenRowBackgroundBrush(ScratchPadCategoryBrush)
+		.SetOddRowBackgroundBrush(ScratchPadCategoryBrush)
+		.SetEvenRowBackgroundHoveredBrush(ScratchPadHoveredCategoryBrush)
+		.SetOddRowBackgroundHoveredBrush(ScratchPadHoveredCategoryBrush));
 
+	Style->Set("NiagaraEditor.Scope.Engine", FLinearColor(FColor(230, 102, 102)));
+	Style->Set("NiagaraEditor.Scope.Owner", FLinearColor(FColor(210, 112, 112)));
+	Style->Set("NiagaraEditor.Scope.User", FLinearColor(FColor(114, 226, 254)));
+	Style->Set("NiagaraEditor.Scope.System", FLinearColor(FColor(1, 202, 252)));
+	Style->Set("NiagaraEditor.Scope.Emitter", FLinearColor(FColor(241, 99, 6)));
+	Style->Set("NiagaraEditor.Scope.Particles", FLinearColor(FColor(131, 218, 9)));
+	Style->Set("NiagaraEditor.Scope.ScriptPersistent", FLinearColor(FColor(255, 247, 77)));
+	Style->Set("NiagaraEditor.Scope.ScriptTransient", FLinearColor(FColor(255, 247, 77)));
 
 	return Style;
 }

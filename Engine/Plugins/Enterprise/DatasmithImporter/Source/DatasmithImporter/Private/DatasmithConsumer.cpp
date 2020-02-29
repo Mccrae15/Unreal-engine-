@@ -28,6 +28,7 @@
 #include "ObjectTemplates/DatasmithSkyLightComponentTemplate.h"
 #include "ObjectTemplates/DatasmithStaticMeshComponentTemplate.h"
 #include "Utility/DatasmithImporterUtils.h"
+#include "Utility/DatasmithImporterImpl.h"
 
 #include "Algo/Count.h"
 #include "AssetRegistryModule.h"
@@ -98,7 +99,7 @@ namespace DatasmithConsumerUtils
 
 	void SetMarker(UObject* Object, const FString& Name, const FString& Value);
 
-	void MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel, TMap< FName, TSoftObjectPtr< AActor > >& ActorsMap, bool bDuplicate);
+	void MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel, TMap< FName, TSoftObjectPtr< AActor > >& ActorsMap, const TArray<UPackage*>& PackagesToCheck, bool bDuplicate);
 
 	template<class AssetClass>
 	void SetMarker(const TMap<FName, TSoftObjectPtr< AssetClass >>& AssetMap, const FString& Name, const FString& Value)
@@ -130,7 +131,7 @@ namespace DatasmithConsumerUtils
 	}
 
 	template<class AssetClass>
-	void ApplyFolderDirective(TMap<FName, TSoftObjectPtr< AssetClass >>& AssetMap, const FString& RootPackagePath, TFunction<void(ELogVerbosity::Type, FText)> ReportCallback)
+	TArray<UPackage*> ApplyFolderDirective(TMap<FName, TSoftObjectPtr< AssetClass >>& AssetMap, const FString& RootPackagePath, TMap<FSoftObjectPath, FSoftObjectPath>& AssetRedirectorMap, TFunction<void(ELogVerbosity::Type, FText)> ReportCallback)
 	{
 		auto CanMoveAsset = [&ReportCallback](UObject* Source, UObject* Target) -> bool
 		{
@@ -163,8 +164,11 @@ namespace DatasmithConsumerUtils
 			return false;
 		};
 
-		TArray<UPackage*> PackagesToCheck;
-		TMap<FSoftObjectPath, FSoftObjectPath> AssetRedirectorMap;
+		TArray<UPackage*> PackagesProcessed;
+		PackagesProcessed.Reserve(AssetMap.Num());
+
+		// Reserve room for new entries in remapping table
+		AssetRedirectorMap.Reserve(AssetRedirectorMap.Num() + AssetMap.Num());
 
 		for(TPair<FName, TSoftObjectPtr< AssetClass >>& Entry : AssetMap)
 		{
@@ -173,14 +177,15 @@ namespace DatasmithConsumerUtils
 				const FString& OutputFolder = GetMarker(Asset, UDataprepContentConsumer::RelativeOutput);
 				if(OutputFolder.Len() > 0)
 				{
-					FString SourcePackagePath = Entry.Value->GetOuter()->GetPathName();
+					UPackage* SourcePackage = Entry.Value->GetOutermost();
 					FString TargetPackagePath = FPaths::Combine(RootPackagePath, OutputFolder, Asset->GetName());
-					
-					FString PackageFilename;
-					FPackageName::TryConvertLongPackageNameToFilename( TargetPackagePath, PackageFilename, FPackageName::GetAssetPackageExtension() );
 
-					if( SourcePackagePath != TargetPackagePath)
+
+					if( ensure(SourcePackage) && SourcePackage->GetPathName() != TargetPackagePath)
 					{
+						FString PackageFilename;
+						FPackageName::TryConvertLongPackageNameToFilename( TargetPackagePath, PackageFilename, FPackageName::GetAssetPackageExtension() );
+
 						bool bCanMove = true;
 
 						FString TargetAssetFullPath = TargetPackagePath + "." + Asset->GetName();
@@ -197,25 +202,37 @@ namespace DatasmithConsumerUtils
 						{
 							FSoftObjectPath& SoftObjectPathRef = AssetRedirectorMap.Emplace( Asset );
 
-							UPackage* Package = CreatePackage(nullptr, *TargetPackagePath);
-							Package->FullyLoad();
+							UPackage* TargetPackage = CreatePackage(nullptr, *TargetPackagePath);
+							TargetPackage->FullyLoad();
 
-							Asset->Rename(nullptr, Package, REN_DontCreateRedirectors | REN_NonTransactional);
+							Asset->Rename(nullptr, TargetPackage, REN_DontCreateRedirectors | REN_NonTransactional);
+
+							// Update asset registry with renaming
+							FAssetRegistryModule::AssetRenamed( Asset, SourcePackage->GetPathName() + TEXT(".") + Asset->GetName() );
+
 							Entry.Value = Asset;
-
 							SoftObjectPathRef = Asset;
-							PackagesToCheck.Add(Package);
+							PackagesProcessed.Add(TargetPackage);
+
+							// Clean up flags on source package. It is not useful anymore
+							SourcePackage->SetDirtyFlag(false);
+							SourcePackage->SetFlags(RF_Transient);
+							SourcePackage->ClearFlags(RF_Standalone | RF_Public);
 						}
 					}
+					else
+					{
+						PackagesProcessed.Add(SourcePackage);
+					}
+				}
+				else
+				{
+					PackagesProcessed.Add(Entry.Value->GetOutermost());
 				}
 			}
 		}
 
-		if(AssetRedirectorMap.Num() > 0)
-		{
-			IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-			AssetTools.RenameReferencingSoftObjectPaths(PackagesToCheck, AssetRedirectorMap);
-		}
+		return PackagesProcessed;
 	}
 }
 
@@ -391,32 +408,9 @@ bool UDatasmithConsumer::Initialize()
 	}
 
 	// Check if the finalize should be threated as a reimport
-	TArray< ADatasmithSceneActor* > SceneActors = FDatasmithImporterUtils::FindSceneActors( ImportContextPtr->ActorsContext.FinalWorld, ImportContextPtr->SceneAsset);
-	if (SceneActors.Num() > 0 )
+	ImportContextPtr->ActorsContext.FinalSceneActors.Append(FDatasmithImporterUtils::FindSceneActors( ImportContextPtr->ActorsContext.FinalWorld, ImportContextPtr->SceneAsset));
+	if (ImportContextPtr->ActorsContext.FinalSceneActors.Num() > 0 )
 	{
-		ADatasmithSceneActor* FoundSceneActor = nullptr;
-		for( ADatasmithSceneActor* SceneActor : SceneActors )
-		{
-			if( SceneActor && SceneActor->Scene == DatasmithScene )
-			{
-				FoundSceneActor = SceneActor;
-				break;
-			}
-		}
-
-		if( FoundSceneActor == nullptr )
-		{
-			//Create a new Datasmith scene actor in the targeted level
-			FActorSpawnParameters SpawnParameters;
-			SpawnParameters.Template = ImportContextPtr->ActorsContext.ImportSceneActor;
-			ADatasmithSceneActor* DestinationSceneActor = Cast< ADatasmithSceneActor >(ImportContextPtr->ActorsContext.FinalWorld->SpawnActor< ADatasmithSceneActor >(SpawnParameters));
-
-			// Name new destination ADatasmithSceneActor to the DatasmithScene's name
-			DestinationSceneActor->SetActorLabel( ImportContextPtr->Scene->GetName() );
-			DestinationSceneActor->MarkPackageDirty();
-			DestinationSceneActor->RelatedActors.Reset();
-		}
-
 		ImportContextPtr->bIsAReimport = true;
 		ImportContextPtr->Options->ReimportOptions.bRespawnDeletedActors = false;
 		ImportContextPtr->Options->ReimportOptions.bUpdateActors = true;
@@ -459,28 +453,40 @@ bool UDatasmithConsumer::Run()
 		}
 	};
 
+	// Array to store materials which soft references might need to be fixed
+	TArray<UPackage*> PackagesToCheck;
+
+	// Array to store level sequences and level variants which soft references might need to be fixed
+	TArray<UPackage*> PackagesToFix;
+
+	// Table of remapping to contain moved assets
+	TMap<FSoftObjectPath, FSoftObjectPath> AssetRedirectorMap;
+
 	DatasmithConsumerUtils::SetMarker(SceneAsset->Textures, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->Textures, TargetContentFolder, ReportFunc );
+	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->Textures, TargetContentFolder, AssetRedirectorMap, ReportFunc );
 
 	DatasmithConsumerUtils::SetMarker(SceneAsset->StaticMeshes, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->StaticMeshes, TargetContentFolder, ReportFunc );
+	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->StaticMeshes, TargetContentFolder, AssetRedirectorMap, ReportFunc );
 
 	DatasmithConsumerUtils::SetMarker(SceneAsset->Materials, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->Materials, TargetContentFolder, ReportFunc );
+	PackagesToCheck.Append(DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->Materials, TargetContentFolder, AssetRedirectorMap, ReportFunc ));
 
 	DatasmithConsumerUtils::SetMarker(SceneAsset->MaterialFunctions, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->MaterialFunctions, TargetContentFolder, ReportFunc );
+	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->MaterialFunctions, TargetContentFolder, AssetRedirectorMap, ReportFunc );
 
 	DatasmithConsumerUtils::SetMarker(SceneAsset->LevelSequences, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->LevelSequences, TargetContentFolder, ReportFunc );
+	PackagesToFix.Append(DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->LevelSequences, TargetContentFolder, AssetRedirectorMap, ReportFunc ));
 
 	DatasmithConsumerUtils::SetMarker(SceneAsset->LevelVariantSets, UDatasmithConsumer::ConsumerMarkerID, UniqueID);
-	DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->LevelVariantSets, TargetContentFolder, ReportFunc );
+	PackagesToFix.Append(DatasmithConsumerUtils::ApplyFolderDirective(SceneAsset->LevelVariantSets, TargetContentFolder, AssetRedirectorMap, ReportFunc ));
 
-	// Apply UDataprepConsumerUserData directives for actors
-	ApplySubLevelDirective();
+	if(AssetRedirectorMap.Num() > 0 && PackagesToCheck.Num() > 0)
+	{
+		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+		AssetTools.RenameReferencingSoftObjectPaths(PackagesToCheck, AssetRedirectorMap);
+	}
 
-	return FinalizeRun();
+	return true;
 }
 
 bool UDatasmithConsumer::FinalizeRun()
@@ -525,63 +531,13 @@ bool UDatasmithConsumer::FinalizeRun()
 	return true;
 }
 
-
 bool UDatasmithConsumer::CreateWorld()
 {
 	ensure(!WorkingWorld.IsValid());
 
-	UWorld* World = Cast<UWorld>(OutputLevelSoftObject.TryLoad());
-	if(World)
-	{
-		World->SetFlags(RF_Public | RF_Transactional |  RF_Standalone);
+	WorkingWorld = TStrongObjectPtr<UWorld>(GWorld.GetReference());
 
-		FWorldContext& WorldContext = GEngine->CreateNewWorldContext(World->WorldType);
-		WorldContext.SetCurrentWorld(World);
-
-		// Load all the secondary levels of the world.
-		World->LoadSecondaryLevels(true);
-
-		// Check that all secondary levels have been added to world
-		for(ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
-		{
-			if(ULevel* SecondaryLevel = StreamingLevel->GetLoadedLevel())
-			{
-				if(!World->ContainsLevel(SecondaryLevel))
-				{
-					World->AddLevel(SecondaryLevel);
-				}
-			}
-		}
-	}
-	else
-	{
-		UPackage* Package = CreatePackage(nullptr, *OutputLevelSoftObject.GetLongPackageName());
-		Package->FullyLoad();
-		Package->SetFlags(RF_Public);
-
-		World = NewObject< UWorld >(Package, *OutputLevelSoftObject.GetAssetName(), RF_Public | RF_Transactional |  RF_Standalone);
-		World->WorldType = EWorldType::Inactive;
-
-		FWorldContext& WorldContext = GEngine->CreateNewWorldContext(World->WorldType);
-		WorldContext.SetCurrentWorld(World);
-
-		World->InitializeNewWorld(UWorld::InitializationValues()
-			.AllowAudioPlayback(false)
-			.CreateAISystem(false)
-			.CreateNavigation(false)
-			.CreatePhysicsScene(false)
-			.RequiresHitProxies(false)
-			.ShouldSimulatePhysics(false)
-			.SetTransactional(false));
-	}
-
-	if(World == nullptr)
-	{
-		ensure(false);
-		return false;
-	}
-
-	TArray<ULevel*> Levels = World->GetLevels();
+	TArray<ULevel*> Levels = WorkingWorld->GetLevels();
 
 	// Find level associated with this consumer
 	PrimaryLevel = nullptr;
@@ -589,84 +545,73 @@ bool UDatasmithConsumer::CreateWorld()
 	{
 		if(Level && Level->GetOuter()->GetName() == LevelName)
 		{
-			PrimaryLevel = Level;
+			// Found a level with the same name, make sure it is the same package path
+			if(UWorld* LevelWorld = Cast<UWorld>(Level->GetOuter()))
+			{
+				FSoftObjectPath LevelWorldPath(LevelWorld);
+
+				// If paths differ, remove level with same name from world
+				if(LevelWorldPath != OutputLevelSoftObject)
+				{
+					if(DatasmithConsumerUtils::GetMarker(Level, ConsumerMarkerID) == UniqueID)
+					{
+						if(Levels.Num() > 0)
+						{
+							const bool bShowDialog = !Context.bSilentMode && !IsRunningCommandlet();
+							bool bUnloadLevel = true;
+
+							if(bShowDialog)
+							{
+								const FTextFormat Format(LOCTEXT("DatasmithConsumer_AlreadyLoaded_Dlg", "Level {0} with a different path from the same Dataprep asset is already loaded.\n\nDo you want to unload it?"));
+								const FText WarningMessage = FText::Format( Format, FText::FromString(LevelName) );
+								const FText DialogTitle( LOCTEXT("DatasmithConsumerAlreadyLoaded_DlgTitle", "Warning - Level already loaded") );
+
+								if(FMessageDialog::Open(EAppMsgType::YesNo, WarningMessage, &DialogTitle) != EAppReturnType::Yes)
+								{
+									bUnloadLevel = false;
+								}
+							}
+							else
+							{
+								const FTextFormat Format(LOCTEXT("DatasmithConsumer_AlreadyLoaded_Overwrite", "Level {0} with a different path from the same Dataprep asset is already loaded.It will be unloaded."));
+								const FText WarningMessage = FText::Format( Format, FText::FromString(LevelName));
+								LogWarning(WarningMessage);
+							}
+
+							if(bUnloadLevel)
+							{
+								WorkingWorld->RemoveLevel(Level);
+								if(ULevelStreaming* StreamingLevel = WorkingWorld->GetLevelStreamingForPackageName(*LevelWorldPath.GetLongPackageName()))
+								{
+									WorkingWorld->RemoveStreamingLevel(StreamingLevel);
+									WorkingWorld->UpdateLevelStreaming();
+								}
+							}
+						}
+					}
+				}
+				else
+				{
+					PrimaryLevel = Level;
+				}
+			}
+			else
+			{
+				check(false);
+			}
+
 			break;
 		}
 	}
 
-	// This should never happen
 	if(PrimaryLevel == nullptr)
 	{
-		ensure(false);
-		return false;
+		PrimaryLevel = FindOrAddLevel(LevelName);
+		ensure(PrimaryLevel);
 	}
 
-	DatasmithConsumerUtils::SetMarker(PrimaryLevel, ConsumerMarkerID, UniqueID);
-	PrimaryLevel->bIsVisible = true;
-
-	// If there is more than one level, move all actors of the world to the main level.
-	// The call to FinalizeRun will take care of redistributing to the sub-levels if applicable
-	if(Levels.Num() > 1)
-	{
-		// Get the ADatasmithSceneActor of the world if it exists
-		TArray< ADatasmithSceneActor* > SceneActors = FDatasmithImporterUtils::FindSceneActors( World, DatasmithScene.Get());
-		TMap< FName, TSoftObjectPtr< AActor > > EmptyRelatedActors;
-		TMap< FName, TSoftObjectPtr< AActor > >& RelatedActors = SceneActors.Num() > 0 ? SceneActors[0]->RelatedActors : EmptyRelatedActors;
-
-		for(ULevel* Level : Levels)
-		{
-			if(Level != PrimaryLevel)
-			{
-				Level->bIsVisible = true;
-
-				// Collect actors to copy to primary level
-				TArray<AActor*> ActorsToCopy;
-				for(AActor* Actor : Level->Actors)
-				{
-					if(Actor && Actor->GetRootComponent() && !Actor->IsA<AWorldSettings>() && !Actor->IsA<APhysicsVolume>() && !Actor->IsA<ABrush>() )
-					{
-						ActorsToCopy.Add(Actor);
-					}
-				}
-
-				DatasmithConsumerUtils::MoveActorsToLevel( ActorsToCopy, PrimaryLevel, RelatedActors, true);
-
-				World->RemoveLevel(Level);
-
-				// Make sure the world and package are properly discarded
-				UPackage* LevelPackage = Level->GetOutermost();
-				UWorld* LevelWorld = Cast<UWorld>(Level->GetOuter());
-
-				// Move the world to the transient package
-				LevelWorld->Rename(nullptr, GetTransientPackage(), REN_NonTransactional | REN_DontCreateRedirectors);
-
-				// Empty the world from all its content
-				LevelWorld->DestroyWorld( true );
-				GEngine->DestroyWorldContext( LevelWorld );
-
-				// Indicates world is good for garbage collect
-				LevelWorld->ClearFlags(RF_Standalone | RF_Public | RF_Transactional);
-				LevelWorld->SetFlags(RF_Transient);
-				LevelWorld->MarkPendingKill();
-
-				// Indicates level's package is good for garbage collect
-				LevelPackage->SetDirtyFlag(false);
-				LevelPackage->ClearFlags(RF_Standalone | RF_Public | RF_Transactional);
-				LevelPackage->SetFlags(RF_Transient);
-				LevelPackage->MarkPendingKill();
-			}
-		}
-
-		World->ClearStreamingLevels();
-
-		// Collect garbage to clear out the discarded world(s) and level(s) 
-		CollectGarbage( GARBAGE_COLLECTION_KEEPFLAGS );
-	}
-
-	World->PersistentLevel = PrimaryLevel;
-	World->SetCurrentLevel(PrimaryLevel);
-
-	WorkingWorld = TStrongObjectPtr<UWorld>(World);
+	OriginalCurrentLevel = WorkingWorld->GetCurrentLevel();
+	WorkingWorld->SetCurrentLevel(PrimaryLevel);
 
 	return true;
 }
@@ -675,19 +620,8 @@ void UDatasmithConsumer::ClearWorld()
 {
 	if(WorkingWorld.IsValid())
 	{
-		UWorld* WorldToDelete = WorkingWorld.Get();
+		WorkingWorld->SetCurrentLevel(OriginalCurrentLevel);
 		WorkingWorld.Reset();
-
-		WorldToDelete->PersistentLevel = PrimaryLevel;
-		WorldToDelete->SetCurrentLevel(PrimaryLevel);
-
-		PrimaryLevel = nullptr;
-
-		WorldToDelete->DestroyWorld( true );
-		GEngine->DestroyWorldContext( WorldToDelete );
-
-		// Collect garbage to clear out the destroyed level
-		CollectGarbage( GARBAGE_COLLECTION_KEEPFLAGS );
 	}
 }
 
@@ -823,38 +757,69 @@ bool UDatasmithConsumer::CanCreateLevel(const FString& RequestedFolder, const FS
 {
 	FSoftObjectPath ObjectPath(FPaths::Combine(RequestedFolder, RequestedName) + TEXT(".") + RequestedName);
 
-	FString PackageFilename;
-	FPackageName::TryConvertLongPackageNameToFilename( ObjectPath.GetLongPackageName(), PackageFilename, FPackageName::GetMapPackageExtension() );
+	const FString AssetPathName = ObjectPath.GetAssetPathString();
 
-	if(FPaths::FileExists(PackageFilename))
+	if(FDatasmithImporterUtils::CanCreateAsset(AssetPathName, UWorld::StaticClass()) == FDatasmithImporterUtils::EAssetCreationStatus::CS_CanCreate)
 	{
-		if(UWorld* World = Cast<UWorld>(ObjectPath.TryLoad()))
+		if(FDatasmithImporterImpl::CheckAssetPersistenceValidity(FPaths::GetPath(AssetPathName), *ImportContextPtr))
 		{
-			if(DatasmithConsumerUtils::GetMarker(World->PersistentLevel, ConsumerMarkerID) != UniqueID)
-			{
-				if(bShowDialog)
-				{
-					const FTextFormat Format(LOCTEXT("DatasmithConsumer_SetTargetContentFolder_Overwrite_Dlg", "Level {0} already exists in {1}.\n\nDo you want to overwrite it?"));
-					const FText WarningMessage = FText::Format( Format, FText::FromString(RequestedName), FText::FromString(RequestedFolder));
-					const FText DialogTitle( LOCTEXT("DatasmithConsumer_Overwrite_DlgTitle", "Warning - Level already exists") );
+			FString PackageFilename;
+			FPackageName::TryConvertLongPackageNameToFilename( ObjectPath.GetLongPackageName(), PackageFilename, FPackageName::GetMapPackageExtension() );
 
-					if(FMessageDialog::Open(EAppMsgType::YesNo, WarningMessage, &DialogTitle) != EAppReturnType::Yes)
-					{
-						return false;
-					}
-				}
-				else
+			if(FPaths::FileExists(PackageFilename))
+			{
+				if(UWorld* World = Cast<UWorld>(ObjectPath.TryLoad()))
 				{
-					const FTextFormat Format(LOCTEXT("DatasmithConsumer_SetTargetContentFolder_Overwrite", "Level {0} already exists in {1}.It will be overwritten."));
-					const FText WarningMessage = FText::Format( Format, FText::FromString(RequestedName), FText::FromString(RequestedFolder));
-					LogWarning(WarningMessage);
+					if(DatasmithConsumerUtils::GetMarker(World->PersistentLevel, ConsumerMarkerID) != UniqueID)
+					{
+						if(bShowDialog)
+						{
+							const FTextFormat Format(LOCTEXT("DatasmithConsumer_SetTargetContentFolder_Update_Dlg", "Level {0} already exists in {1} but is not from this Dataprep asset.\n\nDo you want to update it?"));
+							const FText WarningMessage = FText::Format( Format, FText::FromString(RequestedName), FText::FromString(RequestedFolder));
+							const FText DialogTitle( LOCTEXT("DatasmithConsumer_Update_DlgTitle", "Warning - Level already exists") );
+
+							EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNo, EAppReturnType::No, WarningMessage, &DialogTitle);
+
+							if(Result != EAppReturnType::Yes)
+							{
+								return false;
+							}
+						}
+						else
+						{
+							const FTextFormat Format(LOCTEXT("DatasmithConsumer_SetTargetContentFolder_Overwrite", "Level {0} already exists in {1} but is not from this Dataprep asset.It will be updated."));
+							const FText WarningMessage = FText::Format( Format, FText::FromString(RequestedName), FText::FromString(RequestedFolder));
+							LogWarning(WarningMessage);
+						}
+					}
 				}
 			}
 		}
+		else
+		{
+			FString PackageFilename;
+			FPackageName::TryConvertLongPackageNameToFilename( ObjectPath.GetLongPackageName(), PackageFilename, FPackageName::GetMapPackageExtension() );
+
+			const FTextFormat Format(LOCTEXT("DatasmithConsumer_SetTargetContentFolder_CantCreateFile_Dlg", "Cannot create map file associated with level {0} in directory {1}.\nPlease choose another name for the level or fix the creation issue."));
+			const FText Message = FText::Format( Format, FText::FromString(RequestedName), FText::FromString( FPaths::ConvertRelativePathToFull(FPaths::GetPath(PackageFilename)) ));
+
+			if(bShowDialog)
+			{
+				const FText DialogTitle( LOCTEXT("DatasmithConsumer_CantCreateFile_DlgTitle", "Warning - Cannot create level") );
+
+				FMessageDialog::Open(EAppMsgType::Ok, Message, &DialogTitle);
+			}
+			else
+			{
+				LogError(Message);
+			}
+
+			return false;
+		}
 	}
-	else if(FDatasmithImporterUtils::CanCreateAsset(ObjectPath.GetAssetPathString(), UWorld::StaticClass()) != FDatasmithImporterUtils::EAssetCreationStatus::CS_CanCreate)
+	else
 	{
-		const FTextFormat Format(LOCTEXT("DatasmithConsumer_SetTargetContentFolder_CantCreate_Dlg", "Cannot create level {0} in folder {1}."));
+		const FTextFormat Format(LOCTEXT("DatasmithConsumer_SetTargetContentFolder_CantCreate_Dlg", "Cannot create level {0} in folder {1}.\nAn asset of different class already exists in this folder with the same name."));
 		const FText Message = FText::Format( Format, FText::FromString(RequestedName), FText::FromString(RequestedFolder));
 
 		if(bShowDialog)
@@ -862,13 +827,13 @@ bool UDatasmithConsumer::CanCreateLevel(const FString& RequestedFolder, const FS
 			const FText DialogTitle( LOCTEXT("DatasmithConsumer_CantCreate_DlgTitle", "Warning - Cannot create level") );
 
 			FMessageDialog::Open(EAppMsgType::Ok, Message, &DialogTitle);
-
-			return false;
 		}
 		else
 		{
 			LogError(Message);
 		}
+
+		return false;
 	}
 
 	return true;
@@ -876,6 +841,12 @@ bool UDatasmithConsumer::CanCreateLevel(const FString& RequestedFolder, const FS
 
 bool UDatasmithConsumer::SetTargetContentFolderImplementation(const FString& InTargetContentFolder, FText& OutFailureReason, const bool bIsAutomated)
 {
+	if(InTargetContentFolder == TargetContentFolder)
+	{
+		// #ueent_todo: This is weird it happens in some cases to investigate
+		return true;
+	}
+
 	if(!CanCreateLevel(InTargetContentFolder, LevelName, !bIsAutomated && !IsRunningCommandlet()))
 	{
 		return false;
@@ -936,7 +907,16 @@ ULevel* UDatasmithConsumer::FindOrAddLevel(const FString& InLevelName)
 
 	if(ULevelStreaming* StreamingLevel = FLevelUtils::FindStreamingLevel(WorkingWorld.Get(), *LevelPackageName))
 	{
-		return StreamingLevel->GetLoadedLevel();
+		if(ULevel* Level = StreamingLevel->GetLoadedLevel())
+		{
+			return Level;
+		}
+		else
+		{
+			WorkingWorld->LoadSecondaryLevels();
+			ensure(StreamingLevel->GetLoadedLevel());
+			return StreamingLevel->GetLoadedLevel();
+		}
 	}
 
 	ULevel* CurrentLevel = WorkingWorld->PersistentLevel;
@@ -944,8 +924,6 @@ ULevel* UDatasmithConsumer::FindOrAddLevel(const FString& InLevelName)
 	// This level has not been added yet
 	FString PackageFilename;
 	FPackageName::TryConvertLongPackageNameToFilename( LevelPackageName, PackageFilename, FPackageName::GetMapPackageExtension() );
-
-	bool bCleanLevel = false;
 
 	ULevelStreaming* StreamingLevel = nullptr;
 	if(FPaths::FileExists(PackageFilename))
@@ -962,8 +940,6 @@ ULevel* UDatasmithConsumer::FindOrAddLevel(const FString& InLevelName)
 		{
 			ensure(false);
 		}
-
-		bCleanLevel = true;
 	}
 	else
 	{
@@ -981,28 +957,6 @@ ULevel* UDatasmithConsumer::FindOrAddLevel(const FString& InLevelName)
 		{
 			DatasmithConsumerUtils::SetMarker(NewLevel, ConsumerMarkerID, UniqueID);
 
-			if(bCleanLevel)
-			{
-				// Clean up the level if it contains actors from previous execution
-				UWorld* LevelWorld = Cast<UWorld>(NewLevel->GetOuter());
-
-				TArray<AActor*> LevelActors = NewLevel->Actors;
-				for(AActor* Actor : LevelActors)
-				{
-
-					if(Actor && Actor->GetRootComponent() && !Actor->IsA<AWorldSettings>() && !Actor->IsA<APhysicsVolume>() && !Actor->IsA<ABrush>() )
-					{
-						LevelWorld->DestroyActor(Actor, true);
-						Actor->UObject::Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
-					}
-				}
-
-				LevelWorld->CleanupWorld(false, false);
-				LevelWorld->CleanupActors();
-
-				DatasmithConsumerUtils::SaveMap(LevelWorld);
-			}
-
 			WorkingWorld->AddLevel(NewLevel);
 
 			return NewLevel;
@@ -1019,9 +973,14 @@ ULevel* UDatasmithConsumer::FindOrAddLevel(const FString& InLevelName)
 
 bool UDatasmithConsumer::CheckOutputDirectives()
 {
-	auto CanCreateAsset = [](const FString& AssetPathName,const UClass* AssetClass)
+	auto CanCreateAsset = [ImportContext = ImportContextPtr.Get()](const FString& AssetPathName,const UClass* AssetClass)
 	{
-		return FDatasmithImporterUtils::CanCreateAsset(AssetPathName, AssetClass) == FDatasmithImporterUtils::EAssetCreationStatus::CS_CanCreate;
+		if(FDatasmithImporterUtils::CanCreateAsset(AssetPathName, AssetClass) == FDatasmithImporterUtils::EAssetCreationStatus::CS_CanCreate)
+		{
+			return FDatasmithImporterImpl::CheckAssetPersistenceValidity(FPaths::GetPath(AssetPathName), *ImportContext);
+		}
+
+		return false;
 	};
 
 	const bool bShowDialog = !Context.bSilentMode && !IsRunningCommandlet();
@@ -1029,104 +988,8 @@ bool UDatasmithConsumer::CheckOutputDirectives()
 	// Collect garbage to clear out the destroyed level
 	CollectGarbage( GARBAGE_COLLECTION_KEEPFLAGS );
 
-	// Collect all sub-levels to be created
-	TSet<FString> LevelsToCreate;
-	LevelsToCreate.Add(LevelName);
-
-	for(AActor* Actor : Context.WorldPtr->GetCurrentLevel()->Actors)
-	{
-		if(Actor)
-		{
-			const FString& OutputLevelName = DatasmithConsumerUtils::GetMarker(Actor->GetRootComponent(), UDataprepContentConsumer::RelativeOutput);
-			if(OutputLevelName.Len() > 0)
-			{
-				LevelsToCreate.Add(OutputLevelName);
-			}
-		}
-	}
-
 	bool bCannotCreateAsset = false;
 
-	// check if any of the levels to create or update is not opened in the level editor
-	TArray<FString> OpenedLevels;
-	UWorld* GlobalWorld = GWorld;
-	{
-		TArray<ULevel*> WorldLevels = GlobalWorld->GetLevels();
-		for(ULevel* Level : WorldLevels)
-		{
-			if(Level)
-			{
-				const FString WorldLevelName = Level->GetOuter()->GetName();
-				if(LevelsToCreate.Contains(WorldLevelName))
-				{
-					OpenedLevels.Add(WorldLevelName);
-				}
-			}
-		}
-	}
-
-	for(const FString& LevelToCreate : LevelsToCreate)
-	{
-		FSoftObjectPath AssetSoftObjectPath(FPaths::Combine(TargetContentFolder, LevelToCreate) + "." + LevelToCreate);
-
-		if(!CanCreateAsset(AssetSoftObjectPath.GetAssetPathString(), UWorld::StaticClass()))
-		{
-			const FTextFormat TextFormat(LOCTEXT( "DatasmithConsumer_CannotCreateAsset", "Cannot create asset {0}. Commit will be aborted" ));
-			const FText Message = FText::Format( TextFormat, FText::FromString(AssetSoftObjectPath.GetAssetPathString()) );
-			LogError(Message);
-
-			bCannotCreateAsset = true;
-		}
-		// Check if umap file does not already exist. If so, user will be asked if he/she wants to overwrite it
-		else
-		{
-			FString PackageFilename;
-			FPackageName::TryConvertLongPackageNameToFilename( AssetSoftObjectPath.GetLongPackageName(), PackageFilename, FPackageName::GetMapPackageExtension() );
-			if(FPaths::FileExists(PackageFilename))
-			{
-				const FTextFormat TextFormat(LOCTEXT( "DatasmithConsumer_UMapAlreadyExists", "Level {0} already exists" ));
-				const FText Message = FText::Format( TextFormat, FText::FromString(LevelToCreate) );
-				LogInfo(Message);
-			}
-		}
-	}
-
-	// Abort commit if any level is opened
-	if(OpenedLevels.Num() > 0)
-	{
-		FText OpenedLevelsText;
-		if(OpenedLevels.Num() == 1)
-		{
-			const FTextFormat TextFormat(LOCTEXT( "DatasmithConsumer_OneLevelOpened", "level {0} is opened" ));
-			OpenedLevelsText = FText::Format( TextFormat, FText::FromString(OpenedLevels[0]) );
-		}
-		else
-		{
-			const FString Separator(TEXT(", "));
-			FString OpenedLevelListString = OpenedLevels[0];
-			for(int32 Index = 1; Index < OpenedLevels.Num(); ++Index)
-			{
-				OpenedLevelListString += Separator + OpenedLevels[Index];
-			}
-
-			const FTextFormat TextFormat(LOCTEXT( "DatasmithConsumer_MultipleLevelOpened", "levels {0} are opened"));
-			OpenedLevelsText = FText::Format( TextFormat, FText::FromString(OpenedLevelListString) );
-		}
-
-		const FText Message = FText::Format( LOCTEXT( "DatasmithConsumer_OpenAbortCommit", "Cannot proceed with commit because {0}.\nPlease close any editor using this level and commit again" ), OpenedLevelsText );
-		if(bShowDialog)
-		{
-			const FText Title( LOCTEXT( "DatasmithConsumer_OpenAbortCommitTitle", "Main level is opened" ) );
-			FMessageDialog::Open( EAppMsgType::Ok, Message, &Title );
-		}
-		else
-		{
-			LogError(Message);
-		}
-
-		return false;
-	}
-	
 	for(const TWeakObjectPtr< UObject >& AssetPtr : Context.Assets)
 	{
 		if(UObject* Asset = AssetPtr.Get())
@@ -1173,7 +1036,7 @@ bool UDatasmithConsumer::CheckOutputDirectives()
 	return true;
 }
 
-void UDatasmithConsumer::ApplySubLevelDirective()
+void UDatasmithConsumer::ApplySubLevelDirective(const TArray<UPackage*>& PackagesToCheck)
 {
 	TMap< FName, TSoftObjectPtr< AActor > >& RelatedActors = ImportContextPtr->ActorsContext.CurrentTargetedScene->RelatedActors;
 
@@ -1228,9 +1091,11 @@ void UDatasmithConsumer::ApplySubLevelDirective()
 		}
 	}
 
+	TMap<FSoftObjectPath, FSoftObjectPath> AssetRedirectorMap;
+
 	for(TPair<ULevel*, TArray<AActor*>> Entry : ActorsToMove)
 	{
-		DatasmithConsumerUtils::MoveActorsToLevel( Entry.Value, Entry.Key, RelatedActors, false);
+		DatasmithConsumerUtils::MoveActorsToLevel( Entry.Value, Entry.Key, RelatedActors, PackagesToCheck, false);
 	}
 }
 
@@ -1629,7 +1494,7 @@ namespace DatasmithConsumerUtils
 		WorldToSave->GetOutermost()->SetDirtyFlag(false);
 	}
 
-	TArray<AActor*> MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel, bool bDuplicate)
+	TArray<AActor*> MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel, const TArray<UPackage*>& PackagesToCheck, bool bDuplicate)
 	{
 		if(DestLevel == nullptr || ActorsToMove.Num() == 0)
 		{
@@ -1668,7 +1533,7 @@ namespace DatasmithConsumerUtils
 		const bool bIsMove = bShoudCut;
 		GEditor->CopySelectedActorsToClipboard(OwningWorld, bShoudCut, bIsMove, /*bWarnAboutReferences =*/ false);
 
-		UEditorLevelUtils::SetLevelVisibility(DestLevel, true, false);
+		UEditorLevelUtils::SetLevelVisibility(DestLevel, true, false, ELevelVisibilityDirtyMode::DontModify);
 
 		// Scope this so that Actors that have been pasted will have their final levels set before doing the actor mapping
 		{
@@ -1742,7 +1607,7 @@ namespace DatasmithConsumerUtils
 			}
 		}
 
-		FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
+		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 		TArray<FAssetRenameData> RenameData;
 
 		for (TPair<FSoftObjectPath, FSoftObjectPath>& Pair : ActorPathMapping)
@@ -1755,7 +1620,13 @@ namespace DatasmithConsumerUtils
 
 		if (RenameData.Num() > 0)
 		{
-			AssetToolsModule.Get().RenameAssets(RenameData);
+			AssetTools.RenameAssets(RenameData);
+
+			// Fix soft references in level sequences and variants
+			if(PackagesToCheck.Num() > 0)
+			{
+				AssetTools.RenameReferencingSoftObjectPaths(PackagesToCheck, ActorPathMapping);
+			}
 		}
 
 		// Restore the original clipboard contents
@@ -1764,7 +1635,7 @@ namespace DatasmithConsumerUtils
 		return NewActors;
 	}
 
-	void MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel, TMap<FName,TSoftObjectPtr<AActor>>& ActorsMap, bool bDuplicate)
+	void MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel, TMap<FName,TSoftObjectPtr<AActor>>& ActorsMap, const TArray<UPackage*>& PackagesToCheck, bool bDuplicate)
 	{
 		if(ActorsToMove.Num() > 0)
 		{
@@ -1776,8 +1647,7 @@ namespace DatasmithConsumerUtils
 			EObjectFlags DestWorldFlags = DestLevel->GetOuter()->GetFlags();
 			EObjectFlags DestPackageFlags = DestLevel->GetOutermost()->GetFlags();
 
-			TArray<AActor*> NewActors = MoveActorsToLevel( ActorsToMove, DestLevel, bDuplicate);
-			printf(">>> %d", NewActors.Num());
+			TArray<AActor*> NewActors = MoveActorsToLevel( ActorsToMove, DestLevel, PackagesToCheck, bDuplicate);
 
 			GWorld = PrevGWorld;
 

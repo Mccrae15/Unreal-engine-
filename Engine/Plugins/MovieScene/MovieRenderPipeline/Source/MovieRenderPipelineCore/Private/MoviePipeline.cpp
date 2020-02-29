@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "MoviePipeline.h"
+#include "MovieScene.h"
 #include "MovieRenderPipelineCoreModule.h"
 #include "LevelSequence.h"
 #include "Tracks/MovieSceneSubTrack.h"
@@ -101,6 +102,9 @@ void UMoviePipeline::Initialize(UMoviePipelineExecutorJob* InJob)
 	// the PIE world is ticked for the first time. We'll end up waiting for the next tick
 	// for FCoreDelegateS::OnBeginFrame to get called to actually start processing.
 	UE_LOG(LogMovieRenderPipeline, Log, TEXT("[%d] Initializing overall Movie Pipeline"), GFrameCounter);
+
+	bPrevGScreenMessagesEnabled = GAreScreenMessagesEnabled;
+	GAreScreenMessagesEnabled = false;
 
 	if (!ensureAlwaysMsgf(InJob, TEXT("MoviePipeline cannot be initialized with null job. Aborting.")))
 	{
@@ -261,6 +265,8 @@ void UMoviePipeline::Shutdown()
 
 	TeardownAudioRendering();
 
+	GAreScreenMessagesEnabled = bPrevGScreenMessagesEnabled;
+
 	UE_LOG(LogMovieRenderPipeline, Log, TEXT("Movie Pipeline completed. Duration: %s"), *(FDateTime::UtcNow() - InitializationTime).ToString());
 	PipelineState = EMovieRenderPipelineState::Shutdown;
 }
@@ -376,6 +382,12 @@ bool UMoviePipeline::ProcessEndOfCameraCut(FMoviePipelineShotInfo &CurrentShot, 
 	// tick the new shot will be initialized and processed.
 	if (CurrentShotIndex >= ShotList.Num())
 	{
+		// Ensure all frames have been processed by the GPU and sent to the Output Merger
+		FlushRenderingCommands();
+		
+		// And then make sure all frames are sent to the Output Containers before we finalize.
+		ProcessOutstandingFinishedFrames();
+
 		UE_LOG(LogMovieRenderPipeline, Log, TEXT("[%d] Finished rendering last shot. Moving to Finalize to finish writing items to disk."), GFrameCounter);
 		PipelineState = EMovieRenderPipelineState::Finalize;
 
@@ -551,7 +563,7 @@ void UMoviePipeline::InitializeLevelSequenceActor(ULevelSequence* OriginalLevelS
 }
 
 
-FMoviePipelineShotInfo CreateShotFromMovieScene(const UMovieScene* InMovieScene, const TRange<FFrameNumber>& InIntersectionRange)
+FMoviePipelineShotInfo CreateShotFromMovieScene(const UMovieScene* InMovieScene, const TRange<FFrameNumber>& InIntersectionRange, UMovieSceneSubSection* InSubSection)
 {
 	check(InMovieScene);
 
@@ -566,7 +578,7 @@ FMoviePipelineShotInfo CreateShotFromMovieScene(const UMovieScene* InMovieScene,
 	TArray<FCameraCutRange> IntersectedRanges;
 
 	// We're going to search for Camera Cut tracks within this shot. If none are found, we'll use the whole range of the shot.
-	UMovieSceneCameraCutTrack* CameraCutTrack = InMovieScene->FindMasterTrack<UMovieSceneCameraCutTrack>();
+	const UMovieSceneCameraCutTrack* CameraCutTrack = Cast<UMovieSceneCameraCutTrack>(InMovieScene->GetCameraCutTrack());
 	if (CameraCutTrack)
 	{
 		for (UMovieSceneSection* Section : CameraCutTrack->GetAllSections())
@@ -575,7 +587,19 @@ FMoviePipelineShotInfo CreateShotFromMovieScene(const UMovieScene* InMovieScene,
 
 			// ToDo: Inner vs. Outer resolution differences.
 			// Intersect this cut with the outer range in the likely event that the section goes past the bounds.
-			TRange<FFrameNumber> IntersectingRange = TRange<FFrameNumber>::Intersection(Section->GetRange(), InIntersectionRange);
+			
+			TRange<FFrameNumber> LocalSectionRange = Section->GetRange(); // Section in local space
+			
+			LocalSectionRange = MovieScene::TranslateRange(LocalSectionRange, -InMovieScene->GetPlaybackRange().GetLowerBoundValue()); // Section relative to zero
+
+			TRange<FFrameNumber> SectionRangeInMaster = LocalSectionRange;
+			// Add the offset from the parent subsection to put it back into parent space.
+			if (InSubSection)
+			{
+				SectionRangeInMaster = MovieScene::TranslateRange(LocalSectionRange, InSubSection->GetRange().GetLowerBoundValue());
+			}
+
+			TRange<FFrameNumber> IntersectingRange = TRange<FFrameNumber>::Intersection(SectionRangeInMaster, InIntersectionRange);
 
 			FCameraCutRange& NewRange = IntersectedRanges.AddDefaulted_GetRef();
 			NewRange.Range = IntersectingRange;
@@ -635,6 +659,14 @@ TArray<FMoviePipelineShotInfo> UMoviePipeline::BuildShotListFromSequence(const U
 				continue;
 			}
 
+			// Skip this section if it falls entirely outside of our playback bounds.
+			TRange<FFrameNumber> MasterPlaybackBounds = GetCurrentJob()->GetConfiguration()->GetEffectivePlaybackRange(TargetSequence);
+			if (!ShotSection->GetRange().Overlaps(MasterPlaybackBounds))
+			{
+				UE_LOG(LogMovieRenderPipeline, Verbose, TEXT("Skipped adding Shot %s to Shot List due to not overlapping playback bounds."), *ShotSection->GetShotDisplayName());
+				continue;
+			}
+			
 			//if (CurrentJob->ShotRenderMask.Num() > 0)
 			//{
 			//	if (!CurrentJob->ShotRenderMask.Contains(ShotSection->GetShotDisplayName()))
@@ -647,8 +679,8 @@ TArray<FMoviePipelineShotInfo> UMoviePipeline::BuildShotListFromSequence(const U
 			// The Shot Section may extend past our Sequence's Playback Bounds. We intersect the two bounds to ensure that
 			// the Playback Start/Playback End of the overall sequence is respected.
 			TRange<FFrameNumber> CinematicShotSectionRange = TRange<FFrameNumber>::Intersection(ShotSection->GetRange(), InSequence->GetMovieScene()->GetPlaybackRange());
+			FMoviePipelineShotInfo NewShot = CreateShotFromMovieScene(ShotSection->GetSequence()->GetMovieScene(), CinematicShotSectionRange, ShotSection);
 
-			FMoviePipelineShotInfo NewShot = CreateShotFromMovieScene(ShotSection->GetSequence()->GetMovieScene(), CinematicShotSectionRange);
 
 			// Convert the offset time to ticks
 			FFrameTime OffsetTime = ShotSection->GetOffsetTime().GetValue();
@@ -668,7 +700,7 @@ TArray<FMoviePipelineShotInfo> UMoviePipeline::BuildShotListFromSequence(const U
 	else
 	{
 		// They don't have a cinematic shot track. We'll slice them up by camera cuts instead.
-		FMoviePipelineShotInfo NewShot = CreateShotFromMovieScene(TargetSequence->GetMovieScene(), TargetSequence->GetMovieScene()->GetPlaybackRange());
+		FMoviePipelineShotInfo NewShot = CreateShotFromMovieScene(TargetSequence->GetMovieScene(), TargetSequence->GetMovieScene()->GetPlaybackRange(), nullptr);
 		// NewShot.ShotConfig = GetPipelineMasterConfig()->DefaultShotConfig;
 		
 		NewShotList.Add(MoveTemp(NewShot));
@@ -723,7 +755,19 @@ TArray<FMoviePipelineShotInfo> UMoviePipeline::BuildShotListFromSequence(const U
 			FString CameraName;
 			if (CameraCut.CameraCutSection.IsValid())
 			{
-				CameraName = TargetSequence->GetMovieScene()->FindBinding(CameraCut.CameraCutSection->GetCameraBindingID().GetGuid())->GetName();
+				const FMovieSceneObjectBindingID& CameraObjectBindingId = CameraCut.CameraCutSection->GetCameraBindingID();
+				if (CameraObjectBindingId.IsValid())
+				{
+					UMovieScene* OwningMovieScene = Cast<UMovieScene>(CameraCut.CameraCutSection->GetOuter());
+					if (OwningMovieScene)
+					{
+						FMovieSceneBinding* Binding = OwningMovieScene->FindBinding(CameraObjectBindingId.GetGuid());
+						if (Binding)
+						{
+							CameraName = Binding->GetName();
+						}
+					}
+				}
 			}
 
 			CameraCut.ShotName = ShotName;
@@ -887,15 +931,14 @@ void UMoviePipeline::ExpandShot(FMoviePipelineShotInfo& InShot)
 		ShotMovieScene->SetPlaybackRange(NewPlaybackRange, false);
 
 		// Expand the outer owning section
+		ShotSection->SetIsLocked(false); // Unlock the section so we can modify the range
 		ShotSection->SetRange(MovieScene::DilateRange(ShotSection->GetRange(), -StartOffset, EndOffset));
-
 	}
 
 	// Ensure the overall Movie Scene Playback Range is large enough. This will clamp evaluation if we don't expand it. We hull the existing range
 	// with the new range.
 	TRange<FFrameNumber> EncompassingPlaybackRange = TRange<FFrameNumber>::Hull(TotalPlaybackRange, TargetSequence->MovieScene->GetPlaybackRange());
 	TargetSequence->GetMovieScene()->SetPlaybackRange(EncompassingPlaybackRange);
-
 }
 
 bool UMoviePipeline::IsDebugFrameStepIdling() const

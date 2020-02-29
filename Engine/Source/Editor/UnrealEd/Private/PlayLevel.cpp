@@ -121,7 +121,7 @@ DEFINE_LOG_CATEGORY(LogPlayLevel);
 const static FName NAME_CategoryPIE("PIE");
 
 // Forward declare local utility functions
-FText GeneratePIEViewportWindowTitle(const EPlayNetMode InNetMode, const ERHIFeatureLevel::Type InFeatureLevel, const int32 ClientIndex = -1);
+FText GeneratePIEViewportWindowTitle(const EPlayNetMode InNetMode, const ERHIFeatureLevel::Type InFeatureLevel, const FRequestPlaySessionParams& InSessionParams, const int32 ClientIndex = -1);
 bool PromptMatineeClose();
 
 
@@ -1063,6 +1063,8 @@ void UEditorEngine::StartQueuedPlaySessionRequestImpl()
 		UE_LOG(LogPlayLevel, Warning, TEXT("%s"), *ErrorMsg.ToString());
 		FMessageLog(NAME_CategoryPIE).Warning(ErrorMsg);
 		FMessageLog(NAME_CategoryPIE).Open();
+		
+		CancelRequestPlaySession();
 		return;
 	}
 
@@ -1660,6 +1662,7 @@ void UEditorEngine::CreateNewPlayInEditorInstance(FRequestPlaySessionParams &InR
 		GameInstancePIEParameters.EditorPlaySettings = PlayInEditorSessionInfo->OriginalRequestParams.EditorPlaySettings;
 		GameInstancePIEParameters.WorldFeatureLevel = PreviewPlatform.GetEffectivePreviewFeatureLevel();
 		GameInstancePIEParameters.NetMode = InNetMode;
+		GameInstancePIEParameters.OverrideMapURL = InRequestParams.GlobalMapOverride;
 
 		PIELoginInfo.GameInstancePIEParameters = GameInstancePIEParameters;
 
@@ -1707,7 +1710,7 @@ void UEditorEngine::CreateNewPlayInEditorInstance(FRequestPlaySessionParams &InR
 		}
 
 		// Only count non-dedicated instances as clients so that our indexes line up for log-ins.
-		if (!GameInstancePIEParameters.bRunAsDedicated)
+		if (!GameInstancePIEParameters.bRunAsDedicated && PlayInEditorSessionInfo.IsSet())
 		{
 			PlayInEditorSessionInfo->NumClientInstancesCreated++;
 		}
@@ -2811,7 +2814,7 @@ UGameInstance* UEditorEngine::CreateInnerProcessPIEGameInstance(FRequestPlaySess
 	return GameInstance;
 }
 
-FText GeneratePIEViewportWindowTitle(const EPlayNetMode InNetMode, const ERHIFeatureLevel::Type InFeatureLevel, const int32 ClientIndex)
+FText GeneratePIEViewportWindowTitle(const EPlayNetMode InNetMode, const ERHIFeatureLevel::Type InFeatureLevel, const FRequestPlaySessionParams& InSessionParams, const int32 ClientIndex)
 {
 #if PLATFORM_64BITS
 	const FString PlatformBitsString(TEXT("64"));
@@ -2839,7 +2842,17 @@ FText GeneratePIEViewportWindowTitle(const EPlayNetMode InNetMode, const ERHIFea
 		Args.Add(TEXT("NetMode"), FText::FromString(TEXT("Standalone")));
 	}
 
-	return FText::Format(NSLOCTEXT("UnrealEd", "PlayInEditor_WindowTitleFormat", "{GameName} Preview [NetMode: {NetMode}] ({PlatformBits}-bit/{RHIName})"), Args);
+	if (GEngine->StereoRenderingDevice && GEngine->StereoRenderingDevice.IsValid() && InSessionParams.SessionPreviewTypeOverride == EPlaySessionPreviewType::VRPreview &&
+		GEngine->XRSystem && GEngine->XRSystem.IsValid())
+	{
+		Args.Add(TEXT("XRSystemName"), FText::FromName(GEngine->XRSystem->GetSystemName()));
+	}
+	else
+	{
+		Args.Add(TEXT("XRSystemName"), FText::GetEmpty());
+	}
+
+	return FText::Format(NSLOCTEXT("UnrealEd", "PlayInEditor_WindowTitleFormat", "{GameName} Preview [NetMode: {NetMode}] ({PlatformBits}-bit/{RHIName}) {XRSystemName}"), Args);
 }
 
 void UEditorEngine::TransferEditorSelectionToSIEInstances()
@@ -2906,7 +2919,7 @@ TSharedRef<SPIEViewport> UEditorEngine::GeneratePIEViewportWindow(const FRequest
 	if (!bHasCustomWindow)
 	{
 
-		FText ViewportName = GeneratePIEViewportWindowTitle(InNetMode, PreviewPlatform.GetEffectivePreviewFeatureLevel(), InViewportIndex);
+		FText ViewportName = GeneratePIEViewportWindowTitle(InNetMode, PreviewPlatform.GetEffectivePreviewFeatureLevel(), InSessionParams, InViewportIndex);
 		PieWindow = SNew(SWindow)
 			.Title(ViewportName)
 			.ScreenPosition(FVector2D(WindowPosition.X, WindowPosition.Y))

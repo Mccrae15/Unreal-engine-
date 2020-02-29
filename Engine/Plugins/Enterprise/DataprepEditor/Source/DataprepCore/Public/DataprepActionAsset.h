@@ -54,6 +54,11 @@ class UDataprepActionStep : public UObject
 
 public:
 
+	UDataprepActionStep()
+		: bIsEnabled(true)
+		, StepObject(nullptr)
+	{}
+
 	// Begin UObject Interface
 	virtual void PostLoad() override;
 	// End UObject Interface
@@ -455,7 +460,7 @@ private:
 	bool bWorkingSetHasChanged;
 
 	/** UI label of the action */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = "Label")
 	FString Label;
 
 	/** Package which static meshes will be added to */

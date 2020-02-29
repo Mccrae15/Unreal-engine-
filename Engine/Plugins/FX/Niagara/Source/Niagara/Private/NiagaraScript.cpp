@@ -1057,6 +1057,7 @@ void UNiagaraScript::PostEditChangeProperty(FPropertyChangedEvent& PropertyChang
 	}
 
 	CustomAssetRegistryTagCache.Reset();
+	OnPropertyChangedDelegate.Broadcast(PropertyChangedEvent);
 }
 
 #endif
@@ -1904,7 +1905,7 @@ bool UNiagaraScript::SynchronizeExecutablesWithMaster(const UNiagaraScript* Scri
 
 void UNiagaraScript::InvalidateCompileResults(const FString& Reason)
 {
-	UE_LOG(LogNiagara, Verbose, TEXT("InvalidateCompileResults Script:%s Reason:%s"), *GetPathName());
+	UE_LOG(LogNiagara, Verbose, TEXT("InvalidateCompileResults Script:%s Reason:%s"), *GetPathName(), *Reason);
 	CachedScriptVM.Reset();
 	ScriptResource.Invalidate();
 	CachedScriptVMId.Invalidate();
@@ -1923,7 +1924,10 @@ UNiagaraScript::FOnScriptCompiled& UNiagaraScript::OnGPUScriptCompiled()
 	return OnGPUScriptCompiledDelegate;
 }
 
-
+UNiagaraScript::FOnPropertyChanged& UNiagaraScript::OnPropertyChanged()
+{
+	return OnPropertyChangedDelegate;
+}
 
 #endif
 
@@ -2058,6 +2062,35 @@ FNiagaraShaderScript* UNiagaraScript::AllocateResource()
 }
 
 #if WITH_EDITORONLY_DATA
+TArray<ENiagaraParameterScope> UNiagaraScript::GetUnsupportedParameterScopes() const
+{
+	TArray<ENiagaraParameterScope> UnsupportedParameterScopes;
+	UnsupportedParameterScopes.Add(ENiagaraParameterScope::System);
+	UnsupportedParameterScopes.Add(ENiagaraParameterScope::Emitter);
+	UnsupportedParameterScopes.Add(ENiagaraParameterScope::Particles);
+
+	const TArray<ENiagaraScriptUsage> SupportedUsages = GetSupportedUsageContextsForBitmask(ModuleUsageBitmask);
+	for (ENiagaraScriptUsage SupportedUsage : SupportedUsages)
+	{
+		if (SupportedUsage == ENiagaraScriptUsage::ParticleSpawnScript || SupportedUsage == ENiagaraScriptUsage::ParticleUpdateScript || SupportedUsage == ENiagaraScriptUsage::ParticleSpawnScriptInterpolated
+		|| SupportedUsage == ENiagaraScriptUsage::ParticleGPUComputeScript || SupportedUsage == ENiagaraScriptUsage::ParticleEventScript)
+		{
+			UnsupportedParameterScopes.Empty();
+			return UnsupportedParameterScopes;
+		}
+		else if (SupportedUsage == ENiagaraScriptUsage::EmitterSpawnScript || SupportedUsage == ENiagaraScriptUsage::EmitterUpdateScript)
+		{
+			UnsupportedParameterScopes.Remove(ENiagaraParameterScope::System);
+			UnsupportedParameterScopes.Remove(ENiagaraParameterScope::Emitter);
+		}
+		else if (SupportedUsage == ENiagaraScriptUsage::SystemSpawnScript || SupportedUsage == ENiagaraScriptUsage::SystemUpdateScript)
+		{
+			UnsupportedParameterScopes.Remove(ENiagaraParameterScope::System);
+		}
+	}
+	return UnsupportedParameterScopes;
+}
+
 TArray<ENiagaraScriptUsage> UNiagaraScript::GetSupportedUsageContexts() const
 {
 	return GetSupportedUsageContextsForBitmask(ModuleUsageBitmask);

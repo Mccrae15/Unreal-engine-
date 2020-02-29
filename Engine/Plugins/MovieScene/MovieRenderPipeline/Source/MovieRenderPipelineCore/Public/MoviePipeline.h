@@ -90,7 +90,7 @@ public:
 
 	FDateTime GetInitializationTime() const { return InitializationTime; }
 public:
-	void OnFrameCompletelyRendered(FMoviePipelineMergerOutputFrame&& OutputFrame, const TSharedRef<FImagePixelDataPayload, ESPMode::ThreadSafe> InFrameData);
+	void ProcessOutstandingFinishedFrames();
 	void OnSampleRendered(TUniquePtr<FImagePixelData>&& OutputSample, const TSharedRef<FImagePixelDataPayload, ESPMode::ThreadSafe> InFrameData);
 	const MoviePipeline::FAudioState& GetAudioState() const { return AudioState; }
 public:
@@ -248,6 +248,9 @@ private:
 	FMoviePipelineFrameOutputState CachedOutputState;
 
 	MoviePipeline::FAudioState AudioState;
+
+	/** Cached state of GAreScreenMessagesEnabled. We disable them since some messages are written to the FSceneView directly otherwise. */
+	bool bPrevGScreenMessagesEnabled;
 
 	/** 
 	* Have we hit the callback for the BeginFrame at least once? This solves an issue where the delegates

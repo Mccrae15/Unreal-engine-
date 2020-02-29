@@ -305,9 +305,24 @@ void PopulateSimulatedParticle(
 			{
 				CollisionParticles->X(VertexIndex) = Simplicial->X(VertexIndex);
 
+
+#if 0 
+				// Ryan - this is crashing for Jack with stack:
+				/*
+				Assertion failed : (Index >= 0)& (Index < ArrayNum)[File:E:\4.25\Engine\Source\Runtime\Core\Public\Containers / Array.h][Line:674] Array index out of bounds : 4 from an array of size 4
+					ChaosDestructionDemoEditor_Core!FDebug::OptionallyLogFormattedEnsureMessageReturningFalseImpl()[e:\4.25\engine\source\runtime\core\private\misc\assertionmacros.cpp:491]
+					ChaosDestructionDemoEditor_ChaosSolvers!<lambda_9b5be2529a6e7fa96c17dd5bd4cd785f>::operator()()[e:\4.25\engine\source\runtime\experimental\chaossolvers\private\physicsproxy\geometrycollectionphysicsproxy.cpp:310]
+					ChaosDestructionDemoEditor_ChaosSolvers!PopulateSimulatedParticle()[e:\4.25\engine\source\runtime\experimental\chaossolvers\private\physicsproxy\geometrycollectionphysicsproxy.cpp:310]
+					ChaosDestructionDemoEditor_ChaosSolvers!FGeometryCollectionPhysicsProxy::InitializeSharedCollisionStructures()[e:\4.25\engine\source\runtime\experimental\chaossolvers\private\physicsproxy\geometrycollectionphysicsproxy.cpp:2825]
+					ChaosDestructionDemoEditor_GeometryCollectionEngine!FDerivedDataGeometryCollectionCooker::Build()[e:\4.25\engine\source\runtime\experimental\geometrycollectionengine\private\geometrycollection\deriveddatageometrycollectioncooker.cpp:37]
+					ChaosDestructionDemoEditor_DerivedDataCache!FDerivedDataCache::FBuildAsyncWorker::DoWork()
+				*/
+				// Removing for now.
+
 				// Make sure the collision particles are at least in the domain 
 				// of the implicit shape.
 				ensure(ImplicitShapeDomain.Contains(CollisionParticles->X(VertexIndex)));
+#endif
 			}
 		}
 
@@ -611,11 +626,8 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(
 
 				Chaos::TPBDGeometryCollectionParticleHandle<float, 3>* Handle = Handles[NextIdx++];
 
-				if (DynamicState[ Idx ] == (int32)EObjectStateTypeEnum::Chaos_Object_Dynamic)
-				{
-					Handle->GTGeometryParticle() = nullptr; // GeometryCollections do not support Game Thread TGeometryParticle
-					RigidsSolver->AddParticleToProxy(Handle, this);
-				}
+				Handle->GTGeometryParticle() = nullptr; // GeometryCollections do not support Game Thread TGeometryParticle
+				RigidsSolver->AddParticleToProxy(Handle, this);
 
 				SolverParticleHandles[Idx] = Handle;
 				HandleToTransformGroupIndex.Add(Handle, Idx);
@@ -819,6 +831,13 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(
 							RigidChildrenTransformGroupIndex, 
 							CreationParameters);
 
+					int32 RigidChildrenIdx = 0;
+					for (const int32 ChildIndex : Children[TransformGroupIndex])
+					{
+						SolverClusterID[ChildIndex] = RigidChildren[RigidChildrenIdx++]->CastToClustered()->ClusterIds().Id;
+					}
+					SolverClusterID[TransformGroupIndex] = Handle->ClusterIds().Id;
+
 					SolverClusterHandles[TransformGroupIndex] = Handle;
 					SolverParticleHandles[TransformGroupIndex] = Handle;
 					HandleToTransformGroupIndex.Add(Handle, TransformGroupIndex);
@@ -996,7 +1015,9 @@ FGeometryCollectionPhysicsProxy::BuildClusters(
 		}
 	}
 
-	//const FTransform ParticleTM(Particles.R(NewSolverClusterID), Particles.X(NewSolverClusterID));	//in theory we should be computing this and passing in to avoid inertia computation at runtime. If we do this we must account for leaf particles that have already been created in world space
+	// In theory we should be computing this and passing in to avoid inertia computation at 
+	// runtime. If we do this we must account for leaf particles that have already been created in world space
+	//const FTransform ParticleTM(Particles.R(NewSolverClusterID), Particles.X(NewSolverClusterID));	
 	MassToLocal[CollectionClusterIndex] = FTransform::Identity;
 
 	check(Parameters.RestCollection);
@@ -1208,9 +1229,8 @@ void FGeometryCollectionPhysicsProxy::CreateDynamicAttributes()
 			// Update the rest collection with a copy of the shared pointer.
 			(*RestCollectionSharedImplicits)[Index] = Implicits[Index];
 		}
-
-		SolverClusterID[Index] = INDEX_NONE;
 	}
+	SolverClusterID.Fill(nullptr);
 
 	// Clean up now invalid unique pointers.
 	if (RestCollectionSharedImplicits)
@@ -1939,14 +1959,14 @@ void FGeometryCollectionPhysicsProxy::BufferGameState()
 	const FGeometryCollection* RestCollection = Parameters.RestCollection;
 
 	//Buffer.TransformIndex.Init(RestCollection->TransformIndex);
-	Buffer.BoneMap.Init(RestCollection->BoneMap);
-	Buffer.Parent.Init(RestCollection->Parent);
-	Buffer.Children.Init(RestCollection->Children);
-	Buffer.SimulationType.Init(RestCollection->SimulationType);
+//	Buffer.BoneMap.Init(RestCollection->BoneMap);
+//	Buffer.Parent.Init(RestCollection->Parent);
+//	Buffer.Children.Init(RestCollection->Children);
+//	Buffer.SimulationType.Init(RestCollection->SimulationType);
 
-	Buffer.DynamicState.Init(DynamicCollection->DynamicState);
-	Buffer.Mass.Init(RestCollection->GetAttribute<float>("Mass", FTransformCollection::TransformGroup));
-	Buffer.InertiaTensor.Init(RestCollection->GetAttribute<FVector>("InertiaTensor", FTransformCollection::TransformGroup));
+//	Buffer.DynamicState.Init(DynamicCollection->DynamicState);
+//	Buffer.Mass.Init(RestCollection->GetAttribute<float>("Mass", FTransformCollection::TransformGroup));
+//	Buffer.InertiaTensor.Init(RestCollection->GetAttribute<FVector>("InertiaTensor", FTransformCollection::TransformGroup));
 	Buffer.Transforms.Init(DynamicCollection->Transform);
 
 	GeometryCollectionAlgo::GlobalMatrices(
@@ -2011,7 +2031,6 @@ void FGeometryCollectionPhysicsProxy::PushToPhysicsState(const Chaos::FParticleD
 
 			// Particle disabled states are initialized on the physics thread, so 
 			// we don't want to pull this from the game thread
-
 			//Handle->SetDisabled(GState->DisabledStates[Idx]); ryan - fix this!
 
 			Handle->SetLinearEtherDrag(Parameters.LinearEtherDrag);
@@ -2113,11 +2132,16 @@ void FGeometryCollectionPhysicsProxy::BufferPhysicsResults()
 	TargetResults.IsObjectLoading = IsObjectLoading;
 	
 	const FTransform& ActorToWorld = Parameters.WorldTransform;
-	// It's not worth shrinking the EndFrameUnparentingBuffer array, at least until the solver supports deleting bodies.
-	if (EndFrameUnparentingBuffer.Num() < NumParticles)
+
+	const int32 TransfromGroupSize = GetTransformGroupSize();
+	if (EndFrameUnparentingBuffer.Num() < TransfromGroupSize)
 	{
-		EndFrameUnparentingBuffer.Init(INDEX_NONE, NumParticles);
+		// It's not worth shrinking the EndFrameUnparentingBuffer array, 
+		// at least until the solver supports deleting bodies.
+		EndFrameUnparentingBuffer.Init(INDEX_NONE, TransfromGroupSize);
 	}
+	TManagedArray<int32>& Parent = PTDynamicCollection.Parent;
+	TManagedArray<TSet<int32>>& Children = PTDynamicCollection.Children;
 
 	{ // tmp scope
 		SCOPE_CYCLE_COUNTER(STAT_CalcParticleToWorld);
@@ -2142,7 +2166,7 @@ void FGeometryCollectionPhysicsProxy::BufferPhysicsResults()
 		//const TArrayCollectionArray<FMultiChildProxyId>& MultiChildProxyIdArray = GetSolver()->GetRigidClustering().GetMultiChildProxyIdArray();
 		//const TArrayCollectionArray<TUniquePtr<TMultiChildProxyData<float, 3>>>& MultiChildProxyDataArray = GetSolver()->GetRigidClustering().GetMultiChildProxyDataArray();
 
-		for (int32 TransformIndex = 0; TransformIndex < NumParticles; ++TransformIndex)
+		for (int32 TransformIndex = 0; TransformIndex < TransfromGroupSize; ++TransformIndex)
 		{
 			Chaos::TPBDRigidClusteredParticleHandle<float, 3>* Handle = SolverParticleHandles[TransformIndex];
 			if (!Handle)
@@ -2200,43 +2224,43 @@ void FGeometryCollectionPhysicsProxy::BufferPhysicsResults()
 					MassToLocal[TransformIndex].GetRelativeTransformReverse(ParticleToWorld).GetRelativeTransform(ActorToWorld);
 				TargetResults.Transforms[TransformIndex].NormalizeRotation();
 
-
-#if 0 // TODO Ryan
-				// Force all enabled rigid bodies out of the transform hierarchy
-				if (TargetResults.Parent[TransformIndex] != INDEX_NONE)
+				// If the parent of this NON DISABLED body is set to anything other than INDEX_NONE,
+				// then it was just unparented, likely either by rigid clustering or by fields.  We
+				// need to force all such enabled rigid bodies out of the transform hierarchy.
+				if (Parent[TransformIndex] != INDEX_NONE)
 				{
+					const int32 ParentIndex = Parent[TransformIndex];
 					// Children in the hierarchy are stored in a TSet, which is not thread safe.  
 					// So we retain indices to remove afterwards.
-					EndFrameUnparentingBuffer[TransformIndex] = TargetResults.Parent[TransformIndex];
+					EndFrameUnparentingBuffer[TransformIndex] = ParentIndex;
 				}
-#endif
-#if 0 // TODO Ryan
+
 				// When a leaf node rigid body is removed from a cluster, the rigid
 				// body will become active and needs its clusterID updated.  This just
 				// syncs the clusterID all the time.
-				CollectionClusterID[TransformGroupIndex] = ClusterID[RigidBodyIndex].Id;
-#endif
+				TPBDRigidParticleHandle<float, 3>* ClusterParentId = Handle->ClusterIds().Id;
+				SolverClusterID[TransformIndex] = ClusterParentId;
 			}
 			else // Handle->Disabled()
 			{
-#if 0 // TODO Ryan
 				// The rigid body parent cluster has changed within the solver, and its
 				// parent body is not tracked within the geometry collection. So we need to
 				// pull the rigid bodies out of the transform hierarchy, and just drive
 				// the positions directly from the solvers cluster particle. 
-				if (CollectionClusterID[TransformGroupIndex] != ClusterID[RigidBodyIndex].Id)
+				TPBDRigidParticleHandle<float, 3>* ClusterParentId = Handle->ClusterIds().Id;
+				if(SolverClusterID[TransformIndex] != ClusterParentId)
 				{
 					// Force all driven rigid bodies out of the transform hierarchy
-					if (Parent[TransformGroupIndex] != INDEX_NONE)
+					if (Parent[TransformIndex] != INDEX_NONE)
 					{
-						const int32 ParentIndex = Parent[TransformGroupIndex];
+						const int32 ParentIndex = Parent[TransformIndex];
 						// Children in the hierarchy are stored in a TSet, which is not thread safe.  So we retain
 						// indices to remove afterwards.
-						EndFrameUnparentingBuffer[TransformGroupIndex] = ParentIndex;
+						EndFrameUnparentingBuffer[TransformIndex] = ParentIndex;
 					}
-					CollectionClusterID[TransformGroupIndex] = ClusterID[RigidBodyIndex].Id;
+					SolverClusterID[TransformIndex] = Handle->ClusterIds().Id;
 				}
-#endif
+
 				// Disabled rigid bodies that have valid cluster parents, and have been re-indexed by the
 				// solver (as in, They were re-clustered outside of the geometry collection), These clusters 
 				// will need to be rendered based on the clusters position. 
@@ -2252,9 +2276,7 @@ void FGeometryCollectionPhysicsProxy::BufferPhysicsResults()
 							const FTransform ClusterChildToWorld = ChildToParent * FTransform(ParentHandle->R(), ParentHandle->X());
 							if (Parameters.IsCacheRecording())
 							{
-								//Particles.X(RigidBodyIndex) = ClusterChildToWorld.GetTranslation();
 								Handle->SetX(ClusterChildToWorld.GetTranslation());
-								//Particles.R(RigidBodyIndex) = ClusterChildToWorld.GetRotation();
 								Handle->SetR(ClusterChildToWorld.GetRotation());
 							}
 							// GeomToActor = ActorToWorld.Inv() * ClusterChildToWorld * MassToLocal.Inv();
@@ -2269,6 +2291,21 @@ void FGeometryCollectionPhysicsProxy::BufferPhysicsResults()
 		} // end for
 	} // tmp scope
 
+	for (int32 TransformGroupIndex = 0; TransformGroupIndex < TransfromGroupSize; TransformGroupIndex++)
+	{
+		const int32 ParentIndex = EndFrameUnparentingBuffer[TransformGroupIndex];
+		if (ParentIndex >= 0)
+		{
+			// We reuse EndFrameUnparentingBuffer potentially without reinitialization, 
+			// so reset this index to INDEX_NONE before it gets paged out.
+			EndFrameUnparentingBuffer[TransformGroupIndex] = INDEX_NONE;
+
+			Children[ParentIndex].Remove(TransformGroupIndex);
+			Parent[TransformGroupIndex] = INDEX_NONE;
+		}
+		TargetResults.Parent[TransformGroupIndex] = Parent[TransformGroupIndex];
+	}
+
 	// If object is dynamic, compute global matrices	
 	if (IsObjectDynamic || TargetResults.GlobalTransforms.Num() == 0)
 	{
@@ -2276,46 +2313,22 @@ void FGeometryCollectionPhysicsProxy::BufferPhysicsResults()
 		check(TargetResults.Transforms.Num() == TargetResults.Parent.Num());
 		GeometryCollectionAlgo::GlobalMatrices(
 			TargetResults.Transforms, TargetResults.Parent, TargetResults.GlobalTransforms);
-	}
 
-	// compute world bounds
-	// #note: this is a loose bounds based on the circumscribed box of a bounding sphere for the geometry.		
-	if (IsObjectDynamic || TargetResults.WorldBounds.GetSphere().W < 1e-5)
-	{
+		// Compute world bounds.  This is a loose bounds based on the circumscribed box 
+		// of a bounding sphere for the geometry.		
 		SCOPE_CYCLE_COUNTER(STAT_CalcGlobalGCBounds);
 		FBox BoundingBox(ForceInit);
-		//const FMatrix& ActorToWorld = Parameters.WorldTransform.ToMatrixWithScale();
 		for (int i = 0; i < ValidGeometryBoundingBoxes.Num(); ++i)
 		{
 			BoundingBox += ValidGeometryBoundingBoxes[i].TransformBy(
 				TargetResults.GlobalTransforms[ValidGeometryTransformIndices[i]] * ActorToWorld);
 		}
-		TargetResults.WorldBounds = FBoxSphereBounds(BoundingBox);		
+		TargetResults.WorldBounds = FBoxSphereBounds(BoundingBox);
 	}
-
-#if 0 // TODO Ryan
-	for (int32 TransformGroupIndex = 0; TransformGroupIndex < TransformSize; TransformGroupIndex++)
-	{
-		const int32 ParentIndex = EndFrameUnparentingBuffer[TransformGroupIndex];
-		if (ParentIndex >= 0)
-		{
-			// We reuse EndFrameUnparentingBuffer potentially without reinitialization, so reset this index to -1 before it gets paged out.
-			EndFrameUnparentingBuffer[TransformGroupIndex] = -1;
-
-			Children[ParentIndex].Remove(TransformGroupIndex);
-			Parent[TransformGroupIndex] = INDEX_NONE;
-		}
-	}
-#endif
 
 	// We pulled state out of particles.  Push results into PTDynamicCollection, 
 	// so that it has an updated view.
 	UpdateGeometryCollection(TargetResults);
-
-	// We've updated a buffer.  There's no reason to wait for FGeometryCollectionPhysicsProxy::FlipBuffer()
-	// to be called.  Just flip.
-	PhysToGameInterchange->FlipProducer();
-//#endif // TODO_REIMPLEMENT_GET_RIGID_PARTICLES
 }
 
 void FGeometryCollectionPhysicsProxy::FlipBuffer()
@@ -2326,6 +2339,8 @@ void FGeometryCollectionPhysicsProxy::FlipBuffer()
 	 * The physics thread has pre-locked an RW lock for this operation so the game thread won't be reading
 	 * the data
 	 */
+
+	PhysToGameInterchange->FlipProducer();
 }
 
 // Called from FPhysScene_ChaosInterface::SyncBodies(), NOT the solver.
