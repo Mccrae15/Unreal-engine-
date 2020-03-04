@@ -2817,11 +2817,11 @@ TArray<FSelectedFoliage> AInstancedFoliageActor::GetSelectedInstancesInfo()
 {
 	TArray<FSelectedFoliage> ret_val;
 
-	for (auto& MeshPair : FoliageMeshes)
-	{
-		FFoliageMeshInfo& MeshInfo = *MeshPair.Value;
+	for (auto& MeshPair : FoliageInfos)
+	{	
+		FFoliageInfo& MeshInfo = *MeshPair.Value;
 		UFoliageType* FoliageType = MeshPair.Key;
-		UStaticMesh* InstanceStaticMesh = FoliageType->GetStaticMesh();
+		UStaticMesh* InstanceStaticMesh = (UStaticMesh*)FoliageType->GetSource();
 		TArray<FTransform> InstanceTransform;
 		if (MeshInfo.SelectedIndices.Num() > 0) {
 			for (auto& i : MeshInfo.SelectedIndices) {
@@ -2837,7 +2837,7 @@ TArray<FSelectedFoliage> AInstancedFoliageActor::GetSelectedInstancesInfo()
 			ret_val.Add(FSelectedFoliage(InstanceStaticMesh, InstanceTransform));
 		}
 	}
-	while (FoliageMeshes.Remove(nullptr)) {}	//remove entries from the map
+	while (FoliageInfos.Remove(nullptr)) {}	//remove entries from the map
 	return ret_val;
 }
 

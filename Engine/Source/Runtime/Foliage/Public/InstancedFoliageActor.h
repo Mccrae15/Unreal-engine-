@@ -102,17 +102,6 @@ public:
 	TMap<UFoliageType*, TUniqueObj<FFoliageInfo>> FoliageInfos;
 
 public:
-#if WITH_EDITOR
-	UFUNCTION(Category = "DEBUG", BlueprintCallable)
-		TArray<FTransform> FindMesh22(const UFoliageType* InType) {
-		TArray<FTransform> ret_val;
-		FFoliageMeshInfo* MEshInfo = FindMesh(InType);     //TArray<FFoliageInstance> Instances;
-		for (auto& elem : MEshInfo->Instances) {
-			ret_val.Add(FTransform(elem.Rotation, elem.Location, elem.DrawScale3D));
-		}
-		return ret_val;
-	};
-#endif
 
 	//~ Begin UObject Interface.
 	virtual void Serialize(FArchive& Ar) override;
