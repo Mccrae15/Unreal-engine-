@@ -29,10 +29,6 @@
 #define TODO_REIMPLEMENT_INIT_COMMANDS 0
 #endif
 
-#ifndef TODO_REIMPLEMENT_KINEMATICS
-#define TODO_REIMPLEMENT_KINEMATICS 0
-#endif
-
 #ifndef TODO_REIMPLEMENT_FRACTURE
 #define TODO_REIMPLEMENT_FRACTURE 0
 #endif
@@ -677,7 +673,7 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(
 #endif // TODO_REIMPLEMENT_SOLVER_SETTINGS_ACCESSORS
 					//RigidBodyIndex, 
 					WorldTransform, 
-					(uint8)Parameters.ObjectType, 
+					(uint8)DynamicState[TransformGroupIndex], 
 					CollisionGroup[TransformGroupIndex]);
 
 				if (Parameters.EnableClustering)
@@ -742,9 +738,6 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(
 			}
 		}
 
-#if TODO_REIMPLEMENT_KINEMATICS
-		InitializeKinematics(Particles, DynamicState);
-#endif // TODO_REIMPLEMENT_KINEMATICS
 #if TODO_REIMPLEMENT_FRACTURE
 		InitializeRemoveOnFracture(Particles, DynamicState);
 #endif // TODO_REIMPLEMENT_FRACTURE
@@ -1280,31 +1273,6 @@ void FGeometryCollectionPhysicsProxy::CreateDynamicAttributes()
 	}
 }
 
-void FGeometryCollectionPhysicsProxy::InitializeKinematics(FParticlesType& Particles, const TManagedArray<int32>& DynamicState)
-{
-	if(Parameters.DynamicCollection)
-	{
-		for(int TransformGroupIndex = 0; TransformGroupIndex < RigidBodyID.Num(); TransformGroupIndex++)
-		{
-			if(RigidBodyID[TransformGroupIndex] != INDEX_NONE)
-			{
-				int32 RigidBodyIndex = RigidBodyID[TransformGroupIndex];
-				if(DynamicState[TransformGroupIndex] == (uint8)EObjectStateTypeEnum::Chaos_Object_Kinematic)
-				{
-					Particles.SetObjectState(RigidBodyIndex, Chaos::EObjectStateType::Kinematic);
-				}
-				else if(DynamicState[TransformGroupIndex] == (uint8)EObjectStateTypeEnum::Chaos_Object_Static)
-				{
-					Particles.SetObjectState(RigidBodyIndex, Chaos::EObjectStateType::Static);
-				}
-				else if(DynamicState[TransformGroupIndex] == (uint8)EObjectStateTypeEnum::Chaos_Object_Sleeping)
-				{
-					Particles.SetObjectState(RigidBodyIndex, Chaos::EObjectStateType::Sleeping);
-				}
-			}
-		}
-	}
-}
 
 void FGeometryCollectionPhysicsProxy::InitializeRemoveOnFracture(FParticlesType& Particles, const TManagedArray<int32>& DynamicState)
 {
@@ -2373,6 +2341,7 @@ void FGeometryCollectionPhysicsProxy::PullFromPhysicsState()
 			{
 				GTDynamicCollection->Transform[TmIndex] = TR.Transforms[TmIndex];
 			}
+			GTDynamicCollection->DynamicState[TmIndex] = TR.DynamicState[TmIndex];
 		}
 
 		//question: why do we need this? Sleeping objects will always have to update GPU
@@ -4213,7 +4182,31 @@ void FGeometryCollectionPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Pa
 			}
 		});
 
-		InitializeKinematics(Particles, DynamicState);
+		// InitializeKinematics
+		if (Parameters.DynamicCollection)
+		{
+			for (int32 TransformGroupIndex = 0; TransformGroupIndex < GetTransformGroupSize(); ++TransformGroupIndex)
+			{
+				if (Chaos::TPBDRigidParticleHandle<float, 3>* Handle = SolverParticleHandles[TransformGroupIndex])
+				{
+					// this is being initialized to Static, can't change from static to sleeping
+					Handle->SetObjectState(Chaos::EObjectStateType::Dynamic);
+
+					if (DynamicState[TransformGroupIndex] == (int32)EObjectStateTypeEnum::Chaos_Object_Kinematic)
+					{
+						Handle->SetObjectState(Chaos::EObjectStateType::Kinematic);
+					}
+					else if (DynamicState[TransformGroupIndex] == (int32)EObjectStateTypeEnum::Chaos_Object_Static)
+					{
+						Handle->SetObjectState(Chaos::EObjectStateType::Static);
+					}
+					else if (DynamicState[TransformGroupIndex] == (int32)EObjectStateTypeEnum::Chaos_Object_Sleeping)
+					{
+						Handle->SetObjectState(Chaos::EObjectStateType::Sleeping);
+					}
+				}
+			}
+		}
 
 		InitializeRemoveOnFracture(Particles, DynamicState);
 

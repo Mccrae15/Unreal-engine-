@@ -362,23 +362,45 @@ void STimedDataMonitorPanel::Construct(const FArguments& InArgs)
 				.FillWidth(0.5f)
 				.Padding(0.f, 0.f, 10.f, 0.f)
 				[
-					SNew(SBorder)
-					.HAlign(HAlign_Center)
-					.VAlign(VAlign_Center)
-					.Padding(FMargin(4.f, 4.f, 4.f, 4.f))
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
 					[
-						SAssignNew(TimedDataGenlockWidget, STimedDataGenlock, SharedThis<STimedDataMonitorPanel>(this))
+						SNew(STextBlock)
+						.Text(LOCTEXT("GenlockLabel", "Genlock"))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(SBorder)
+						.HAlign(HAlign_Center)
+						.VAlign(VAlign_Center)
+						.Padding(FMargin(4.f, 4.f, 4.f, 4.f))
+						[
+							SAssignNew(TimedDataGenlockWidget, STimedDataGenlock, SharedThis<STimedDataMonitorPanel>(this))
+						]
 					]
 				]
 				+ SHorizontalBox::Slot()
 				.FillWidth(0.5f)
 				.Padding(0.f)
 				[
-					SNew(SBorder)
-					.HAlign(HAlign_Center)
-					.VAlign(VAlign_Center)
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
 					[
-						SAssignNew(TimedDataTimecodeWidget, STimedDataTimecodeProvider, SharedThis<STimedDataMonitorPanel>(this))
+						SNew(STextBlock)
+						.Text(LOCTEXT("TimecodeLabel", "Timecode Provider"))
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(SBorder)
+						.HAlign(HAlign_Center)
+						.VAlign(VAlign_Center)
+						[
+							SAssignNew(TimedDataTimecodeWidget, STimedDataTimecodeProvider, SharedThis<STimedDataMonitorPanel>(this))
+						]
 					]
 				]
 			]
@@ -655,7 +677,7 @@ bool STimedDataMonitorPanel::IsResetEvaluationChecked() const
 
 FReply STimedDataMonitorPanel::OnShowBuffersClicked()
 {
-	FGlobalTabmanager::Get()->InvokeTab(FTabId(Utilities::NAME_TimedDataMonitorBuffers));
+	FGlobalTabmanager::Get()->TryInvokeTab(FTabId(Utilities::NAME_TimedDataMonitorBuffers));
 	return FReply::Handled();
 }
 
