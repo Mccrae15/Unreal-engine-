@@ -294,7 +294,7 @@ public:
 	* The PredictedSecondsFromNow parameter for calls to Get Pose Action
 	* A value of -9999.f will trigger a GetPoseActionDataForNextFrame, otherwise a GetPoseActionRelativeToNow will be called
 	*/
-	float GlobalPredictedSecondsFromNow = -9999.f;
+	float GlobalPredictedSecondsFromNow = 0.f;//-9999.f;
 
 	/** The skeletal tracking level for the controller in the player's left hand  */
 	EVRSkeletalTrackingLevel LeftControllerFidelity;
