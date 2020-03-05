@@ -964,6 +964,7 @@ void ComputeHairStrandsInterpolation(
 			Output.HairGroupPublicData->VFInput.VertexCount = Output.VFInput.VertexCount;
 			Output.HairGroupPublicData->VFInput.HairRadius = Output.VFInput.HairRadius;
 			Output.HairGroupPublicData->VFInput.HairLength = Output.VFInput.HairLength;
+			Output.HairGroupPublicData->VFInput.bUseStableRasterization = Output.VFInput.bUseStableRasterization;
 			Output.HairGroupPublicData->VFInput.HairDensity = Output.VFInput.HairDensity;
 			Output.HairGroupPublicData->VFInput.LocalToWorldTransform = LocalToWorld;
 
@@ -1318,6 +1319,17 @@ static void InternalProcessGroomBindingTask(FRHICommandListImmediate& RHICmdList
 
 		Resource.SimRootResources->InitRHI();
 		Resource.RenRootResources->InitRHI();
+	}
+
+	TArray<FGoomBindingGroupInfo>& OutGroupInfos = BindingAsset->GroupInfos;
+	OutGroupInfos.Empty();
+	for (const UGroomBindingAsset::FHairGroupData& Data : OutHairGroupDatas)
+	{
+		FGoomBindingGroupInfo& Info = OutGroupInfos.AddDefaulted_GetRef();
+		Info.SimRootCount	= Data.SimRootData.RootCount;
+		Info.SimLODCount	= Data.SimRootData.MeshProjectionLODs.Num();
+		Info.RenRootCount	= Data.RenRootData.RootCount;
+		Info.RenLODCount	= Data.RenRootData.MeshProjectionLODs.Num();
 	}
 
 	FHairStrandsProjectionHairData RenProjectionDatas;

@@ -62,9 +62,6 @@ void SUsdStage::Construct( const FArguments& InArgs )
 	IUsdStageModule& UsdStageModule = FModuleManager::Get().LoadModuleChecked< IUsdStageModule >( "UsdStage" );
 	UsdStageActor = &UsdStageModule.GetUsdStageActor( GWorld );
 
-	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-	OnMapChangedHandle = LevelEditorModule.OnMapChanged().AddSP(this, &SUsdStage::OnMapChanged);
-
 	TUsdStore< pxr::UsdStageRefPtr > UsdStage;
 
 	if ( UsdStageActor.IsValid() )
@@ -223,9 +220,6 @@ SUsdStage::~SUsdStage()
 	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove( OnStageActorPropertyChangedHandle );
 	AUsdStageActor::OnActorLoaded.Remove( OnActorLoadedHandle );
 
-	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-	LevelEditorModule.OnMapChanged().Remove(OnMapChangedHandle);
-
 	ClearStageActorDelegates();
 }
 
@@ -362,14 +356,6 @@ void SUsdStage::FillOptionsMenu(FMenuBuilder& MenuBuilder)
 			false,
 			FSlateIcon(),
 			false);
-
-		MenuBuilder.AddSubMenu(
-			LOCTEXT("PurposeVisibility", "Purpose visibility"),
-			LOCTEXT("PurposeVisibility_ToolTip", "Quickly toggle which of the loaded purposes are visible on the stage"),
-			FNewMenuDelegate::CreateSP(this, &SUsdStage::FillPurposeVisibilitySubMenu),
-			false,
-			FSlateIcon(),
-			false);
 	}
 	MenuBuilder.EndSection();
 }
@@ -497,62 +483,17 @@ void SUsdStage::FillPurposesToLoadSubMenu(FMenuBuilder& MenuBuilder)
 	AddPurposeEntry(EUsdPurpose::Guide,  LOCTEXT("GuidePurpose",  "Guide"));
 }
 
-void SUsdStage::FillPurposeVisibilitySubMenu(FMenuBuilder& MenuBuilder)
-{
-	auto AddPurposeEntry = [&](const EUsdPurpose& Purpose, const FText& Text)
-	{
-		MenuBuilder.AddMenuEntry(
-			Text,
-			FText::GetEmpty(),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateLambda([this, Purpose]()
-				{
-					if(AUsdStageActor* StageActor = UsdStageActor.Get())
-					{
-						FScopedTransaction Transaction(FText::Format(
-							LOCTEXT("PurposeVisibilityTransaction", "Change purpose visibility for USD stage actor '{0}'"),
-							FText::FromString(StageActor->GetActorLabel())
-						));
-
-						StageActor->Modify();
-						StageActor->PurposeVisibility = (int32)((EUsdPurpose)StageActor->PurposeVisibility ^ Purpose);
-
-						FPropertyChangedEvent PropertyChangedEvent(
-							FindFieldChecked< FProperty >( StageActor->GetClass(), GET_MEMBER_NAME_CHECKED( AUsdStageActor, PurposeVisibility ) )
-						);
-						StageActor->PostEditChangeProperty(PropertyChangedEvent);
-					}
-				}),
-				FCanExecuteAction::CreateLambda([this]()
-				{
-					return UsdStageActor.Get() != nullptr;
-				}),
-				FIsActionChecked::CreateLambda([this, Purpose]()
-				{
-					if(AUsdStageActor* StageActor = UsdStageActor.Get())
-					{
-						return EnumHasAllFlags((EUsdPurpose)StageActor->PurposeVisibility, Purpose);
-					}
-					return false;
-				})
-			),
-			NAME_None,
-			EUserInterfaceActionType::Check
-		);
-	};
-
-	AddPurposeEntry(EUsdPurpose::Proxy,  LOCTEXT("ProxyPurpose",  "Proxy"));
-	AddPurposeEntry(EUsdPurpose::Render, LOCTEXT("RenderPurpose", "Render"));
-	AddPurposeEntry(EUsdPurpose::Guide,  LOCTEXT("GuidePurpose",  "Guide"));
-}
-
 void SUsdStage::OnNew()
 {
 	TOptional< FString > UsdFilePath = UsdUtils::BrowseUsdFile( UsdUtils::EBrowseFileMode::Save, AsShared() );
 
 	if ( UsdFilePath )
 	{
+		FScopedTransaction Transaction(FText::Format(
+			LOCTEXT("NewStageTransaction", "Created new USD stage '{0}'"),
+			FText::FromString(UsdFilePath.GetValue())
+		));
+
 		{
 			FScopedUsdAllocs UsdAllocs;
 
@@ -829,11 +770,6 @@ void SUsdStage::OnStageActorPropertyChanged( UObject* ObjectBeingModified, FProp
 			this->UsdStageInfoWidget->RefreshStageInfos( UsdStageActor.Get() );
 		}
 	}
-}
-
-void SUsdStage::OnMapChanged(UWorld* World, EMapChangeType ChangeType)
-{
-	CloseStage();
 }
 
 #endif // #if USE_USD_SDK

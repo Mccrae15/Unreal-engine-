@@ -23,6 +23,8 @@ struct FHairStrandsVisibilityData
 	TRefCountPtr<IPooledRenderTarget> VelocityTexture;
 	TRefCountPtr<IPooledRenderTarget> CategorizationTexture;
 	TRefCountPtr<IPooledRenderTarget> ViewHairCountTexture;
+	TRefCountPtr<IPooledRenderTarget> ViewHairCountUintTexture;
+	TRefCountPtr<IPooledRenderTarget> DepthTextureUint;
 	TRefCountPtr<IPooledRenderTarget> LightChannelMaskTexture;
 
 	TRefCountPtr<IPooledRenderTarget> PPLLNodeCounterTexture;
@@ -38,6 +40,8 @@ struct FHairStrandsVisibilityData
 	const uint32					  TileThreadGroupSize = 32;
 
 	uint32							  MaxSampleCount = 8;
+	uint32							  MaxNodeCount = 0;
+	TRefCountPtr<IPooledRenderTarget> NodeCount;
 	TRefCountPtr<IPooledRenderTarget> NodeIndex;
 	TRefCountPtr<FPooledRDGBuffer>	  NodeData;
 	FShaderResourceViewRHIRef		  NodeDataSRV;
@@ -45,6 +49,14 @@ struct FHairStrandsVisibilityData
 	FShaderResourceViewRHIRef		  NodeCoordSRV;
 	TRefCountPtr<FPooledRDGBuffer>	  NodeIndirectArg;
 	uint32							  NodeGroupSize = 0;
+
+	// Hair lighting is accumulated within this buffer
+	// Allocated conservatively
+	// User indirect dispatch for accumulating contribution
+	FIntPoint SampleLightingViewportResolution;
+	TRefCountPtr<IPooledRenderTarget> SampleLightingBuffer;
+//	TRefCountPtr<IPooledRenderTarget> PixelLightingBuffer;
+
 };
 
 struct FHairStrandsVisibilityViews

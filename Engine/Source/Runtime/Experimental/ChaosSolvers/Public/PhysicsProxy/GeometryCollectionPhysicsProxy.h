@@ -135,7 +135,7 @@ public:
 	 */
 	FGeometryCollectionPhysicsProxy(
 		UObject* InOwner, 
-		FGeometryDynamicCollection* InDynamicCollection, 
+		const FSimulationParameters& SimulationParameters,
 		FInitFunc InInitFunc, 
 		FCacheSyncFunc InCacheSyncFunc, 
 		FFinalSyncFunc InFinalSyncFunc  ,
@@ -147,14 +147,7 @@ public:
 	 * and prepare for simulation.
 	 */
 	void Initialize();
-	void Reset() { InitializedState = ESimulationInitializationState::Unintialized; }
-
-	/** 
-	 * Initialize rigid body particles on the game thread. 
-	 *
-	 * Called by \c FPBDRigidsSolver::RegisterObject().
-	 */
-	void InitializeBodiesGT();
+	void Reset() { }
 
 	/** 
 	 * Finish initialization on the physics thread. 
@@ -247,7 +240,6 @@ public:
 	void DisableCollisionsCallback(TSet<TTuple<int32, int32>>& InPairs);
 	void AddForceCallback(FParticlesType& InParticles, const float InDt, const int32 InIndex);
 	void FieldForcesUpdateCallback(Chaos::FPhysicsSolver* InSolver, FParticlesType& Particles, Chaos::TArrayCollectionArray<FVector> & Force, Chaos::TArrayCollectionArray<FVector> & Torque, const float Time);
-	void ActivateBodies();
 
 protected:
 	/**
@@ -339,7 +331,6 @@ private:
 private:
 	FSimulationParameters Parameters;
 
-	ESimulationInitializationState InitializedState;
 	// Records current dynamic state
 	bool IsObjectDynamic;
 	// Indicate when loaded

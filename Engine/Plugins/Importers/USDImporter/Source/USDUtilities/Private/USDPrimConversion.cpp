@@ -36,14 +36,22 @@ bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr:
 	bool bResetXFormStack = false;
 	Xformable.GetLocalTransformation( &UsdMatrix, &bResetXFormStack, EvalTime );
 
-	FRotator AdditionalRotation( ForceInit );
-
 	UsdToUnreal::FUsdStageInfo StageInfo( Stage );
 
+	// Extra rotation to match different camera facing direction convention
+	// Note: The camera space is always Y-up, yes, but this is not what this is: This is the camera's transform wrt the stage,
+	// which follows the stage up axis
+	FRotator AdditionalRotation( ForceInit );
 	if ( Xformable.GetPrim().IsA< pxr::UsdGeomCamera >() )
 	{
-		AdditionalRotation = FRotator( 0.0f, -90.f, 0.0f );
-		StageInfo.UpAxis = pxr::UsdGeomTokens->y; // Cameras are always Y up in USD
+		if (StageInfo.UpAxis == pxr::UsdGeomTokens->y)
+		{
+			AdditionalRotation = FRotator(0.0f, -90.f, 0.0f);
+		}
+		else
+		{
+			AdditionalRotation = FRotator(-90.0f, -90.f, 0.0f);
+		}
 	}
 
 	OutTransform = FTransform( AdditionalRotation ) * UsdToUnreal::ConvertMatrix( StageInfo, UsdMatrix );
@@ -105,19 +113,19 @@ bool UnrealToUsd::ConvertSceneComponent( const pxr::UsdStageRefPtr& Stage, const
 
 	// Transform
 	pxr::UsdGeomXformable XForm( UsdPrim );
-	if ( XForm )
+	if ( !XForm )
 	{
-		pxr::GfMatrix4d UsdMatrix;
-		bool bResetXFormStack = false;
-		XForm.GetLocalTransformation( &UsdMatrix, &bResetXFormStack );
+		return false;
+	}
 
-		pxr::GfMatrix4d UsdTransform = UnrealToUsd::ConvertTransform( Stage, SceneComponent->GetRelativeTransform() );
+	pxr::GfMatrix4d UsdMatrix;
+	bool bResetXFormStack = false;
+	XForm.GetLocalTransformation( &UsdMatrix, &bResetXFormStack );
 
-		if ( GfIsClose( UsdMatrix, UsdTransform, THRESH_VECTORS_ARE_NEAR ) )
-		{
-			return true;
-		}
+	pxr::GfMatrix4d UsdTransform = UnrealToUsd::ConvertTransform( Stage, SceneComponent->GetRelativeTransform() );
 
+	if ( !GfIsClose( UsdMatrix, UsdTransform, THRESH_VECTORS_ARE_NEAR ) )
+	{
 		bResetXFormStack = false;
 		bool bFoundTransformOp = false;
 
@@ -142,6 +150,17 @@ bool UnrealToUsd::ConvertSceneComponent( const pxr::UsdStageRefPtr& Stage, const
 				MatrixXform.Set( UsdTransform );
 			}
 		}
+	}
+
+	// Visibility
+	bool bVisible = SceneComponent->GetVisibleFlag();
+	if ( bVisible )
+	{
+		XForm.MakeVisible();
+	}
+	else
+	{
+		XForm.MakeInvisible();
 	}
 
 	return true;

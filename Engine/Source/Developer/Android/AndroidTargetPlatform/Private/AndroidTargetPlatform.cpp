@@ -247,6 +247,16 @@ bool FAndroidTargetPlatform::SupportsVulkan() const
 	return bSupportsVulkan;
 }
 
+bool FAndroidTargetPlatform::SupportsVulkanSM5() const
+{
+	// default to no support for VulkanSM5
+	bool bSupportsMobileVulkanSM5 = false;
+#if WITH_ENGINE
+	GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bSupportsVulkanSM5"), bSupportsMobileVulkanSM5, GEngineIni);
+#endif
+	return bSupportsMobileVulkanSM5;
+}
+
 bool FAndroidTargetPlatform::SupportsSoftwareOcclusion() const
 {
 	static auto* CVarMobileAllowSoftwareOcclusion = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.AllowSoftwareOcclusion"));
@@ -343,8 +353,10 @@ bool FAndroidTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) 
 			return SupportsES31() || SupportsVulkan();
 
 		case ETargetPlatformFeatures::HighQualityLightmaps:
-		case ETargetPlatformFeatures::Tessellation:
 		case ETargetPlatformFeatures::DeferredRendering:
+			return SupportsAEP() || SupportsVulkanSM5();
+
+		case ETargetPlatformFeatures::Tessellation:
 			return SupportsAEP();
 
 		case ETargetPlatformFeatures::SoftwareOcclusion:
@@ -368,10 +380,15 @@ void FAndroidTargetPlatform::GetAllPossibleShaderFormats( TArray<FName>& OutForm
 	static FName NAME_GLSL_310_ES_EXT(TEXT("GLSL_310_ES_EXT"));
 	static FName NAME_SF_VULKAN_ES31_ANDROID(TEXT("SF_VULKAN_ES31_ANDROID_NOUB"));
 	static FName NAME_GLSL_ES3_1_ANDROID(TEXT("GLSL_ES3_1_ANDROID"));
+	static FName NAME_SF_VULKAN_SM5_ANDROID(TEXT("SF_VULKAN_SM5_ANDROID"));
 
 	if (SupportsVulkan())
 	{
 		OutFormats.AddUnique(NAME_SF_VULKAN_ES31_ANDROID);
+		if (SupportsVulkanSM5())
+		{
+			OutFormats.AddUnique(NAME_SF_VULKAN_SM5_ANDROID);
+		}
 	}
 
 	if (SupportsES31())
@@ -453,12 +470,8 @@ void FAndroidTargetPlatform::GetTextureFormats( const UTexture* InTexture, TArra
 			else if (LayerFormatSettings.CompressionSettings == TC_Normalmap)
 			{
 				if(!bIsCompressionValid) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePOTERROR;
-				else if(FormatCategory == EAndroidTextureFormatCategory::PVRTC) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePVRTC4;
 				else if (FormatCategory == EAndroidTextureFormatCategory::DXT) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameDXT5;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ATC) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameATC_RGBA_I;
 				else if (FormatCategory == EAndroidTextureFormatCategory::ETC2) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameETC2_RGB;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC1a) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC1a;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC1) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC1;
 				else bValidFormat = false;
 			}
 			else if (LayerFormatSettings.CompressionSettings == TC_Displacementmap)
@@ -481,48 +494,32 @@ void FAndroidTargetPlatform::GetTextureFormats( const UTexture* InTexture, TArra
 			{
 				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameG8;
 			}
-			else if (InTexture->bForcePVRTC4 || LayerFormatSettings.CompressionSettings == TC_BC7)
+			else if (LayerFormatSettings.CompressionSettings == TC_BC7)
 			{
 				if (!bIsCompressionValid) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePOTERROR;
-				else if (FormatCategory == EAndroidTextureFormatCategory::PVRTC) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePVRTC4;
 				else if (FormatCategory == EAndroidTextureFormatCategory::DXT) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameDXT5;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ATC) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameATC_RGBA_I;
 				else if (FormatCategory == EAndroidTextureFormatCategory::ETC2) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC2;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC1a) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC1a;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC1) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC1;
 				else bValidFormat = false;
 			}
 			else if (LayerFormatSettings.CompressionNoAlpha)
 			{
 				if (!bIsCompressionValid) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePOTERROR;
-				else if (FormatCategory == EAndroidTextureFormatCategory::PVRTC) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePVRTC2;
 				else if (FormatCategory == EAndroidTextureFormatCategory::DXT) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameDXT1;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ATC) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameATC_RGB;
 				else if (FormatCategory == EAndroidTextureFormatCategory::ETC2) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameETC2_RGB;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC1a) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC1a;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC1) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameETC1;
 				else bValidFormat = false;
 			}
 			else if (InTexture->bDitherMipMapAlpha)
 			{
 				if (!bIsCompressionValid) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePOTERROR;
-				else if (FormatCategory == EAndroidTextureFormatCategory::PVRTC) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePVRTC4;
 				else if (FormatCategory == EAndroidTextureFormatCategory::DXT) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameDXT5;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ATC) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameATC_RGBA_I;
 				else if (FormatCategory == EAndroidTextureFormatCategory::ETC2) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC2;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC1a) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC1a;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC1) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC1;
 				else bValidFormat = false;
 			}
 			else
 			{
 				if (!bIsCompressionValid) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePOTERROR;
-				else if (FormatCategory == EAndroidTextureFormatCategory::PVRTC) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePVRTC4;
 				else if (FormatCategory == EAndroidTextureFormatCategory::DXT) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoDXT;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ATC) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoATC;
 				else if (FormatCategory == EAndroidTextureFormatCategory::ETC2) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC2;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC1a) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC1a;
-				else if (FormatCategory == EAndroidTextureFormatCategory::ETC1) FormatPerLayer[LayerIndex] = AndroidTexFormat::NameAutoETC1;
 				else bValidFormat = false;
 			}
 		}
@@ -551,22 +548,10 @@ void FAndroidTargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) con
 
 	auto AddAllTextureFormatIfSupports = [=, &OutFormats](bool bIsNonPOT)
 	{
-		AddTextureFormatIfSupports(AndroidTexFormat::NameAutoPVRTC, OutFormats, bIsNonPOT);
-		AddTextureFormatIfSupports(AndroidTexFormat::NamePVRTC2, OutFormats, bIsNonPOT);
-		AddTextureFormatIfSupports(AndroidTexFormat::NamePVRTC4, OutFormats, bIsNonPOT);
-
 		AddTextureFormatIfSupports(AndroidTexFormat::NameAutoDXT, OutFormats, bIsNonPOT);
 		AddTextureFormatIfSupports(AndroidTexFormat::NameDXT1, OutFormats, bIsNonPOT);
 		AddTextureFormatIfSupports(AndroidTexFormat::NameDXT5, OutFormats, bIsNonPOT);
-
-		AddTextureFormatIfSupports(AndroidTexFormat::NameATC_RGB, OutFormats, bIsNonPOT);
-		AddTextureFormatIfSupports(AndroidTexFormat::NameATC_RGBA_I, OutFormats, bIsNonPOT);
-
-		AddTextureFormatIfSupports(AndroidTexFormat::NameAutoETC1, OutFormats, bIsNonPOT);
-		AddTextureFormatIfSupports(AndroidTexFormat::NameAutoETC1a, OutFormats, bIsNonPOT);
 		AddTextureFormatIfSupports(AndroidTexFormat::NameAutoETC2, OutFormats, bIsNonPOT);
-
-		AddTextureFormatIfSupports(AndroidTexFormat::NameAutoATC, OutFormats, bIsNonPOT);
 	};
 
 	AddAllTextureFormatIfSupports(true);
@@ -576,7 +561,7 @@ void FAndroidTargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) con
 
 void FAndroidTargetPlatform::GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const
 {
-	if (SupportsAEP())
+	if (SupportsAEP() || SupportsVulkanSM5())
 	{
 		// use Full HDR with AEP
 		OutFormats.Add(FName(TEXT("FullHDR")));
