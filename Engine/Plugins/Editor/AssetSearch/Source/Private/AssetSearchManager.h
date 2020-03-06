@@ -6,10 +6,11 @@
 #include "IAssetSearchModule.h"
 #include "AssetSearchDatabase.h"
 #include "Containers/Queue.h"
+#include "HAL/Runnable.h"
 
 class FRunnableThread;
 
-class FAssetSearchManager
+class FAssetSearchManager : public FRunnable
 {
 public:
 	FAssetSearchManager();
@@ -24,6 +25,8 @@ public:
 
 private:
 	bool Tick_GameThread(float DeltaTime);
+	virtual uint32 Run() override;
+	void Tick_DatabaseOperationThread();
 
 private:
 	void OnAssetAdded(const FAssetData& InAssetData);
@@ -79,5 +82,10 @@ private:
 	FDelegateHandle TickerHandle;
 
 private:
-	FRunnableThread* Thread;
+	TAtomic<bool> RunThread;
+	FRunnableThread* DatabaseThread = nullptr;
+
+	TQueue<TFunction<void()>> ImmediateOperations;
+	TQueue<TFunction<void()>> FeedOperations;
+	TQueue<TFunction<void()>> UpdateOperations;
 };
