@@ -104,18 +104,19 @@ class ENGINE_API UInputSettings
 	float DoubleClickTime;
 
 private:
-	/** List of Action Mappings */
-	UPROPERTY(config, EditAnywhere, Category="Bindings")
-	TArray<struct FInputActionKeyMapping> ActionMappings;
-
-	/** List of Axis Mappings */
-	UPROPERTY(config, EditAnywhere, Category="Bindings")
-	TArray<struct FInputAxisKeyMapping> AxisMappings;
-
 	/** List of Axis Mappings */
 	UPROPERTY(config, EditAnywhere, Category = "Bindings")
 	TArray<struct FInputActionSpeechMapping> SpeechMappings;
 public:
+
+	/** List of Action Mappings */
+	UPROPERTY(config, EditAnywhere, Category = "Bindings")
+		TArray<struct FInputActionKeyMapping> ActionMappings;
+
+	/** List of Axis Mappings */
+	UPROPERTY(config, EditAnywhere, Category = "Bindings")
+		TArray<struct FInputAxisKeyMapping> AxisMappings;
+
 	/** The default on-screen touch input interface for the game (can be null to disable the onscreen interface) */
 	UPROPERTY(config, EditAnywhere, Category="Mobile", meta=(AllowedClasses="TouchInterface"))
 	FSoftObjectPath DefaultTouchInterface;
