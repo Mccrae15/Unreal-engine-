@@ -15,10 +15,12 @@
 
 struct FPropertyChangedEvent;
 
+#if PHYSICS_INTERFACE_PHYSX
 namespace physx
 {
 	class PxMaterial;
 }
+#endif
 
 /** DEPRECATED Pairs desired tire friction scale with tire type */
 USTRUCT()
@@ -118,9 +120,7 @@ public:
 
 	FPhysicsMaterialHandle MaterialHandle;
 
-#if WITH_PHYSX
 	FPhysxUserData PhysxUserData;
-#endif
 
 	//~ Begin UObject Interface
 #if WITH_EDITOR

@@ -1155,7 +1155,7 @@ namespace UnrealBuildTool
 					TargetDeviceFamily.Attributes.Append(NameAttribute);
 
 					XmlAttribute MinVersionAttribute = AppxManifestXmlDocument.CreateAttribute("MinVersion");
-					string versionString = CreateStringValue("MinimumPlatformVersion", "Package.Dependencies.TargetDeviceFamily[0].MinVersion", "MinimumPlatformVersion", "MinVersion", "10.0.10240.0");
+					string versionString = CreateStringValue("MinimumPlatformVersion", "Package.Dependencies.TargetDeviceFamily[0].MinVersion", "MinimumPlatformVersion", "MinVersion", "10.0.17763.0");
 					MinVersionAttribute.Value = versionString;
 					TargetDeviceFamily.Attributes.Append(MinVersionAttribute);
 
@@ -1180,19 +1180,9 @@ namespace UnrealBuildTool
 					Properties.AppendChild(PublisherDisplayName);
 
 					XmlElement PackageLogo = AppxManifestXmlDocument.CreateElement("Logo");
-					// Some applications may not have a package logo and use the application logo instead.
-					// Try logos in the following order:
-					//   1. Project package logo
-					//   2. Project application logo
-					//   3. Engine application logo (the engine always uses a single logo for package and application)
-					if (CopyAndReplaceBinaryIntermediate("StoreLogo.png", false))
-					{
+                    if (CopyAndReplaceBinaryIntermediate("StoreLogo.png"))
+                    {
 						PackageLogo.InnerText = BuildResourceSubPath + "\\StoreLogo.png";
-						Properties.AppendChild(PackageLogo);
-					}
-					else if (CopyAndReplaceBinaryIntermediate("Logo.png"))
-					{
-						PackageLogo.InnerText = BuildResourceSubPath + "\\Logo.png";
 						Properties.AppendChild(PackageLogo);
 					}
 					else
@@ -1540,9 +1530,22 @@ namespace UnrealBuildTool
 				}
 			}
 
-			// Any culture with a culture-specific value will override the neutral value,
-			// even for unrelated cultures.  So propagate the neutral value to avoid this happening.
-			if (IsEverLocalized)
+            // Values cannot be empty in the resource file, or the appx will fail WACK.
+            if (string.IsNullOrEmpty(NeutralValue.Trim()))
+            {
+                if (!string.IsNullOrEmpty(DefaultValue.Trim()))
+                {
+                    NeutralValue = DefaultValue.Trim();
+                }
+                else
+                {
+                    NeutralValue = "Missing Entry";
+                }
+            }
+
+            // Any culture with a culture-specific value will override the neutral value,
+            // even for unrelated cultures.  So propagate the neutral value to avoid this happening.
+            if (IsEverLocalized)
 			{
 				for (int i = 0; i < CulturesToStage.Count; ++i)
 				{
@@ -1729,22 +1732,12 @@ namespace UnrealBuildTool
 			XmlElement PackageDescription = AppxManifestXmlDocument.CreateElement("Description");
 			PackageDescription.InnerText = "ms-resource:PackageDescription";
 			Properties.AppendChild(PackageDescription);
-			AddResourceEntry("PackageDescription", "PackageDescription", "Package.Properties.Description", "/Script/EngineSettings.GeneralProjectSettings", "Description", "");
+			AddResourceEntry("PackageDescription", "PackageDescription", "Package.Properties.Description", "/Script/EngineSettings.GeneralProjectSettings", "Description", "No Description");
 
 			XmlElement PackageLogo = AppxManifestXmlDocument.CreateElement("Logo");
-			// Some applications may not have a package logo and use the application logo instead.
-			// Try logos in the following order:
-			//   1. Project package logo
-			//   2. Project application logo
-			//   3. Engine application logo (the engine always uses a single logo for package and application)
-			if (CopyAndReplaceBinaryIntermediate("StoreLogo.png", false))
+			if (CopyAndReplaceBinaryIntermediate("StoreLogo.png"))
 			{
 				PackageLogo.InnerText = BuildResourceSubPath + "\\StoreLogo.png";
-				Properties.AppendChild(PackageLogo);
-			}
-			else if (CopyAndReplaceBinaryIntermediate("Logo.png"))
-			{
-				PackageLogo.InnerText = BuildResourceSubPath + "\\Logo.png";
 				Properties.AppendChild(PackageLogo);
 			}
 			else

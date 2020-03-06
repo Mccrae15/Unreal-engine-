@@ -541,21 +541,6 @@ public:
 		return UniformBufferLayout;
 	}
 
-	uint32 GetAllocatedSize() const
-	{
-		/*return UniformVectorExpressions.GetAllocatedSize()
-			+ UniformScalarExpressions.GetAllocatedSize()
-			+ Uniform2DTextureExpressions.GetAllocatedSize()
-			+ UniformCubeTextureExpressions.GetAllocatedSize()
-			+ Uniform2DArrayTextureExpressions.GetAllocatedSize()
-			+ UniformVolumeTextureExpressions.GetAllocatedSize()
-			+ UniformVirtualTextureExpressions.GetAllocatedSize()
-			+ UniformExternalTextureExpressions.GetAllocatedSize()
-			+ VTStacks.GetAllocatedSize()
-			+ ParameterCollections.GetAllocatedSize();*/
-		return 0u;
-	}
-
 	inline const FMaterialVectorParameterInfo& GetVectorParameter(uint32 Index) const { return UniformVectorParameters[Index]; }
 	inline const FMaterialScalarParameterInfo& GetScalarParameter(uint32 Index) const { return UniformScalarParameters[Index]; }
 	inline const FMaterialTextureParameterInfo& GetTextureParameter(EMaterialTextureParameterType Type, int32 Index) const { return UniformTextureParameters[(uint32)Type][Index]; }
@@ -1200,7 +1185,7 @@ public:
 	void RestoreShadersFromMemory(const TArray<uint8>& ShaderData);
 
 	/** Serializes a shader map to an archive (used with recompiling shaders for a remote console) */
-	ENGINE_API static void SaveForRemoteRecompile(FArchive& Ar, const TMap<FString, TArray<TRefCountPtr<FMaterialShaderMap> > >& CompiledShaderMaps, const TArray<FShaderResourceId>& ClientResourceIds);
+	ENGINE_API static void SaveForRemoteRecompile(FArchive& Ar, const TMap<FString, TArray<TRefCountPtr<FMaterialShaderMap> > >& CompiledShaderMaps);
 	ENGINE_API static void LoadForRemoteRecompile(FArchive& Ar, EShaderPlatform ShaderPlatform, const TArray<FString>& MaterialsForShaderMaps);
 
 #if WITH_EDITOR
@@ -2056,6 +2041,24 @@ struct FUniformExpressionCache
 	void ResetAllocatedVTs();
 };
 
+struct FUniformExpressionCacheContainer
+{
+	inline FUniformExpressionCache& operator[](int32 Index)
+	{
+#if WITH_EDITOR
+		return Elements[Index];
+#else
+		return Elements;
+#endif
+	}
+private:
+#if WITH_EDITOR
+	FUniformExpressionCache Elements[ERHIFeatureLevel::Num];
+#else
+	FUniformExpressionCache Elements;
+#endif
+};
+
 class USubsurfaceProfile;
 
 /**
@@ -2066,7 +2069,7 @@ class FMaterialRenderProxy : public FRenderResource
 public:
 
 	/** Cached uniform expressions. */
-	mutable FUniformExpressionCache UniformExpressionCache[ERHIFeatureLevel::Num];
+	mutable FUniformExpressionCacheContainer UniformExpressionCache;
 
 	/** Cached external texture immutable samplers */
 	mutable FImmutableSamplerState ImmutableSamplerState;

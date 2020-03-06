@@ -1442,33 +1442,60 @@ void FPhysScene_ChaosInterface::AddForceAtPosition_AssumesLocked(FBodyInstance* 
 
 void FPhysScene_ChaosInterface::AddRadialForceToBody_AssumesLocked(FBodyInstance* BodyInstance, const FVector& Origin, const float Radius, const float Strength, const uint8 Falloff, bool bAccelChange, bool bAllowSubstepping)
 {
-	// #todo : Implement
-#if 0
-	Chaos::TVector<float, 3> Direction = (static_cast<FVector>(Scene.GetSolver()->GetRigidParticles().X(Index)) - Origin);
-	Chaos::TVector<float, 3> Force(0);
-	const float Distance = Direction.Size();
-
-	if(Distance > Radius)
+	FPhysicsActorHandle& Handle = BodyInstance->GetPhysicsActorHandle();
+	if (ensure(FPhysicsInterface::IsValid(Handle)))
 	{
-		return;
+		Chaos::TPBDRigidParticle<float, 3>* Rigid = Handle->CastToRigidParticle();
+		
+		if (ensure(Rigid))
+		{
+			Chaos::EObjectStateType ObjectState = Rigid->ObjectState();
+			if (CHAOS_ENSURE(ObjectState == Chaos::EObjectStateType::Dynamic || ObjectState == Chaos::EObjectStateType::Sleeping))
+			{
+				const Chaos::FVec3& CurrentForce = Rigid->F();
+				const Chaos::FVec3& CurrentTorque = Rigid->Torque();
+				const Chaos::FVec3 WorldCOM = Chaos::FParticleUtilitiesGT::GetCoMWorldPosition(Rigid);
+
+				Chaos::FVec3 Direction = WorldCOM - Origin;
+				const float Distance = Direction.Size();
+				if (Distance > Radius)
+				{
+					return;
+				}
+
+				Rigid->SetObjectState(Chaos::EObjectStateType::Dynamic);
+
+				if (Distance < 1e-4)
+				{
+					Direction = Chaos::FVec3(1, 0, 0);
+				}
+				else
+				{
+					Direction = Direction.GetUnsafeNormal();
+				}
+				Chaos::FVec3 Force(0, 0, 0);
+				CHAOS_ENSURE(Falloff < RIF_MAX);
+				if (Falloff == ERadialImpulseFalloff::RIF_Constant)
+				{
+					Force = Strength * Direction;
+				}
+				if (Falloff == ERadialImpulseFalloff::RIF_Linear)
+				{
+					Force = (Radius - Distance) / Radius * Strength * Direction;
+				}
+				if (bAccelChange)
+				{
+					const float Mass = Rigid->M();
+					const Chaos::TVector<float, 3> TotalAcceleration = CurrentForce + (Force * Mass);
+					Rigid->SetF(TotalAcceleration);
+				}
+				else
+				{
+					Rigid->SetF(CurrentForce + Force);
+				}
+			}
+		}
 	}
-
-	Direction = Direction.GetSafeNormal();
-	
-	check(Falloff == RIF_Constant || Falloff == RIF_Linear);
-
-	if(Falloff == RIF_Constant)
-	{
-		Force = Strength * Direction;
-	}
-
-	if(Falloff == RIF_Linear)
-	{
-		Force = (Radius - Distance) / Radius * Strength * Direction;
-	}
-
-	AddForce(bAccelChange ? (Force * Scene.GetSolver()->GetRigidParticles().M(Index)) : Force, Id);
-#endif
 }
 
 void FPhysScene_ChaosInterface::ClearForces_AssumesLocked(FBodyInstance* BodyInstance, bool bAllowSubstepping)
@@ -2100,69 +2127,72 @@ void FPhysScene_ChaosInterface::SyncBodies(Chaos::FPhysicsSolver* Solver)
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("SyncBodies"), STAT_SyncBodies, STATGROUP_Physics);
 	TArray<FPhysScenePendingComponentTransform_Chaos> PendingTransforms;
 
-	Chaos::FPBDRigidActiveParticlesBufferAccessor Accessor(Solver->GetActiveParticlesBuffer());
-
-	TSet<FGeometryCollectionPhysicsProxy*> GCProxies;
-
-	const Chaos::FPBDRigidActiveParticlesBufferOut* ActiveParticleBuffer = Accessor.GetSolverOutData();
-	for (Chaos::TGeometryParticle<float, 3>* ActiveParticle : ActiveParticleBuffer->ActiveGameThreadParticles)
 	{
-		if (IPhysicsProxyBase * ProxyBase = ActiveParticle->Proxy)
+		Chaos::FPBDRigidActiveParticlesBufferAccessor Accessor(Solver->GetActiveParticlesBuffer());
+
+		TSet<FGeometryCollectionPhysicsProxy*> GCProxies;
+
+		const Chaos::FPBDRigidActiveParticlesBufferOut* ActiveParticleBuffer = Accessor.GetSolverOutData();
+		for (Chaos::TGeometryParticle<float, 3>* ActiveParticle : ActiveParticleBuffer->ActiveGameThreadParticles)
 		{
-			if (ProxyBase->GetType() == EPhysicsProxyType::SingleRigidParticleType)
+			if (IPhysicsProxyBase * ProxyBase = ActiveParticle->Proxy)
 			{
-				FSingleParticlePhysicsProxy< Chaos::TPBDRigidParticle<float, 3> > * Proxy = static_cast<FSingleParticlePhysicsProxy< Chaos::TPBDRigidParticle<float, 3> >*>(ProxyBase);
-				Proxy->PullFromPhysicsState();
-
-				if (FBodyInstance* BodyInstance = FPhysicsUserData::Get<FBodyInstance>(ActiveParticle->UserData()))
+				if (ProxyBase->GetType() == EPhysicsProxyType::SingleRigidParticleType)
 				{
-					if (BodyInstance->OwnerComponent.IsValid())
+					FSingleParticlePhysicsProxy< Chaos::TPBDRigidParticle<float, 3> > * Proxy = static_cast<FSingleParticlePhysicsProxy< Chaos::TPBDRigidParticle<float, 3> >*>(ProxyBase);
+					Proxy->PullFromPhysicsState();
+
+					if (FBodyInstance* BodyInstance = FPhysicsUserData::Get<FBodyInstance>(ActiveParticle->UserData()))
 					{
-						UPrimitiveComponent* OwnerComponent = BodyInstance->OwnerComponent.Get();
-						if (OwnerComponent != nullptr)
+						if (BodyInstance->OwnerComponent.IsValid())
 						{
-							bool bPendingMove = false;
-							if (BodyInstance->InstanceBodyIndex == INDEX_NONE)
+							UPrimitiveComponent* OwnerComponent = BodyInstance->OwnerComponent.Get();
+							if (OwnerComponent != nullptr)
 							{
-								Chaos::TRigidTransform<float, 3> NewTransform(ActiveParticle->X(), ActiveParticle->R());
-
-								if (!NewTransform.EqualsNoScale(OwnerComponent->GetComponentTransform()))
+								bool bPendingMove = false;
+								if (BodyInstance->InstanceBodyIndex == INDEX_NONE)
 								{
-									bPendingMove = true;
-									const FVector MoveBy = NewTransform.GetLocation() - OwnerComponent->GetComponentTransform().GetLocation();
-									const FQuat NewRotation = NewTransform.GetRotation();
-									PendingTransforms.Add(FPhysScenePendingComponentTransform_Chaos(OwnerComponent, MoveBy, NewRotation, Proxy->HasAwakeEvent()));
-								}
-							}
+									Chaos::TRigidTransform<float, 3> NewTransform(ActiveParticle->X(), ActiveParticle->R());
 
-							if (Proxy->HasAwakeEvent() && !bPendingMove)
-							{
-								PendingTransforms.Add(FPhysScenePendingComponentTransform_Chaos(OwnerComponent));
+									if (!NewTransform.EqualsNoScale(OwnerComponent->GetComponentTransform()))
+									{
+										bPendingMove = true;
+										const FVector MoveBy = NewTransform.GetLocation() - OwnerComponent->GetComponentTransform().GetLocation();
+										const FQuat NewRotation = NewTransform.GetRotation();
+										PendingTransforms.Add(FPhysScenePendingComponentTransform_Chaos(OwnerComponent, MoveBy, NewRotation, Proxy->HasAwakeEvent()));
+									}
+								}
+
+								if (Proxy->HasAwakeEvent() && !bPendingMove)
+								{
+									PendingTransforms.Add(FPhysScenePendingComponentTransform_Chaos(OwnerComponent));
+								}
+								Proxy->ClearEvents();
 							}
-							Proxy->ClearEvents();
 						}
 					}
 				}
+				else if(ProxyBase->GetType() == EPhysicsProxyType::GeometryCollectionType)
+				{
+					FGeometryCollectionPhysicsProxy* Proxy = static_cast<FGeometryCollectionPhysicsProxy*>(ProxyBase);
+					GCProxies.Add(Proxy);
+				}
 			}
-			else if(ProxyBase->GetType() == EPhysicsProxyType::GeometryCollectionType)
+		}
+		for (IPhysicsProxyBase* ProxyBase : ActiveParticleBuffer->PhysicsParticleProxies) 
+		{
+			if(ProxyBase->GetType() == EPhysicsProxyType::GeometryCollectionType)
 			{
 				FGeometryCollectionPhysicsProxy* Proxy = static_cast<FGeometryCollectionPhysicsProxy*>(ProxyBase);
 				GCProxies.Add(Proxy);
 			}
+			else
+			{
+				ensure(false); // Unhandled physics only particle proxy!
+			}
 		}
 	}
-	for (IPhysicsProxyBase* ProxyBase : ActiveParticleBuffer->PhysicsParticleProxies) 
-	{
-		if(ProxyBase->GetType() == EPhysicsProxyType::GeometryCollectionType)
-		{
-			FGeometryCollectionPhysicsProxy* Proxy = static_cast<FGeometryCollectionPhysicsProxy*>(ProxyBase);
-			GCProxies.Add(Proxy);
-		}
-		else
-		{
-			ensure(false); // Unhandled physics only particle proxy!
-		}
-	}
+	
 	for (auto* GCProxy : GCProxies)
 	{
 		GCProxy->PullFromPhysicsState();

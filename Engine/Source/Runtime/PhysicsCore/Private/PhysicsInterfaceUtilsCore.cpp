@@ -6,7 +6,22 @@
 
 #include "Chaos/ParticleHandle.h"
 
-#if WITH_PHYSX
+FCollisionFilterData P2UFilterData(const PxFilterData& PFilterData)
+{
+	FCollisionFilterData FilterData;
+	FilterData.Word0 = PFilterData.word0;
+	FilterData.Word1 = PFilterData.word1;
+	FilterData.Word2 = PFilterData.word2;
+	FilterData.Word3 = PFilterData.word3;
+	return FilterData;
+}
+
+PxFilterData U2PFilterData(const FCollisionFilterData& FilterData)
+{
+	return PxFilterData(FilterData.Word0, FilterData.Word1, FilterData.Word2, FilterData.Word3);
+}
+
+#if PHYSICS_INTERFACE_PHYSX
 
 PxShapeFlags BuildPhysXShapeFlags(FBodyCollisionFlags BodyCollisionFlags, bool bPhysicsStatic, bool bIsTriangleMesh)
 {
@@ -27,21 +42,6 @@ PxShapeFlags BuildPhysXShapeFlags(FBodyCollisionFlags BodyCollisionFlags, bool b
 	ModifyShapeFlag<PxShapeFlag::eVISUALIZATION>(ShapeFlags, true);
 
 	return ShapeFlags;
-}
-
-PxFilterData U2PFilterData(const FCollisionFilterData& FilterData)
-{
-	return PxFilterData(FilterData.Word0, FilterData.Word1, FilterData.Word2, FilterData.Word3);
-}
-
-FCollisionFilterData P2UFilterData(const PxFilterData& PFilterData)
-{
-	FCollisionFilterData FilterData;
-	FilterData.Word0 = PFilterData.word0;
-	FilterData.Word1 = PFilterData.word1;
-	FilterData.Word2 = PFilterData.word2;
-	FilterData.Word3 = PFilterData.word3;
-	return FilterData;
 }
 
 PxGeometryType::Enum U2PCollisionShapeType(ECollisionShapeType InUType)

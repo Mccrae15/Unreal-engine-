@@ -349,6 +349,15 @@ void FMaterialInstanceResource::GameThread_SetParent(UMaterialInterface* ParentM
 	}
 }
 
+void FMaterialInstanceResource::InitMIParameters(FMaterialInstanceParameterSet& ParameterSet)
+{
+	InvalidateUniformExpressionCache(false);
+	Swap(ScalarParameterArray, ParameterSet.ScalarParameters);
+	Swap(VectorParameterArray, ParameterSet.VectorParameters);
+	Swap(TextureParameterArray, ParameterSet.TextureParameters);
+	Swap(RuntimeVirtualTextureParameterArray, ParameterSet.RuntimeVirtualTextureParameters);
+}
+
 /**
 * Updates a parameter on the material instance from the game thread.
 */
@@ -534,8 +543,10 @@ UMaterialInstance::UMaterialInstance(const FObjectInitializer& ObjectInitializer
 	: Super(ObjectInitializer)
 {
 	bHasStaticPermutationResource = false;
+#if WITH_EDITOR
 	ReentrantFlag[0] = false;
 	ReentrantFlag[1] = false;
+#endif
 	ShadingModels = MSM_Unlit;
 
 	PhysMaterial = nullptr;
@@ -559,16 +570,63 @@ void UMaterialInstance::PostInitProperties()
 /**
  * Initializes MI parameters from the game thread.
  */
-template <typename ParameterType>
-void GameThread_InitMIParameters(const UMaterialInstance* Instance, const TArray<ParameterType>& Parameters)
+void GameThread_InitMIParameters(const UMaterialInstance& Instance)
 {
-	if (!Instance->HasAnyFlags(RF_ClassDefaultObject))
+	if (Instance.HasAnyFlags(RF_ClassDefaultObject))
 	{
-		for (int32 ParameterIndex = 0; ParameterIndex < Parameters.Num(); ParameterIndex++)
-		{
-			GameThread_UpdateMIParameter(Instance, Parameters[ParameterIndex]);
-		}
+		return;
 	}
+
+	FMaterialInstanceResource* Resource = Instance.Resource;
+	FMaterialInstanceParameterSet ParameterSet;
+
+	// Scalar parameters
+	ParameterSet.ScalarParameters.Reserve(Instance.ScalarParameterValues.Num());
+	for (const FScalarParameterValue& Parameter : Instance.ScalarParameterValues)
+	{
+		auto& ParamRef = ParameterSet.ScalarParameters.AddDefaulted_GetRef();
+		ParamRef.Info = Parameter.ParameterInfo;
+		ParamRef.Value = FScalarParameterValue::GetValue(Parameter);
+	}
+
+	// Vector parameters
+	ParameterSet.VectorParameters.Reserve(Instance.VectorParameterValues.Num());
+	for (const FVectorParameterValue& Parameter : Instance.VectorParameterValues)
+	{
+		auto& ParamRef = ParameterSet.VectorParameters.AddDefaulted_GetRef();
+		ParamRef.Info = Parameter.ParameterInfo;
+		ParamRef.Value = FVectorParameterValue::GetValue(Parameter);
+	}
+
+	// Texture + Fonts parameters
+	ParameterSet.TextureParameters.Reserve(Instance.TextureParameterValues.Num() + Instance.FontParameterValues.Num());
+	for (const FTextureParameterValue& Parameter : Instance.TextureParameterValues)
+	{
+		auto& ParamRef = ParameterSet.TextureParameters.AddDefaulted_GetRef();
+		ParamRef.Info = Parameter.ParameterInfo;
+		ParamRef.Value = FTextureParameterValue::GetValue(Parameter);
+	}
+	for (const FFontParameterValue& Parameter : Instance.FontParameterValues)
+	{
+		auto& ParamRef = ParameterSet.TextureParameters.AddDefaulted_GetRef();
+		ParamRef.Info = Parameter.ParameterInfo;
+		ParamRef.Value = FFontParameterValue::GetValue(Parameter);
+	}
+
+	// RuntimeVirtualTexture parameters
+	ParameterSet.RuntimeVirtualTextureParameters.Reserve(Instance.RuntimeVirtualTextureParameterValues.Num());
+	for (const FRuntimeVirtualTextureParameterValue& Parameter : Instance.RuntimeVirtualTextureParameterValues)
+	{
+		auto& ParamRef = ParameterSet.RuntimeVirtualTextureParameters.AddDefaulted_GetRef();
+		ParamRef.Info = Parameter.ParameterInfo;
+		ParamRef.Value = FRuntimeVirtualTextureParameterValue::GetValue(Parameter);
+	}
+	
+	ENQUEUE_RENDER_COMMAND(InitMIParameters)(
+		[Resource, Parameters = MoveTemp(ParameterSet)](FRHICommandListImmediate& RHICmdList) mutable
+		{
+			Resource->InitMIParameters(Parameters);
+		});
 }
 
 void UMaterialInstance::InitResources()
@@ -606,12 +664,7 @@ void UMaterialInstance::InitResources()
 		Resource->GameThread_SetParent(SafeParent);
 	}
 
-	GameThread_InitMIParameters(this, ScalarParameterValues);
-	GameThread_InitMIParameters(this, VectorParameterValues);
-	GameThread_InitMIParameters(this, TextureParameterValues);
-	GameThread_InitMIParameters(this, FontParameterValues);
-	GameThread_InitMIParameters(this, RuntimeVirtualTextureParameterValues);
-
+	GameThread_InitMIParameters(*this);
 	PropagateDataToMaterialProxy();
 
 	CacheMaterialInstanceUniformExpressions(this);
@@ -2670,8 +2723,11 @@ void UMaterialInstance::GetAllShaderMaps(TArray<FMaterialShaderMap*>& OutShaderM
 		for (int32 FeatureLevelIndex = 0; FeatureLevelIndex < ERHIFeatureLevel::Num; FeatureLevelIndex++)
 		{
 			FMaterialResource* CurrentResource = StaticPermutationMaterialResources[QualityLevelIndex][FeatureLevelIndex];
-			FMaterialShaderMap* ShaderMap = CurrentResource->GetGameThreadShaderMap();
-			OutShaderMaps.Add(ShaderMap);
+			if (CurrentResource)
+			{
+				FMaterialShaderMap* ShaderMap = CurrentResource->GetGameThreadShaderMap();
+				OutShaderMaps.Add(ShaderMap);
+			}
 		}
 	}
 }
@@ -2722,7 +2778,16 @@ void UMaterialInstance::UpdatePermutationAllocations(FMaterialResourceDeferredDe
 			}
 		}
 #else
-		for (int32 FeatureLevelIndex = 0; FeatureLevelIndex < ERHIFeatureLevel::Num; FeatureLevelIndex++)
+		// Initialize only current feature level in a cooked game and all in the editor
+		int32 FeatureLevelMin = 0;
+		int32 FeatureLevelMax = ERHIFeatureLevel::Num;
+		if (FPlatformProperties::RequiresCookedData())
+		{
+			FeatureLevelMin = GMaxRHIFeatureLevel;
+			FeatureLevelMax = GMaxRHIFeatureLevel + 1;
+		}
+		
+		for (int32 FeatureLevelIndex = FeatureLevelMin; FeatureLevelIndex < FeatureLevelMax; FeatureLevelIndex++)
 		{
 			EShaderPlatform ShaderPlatform = GShaderPlatformForFeatureLevel[FeatureLevelIndex];
 			TArray<bool, TInlineAllocator<EMaterialQualityLevel::Num> > QualityLevelsUsed;
@@ -2790,9 +2855,12 @@ void UMaterialInstance::CacheResourceShadersForRendering()
 			// In cooked build, there is no shader compilation but this is still needed to
 			// register the loaded shadermap
 			ResourcesToCache.Reset();
-			check(StaticPermutationMaterialResources[LocalActiveQL][FeatureLevel]);
-			ResourcesToCache.Add(StaticPermutationMaterialResources[LocalActiveQL][FeatureLevel]);
-			CacheShadersForResources(ShaderPlatform, ResourcesToCache);
+			FMaterialResource* CurrentResource = StaticPermutationMaterialResources[LocalActiveQL][FeatureLevel];
+			if (CurrentResource)
+			{
+				ResourcesToCache.Add(CurrentResource);
+				CacheShadersForResources(ShaderPlatform, ResourcesToCache);
+			}
 		}
 	}
 
@@ -3933,6 +4001,7 @@ void UMaterialInstance::UpdateStaticPermutation(const FStaticParameterSet& NewPa
 void UMaterialInstance::UpdateCachedLayerParameters()
 {
 	FMaterialCachedExpressionData CachedExpressionData;
+	CachedExpressionData.Reset();
 	if (Parent)
 	{
 		CachedExpressionData.ReferencedTextures = Parent->GetReferencedTextures();

@@ -143,6 +143,7 @@ void FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool b
 
 		void* SaveFrozenContent = MemoryImageResult.Bytes.GetData();
 		uint32 SaveFrozenContentSize = MemoryImageResult.Bytes.Num();
+		check(SaveFrozenContentSize > 0u);
 		Ar << SaveFrozenContentSize;
 		Ar.Serialize(SaveFrozenContent, SaveFrozenContentSize);
 		MemoryImageResult.SaveToArchive(Ar);
@@ -167,6 +168,11 @@ void FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool b
 #endif // WITH_EDITOR
 		Ar << bShareCode;
 #if WITH_EDITOR
+		if (Ar.IsCooking())
+		{
+			Code->NotifyShadersCooked(Ar.CookingTarget());
+		}
+
 		if (bShareCode)
 		{
 			FSHAHash ResourceHash = Code->ResourceHash;
@@ -176,7 +182,7 @@ void FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool b
 		else
 #endif // WITH_EDITOR
 		{
-			Code->Serialize(Ar);
+			Code->Serialize(Ar, bLoadedByCookedMaterial);
 		}
 	}
 	else
@@ -185,6 +191,9 @@ void FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool b
 		PointerTable = CreatePointerTable();
 
 		Ar << FrozenContentSize;
+		// ensure frozen content is at least as big as our FShaderMapContent-derived class
+		checkf(FrozenContentSize >= ContentTypeLayout.Size, TEXT("Invalid FrozenContentSize for %s, got %d, expected at least %d"), ContentTypeLayout.Name, FrozenContentSize, ContentTypeLayout.Size);
+
 		void* ContentMemory = FMemory::Malloc(FrozenContentSize);
 		Ar.Serialize(ContentMemory, FrozenContentSize);
 		Content = static_cast<FShaderMapContent*>(ContentMemory);
@@ -239,7 +248,7 @@ void FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool b
 		else
 		{
 			Code = new FShaderMapResourceCode();
-			Code->Serialize(Ar);
+			Code->Serialize(Ar, bLoadedByCookedMaterial);
 			Resource = new FShaderMapResource_InlineCode(GetShaderPlatform(), Code);
 		}
 
@@ -262,6 +271,10 @@ void FShaderMapBase::DestroyContent()
 		DEC_DWORD_STAT_BY(STAT_Shaders_NumShadersLoaded, NumFrozenShaders);
 
 		InternalDeleteObjectFromLayout(Content, ContentTypeLayout, FrozenContentSize > 0u);
+		if (FrozenContentSize > 0u)
+		{
+			FMemory::Free(Content);
+		}
 
 		FrozenContentSize = 0u;
 		NumFrozenShaders = 0u;

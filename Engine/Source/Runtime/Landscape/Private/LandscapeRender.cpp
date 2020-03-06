@@ -1443,7 +1443,14 @@ void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
 			SharedBuffers->VertexFactory = LandscapeXYOffsetVertexFactory;
 		}
 
-		if (UseVirtualTexturing(FeatureLevel))
+		// we need the fixed grid vertex factory for both virtual texturing and grass : 
+		bool bNeedsFixedGridVertexFactory = UseVirtualTexturing(FeatureLevel);
+
+#if WITH_EDITOR
+		bNeedsFixedGridVertexFactory |= (SharedBuffers->GrassIndexBuffer != nullptr);
+#endif // WITH_EDITOR
+
+		if (bNeedsFixedGridVertexFactory)
 		{
 			//todo[vt]: We will need a version of this to support XYOffsetmapTexture
 			FLandscapeFixedGridVertexFactory* LandscapeVertexFactory = new FLandscapeFixedGridVertexFactory(FeatureLevel);
@@ -1510,6 +1517,8 @@ void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
 	// Create MeshBatch for grass rendering
 	if (SharedBuffers->GrassIndexBuffer)
 	{
+		check(FixedGridVertexFactory != nullptr);
+
 		GrassMeshBatch.Elements.Empty(NumMips);
 		GrassMeshBatch.Elements.AddDefaulted(NumMips);
 		GrassBatchParams.Empty(NumMips);
@@ -4073,6 +4082,7 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 	, SubsectionSizeVerts(InSubsectionSizeQuads + 1)
 	, NumSubsections(InNumSubsections)
 	, VertexFactory(nullptr)
+	, FixedGridVertexFactory(nullptr)
 	, VertexBuffer(nullptr)
 	, AdjacencyIndexBuffers(nullptr)
 	, bUse32BitIndices(false)

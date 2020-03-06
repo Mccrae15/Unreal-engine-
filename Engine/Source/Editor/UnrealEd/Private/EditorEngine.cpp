@@ -4396,12 +4396,12 @@ void UEditorEngine::CleanupPhysicsSceneThatWasInitializedForSave(UWorld* World, 
 
 	World->SetPhysicsScene(nullptr);
 
-#if WITH_PHYSX
+#if PHYSICS_INTERFACE_PHYSX
 	if (GPhysCommandHandler)
 	{
 		GPhysCommandHandler->Flush();
 	}
-#endif // WITH_PHYSX
+#endif // PHYSICS_INTERFACE_PHYSX
 
 	// Update components again in case it was a world without a physics scene but did have rendered components.
 	World->UpdateWorldComponents(true, true);
@@ -6239,6 +6239,11 @@ bool UEditorEngine::IsAnyViewportRealtime()
 
 bool UEditorEngine::ShouldThrottleCPUUsage() const
 {
+	if (IsRunningCommandlet())
+	{
+		return false;
+	}
+
 	bool bShouldThrottle = false;
 
 	const bool bRunningCommandlet = IsRunningCommandlet();
@@ -6251,25 +6256,28 @@ bool UEditorEngine::ShouldThrottleCPUUsage() const
 		bShouldThrottle = Settings->bThrottleCPUWhenNotForeground;
 
 		// Check if we should throttle due to all windows being minimized
-		if ( !bShouldThrottle )
+		if (FSlateApplication::IsInitialized())
 		{
-			 bShouldThrottle = AreAllWindowsHidden();
-		}
+			if (!bShouldThrottle)
+			{
+				bShouldThrottle = AreAllWindowsHidden();
+			}
 
-		// Do not throttle during drag and drop
-		if (bShouldThrottle && FSlateApplication::Get().IsDragDropping())
-		{
-			bShouldThrottle = false;
-		}
-
-		if (bShouldThrottle)
-		{
-			static const FName AssetRegistryName(TEXT("AssetRegistry"));
-			FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>(AssetRegistryName);
-			// Don't throttle during amortized export, greatly increases export time
-			if (IsLightingBuildCurrentlyExporting() || GShaderCompilingManager->IsCompiling() || (AssetRegistryModule && AssetRegistryModule->Get().IsLoadingAssets()))
+			// Do not throttle during drag and drop
+			if (bShouldThrottle && FSlateApplication::Get().IsDragDropping())
 			{
 				bShouldThrottle = false;
+			}
+
+			if (bShouldThrottle)
+			{
+				static const FName AssetRegistryName(TEXT("AssetRegistry"));
+				FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>(AssetRegistryName);
+				// Don't throttle during amortized export, greatly increases export time
+				if (IsLightingBuildCurrentlyExporting() || GShaderCompilingManager->IsCompiling() || (AssetRegistryModule && AssetRegistryModule->Get().IsLoadingAssets()))
+				{
+					bShouldThrottle = false;
+				}
 			}
 		}
 	}

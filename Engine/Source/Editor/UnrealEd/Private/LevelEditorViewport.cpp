@@ -1302,9 +1302,31 @@ FDropQuery FLevelEditorViewportClient::CanDropObjectsAtCoordinates(int32 MouseX,
 {
 	FDropQuery Result;
 
-	if ( !ObjectTools::IsAssetValidForPlacing( GetWorld(), AssetData.ObjectPath.ToString() ) )
+	UWorld* CurrentWorld = GetWorld();
+	if ( !ObjectTools::IsAssetValidForPlacing(CurrentWorld, AssetData.ObjectPath.ToString() ) )
 	{
 		return Result;
+	}
+
+	if (CurrentWorld)
+	{
+		ULevel* CurrentLevel = CurrentWorld->GetCurrentLevel();
+		UWorld* CurrentLevelOuterWorld = CurrentLevel ? Cast<UWorld>(CurrentLevel->GetOuter()) : nullptr;  
+		UWorld* ReferencingWorld = CurrentLevelOuterWorld ? CurrentLevelOuterWorld : CurrentWorld;
+		FAssetReferenceFilterContext AssetReferenceFilterContext;
+		AssetReferenceFilterContext.ReferencingAssets.Add(FAssetData(ReferencingWorld));
+
+		TSharedPtr<IAssetReferenceFilter> AssetReferenceFilter = GEditor->MakeAssetReferenceFilter(AssetReferenceFilterContext);
+		if (AssetReferenceFilter.IsValid())
+		{
+			FText FailureReason;
+			if (!AssetReferenceFilter->PassesFilter(AssetData, &FailureReason))
+			{
+				Result.bCanDrop = false;
+				Result.HintText = FailureReason;
+				return Result;
+			}
+		}
 	}
 
 	UObject* AssetObj = AssetData.GetAsset();

@@ -16,7 +16,7 @@ class GEOMETRYCACHEABCFILE_API UGeometryCacheAbcFileComponent : public UGeometry
 {
 	GENERATED_BODY()
 
-	UGeometryCacheAbcFileComponent();
+	UGeometryCacheAbcFileComponent(const FObjectInitializer& ObjectInitializer);
 
 public:
 
@@ -50,5 +50,6 @@ public:
 protected:
 	void InitializeGeometryCache();
 
+	UPROPERTY(Transient)
 	UAbcImportSettings* AbcSettings;
 };

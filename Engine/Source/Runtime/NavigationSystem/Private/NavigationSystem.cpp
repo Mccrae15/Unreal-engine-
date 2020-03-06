@@ -89,6 +89,7 @@ DEFINE_STAT(STAT_Navigation_RecastTestPath);
 DEFINE_STAT(STAT_RecastNavMeshGenerator_StoringCompressedLayers);
 DEFINE_STAT(STAT_Navigation_RecastBuildCompressedLayers);
 DEFINE_STAT(STAT_Navigation_RecastCreateHeightField);
+DEFINE_STAT(STAT_Navigation_RecastComputeRasterizationMasks);
 DEFINE_STAT(STAT_Navigation_RecastRasterizeTriangles);
 DEFINE_STAT(STAT_Navigation_RecastVoxelFilter);
 DEFINE_STAT(STAT_Navigation_RecastFilter);
@@ -1044,8 +1045,7 @@ void UNavigationSystemV1::CalcTimeSlicedUpdateData(TArray<double>& OutCurrentTim
 	OutNumTimeSlicedRemainingBuildTasks = 0;
 	OutIsTimeSlicingArray.SetNumZeroed(NavDataSet.Num());
 	bOutAnyNonTimeSlicedGenerators = false;
-	OutCurrentTimeSlicedBuildTaskDurations.Empty();
-	OutCurrentTimeSlicedBuildTaskDurations.Reserve(NavDataSet.Num());
+	OutCurrentTimeSlicedBuildTaskDurations.Reset(NavDataSet.Num());
 
 	for (int32 NavDataIdx = 0; NavDataIdx < NavDataSet.Num(); ++NavDataIdx)
 	{

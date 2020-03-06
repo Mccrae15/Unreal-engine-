@@ -86,6 +86,10 @@ static UPackage*			GObjTransientPkg								= NULL;
 	static TArray<FString>			DebugSpikeMarkNames;
 #endif
 
+#if WITH_EDITOR
+	UObject::FAssetRegistryTag::FOnGetObjectAssetRegistryTags UObject::FAssetRegistryTag::OnGetExtraObjectTags;
+#endif // WITH_EDITOR
+
 UObject::UObject( EStaticConstructor, EObjectFlags InFlags )
 : UObjectBaseUtility(InFlags | (!(InFlags & RF_Dynamic) ? (RF_MarkAsNative | RF_MarkAsRootSet) : RF_NoFlags))
 {
@@ -1815,6 +1819,9 @@ void UObject::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 	FAssetRegistryTag::GetAssetRegistryTagsFromSearchableProperties(this, OutTags);
 
 #if WITH_EDITOR
+	// Notify external sources that we need tags.
+	FAssetRegistryTag::OnGetExtraObjectTags.Broadcast(this, OutTags);
+
 	// Check if there's a UMetaData for this object that has tags that are requested in the settings to be transferred to the Asset Registry
 	const TSet<FName>& MetaDataTagsForAR = GetMetaDataTagsForAssetRegistry();
 	if (MetaDataTagsForAR.Num() > 0)
@@ -4427,11 +4434,16 @@ void StaticExit()
 		GUObjectArray.CloseDisregardForGC();
 	}
 
+	// Complete any pending incremental GC
+	if (IsIncrementalPurgePending())
+	{
+		IncrementalPurgeGarbage(false);
+	}
+
 	// Make sure no other threads manipulate UObjects
 	AcquireGCLock();
 
-	GatherUnreachableObjects(false);
-	IncrementalPurgeGarbage(false);
+	// Dissolve all clusters before the final GC pass
 	GUObjectClusters.DissolveClusters(true);
 
 	// Keep track of how many objects there are for GC stats as we simulate a mark pass.
@@ -4453,10 +4465,18 @@ void StaticExit()
 		FUObjectItem* ObjItem = *It;
 		checkSlow(ObjItem);
 		UObject* Obj = static_cast<UObject*>(ObjItem->Object);
-		if (Obj && !Obj->IsA<UField>()) // Skip Structures, properties, etc.. They could be still necessary while GC.
+		if (Obj) 
 		{
-			// Mark as unreachable so purge phase will kill it.
-			ObjItem->SetUnreachable();
+			// Skip Structures, properties, etc.. They could be still necessary while GC.
+			if (!Obj->IsA<UField>())
+			{
+				// Mark as unreachable so purge phase will kill it.
+				ObjItem->SetUnreachable();
+			}
+			else
+			{
+				ObjItem->ClearUnreachable();
+			}
 		}
 	}
 

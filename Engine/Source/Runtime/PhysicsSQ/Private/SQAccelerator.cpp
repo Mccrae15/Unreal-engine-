@@ -2,6 +2,7 @@
 
 #include "SQAccelerator.h"
 #include "CollisionQueryFilterCallbackCore.h"
+#include "PhysicsCore/Public/PhysicsInterfaceUtilsCore.h"
 
 #if PHYSICS_INTERFACE_PHYSX
 #include "SceneQueryPhysXImp.h"	//todo: use nice platform wrapper
@@ -117,10 +118,9 @@ struct TSQVisitor : public Chaos::ISpatialVisitor<TPayload, float>
 		, QueryCallback(InQueryCallback)
 		, StartTM(InStartTM)
 	{
-#if WITH_PHYSX
 		//#TODO - reimplement query flags alternative for Chaos
 		bAnyHit = QueryFilterData.flags & PxQueryFlag::eANY_HIT;
-#endif
+
 		//todo: check THitType is sweep
 	}
 
@@ -136,10 +136,9 @@ struct TSQVisitor : public Chaos::ISpatialVisitor<TPayload, float>
 		, QueryCallback(InQueryCallback)
 		, StartTM(InWorldTM)
 	{
-#if WITH_PHYSX
 		//#TODO - reimplement query flags alternative for Chaos
 		bAnyHit = QueryFilterData.flags & PxQueryFlag::eANY_HIT;
-#endif
+
 		//todo: check THitType is overlap
 	}
 
@@ -233,13 +232,8 @@ private:
 
 			//TODO: use gt particles directly
 			//#TODO alternative to px flags
-#if WITH_PHYSX
 			ECollisionQueryHitType HitType = QueryFilterData.flags & PxQueryFlag::ePREFILTER ? QueryCallback.PreFilter(QueryFilterDataConcrete, *Shape, *GeometryParticle) : ECollisionQueryHitType::Block;
-#else
-			//#TODO Chaos flag alternative
-			ensure(false);
-			ECollisionQueryHitType HitType = ECollisionQueryHitType::Block;
-#endif
+
 			if (HitType != ECollisionQueryHitType::None)
 			{
 				//QUICK_SCOPE_CYCLE_COUNTER(SQNarrow);
@@ -293,12 +287,9 @@ private:
 				{
 					//QUICK_SCOPE_CYCLE_COUNTER(SQNarrowHit);
 					FillHitHelper(Hit, Distance, WorldPosition, WorldNormal, FaceIdx, bComputeMTD);
-#if WITH_PHYSX
+
 					HitType = QueryFilterData.flags & PxQueryFlag::ePOSTFILTER ? QueryCallback.PostFilter(QueryFilterDataConcrete, Hit) : HitType;
-#else
-					//#TODO Chaos flag alternative
-					ensure(false);
-#endif
+
 					if (HitType != ECollisionQueryHitType::None)
 					{
 

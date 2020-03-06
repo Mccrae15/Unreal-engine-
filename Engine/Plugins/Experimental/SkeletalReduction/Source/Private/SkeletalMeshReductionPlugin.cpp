@@ -74,12 +74,12 @@ public:
 		{
 			case SkeletalMeshTerminationCriterion::SMTC_NumOfTriangles:
 			{
-				return ReductionSettings.NumOfTrianglesPercentage < Threshold_One;
+				return ReductionSettings.NumOfTrianglesPercentage < Threshold_One || ReductionSettings.MaxNumOfTrianglesPercentage < NumTriangles;
 			}
 			break;
 			case SkeletalMeshTerminationCriterion::SMTC_NumOfVerts:
 			{
-				return ReductionSettings.NumOfVertPercentage < Threshold_One;
+				return ReductionSettings.NumOfVertPercentage < Threshold_One || ReductionSettings.MaxNumOfVertsPercentage < NumVertices;
 			}
 			break;
 			case SkeletalMeshTerminationCriterion::SMTC_TriangleOrVert:
@@ -930,14 +930,23 @@ float FQuadricSkeletalMeshReduction::SimplifyMesh( const FSkeletalMeshOptimizati
 	const float MaxDist = FLT_MAX; // (Settings.ReductionMethod != SkeletalMeshOptimizationType::SMOT_NumOfTriangles) ? Settings.MaxDeviationPercentage * Bounds.SphereRadius : FLT_MAX;
 	const int32 SrcTriNum = Mesh.NumIndices() / 3;
 	const float TriangleRetainRatio = FMath::Clamp(Settings.NumOfTrianglesPercentage, 0.f, 1.f);
-	const int32 TargetTriNum = (bUseTrianglePercentCriterion) ? FMath::CeilToInt(TriangleRetainRatio * SrcTriNum) : Settings.MaxNumOfTriangles;
+	int32 TargetTriNum = (bUseTrianglePercentCriterion) ? FMath::CeilToInt(TriangleRetainRatio * SrcTriNum) : Settings.MaxNumOfTriangles;
+	if (Settings.TerminationCriterion == SkeletalMeshTerminationCriterion::SMTC_NumOfTriangles)
+	{
+		TargetTriNum = FMath::Min(TargetTriNum, int32(Settings.MaxNumOfTrianglesPercentage));
+	}
 
 	const int32 MinTriNumToRetain = (bUseTrianglePercentCriterion || bUseMaxTrisNumCriterion) ? FMath::Max(4, TargetTriNum) : 4;
 	const float MaxCollapseCost = FLT_MAX;
 
 	const int32 SrcVertNum = Mesh.NumVertices();
 	const float VertRetainRatio = FMath::Clamp(Settings.NumOfVertPercentage, 0.f, 1.f);
-	const int32 TargetVertNum = (bUseVertexPercentCriterion) ? FMath::CeilToInt(VertRetainRatio * SrcVertNum) : Settings.MaxNumOfVerts + 1;
+	int32 TargetVertNum = (bUseVertexPercentCriterion) ? FMath::CeilToInt(VertRetainRatio * SrcVertNum) : Settings.MaxNumOfVerts + 1;
+	if (Settings.TerminationCriterion == SkeletalMeshTerminationCriterion::SMTC_NumOfVerts)
+	{
+		TargetVertNum = FMath::Min(TargetVertNum, int32(Settings.MaxNumOfVertsPercentage + 1));
+	}
+
 	const int32 MinVerNumToRetain = (bUseVertexPercentCriterion || bUseMaxVertNumCriterion) ? FMath::Max(6, TargetVertNum) : 6;
 
 	const float VolumeImportance      = FMath::Clamp(Settings.VolumeImportance, 0.f, 2.f);
@@ -1327,7 +1336,7 @@ namespace
 
 	void Empty(FSkeletalMeshLODModel& LODModel)
 	{
-		LODModel = FSkeletalMeshLODModel();
+		LODModel.Empty();
 	}
 
 }
@@ -1591,9 +1600,7 @@ void FQuadricSkeletalMeshReduction::ConvertToFSkeletalMeshLODModel( const int32 
 	Options.bComputeTangents = false;
 	Options.bUseMikkTSpace = true; //Avoid builtin build by specifying true for mikkt space
 	Options.bComputeWeightedNormals = false;
-	Options.OverlappingThresholds.ThresholdPosition = 0.0f;
-	Options.OverlappingThresholds.ThresholdTangentNormal = 0.0f;
-	Options.OverlappingThresholds.ThresholdUV = 0.0f;
+	//Leave the default threshold
 	Options.bRemoveDegenerateTriangles = false;
 	IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>("MeshUtilities");
 	
@@ -1638,10 +1645,21 @@ bool FQuadricSkeletalMeshReduction::ReduceSkeletalLODModel( const FSkeletalMeshL
 {
 
 	const int32 SrcNumVerts = SrcModel.NumVertices;
-	
+	auto GetLODModelTriangleCount = [](const FSkeletalMeshLODModel& LODModel)->uint32
+	{
+		uint32 NumTriangles = 0;
+		for (const FSkelMeshSection& Section : LODModel.Sections)
+		{
+			
+			NumTriangles += Section.NumTriangles >= 0 ? (uint32)Section.NumTriangles : 0;
+		}
+		return NumTriangles;
+	};
+	const uint32 SrcNumTriangles = GetLODModelTriangleCount(SrcModel);
+
 	// Parameters for Simplification etc
-	const bool bUseVertexPercentCriterion   = ((Settings.TerminationCriterion == SMTC_NumOfVerts     || Settings.TerminationCriterion == SMTC_TriangleOrVert) && Settings.NumOfVertPercentage < 1.f) ;
-	const bool bUseTrianglePercentCriterion = ((Settings.TerminationCriterion == SMTC_NumOfTriangles || Settings.TerminationCriterion == SMTC_TriangleOrVert) && Settings.NumOfTrianglesPercentage < 1.f);
+	const bool bUseVertexPercentCriterion   = ((Settings.TerminationCriterion == SMTC_NumOfVerts     || Settings.TerminationCriterion == SMTC_TriangleOrVert) && (Settings.NumOfVertPercentage < 1.f || Settings.MaxNumOfVertsPercentage < (uint32)SrcNumVerts)) ;
+	const bool bUseTrianglePercentCriterion = ((Settings.TerminationCriterion == SMTC_NumOfTriangles || Settings.TerminationCriterion == SMTC_TriangleOrVert) && (Settings.NumOfTrianglesPercentage < 1.f || Settings.MaxNumOfTrianglesPercentage < SrcNumTriangles));
 
 	const bool bUseMaxVertexCriterion   = ((Settings.TerminationCriterion == SMTC_AbsNumOfVerts || Settings.TerminationCriterion == SMTC_AbsTriangleOrVert) && SrcNumVerts);
 	const bool bUseMaxTriangleCriterion = ((Settings.TerminationCriterion == SMTC_AbsNumOfTriangles || Settings.TerminationCriterion == SMTC_AbsTriangleOrVert) && Settings.MaxNumOfTriangles < INT32_MAX);
@@ -1663,7 +1681,7 @@ bool FQuadricSkeletalMeshReduction::ReduceSkeletalLODModel( const FSkeletalMeshL
 
 	int32 IterationNum = 0;
 	//We keep the original MaxNumVerts because if we iterate we want to still compare with the original request.
-	uint32 OriginalMaxNumVertsSetting = Settings.MaxNumOfVerts;
+	uint32 OriginalMaxNumVertsSetting = bUseVertexPercentCriterion ? Settings.MaxNumOfVertsPercentage : Settings.MaxNumOfVerts;
 	do 
 	{
 		if (bOptimizeMesh)
@@ -1715,7 +1733,14 @@ bool FQuadricSkeletalMeshReduction::ReduceSkeletalLODModel( const FSkeletalMeshL
 			{
 				// Some verts were created by chunking - we need simplify more.
 				int32 ExcessVerts = (int32)(OutSkeletalMeshLODModel.NumVertices - OriginalMaxNumVertsSetting);
-				Settings.MaxNumOfVerts = FMath::Max((int32)Settings.MaxNumOfVerts - ExcessVerts, 6);
+				if (bUseVertexPercentCriterion)
+				{
+					Settings.MaxNumOfVertsPercentage = FMath::Max((int32)Settings.MaxNumOfVertsPercentage - ExcessVerts, 6);
+				}
+				else
+				{
+					Settings.MaxNumOfVerts = FMath::Max((int32)Settings.MaxNumOfVerts - ExcessVerts, 6);
+				}
 
 				UE_LOG(LogSkeletalMeshReduction, Log, TEXT("Chunking to limit unique bones per section generated additional vertices - continuing simplification of LOD %d "), LODIndex);
 				ConvertToFSkinnedSkeletalMesh(SrcModel, BoneMatrices, LODIndex, SkinnedSkeletalMesh);
@@ -2007,8 +2032,8 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 		}
 	}
 
-	// Reduce LOD model with SrcMesh
-	if (ReduceSkeletalLODModel(*SrcModel, *NewModel, SkeletalMesh.GetImportedBounds(), SkeletalMesh.RefSkeleton, Settings, ImportantBones, RelativeToRefPoseMatrices, LODIndex, bReducingSourceModel))
+	// Reduce LOD model with SrcMesh if src mesh has more then 1 triangle
+	if (SrcModel->NumVertices > 3 && ReduceSkeletalLODModel(*SrcModel, *NewModel, SkeletalMesh.GetImportedBounds(), SkeletalMesh.RefSkeleton, Settings, ImportantBones, RelativeToRefPoseMatrices, LODIndex, bReducingSourceModel))
 	{
 		FSkeletalMeshLODInfo* ReducedLODInfoPtr = SkeletalMesh.GetLODInfo(LODIndex);
 		check(ReducedLODInfoPtr);
@@ -2072,7 +2097,6 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 	}
 	else
 	{
-		//TODO: This is not thread safe.
 		FSkeletalMeshLODModel::CopyStructure(NewModel, SrcModel);
 
 		// Do any joint-welding / bone removal.

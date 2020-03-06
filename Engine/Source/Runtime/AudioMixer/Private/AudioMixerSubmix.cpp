@@ -19,6 +19,14 @@ FAutoConsoleVariableRef CVarRecoverRecordingOnShutdown(
 	TEXT("0: Disabled, 1: Enabled"),
 	ECVF_Default);
 
+static int32 BypassAllSubmixEffectsCVar = 1;
+FAutoConsoleVariableRef CVarBypassAllSubmixEffects(
+	TEXT("au.BypassAllSubmixEffects"),
+	BypassAllSubmixEffectsCVar,
+	TEXT("When set to 1, all submix effects will be bypassed.\n")
+	TEXT("1: Submix Effects are disabled."),
+	ECVF_Default);
+
 namespace Audio
 {
 	// Unique IDs for mixer submixes
@@ -93,6 +101,8 @@ namespace Audio
 			CurrentOutputVolume = FMath::Clamp(SoundSubmix->OutputVolume, 0.0f, 1.0f);
 			TargetOutputVolume = CurrentOutputVolume;
 
+
+			FScopeLock ScopeLock(&EffectChainMutationCriticalSection);
 			// Set the initialized output volume
 			CurrentWetLevel = FMath::Clamp(SoundSubmix->WetLevel, 0.0f, 1.0f);
 			TargetWetLevel = CurrentWetLevel;
@@ -325,6 +335,7 @@ namespace Audio
 
 	void FMixerSubmix::AddSoundEffectSubmix(uint32 SubmixPresetId, FSoundEffectSubmixPtr InSoundEffectSubmix)
 	{
+		FScopeLock ScopeLock(&EffectChainMutationCriticalSection);
 		AUDIO_MIXER_CHECK_AUDIO_PLAT_THREAD(MixerDevice);
 
 		// Look to see if the submix preset ID is already present
@@ -347,6 +358,7 @@ namespace Audio
 
 	void FMixerSubmix::RemoveSoundEffectSubmix(uint32 SubmixPresetId)
 	{
+		FScopeLock ScopeLock(&EffectChainMutationCriticalSection);
 		AUDIO_MIXER_CHECK_AUDIO_PLAT_THREAD(MixerDevice);
 
 		for (FSubmixEffectInfo& Effect : EffectSubmixChain)
@@ -365,6 +377,8 @@ namespace Audio
 
 	void FMixerSubmix::ClearSoundEffectSubmixes()
 	{
+		FScopeLock ScopeLock(&EffectChainMutationCriticalSection);
+
 		for (FSubmixEffectInfo& Info : EffectSubmixChain)
 		{
 			if (Info.EffectInstance.IsValid())
@@ -379,6 +393,8 @@ namespace Audio
 
 	void FMixerSubmix::ReplaceSoundEffectSubmix(int32 InIndex, int32 InPresetId, FSoundEffectSubmixPtr InEffectInstance)
 	{
+		FScopeLock ScopeLock(&EffectChainMutationCriticalSection);
+
 		if (InEffectInstance->GetPreset() != nullptr && InIndex < EffectSubmixChain.Num())
 		{
 			EffectSubmixChain[InIndex].PresetId = InPresetId;
@@ -805,66 +821,69 @@ namespace Audio
 			}
 		}
 
-		if (EffectSubmixChain.Num() > 0)
 		{
-			CSV_SCOPED_TIMING_STAT(Audio, SubmixEffectProcessing);
-
-			// Setup the input data buffer
-			FSoundEffectSubmixInputData InputData;
-			InputData.AudioClock = MixerDevice->GetAudioTime();
-
-			// Compute the number of frames of audio. This will be independent of if we downmix our wet buffer.
-			InputData.NumFrames = NumSamples / NumChannels;
-			InputData.NumChannels = NumChannels;
-			InputData.NumDeviceChannels = MixerDevice->GetNumDeviceChannels();
-			InputData.ListenerTransforms = MixerDevice->GetListenerTransforms();
-			InputData.AudioClock = MixerDevice->GetAudioClock();
-
-			FSoundEffectSubmixOutputData OutputData;
-			OutputData.AudioBuffer = &ScratchBuffer;
-			OutputData.NumChannels = NumChannels;
-
-			for (FSubmixEffectInfo& SubmixEffectInfo : EffectSubmixChain)
+			FScopeLock ScopeLock(&EffectChainMutationCriticalSection);
+			if (!BypassAllSubmixEffectsCVar && EffectSubmixChain.Num() > 0)
 			{
-				FSoundEffectSubmixPtr SubmixEffect = SubmixEffectInfo.EffectInstance;
+				CSV_SCOPED_TIMING_STAT(Audio, SubmixEffectProcessing);
 
-				// SubmixEffectInfo.EffectInstance will be null if FMixerSubmix::RemoveSoundEffectSubmix was called earlier.
-				if (!SubmixEffect.IsValid())
+				// Setup the input data buffer
+				FSoundEffectSubmixInputData InputData;
+				InputData.AudioClock = MixerDevice->GetAudioTime();
+
+				// Compute the number of frames of audio. This will be independent of if we downmix our wet buffer.
+				InputData.NumFrames = NumSamples / NumChannels;
+				InputData.NumChannels = NumChannels;
+				InputData.NumDeviceChannels = MixerDevice->GetNumDeviceChannels();
+				InputData.ListenerTransforms = MixerDevice->GetListenerTransforms();
+				InputData.AudioClock = MixerDevice->GetAudioClock();
+
+				FSoundEffectSubmixOutputData OutputData;
+				OutputData.AudioBuffer = &ScratchBuffer;
+				OutputData.NumChannels = NumChannels;
+
+				for (FSubmixEffectInfo& SubmixEffectInfo : EffectSubmixChain)
 				{
-					continue;
-				}
+					FSoundEffectSubmixPtr SubmixEffect = SubmixEffectInfo.EffectInstance;
 
-				// Reset the output scratch buffer
-				ScratchBuffer.Reset(NumSamples);
-				ScratchBuffer.AddZeroed(NumSamples);
+					// SubmixEffectInfo.EffectInstance will be null if FMixerSubmix::RemoveSoundEffectSubmix was called earlier.
+					if (!SubmixEffect.IsValid())
+					{
+						continue;
+					}
 
-				// Check to see if we need to down-mix our audio before sending to the submix effect
-				const uint32 ChannelCountOverride = SubmixEffect->GetDesiredInputChannelCountOverride();
+					// Reset the output scratch buffer
+					ScratchBuffer.Reset(NumSamples);
+					ScratchBuffer.AddZeroed(NumSamples);
 
-				if (ChannelCountOverride != INDEX_NONE && ChannelCountOverride != NumChannels)
-				{
-					// Perform the down-mix operation with the down-mixed scratch buffer
-					DownmixedBuffer.Reset();
-					DownmixedBuffer.AddUninitialized(NumOutputFrames * ChannelCountOverride);
-					DownmixBuffer(NumChannels, InputBuffer, ChannelCountOverride, DownmixedBuffer);
+					// Check to see if we need to down-mix our audio before sending to the submix effect
+					const uint32 ChannelCountOverride = SubmixEffect->GetDesiredInputChannelCountOverride();
 
-					InputData.NumChannels = ChannelCountOverride;
-					InputData.AudioBuffer = &DownmixedBuffer;
-					SubmixEffect->ProcessAudio(InputData, OutputData);
-				}
-				else
-				{
-					// If we're not down-mixing, then just pass in the current wet buffer and our channel count is the same as the output channel count
-					InputData.NumChannels = NumChannels;
-					InputData.AudioBuffer = &InputBuffer;
-					SubmixEffect->ProcessAudio(InputData, OutputData);
-				}
+					if (ChannelCountOverride != INDEX_NONE && ChannelCountOverride != NumChannels)
+					{
+						// Perform the down-mix operation with the down-mixed scratch buffer
+						DownmixedBuffer.Reset();
+						DownmixedBuffer.AddUninitialized(NumOutputFrames * ChannelCountOverride);
+						DownmixBuffer(NumChannels, InputBuffer, ChannelCountOverride, DownmixedBuffer);
 
-				// Mix in the dry signal directly
-				const float DryLevel = SubmixEffect->GetDryLevel();
-				if (DryLevel > 0.0f)
-				{
-					Audio::MixInBufferFast(InputBuffer, ScratchBuffer, DryLevel);
+						InputData.NumChannels = ChannelCountOverride;
+						InputData.AudioBuffer = &DownmixedBuffer;
+						SubmixEffect->ProcessAudio(InputData, OutputData);
+					}
+					else
+					{
+						// If we're not down-mixing, then just pass in the current wet buffer and our channel count is the same as the output channel count
+						InputData.NumChannels = NumChannels;
+						InputData.AudioBuffer = &InputBuffer;
+						SubmixEffect->ProcessAudio(InputData, OutputData);
+					}
+					
+					// Mix in the dry signal directly
+					const float DryLevel = SubmixEffect->GetDryLevel();
+					if (DryLevel > 0.0f)
+					{
+						Audio::MixInBufferFast(InputBuffer, ScratchBuffer, DryLevel);
+					}
 				}
 
 				FMemory::Memcpy((void*)BufferPtr, (void*)ScratchBuffer.GetData(), sizeof(float) * NumSamples);
@@ -970,6 +989,7 @@ namespace Audio
 		// Now loop through any buffer listeners and feed the listeners the result of this audio callback
 		if(const USoundSubmix* SoundSubmix = Cast<const USoundSubmix>(OwningSubmixObject))
 		{
+			CSV_SCOPED_TIMING_STAT(Audio, SubmixBufferListeners);
 			double AudioClock = MixerDevice->GetAudioTime();
 			float SampleRate = MixerDevice->GetSampleRate();
 			FScopeLock Lock(&BufferListenerCriticalSection);
@@ -1408,6 +1428,7 @@ namespace Audio
 		check(BufferListener);
 		BufferListeners.Remove(BufferListener);
 	}
+
 	void FMixerSubmix::StartEnvelopeFollowing(int32 AttackTime, int32 ReleaseTime)
 	{
 		if (!bIsEnvelopeFollowing)

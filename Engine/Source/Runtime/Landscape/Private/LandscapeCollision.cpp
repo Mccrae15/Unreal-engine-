@@ -45,7 +45,7 @@
 #include "Physics/PhysicsInterfaceCore.h"
 #include "Physics/PhysicsInterfaceUtils.h"
 
-#if WITH_EDITOR && WITH_PHYSX
+#if WITH_EDITOR && PHYSICS_INTERFACE_PHYSX
 	#include "IPhysXCooking.h"
 #endif
 
@@ -252,7 +252,6 @@ void ULandscapeHeightfieldCollisionComponent::OnCreatePhysicsState()
 
 	if (!BodyInstance.IsValidBodyInstance())
 	{
-#if WITH_PHYSX
 		CreateCollisionObject();
 
 		if (IsValidRef(HeightfieldRef))
@@ -280,9 +279,7 @@ void ULandscapeHeightfieldCollisionComponent::OnCreatePhysicsState()
 			LandscapeComponentMatrix.SetAxis(0, TerrainX);
 			LandscapeComponentMatrix.SetAxis(2, TerrainY);
 			LandscapeComponentMatrix.SetAxis(1, TerrainZ);
-
-			PxTransform PhysXLandscapeComponentTransform = U2PTransform(FTransform(LandscapeComponentMatrix));
-
+			
 			const bool bCreateSimpleCollision = SimpleCollisionSizeQuads > 0;
 			const float SimpleCollisionScale = bCreateSimpleCollision ? CollisionScale * CollisionSizeQuads / SimpleCollisionSizeQuads : 0;
 
@@ -290,6 +287,7 @@ void ULandscapeHeightfieldCollisionComponent::OnCreatePhysicsState()
 			FVector FinalScale(LandscapeScale.X * CollisionScale, LandscapeScale.Y * CollisionScale, LandscapeScale.Z * LANDSCAPE_ZSCALE);
 
 #if PHYSICS_INTERFACE_PHYSX
+			PxTransform PhysXLandscapeComponentTransform = U2PTransform(FTransform(LandscapeComponentMatrix));
 			PxHeightFieldGeometry LandscapeComponentGeom(HeightfieldRef->RBHeightfield, PxMeshGeometryFlag::eDOUBLE_SIDED, LandscapeScale.Z * LANDSCAPE_ZSCALE, LandscapeScale.Y * CollisionScale, LandscapeScale.X * CollisionScale);
 
 			if (LandscapeComponentGeom.isValid())
@@ -523,7 +521,6 @@ void ULandscapeHeightfieldCollisionComponent::OnCreatePhysicsState()
 			}
 #endif // WITH_CHAOS
 		}
-#endif// WITH_PHYSX
 	}
 }
 
@@ -733,7 +730,7 @@ void ULandscapeHeightfieldCollisionComponent::SpeculativelyLoadAsyncDDCCollsionD
 #endif
 }
 
-#if WITH_PHYSX
+#if PHYSICS_INTERFACE_PHYSX
 TArray<PxHeightFieldSample> ConvertHeightfieldDataForPhysx(const ULandscapeHeightfieldCollisionComponent* const Component, const int32 CollisionSizeVerts, const bool bIsMirrored, const uint16* Heights, const bool bUseDefMaterial, const uint8* DominantLayers, UPhysicalMaterial* const DefMaterial, TArray<UPhysicalMaterial*> &InOutMaterials)
 {
 	const int32 NumSamples = FMath::Square(CollisionSizeVerts);
@@ -1019,7 +1016,7 @@ bool ULandscapeMeshCollisionComponent::CookCollisionData(const FName& Format, bo
 		return true;
 	}
 
-#if WITH_PHYSX
+#if PHYSICS_INTERFACE_PHYSX
 	COOK_STAT(auto Timer = LandscapeCollisionCookStats::MeshUsageStats.TimeSyncWork());
 	// we have 2 versions of collision objects
 	const int32 CookedDataIndex = bUseDefMaterial ? 0 : 1;
@@ -1216,14 +1213,16 @@ bool ULandscapeMeshCollisionComponent::CookCollisionData(const FName& Format, bo
 
 	return Result;
 
-#endif // WITH_PHYSX
+#elif WITH_CHAOS
+CHAOS_ENSURE(false);
+#endif
 	return false;
 }
 #endif //WITH_EDITOR
 
 void ULandscapeMeshCollisionComponent::CreateCollisionObject()
 {
-#if WITH_PHYSX	
+#if PHYSICS_INTERFACE_PHYSX
 	// If we have not created a heightfield yet - do it now.
 	if (!IsValidRef(MeshRef))
 	{
@@ -1308,7 +1307,7 @@ void ULandscapeMeshCollisionComponent::OnCreatePhysicsState()
 
 	if (!BodyInstance.IsValidBodyInstance())
 	{
-#if WITH_PHYSX
+#if PHYSICS_INTERFACE_PHYSX
 		// This will do nothing, because we create trimesh at component PostLoad event, unless we destroyed it explicitly
 		CreateCollisionObject();
 
@@ -2044,7 +2043,7 @@ void ULandscapeHeightfieldCollisionComponent::PrepareGeometryExportSync()
 bool ULandscapeMeshCollisionComponent::DoCustomNavigableGeometryExport(FNavigableGeometryExport& GeomExport) const
 {
 	check(IsInGameThread());
-#if WITH_PHYSX
+#if PHYSICS_INTERFACE_PHYSX
 	if (IsValidRef(MeshRef) && MeshRef->RBTriangleMesh != nullptr)
 	{
 		FTransform MeshToW = GetComponentTransform();
@@ -2059,7 +2058,9 @@ bool ULandscapeMeshCollisionComponent::DoCustomNavigableGeometryExport(FNavigabl
 			GeomExport.ExportPxTriMesh32Bit(MeshRef->RBTriangleMesh, MeshToW);
 		}
 	}
-#endif// WITH_PHYSX
+#elif WITH_CHAOS
+	CHAOS_ENSURE(false);
+#endif
 	return false;
 }
 
