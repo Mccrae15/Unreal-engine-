@@ -47,7 +47,7 @@ enum class EMovieRenderPipelineState : uint8
 	/** All outputs have finished writing to disk or otherwise processing. Additional exports that may have needed information about the produced file can now be run. */
 	Export = 3,
 	/** The pipeline has been shut down. It is an error to shut it down again. */
-	Shutdown = 4,
+	Finished = 4,
 };
 
 /**
@@ -624,6 +624,12 @@ public:
 	/** What time data should this frame use? Can vary between samples when TemporalSampleCount > 1. */
 	FTimeData TimeData;
 
+	/** The name of the currently active camera being rendered. May be empty. */
+	FString CameraName;
+
+	/** THe name of the currently active shot. May be empty if there is no shot track. */
+	FString ShotName;
+
 	/** INFORMATION BELOW HERE SHOULD NOT GET PERSISTED BETWEEN FRAMES */
 
 	void ResetPerFrameData()
@@ -645,6 +651,8 @@ public:
 		ShotSamplesRendered = 0;
 		ShotIndex = 0;
 		TemporalSampleCount = 0;
+		CameraName.Reset();
+		ShotName.Reset();
 	}
 
 	/**
