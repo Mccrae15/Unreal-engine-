@@ -320,26 +320,22 @@ FText FDataprepDragDropOp::GetMessageText()
 
 	if(bDropTargetValid || bCopyRequested)
 	{
-		if(Cast<UDataprepGraphActionStepNode>(GetHoveredNode()) != nullptr)
+		if(GetHoveredNode()->IsA<UDataprepGraphActionStepNode>() || GetHoveredNode()->IsA<UDataprepGraphActionNode>())
 		{
-			LastMessageText = bCopyRequested ? LOCTEXT("CopyDataprepActionStepNode", "Copy step to location") : LOCTEXT("MoveDataprepActionStepNode", "Move step to location");
+			LastMessageText = bCopyRequested ? LOCTEXT("DataprepActionStepNode_Copy", "Copy step to location") : LOCTEXT("DataprepActionStepNode_Move", "Move step to location");
 		}
-		else if(Cast<UDataprepGraphActionNode>(GetHoveredNode()) != nullptr)
+		else if(GetHoveredNode()->IsA<UDataprepGraphRecipeNode>())
 		{
-			LastMessageText = bCopyRequested ? LOCTEXT("CopyDataprepActionAssetNode", "Copy step to location") : LOCTEXT("MoveDataprepActionAssetNode", "Move step to location");
-		}
-		else if(Cast<UDataprepGraphRecipeNode>(GetHoveredNode()) != nullptr)
-		{
-			LastMessageText = LOCTEXT("InsertDataprepActionAssetNode", "Insert action to location");
+			LastMessageText = LOCTEXT("DataprepActionAssetNode_Insert", "Insert action to location");
 		}
 	}
 	else if(GetHoveredNode() != nullptr)
 	{
-		LastMessageText = LOCTEXT("NoSelfMove", "Cannot move to itself");
+		LastMessageText = LOCTEXT("DataprepActionStepNode_NoSelfMove", "Cannot move to itself");
 	}
 	else
 	{
-		LastMessageText = LOCTEXT("NotImplemented", "Operation not implemented yet");
+		LastMessageText = LOCTEXT("DataprepActionStepNode_NotImplemented", "Operation not implemented yet");
 	}
 
 	return LastMessageText;
@@ -552,11 +548,11 @@ FReply FDataprepDragDropOp::DoDropOnTrack(UDataprepAsset* TargetDataprepAsset, i
 
 			if(InsertIndex >= 0 && InsertIndex < TargetDataprepAsset->GetActionCount())
 			{
-				TargetDataprepAsset->InsertActions(Steps, InsertIndex);
+				TargetDataprepAsset->InsertAction(Steps, InsertIndex);
 			}
 			else
 			{
-				TargetDataprepAsset->AddActions(Steps);
+				TargetDataprepAsset->AddAction(Steps);
 			}
 		}
 
@@ -569,15 +565,18 @@ FReply FDataprepDragDropOp::DoDropOnTrack(UDataprepAsset* TargetDataprepAsset, i
 
 		bool bTransactionSuccessful = false;
 
-		UDataprepActionAsset* Action = Cast<UDataprepActionAsset>(UDataprepActionAsset::StaticClass()->GetDefaultObject());
+		UDataprepActionAsset* Action = nullptr;
 
 		if(InsertIndex >= 0 && InsertIndex < TargetDataprepAsset->GetActionCount())
 		{
-			bTransactionSuccessful = TargetDataprepAsset->InsertAction(Action, InsertIndex);
+			bTransactionSuccessful = TargetDataprepAsset->InsertAction(InsertIndex);
+			Action = TargetDataprepAsset->GetAction(InsertIndex);
 		}
 		else
 		{
-			InsertIndex = TargetDataprepAsset->AddAction(Action);
+			InsertIndex = TargetDataprepAsset->AddAction();
+			Action = TargetDataprepAsset->GetAction(InsertIndex);
+
 			bTransactionSuccessful = InsertIndex != INDEX_NONE;
 		}
 
@@ -586,9 +585,6 @@ FReply FDataprepDragDropOp::DoDropOnTrack(UDataprepAsset* TargetDataprepAsset, i
 			Transaction.Cancel();
 			return FReply::Unhandled();
 		}
-
-		Action = TargetDataprepAsset->GetAction(InsertIndex);
-		Action->SetLabel(TEXT("New Action"));
 
 		FDataprepSchemaActionContext Context;
 		Context.DataprepActionPtr = Action;

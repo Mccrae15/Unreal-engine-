@@ -194,13 +194,6 @@ private:
 	bool Visit(const Chaos::TSpatialVisitorData<TPayload>& Instance, Chaos::FQueryFastData* CurData)
 	{
 		//QUICK_SCOPE_CYCLE_COUNTER(SQVisit);
-#if CHAOS_DEBUG_DRAW && WITH_CHAOS
-		if (DebugParams.IsDebugQuery() && ChaosSQDrawDebugVisitorQueries)
-		{
-			DebugDraw<SQ>(Instance, CurData->CurrentLength);
-		}
-#endif
-
 		TPayload Payload = Instance.Payload;
 
 		//todo: add a check to ensure hitbuffer matches SQ type
@@ -209,8 +202,14 @@ private:
 		const TShapesArray<float,3>& Shapes = GeometryParticle->ShapesArray();
 
 		const bool bTestShapeBounds =  Shapes.Num() > 1;
+		bool bContinue = true;
 
 		const TRigidTransform<float, 3> ActorTM(GeometryParticle->X(), GeometryParticle->R());
+
+#if CHAOS_DEBUG_DRAW
+		bool bAllShapesIgnoredInPrefilter = true;
+		bool bHitBufferIncreased = false;
+#endif
 
 		for (const auto& Shape : Shapes)
 		{
@@ -259,6 +258,10 @@ private:
 
 			if (HitType != ECollisionQueryHitType::None)
 			{
+#if CHAOS_DEBUG_DRAW
+				bAllShapesIgnoredInPrefilter = false;
+#endif
+
 				//QUICK_SCOPE_CYCLE_COUNTER(SQNarrow);
 				THitType Hit;
 				Hit.Actor = GeometryParticle;
@@ -324,42 +327,66 @@ private:
 						//overlap never blocks
 						const bool bBlocker = (HitType == ECollisionQueryHitType::Block || bAnyHit || HitBuffer.WantsSingleResult());
 						HitBuffer.InsertHit(Hit, bBlocker);
+#if CHAOS_DEBUG_DRAW
+						bHitBufferIncreased = true;
+#endif
 
 						if (bBlocker && SQ != ESQType::Overlap)
 						{
 							CurData->SetLength(FMath::Max(0.f, Distance));	//Max is needed for MTD which returns negative distance
 							if (CurData->CurrentLength == 0 && (SQ == ESQType::Raycast || HitBuffer.WantsSingleResult()))	//raycasts always fail with distance 0, sweeps only matter if we want multi overlaps
 							{
-								return false;	//initial overlap so nothing will be better than this
+								bContinue = false; //initial overlap so nothing will be better than this
+								break;
 							}
 						}
 
 						if (bAnyHit)
 						{
-							return false;
+							bContinue = false;
+							break;
 						}
 					}
 				}
 			}
 		}
 
-		return true;
+#if CHAOS_DEBUG_DRAW && WITH_CHAOS
+		if (DebugParams.IsDebugQuery() && ChaosSQDrawDebugVisitorQueries)
+		{
+			DebugDraw<SQ>(Instance, CurData->CurrentLength, bAllShapesIgnoredInPrefilter, bHitBufferIncreased);
+		}
+#endif
+
+		return bContinue;
 	}
 
-#if CHAOS_DEBUG_DRAW && !(UE_BUILD_TEST || UE_BUILD_SHIPPING)
+#if CHAOS_DEBUG_DRAW
+
+	void DebugDrawPayloadImpl(const TPayload& Payload, const bool bExternal, const bool bHit, decltype(&TPayload::DebugDraw)) { Payload.DebugDraw(bExternal, bHit); }
+	void DebugDrawPayloadImpl(const TPayload& Payload, const bool bExternal, const bool bHit, ...) { }
+	void DebugDrawPayload(const TPayload& Payload, const bool bExternal, const bool bHit) { DebugDrawPayloadImpl(Payload, bExternal, bHit, 0); }
+
 	template <ESQType SQ>
-	void DebugDraw(const Chaos::TSpatialVisitorData<TPayload>& Instance, const float CurLength)
+	void DebugDraw(const Chaos::TSpatialVisitorData<TPayload>& Instance, const float CurLength, const bool bPrefiltered, const bool bHit)
 	{
 		if (SQ == ESQType::Raycast)
 		{
 			const FVector EndPoint = StartPoint + (Dir * CurLength);
-			Chaos::FDebugDrawQueue::GetInstance().DrawDebugDirectionalArrow(StartPoint, EndPoint, 5.f, FColor::Green, false, -1.f, 0, 1.f);
+			Chaos::FDebugDrawQueue::GetInstance().DrawDebugDirectionalArrow(StartPoint, EndPoint, 5.f, bHit ? FColor::Red : FColor::Green);
 		}
 
 		if (Instance.bHasBounds)
 		{
-			Chaos::FDebugDrawQueue::GetInstance().DrawDebugBox(Instance.Bounds.Center(), Instance.Bounds.Extents(), FQuat::Identity, FColor::Red, false, -1.f, 0, 2.f);
+			Chaos::FDebugDrawQueue::GetInstance().DrawDebugBox(Instance.Bounds.Center(), Instance.Bounds.Extents(), FQuat::Identity, bHit ? FColor(100, 50, 50) : FColor(50, 100, 50), false, -1.f, 0, 0.f);
 		}
+
+#if WITH_CHAOS
+		if (!bPrefiltered)
+		{
+			DebugDrawPayload(Instance.Payload, DebugParams.bExternalQuery, bHit);
+		}
+#endif
 	}
 #endif
 

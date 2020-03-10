@@ -1891,6 +1891,9 @@ void USoundWave::Parse(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstance
 	WaveInstance->ReverbSendLevelRange = ParseParams.ReverbSendLevelRange;
 	WaveInstance->ReverbSendLevelDistanceRange = ParseParams.ReverbSendLevelDistanceRange;
 
+	// Copy the submix send settings
+	WaveInstance->SubmixSendSettings = ParseParams.SubmixSendSettings;
+
 	// Get the envelope follower settings
 	WaveInstance->EnvelopeFollowerAttackTime = ParseParams.EnvelopeFollowerAttackTime;
 	WaveInstance->EnvelopeFollowerReleaseTime = ParseParams.EnvelopeFollowerReleaseTime;
@@ -2472,7 +2475,7 @@ void USoundWave::RetainCompressedAudio(bool bForceSync /*= false*/)
 {
 	// Since the zeroth chunk is always inlined and stored in memory,
 	// early exit if we only have one chunk.
-	if (DisableRetainingCVar || GetNumChunks() <= 1)
+	if (GIsEditor || DisableRetainingCVar || GetNumChunks() <= 1)
 	{
 		return;
 	}

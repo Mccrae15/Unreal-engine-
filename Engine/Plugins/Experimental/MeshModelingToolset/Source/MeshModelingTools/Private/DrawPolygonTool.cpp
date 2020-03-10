@@ -237,21 +237,12 @@ void UDrawPolygonTool::Shutdown(EToolShutdownType ShutdownType)
 
 void UDrawPolygonTool::RegisterActions(FInteractiveToolActionSet& ActionSet)
 {
-	ActionSet.RegisterAction(this, (int32)EStandardToolActions::BaseClientDefinedActionID + 1,
-		TEXT("PopLastVertex"), 
-		LOCTEXT("PopLastVertex", "Pop Last Vertex"),
-		LOCTEXT("PopLastVertexTooltip", "Pop last vertex added to polygon"),
-		EModifierKey::None, EKeys::BackSpace,
-		[this]() { PopLastVertexAction(); });
-
-
 	ActionSet.RegisterAction(this, (int32)EStandardToolActions::BaseClientDefinedActionID + 2,
 		TEXT("ToggleGizmo"),
 		LOCTEXT("ToggleGizmo", "Toggle Gizmo"),
 		LOCTEXT("ToggleGizmoTooltip", "Toggle visibility of the transformation Gizmo"),
 		EModifierKey::None, EKeys::A,
 		[this]() { PolygonProperties->bShowGizmo = !PolygonProperties->bShowGizmo; });
-
 }
 
 
@@ -274,6 +265,7 @@ void UDrawPolygonTool::PopLastVertexAction()
 		{
 			PolygonVertices.RemoveAt(0);
 			bAbortActivePolygonDraw = true;
+			CurrentCurveTimestamp++;
 		}
 	}
 	else
@@ -287,6 +279,7 @@ void UDrawPolygonTool::PopLastVertexAction()
 		{
 			FixedPolygonClickPoints.RemoveAt(0);
 			bAbortActivePolygonDraw = true;
+			CurrentCurveTimestamp++;
 		}
 	}
 }
@@ -504,6 +497,7 @@ void UDrawPolygonTool::ResetPolygon()
 	SnapEngine.Reset();
 	bHaveSurfaceHit = false;
 	bInFixedPolygonMode = false;
+	CurrentCurveTimestamp++;
 }
 
 void UDrawPolygonTool::UpdatePreviewVertex(const FVector& PreviewVertexIn)
@@ -639,19 +633,10 @@ void UDrawPolygonTool::OnBeginClickSequence(const FInputDeviceRay& ClickPos)
 		return;		// cannot start a poly an a point that is not visible, this is almost certainly an error due to draw plane
 	}
 
-	AppendVertex(HitPos);
 	UpdatePreviewVertex(HitPos);
 
 	bInFixedPolygonMode = (PolygonProperties->PolygonType != EDrawPolygonDrawMode::Freehand);
 	FixedPolygonClickPoints.Reset();
-	FixedPolygonClickPoints.Add(HitPos);
-
-	// if we are starting a freehand poly, add start point as snap target, but then ignore it until we get 3 verts
-	if (bInFixedPolygonMode == false)
-	{
-		SnapEngine.AddPointTarget(PolygonVertices[0], StartPointSnapID, 1);
-		SnapEngine.AddIgnoreTarget(StartPointSnapID);
-	}
 }
 
 void UDrawPolygonTool::OnNextSequencePreview(const FInputDeviceRay& ClickPos)
@@ -678,13 +663,12 @@ void UDrawPolygonTool::OnNextSequencePreview(const FInputDeviceRay& ClickPos)
 		return;
 	}
 
+	UpdatePreviewVertex(HitPos);
 	if (PolygonVertices.Num() > 2)
 	{
 		bPreviewUpdatePending = true;
+		UpdateSelfIntersection();
 	}
-
-	UpdatePreviewVertex(HitPos);
-	UpdateSelfIntersection();
 }
 
 bool UDrawPolygonTool::OnNextSequenceClick(const FInputDeviceRay& ClickPos)
@@ -706,7 +690,7 @@ bool UDrawPolygonTool::OnNextSequenceClick(const FInputDeviceRay& ClickPos)
 	if (bInFixedPolygonMode)
 	{
 		// ignore very close click points
-		if ( ToolSceneQueriesUtil::PointSnapQuery(this, FixedPolygonClickPoints[FixedPolygonClickPoints.Num()-1], HitPos) )
+		if (FixedPolygonClickPoints.Num() > 0 && ToolSceneQueriesUtil::PointSnapQuery(this, FixedPolygonClickPoints[FixedPolygonClickPoints.Num()-1], HitPos) )
 		{
 			return true;
 		}
@@ -722,7 +706,7 @@ bool UDrawPolygonTool::OnNextSequenceClick(const FInputDeviceRay& ClickPos)
 	else
 	{
 		// ignore very close click points
-		if (ToolSceneQueriesUtil::PointSnapQuery(this, PolygonVertices[PolygonVertices.Num()-1], HitPos))
+		if (PolygonVertices.Num() > 0 && ToolSceneQueriesUtil::PointSnapQuery(this, PolygonVertices[PolygonVertices.Num()-1], HitPos))
 		{
 			return true;
 		}
@@ -769,6 +753,16 @@ bool UDrawPolygonTool::OnNextSequenceClick(const FInputDeviceRay& ClickPos)
 	}
 
 	AppendVertex(HitPos);
+
+	// emit change event
+	GetToolManager()->EmitObjectChange(this, MakeUnique<FDrawPolygonStateChange>(CurrentCurveTimestamp), LOCTEXT("DrawPolyAddPoint", "Add Point"));
+
+	// if we are starting a freehand poly, add start point as snap target, but then ignore it until we get 3 verts
+	if (bInFixedPolygonMode == false && PolygonVertices.Num() == 1)
+	{
+		SnapEngine.AddPointTarget(PolygonVertices[0], StartPointSnapID, 1);
+		SnapEngine.AddIgnoreTarget(StartPointSnapID);
+	}
 	if (PolygonVertices.Num() > 2)
 	{
 		SnapEngine.RemoveIgnoreTarget(StartPointSnapID);
@@ -1288,6 +1282,40 @@ void UDrawPolygonTool::ShowExtrudeMessage()
 		LOCTEXT("OnStartExtrude", "Set the height of the Extrusion by positioning the mouse over the extrusion volume, or over the scene to snap to relative heights."),
 		EToolMessageLevel::UserNotification);
 }
+
+
+
+
+void UDrawPolygonTool::UndoCurrentOperation()
+{
+	if (bInInteractiveExtrude)
+	{
+		PreviewMesh->ClearPreview();
+		PreviewMesh->SetVisible(false);
+		bInInteractiveExtrude = false;
+		PopLastVertexAction();
+	}
+	else
+	{
+		PopLastVertexAction();
+	}
+}
+
+
+void FDrawPolygonStateChange::Revert(UObject* Object)
+{
+	Cast<UDrawPolygonTool>(Object)->UndoCurrentOperation();
+	bHaveDoneUndo = true;
+}
+bool FDrawPolygonStateChange::HasExpired(UObject* Object) const
+{
+	return bHaveDoneUndo || (Cast<UDrawPolygonTool>(Object)->CheckInCurve(CurveTimestamp) == false);
+}
+FString FDrawPolygonStateChange::ToString() const
+{
+	return TEXT("FDrawPolygonStateChange");
+}
+
 
 
 #undef LOCTEXT_NAMESPACE

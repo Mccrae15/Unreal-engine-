@@ -221,6 +221,9 @@ bool FLODUtilities::RegenerateLOD(USkeletalMesh* SkeletalMesh, int32 NewLODCount
 		FSkeletalMeshUpdateContext UpdateContext;
 		UpdateContext.SkeletalMesh = SkeletalMesh;
 
+		//If we force a regenerate, we want to invalidate the DCC so the render data get rebuilded
+		SkeletalMesh->InvalidateDeriveDataCacheGUID();
+
 		// remove LODs
 		int32 CurrentNumLODs = SkeletalMesh->GetLODNum();
 		if (LODCount < CurrentNumLODs)
@@ -1600,7 +1603,7 @@ bool FLODUtilities::UpdateAlternateSkinWeights(FSkeletalMeshLODModel& LODModelDe
 	int32 ProfileIndex = 0;
 	if (!ImportDataDest.AlternateInfluenceProfileNames.Find(ProfileNameDest.ToString(), ProfileIndex))
 	{
-		UE_LOG(LogLODUtilities, Error, TEXT("Failed to import Skin Weight Profile the alternate skinning imported source data is not available."), *SkeletalMeshName);
+		UE_LOG(LogLODUtilities, Warning, TEXT("Failed to import Skin Weight Profile the alternate skinning imported source data is not available."), *SkeletalMeshName);
 		return false;
 	}
 	check(ImportDataDest.AlternateInfluences.IsValidIndex(ProfileIndex));
