@@ -9,6 +9,7 @@
 #include "HAL/Runnable.h"
 
 class FRunnableThread;
+class UClass;
 
 class FAssetSearchManager : public FRunnable
 {
@@ -17,7 +18,7 @@ public:
 	~FAssetSearchManager();
 	
 	void Start();
-	void RegisterIndexer(FName AssetClassName, IAssetIndexer* Indexer);
+	void RegisterAssetIndexer(const UClass* AssetClass, TUniquePtr<IAssetIndexer>&& Indexer);
 
 	FSearchStats GetStats() const;
 
@@ -33,6 +34,9 @@ private:
 
 private:
 	void OnAssetAdded(const FAssetData& InAssetData);
+	void OnAssetRemoved(const FAssetData& InAssetData);
+	void OnAssetScanFinished();
+
 	void OnObjectSaved(UObject* InObject);
 	void OnAssetLoaded(UObject* InObject);
 	void OnGetAssetTags(const UObject* Object, TArray<UObject::FAssetRegistryTag>& OutTags);
@@ -46,7 +50,7 @@ private:
 	FString TryGetDDCKeyForAsset(const FAssetData& InAsset);
 	FString GetDerivedDataKey(const FSHAHash& IndexedContentHash);
 	FString GetDerivedDataKey(const FAssetData& UnindexedAsset);
-	bool HasIndexerForClass(UClass* AssetClass);
+	bool HasIndexerForClass(const UClass* AssetClass);
 	void StoreIndexForAsset(UObject* InAsset, bool Unindexed);
 	void LoadDDCContentIntoDatabase(const FAssetData& InAsset, const TArray<uint8>& Content, const FString& DerivedDataKey);
 
@@ -68,11 +72,17 @@ private:
 	double LastRecordCountUpdateSeconds;
 
 private:
-	TMap<FName, IAssetIndexer*> Indexers;
+	TMap<FName, TUniquePtr<IAssetIndexer>> Indexers;
 
 	TArray<TWeakObjectPtr<UObject>> RequestIndexQueue;
 
-	TArray<FAssetData> ProcessAssetQueue;
+	struct FAssetOperation
+	{
+		FAssetData Asset;
+		bool bRemoval = false;
+	};
+
+	TArray<FAssetOperation> ProcessAssetQueue;
 
 	struct FAssetDDCRequest
 	{

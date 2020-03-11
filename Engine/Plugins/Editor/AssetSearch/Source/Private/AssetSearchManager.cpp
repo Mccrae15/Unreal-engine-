@@ -18,6 +18,12 @@
 #include "StudioAnalytics.h"
 #include "AnalyticsEventAttribute.h"
 #include "Misc/FeedbackContext.h"
+#include "WidgetBlueprint.h"
+#include "Engine/Blueprint.h"
+#include "Engine/DataTable.h"
+#include "Engine/DataAsset.h"
+#include "Indexers/DialogueWaveIndexer.h"
+#include "Sound/DialogueWave.h"
 
 #define LOCTEXT_NAMESPACE "FAssetSearchManager"
 
@@ -78,10 +84,11 @@ FAssetSearchManager::~FAssetSearchManager()
 
 void FAssetSearchManager::Start()
 {
-	RegisterIndexer(TEXT("DataAsset"), new FDataAssetIndexer());
-	RegisterIndexer(TEXT("DataTable"), new FDataTableIndexer());
-	RegisterIndexer(TEXT("Blueprint"), new FBlueprintIndexer());
-	RegisterIndexer(TEXT("WidgetBlueprint"), new FWidgetBlueprintIndexer());
+	RegisterAssetIndexer(UDataAsset::StaticClass(), MakeUnique<FDataAssetIndexer>());
+	RegisterAssetIndexer(UDataTable::StaticClass(), MakeUnique<FDataTableIndexer>());
+	RegisterAssetIndexer(UBlueprint::StaticClass(), MakeUnique<FBlueprintIndexer>());
+	RegisterAssetIndexer(UWidgetBlueprint::StaticClass(), MakeUnique<FWidgetBlueprintIndexer>());
+	RegisterAssetIndexer(UDialogueWave::StaticClass(), MakeUnique<FDialogueWaveIndexer>());
 
 	const FString SessionPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Search")));
 	SearchDatabase.Open(SessionPath);
@@ -92,6 +99,8 @@ void FAssetSearchManager::Start()
 
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 	AssetRegistry.OnAssetAdded().AddRaw(this, &FAssetSearchManager::OnAssetAdded);
+	AssetRegistry.OnAssetRemoved().AddRaw(this, &FAssetSearchManager::OnAssetRemoved);
+	AssetRegistry.OnFilesLoaded().AddRaw(this, &FAssetSearchManager::OnAssetScanFinished);
 	
 	TArray<FAssetData> TempAssetData;
 	AssetRegistry.GetAllAssets(TempAssetData, true);
@@ -118,10 +127,11 @@ FSearchStats FAssetSearchManager::GetStats() const
 	return Stats;
 }
 
-void FAssetSearchManager::RegisterIndexer(FName AssetClassName, IAssetIndexer* Indexer)
+void FAssetSearchManager::RegisterAssetIndexer(const UClass* AssetClass, TUniquePtr<IAssetIndexer>&& Indexer)
 {
 	check(IsInGameThread());
-	Indexers.Add(AssetClassName, Indexer);
+
+	Indexers.Add(AssetClass->GetFName(), MoveTemp(Indexer));
 }
 
 void FAssetSearchManager::OnAssetAdded(const FAssetData& InAssetData)
@@ -141,7 +151,33 @@ void FAssetSearchManager::OnAssetAdded(const FAssetData& InAssetData)
 		}
 	}
 
-	ProcessAssetQueue.Add(InAssetData);
+	FAssetOperation Operation;
+	Operation.Asset = InAssetData;
+	ProcessAssetQueue.Add(Operation);
+}
+
+void FAssetSearchManager::OnAssetRemoved(const FAssetData& InAssetData)
+{
+	check(IsInGameThread());
+
+	FAssetOperation Operation;
+	Operation.Asset = InAssetData;
+	Operation.bRemoval = true;
+	ProcessAssetQueue.Add(Operation);
+}
+
+void FAssetSearchManager::OnAssetScanFinished()
+{
+	check(IsInGameThread());
+
+	TArray<FAssetData> AllAssets;
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	AssetRegistry.GetAllAssets(AllAssets, false);
+
+	UpdateOperations.Enqueue([this, AssetsAvailable = MoveTemp(AllAssets)]() mutable {
+		FScopeLock ScopedLock(&SearchDatabaseCS);
+		SearchDatabase.RemoveAssetsNotInThisSet(AssetsAvailable);
+	});
 }
 
 void FAssetSearchManager::OnObjectSaved(UObject* InObject)
@@ -168,7 +204,7 @@ void FAssetSearchManager::OnGetAssetTags(const UObject* Object, TArray<UObject::
 {
 	check(IsInGameThread());
 
-	FString ObjectPath = Object->GetPathName();
+	const FString ObjectPath = Object->GetPathName();
 	const FContentHashEntry* ContentEntry = ContentHashCache.Find(ObjectPath);
 
 	if (ContentEntry)
@@ -297,12 +333,12 @@ FString FAssetSearchManager::GetDerivedDataKey(const FAssetData& UnindexedAsset)
 	return DDCKey;
 }
 
-bool FAssetSearchManager::HasIndexerForClass(UClass* AssetClass)
+bool FAssetSearchManager::HasIndexerForClass(const UClass* AssetClass)
 {
-	UClass* IndexableClass = AssetClass;
+	const UClass* IndexableClass = AssetClass;
 	while (IndexableClass)
 	{
-		if (IAssetIndexer* Indexer = Indexers.FindRef(IndexableClass->GetFName()))
+		if (Indexers.Contains(IndexableClass->GetFName()))
 		{
 			return true;
 		}
@@ -329,8 +365,10 @@ void FAssetSearchManager::StoreIndexForAsset(UObject* InAsset, bool bLegacyIndex
 			UClass* IndexableClass = InAsset->GetClass();
 			while (IndexableClass)
 			{
-				if (IAssetIndexer* Indexer = Indexers.FindRef(IndexableClass->GetFName()))
+				if (TUniquePtr<IAssetIndexer>* IndexerPtr = Indexers.Find(IndexableClass->GetFName()))
 				{
+					IAssetIndexer* Indexer = IndexerPtr->Get();
+
 					bWasIndexed = true;
 					Serializer.BeginIndexer(Indexer);
 					Indexer->IndexAsset(InAsset, Serializer);
@@ -387,10 +425,22 @@ bool FAssetSearchManager::Tick_GameThread(float DeltaTime)
 	int32 ScanLimit = GameThread_AssetScanLimit;
 	while (ProcessAssetQueue.Num() > 0 && ScanLimit > 0 && PendingDownloads < PendingDownloadsMax)
 	{
-		FAssetData Asset = ProcessAssetQueue.Pop(false);
-		if (TryLoadIndexForAsset(Asset))
+		FAssetOperation Operation = ProcessAssetQueue.Pop(false);
+		FAssetData Asset = Operation.Asset;
+
+		if (Operation.bRemoval)
 		{
-			ScanLimit -= 10;
+			UpdateOperations.Enqueue([this, Asset]() {
+				FScopeLock ScopedLock(&SearchDatabaseCS);
+				SearchDatabase.RemoveAsset(Asset);
+			});
+		}
+		else
+		{
+			if (TryLoadIndexForAsset(Asset))
+			{
+				ScanLimit -= 10;
+			}
 		}
 
 		ScanLimit--;
@@ -474,7 +524,7 @@ void FAssetSearchManager::ForceIndexOnAssetsMissingIndex()
 
 		if (UObject* AssetToIndex = Request.AssetData.GetAsset())
 		{
-			StoreIndexForAsset(AssetToIndex, true);
+			StoreIndexForAsset(AssetToIndex, Request.DDCKey_IndexDataHash.StartsWith(TEXT("AssetSearch_Legacy")));
 		}
 
 		RequestCount++;
