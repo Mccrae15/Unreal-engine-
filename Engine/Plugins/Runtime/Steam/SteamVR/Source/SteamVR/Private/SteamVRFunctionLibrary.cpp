@@ -139,3 +139,39 @@ FVector USteamVRFunctionLibrary::GetBasePosition()
 
 	return FVector::ZeroVector;
 }
+
+FRotator USteamVRFunctionLibrary::GetBaseRotation()
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->GetBaseRotation();
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+	return FRotator::ZeroRotator;
+}
+
+void USteamVRFunctionLibrary::SetBaseRotation(FRotator NewRotation)
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->SetBaseRotation(NewRotation);
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+}
+
+void USteamVRFunctionLibrary::SetBasePosition(FVector NewPosition)
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->SetBasePosition(NewPosition);
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+}
