@@ -159,12 +159,10 @@ AOculusMR_CastingCameraActor::AOculusMR_CastingCameraActor(const FObjectInitiali
 	ForegroundRenderTargets.SetNum(1);
 
 	BackgroundRenderTargets[0] = NewObject<UTextureRenderTarget2D>();
-	BackgroundRenderTargets[0]->RenderTargetFormat = RTF_RGB10A2;
-	BackgroundRenderTargets[0]->TargetGamma = 2.2;
+	BackgroundRenderTargets[0]->RenderTargetFormat = RTF_RGBA8_SRGB;
 
 	ForegroundRenderTargets[0] = NewObject<UTextureRenderTarget2D>();
-	ForegroundRenderTargets[0]->RenderTargetFormat = RTF_RGB10A2;
-	ForegroundRenderTargets[0]->TargetGamma = 2.2;
+	ForegroundRenderTargets[0]->RenderTargetFormat = RTF_RGBA8_SRGB;
 #elif PLATFORM_ANDROID
 	BackgroundRenderTargets.SetNum(NumRTs);
 	ForegroundRenderTargets.SetNum(NumRTs);
@@ -174,12 +172,10 @@ AOculusMR_CastingCameraActor::AOculusMR_CastingCameraActor(const FObjectInitiali
 	for (unsigned int i = 0; i < NumRTs; ++i)
 	{
 		BackgroundRenderTargets[i] = NewObject<UTextureRenderTarget2D>();
-		BackgroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8;
-		BackgroundRenderTargets[i]->TargetGamma = 2.2;
+		BackgroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8_SRGB;
 
 		ForegroundRenderTargets[i] = NewObject<UTextureRenderTarget2D>();
-		ForegroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8;
-		ForegroundRenderTargets[i]->TargetGamma = 2.2;
+		ForegroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8_SRGB;
 
 		AudioTimes[i] = 0.0;
 	}
@@ -462,15 +458,27 @@ void AOculusMR_CastingCameraActor::Tick(float DeltaTime)
 
 			if (IsVulkanPlatform(GMaxRHIShaderPlatform))
 			{
-				// The Vulkan RHI's implementation of GetNativeResource is different and returns the VkImage cast
-				// as a void* instead of a pointer to the VkImage, so we need this workaround
-				BackgroundTexture = (void*)BackgroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource();
-				ForegroundTexture = (void*)ForegroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource();
+				ExecuteOnRenderThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
+				{
+					ExecuteOnRHIThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
+					{
+						// The Vulkan RHI's implementation of GetNativeResource is different and returns the VkImage cast
+						// as a void* instead of a pointer to the VkImage, so we need this workaround
+						BackgroundTexture = (void*)BackgroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource();
+						ForegroundTexture = (void*)ForegroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource();
+					});
+				});
 			}
 			else
 			{
-				BackgroundTexture = *((void**)BackgroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource());
-				ForegroundTexture = *((void**)ForegroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource());
+				ExecuteOnRenderThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
+				{
+					ExecuteOnRHIThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
+					{
+						BackgroundTexture = *((void**)BackgroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource());
+						ForegroundTexture = *((void**)ForegroundRenderTargets[EncodeIndex]->Resource->TextureRHI->GetNativeResource());
+					});
+				});
 			}
 			ovrp_Media_EncodeMrcFrameWithDualTextures(BackgroundTexture, ForegroundTexture, AudioBuffers[EncodeIndex].GetData(), AudioBuffers[EncodeIndex].Num() * sizeof(float), NumChannels, AudioTime, &SyncId);
 		}
@@ -854,6 +862,7 @@ void AOculusMR_CastingCameraActor::UpdateTrackedCameraPosition()
 #endif
 	FPose CameraPose = CameraTrackedObjectPose * CameraTrackingSpacePose;
 	CameraPose = CameraPose * FPose(MRState->TrackedCamera.UserRotation.Quaternion(), MRState->TrackedCamera.UserOffset);
+	CameraPose.Position = CameraPose.Position * MRState->ScalingFactor;
 
 	float Distance = 0.0f;
 	if (MRSettings->ClippingReference == EOculusMR_ClippingReference::CR_TrackingReference)
@@ -1122,6 +1131,7 @@ void AOculusMR_CastingCameraActor::SetupMRCScreen()
 #endif
 		UpdateRenderTargetSize();
 
+		GetCaptureComponent2D()->bDisableFlipCopyGLES = true;
 		// LDR for gamma correction and post process
 		GetCaptureComponent2D()->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
 
@@ -1134,6 +1144,7 @@ void AOculusMR_CastingCameraActor::SetupMRCScreen()
 		{
 			ForegroundCaptureActor = GetWorld()->SpawnActor<ASceneCapture2D>();
 
+			ForegroundCaptureActor->GetCaptureComponent2D()->bDisableFlipCopyGLES = true;
 			// LDR for gamma correction and post process
 			ForegroundCaptureActor->GetCaptureComponent2D()->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
 #if PLATFORM_ANDROID

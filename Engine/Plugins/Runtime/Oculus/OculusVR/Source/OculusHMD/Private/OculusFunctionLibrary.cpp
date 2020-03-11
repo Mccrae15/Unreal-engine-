@@ -382,13 +382,13 @@ float UOculusFunctionLibrary::GetGPUFrameTime()
 	return 0.0f;
 }
 
-void UOculusFunctionLibrary::SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel level)
+void UOculusFunctionLibrary::SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel level, bool isDynamic)
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
 	if (OculusHMD != nullptr)
 	{
-		OculusHMD->SetFixedFoveatedRenderingLevel(level);
+		OculusHMD->SetFixedFoveatedRenderingLevel(level, isDynamic);
 	}
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 }
@@ -719,6 +719,19 @@ void UOculusFunctionLibrary::SetGuardianVisibility(bool GuardianVisible)
 		ovrp_SetBoundaryVisible2(GuardianVisible);
 	}
 #endif
+}
+
+bool UOculusFunctionLibrary::GetSystemHmd3DofModeEnabled()
+{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS
+	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
+	if (OculusHMD != nullptr)
+	{
+		ovrpBool enabled;
+		return OVRP_SUCCESS(ovrp_GetSystemHmd3DofModeEnabled(&enabled)) && enabled;
+	}
+#endif
+	return false;
 }
 
 #undef LOCTEXT_NAMESPACE

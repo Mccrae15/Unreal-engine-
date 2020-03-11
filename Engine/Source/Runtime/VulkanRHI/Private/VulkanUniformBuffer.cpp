@@ -118,6 +118,9 @@ void FVulkanUniformBuffer::UpdateResourceTable(FRHIResource** Resources, int32 R
 
 FVulkanEmulatedUniformBuffer::FVulkanEmulatedUniformBuffer(const FRHIUniformBufferLayout& InLayout, const void* Contents, EUniformBufferUsage InUsage, EUniformBufferValidation Validation)
 	: FVulkanUniformBuffer(InLayout, Contents, InUsage, Validation)
+#if WITH_LATE_LATCHING_CODE
+	, PatchingFrameNumber(-1)
+#endif
 {
 #if VULKAN_ENABLE_AGGRESSIVE_STATS
 	SCOPE_CYCLE_COUNTER(STAT_VulkanUniformBufferCreateTime);
@@ -360,7 +363,51 @@ FVulkanUniformBufferUploader::FVulkanUniformBufferUploader(FVulkanDevice* InDevi
 			CPUBuffer = new FVulkanRingBuffer(InDevice, PackedUniformsRingBufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 		}
 	}
+
+#if WITH_LATE_LATCHING_CODE
+	EnableUniformBufferPatching = false;
+	UniformBufferPatchingFrameNumber = -1;
+	if (FVulkanPlatform::SupportsUniformBufferPatching())
+		BufferPatchInfos.Reserve(1000);
+#endif
 }
+
+#if WITH_LATE_LATCHING_CODE
+void FVulkanUniformBufferUploader::ApplyUniformBufferPatching(bool NeedAbort)
+{
+	int PatchCount = BufferPatchInfos.Num();
+
+	if (NeedAbort)
+	{
+		for (int i = 0; i < PatchCount; i++)
+		{
+			FUniformBufferPatchInfo& PatchInfo = BufferPatchInfos[i];
+			FVulkanEmulatedUniformBuffer* Emulate = (FVulkanEmulatedUniformBuffer*)PatchInfo.SourceBuffer;
+			if (Emulate->GetPatchingFrameNumber() > 0)
+			{
+				Emulate->FlagPatchingFrameNumber(-1);
+			}
+		}
+	}
+	else
+	{
+		for (int i = 0; i < PatchCount; i++)
+		{
+			FUniformBufferPatchInfo& PatchInfo = BufferPatchInfos[i];
+			ensureMsgf(PatchInfo.SourceBuffer != NULL, TEXT("PatchInfo.SourceBuffer can't be null"));
+			FVulkanEmulatedUniformBuffer* Emulate = (FVulkanEmulatedUniformBuffer*)PatchInfo.SourceBuffer;
+			memcpy(PatchInfo.DestBufferAddress, Emulate->ConstantData.GetData() + PatchInfo.SourceOffsetInFloats * sizeof(float), PatchInfo.SizeInFloats * sizeof(float));
+
+			if (Emulate->GetPatchingFrameNumber() > 0)
+			{
+				Emulate->FlagPatchingFrameNumber(-1);
+			}
+		}
+	}
+
+	BufferPatchInfos.Empty(BufferPatchInfos.Num());
+}
+#endif
 
 FVulkanUniformBufferUploader::~FVulkanUniformBufferUploader()
 {

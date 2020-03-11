@@ -310,12 +310,12 @@ void FSlateRHIRenderer::CreateViewport(const TSharedRef<SWindow> Window)
 		NewInfo->ProjectionMatrix = CreateProjectionMatrix( Width, Height );
 		if (FPlatformMisc::IsStandaloneStereoOnlyDevice())
 		{
-			NewInfo->PixelFormat = PF_B8G8R8A8;
+			NewInfo->PixelFormat = GetSlateRecommendedColorFormat();
 		}
 #if ALPHA_BLENDED_WINDOWS		
 		if (Window->GetTransparencySupport() == EWindowTransparency::PerPixel)
 		{
-			NewInfo->PixelFormat = PF_B8G8R8A8;
+			NewInfo->PixelFormat = GetSlateRecommendedColorFormat();
 		}
 #endif
 
@@ -754,7 +754,7 @@ void FSlateRHIRenderer::DrawWindow_RenderThread(FRHICommandListImmediate& RHICmd
 				uint32 BaseFlags = RHISupportsRenderTargetWriteMask(GMaxRHIShaderPlatform) ? TexCreate_NoFastClearFinalize : TexCreate_None;
 
 				FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(FIntPoint(ViewportWidth, ViewportHeight),
-					PF_B8G8R8A8,
+					GetSlateRecommendedColorFormat(),
 					FClearValueBinding::Transparent,
 					BaseFlags,
 					TexCreate_ShaderResource | TexCreate_RenderTargetable,
@@ -1510,7 +1510,7 @@ void FSlateRHIRenderer::SetColorVisionDeficiencyType(EColorVisionDeficiency Type
 FSlateUpdatableTexture* FSlateRHIRenderer::CreateUpdatableTexture(uint32 Width, uint32 Height)
 {
 	const bool bCreateEmptyTexture = true;
-	FSlateTexture2DRHIRef* NewTexture = new FSlateTexture2DRHIRef(Width, Height, PF_B8G8R8A8, nullptr, TexCreate_Dynamic, bCreateEmptyTexture);
+	FSlateTexture2DRHIRef* NewTexture = new FSlateTexture2DRHIRef(Width, Height, GetSlateRecommendedColorFormat(), nullptr, TexCreate_Dynamic, bCreateEmptyTexture);
 	if (IsInRenderingThread())
 	{
 		NewTexture->InitResource();
@@ -1605,6 +1605,10 @@ void FSlateRHIRenderer::ClearScenes()
 	}
 }
 
+EPixelFormat FSlateRHIRenderer::GetSlateRecommendedColorFormat()
+{
+	return FPlatformMisc::IsStandaloneStereoOnlyDevice() ? PF_R8G8B8A8 : PF_B8G8R8A8;
+}
 
 FRHICOMMAND_MACRO(FClearCachedRenderingDataCommand)
 {

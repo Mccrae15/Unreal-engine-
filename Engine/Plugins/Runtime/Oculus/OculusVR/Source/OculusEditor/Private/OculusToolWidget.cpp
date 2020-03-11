@@ -2,6 +2,7 @@
 
 #include "OculusToolWidget.h"
 #include "OculusEditorSettings.h"
+#include "OculusHMDRuntimeSettings.h"
 #include "OculusHMD.h"
 #include "DetailLayoutBuilder.h"
 #include "Engine/RendererSettings.h"
@@ -806,16 +807,16 @@ EVisibility SOculusToolWidget::StartInVRVisibility(FName tag) const
 
 FReply SOculusToolWidget::SupportDashEnable(bool text)
 {
-	const TCHAR* OculusSettings = TEXT("Oculus.Settings");
-	GConfig->SetBool(OculusSettings, TEXT("bSupportsDash"), true, GEngineIni);
+	UOculusHMDRuntimeSettings* Settings = GetMutableDefault<UOculusHMDRuntimeSettings>();
+	Settings->bSupportsDash = true;
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UOculusHMDRuntimeSettings, bSupportsDash)), Settings->GetDefaultConfigFilename());
 	return FReply::Handled();
 }
 
 EVisibility SOculusToolWidget::SupportDashVisibility(FName tag) const
 {
-	bool v = false;
-	const TCHAR* OculusSettings = TEXT("Oculus.Settings");
-	return (GConfig->GetBool(OculusSettings, TEXT("bSupportsDash"), v, GEngineIni) && v) ? EVisibility::Collapsed : EVisibility::Visible;
+	const UOculusHMDRuntimeSettings* Settings = GetDefault<UOculusHMDRuntimeSettings>();
+	return Settings->bSupportsDash ? EVisibility::Collapsed : EVisibility::Visible;
 }
 
 #undef LOCTEXT_NAMESPACE

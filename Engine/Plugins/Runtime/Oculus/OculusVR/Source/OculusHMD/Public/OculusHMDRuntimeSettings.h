@@ -58,6 +58,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	EFixedFoveatedRenderingLevel FFRLevel;
 
+	/** Whether FFR adjusts its level dynamically or not */
+	UPROPERTY(config, EditAnywhere, Category = Mobile)
+	bool FFRDynamic;
+
 	/** Compensates in the compositor for chromatic aberration, at a higher GPU cost but without the color fringes on the sides of the lenses */
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	bool bChromaCorrection;
@@ -65,6 +69,16 @@ public:
 	/** Recenters the HMD too when the controller recenter button is pressed on Go and GearVR */
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	bool bRecenterHMDWithController;
+
+	/** If enabled the app will be focus aware. This will keep the app in foreground when the User presses the oculus button (needs the app to handle input focus loss!) */
+	UPROPERTY(config, EditAnywhere, Category = Mobile)
+	bool bFocusAware;
+
+//#if WITH_LATE_LATCHING_CODE
+	/** [Experimental]Enable Late latching for reducing HMD and controller latency, improve tracking prediction quality, multiview and vulkan has to be enabled for this featuretha */
+	UPROPERTY(config, EditAnywhere, Category = Mobile)
+	bool bLateLatching;
+//#endif
 
 private:
 	void LoadFromIni();

@@ -33,10 +33,13 @@ void FLateUpdateManager::Setup(const FTransform& ParentToWorld, USceneComponent*
 
 }
 
+#if WITH_LATE_LATCHING_CODE
+void FLateUpdateManager::Apply_RenderThread(FSceneInterface* Scene, const int32 FrameNumber, const FTransform& OldRelativeTransform, const FTransform& NewRelativeTransform)
+#else
 void FLateUpdateManager::Apply_RenderThread(FSceneInterface* Scene, const FTransform& OldRelativeTransform, const FTransform& NewRelativeTransform)
+#endif
 {
 	check(IsInRenderingThread());
-
 	if (!UpdateStates[LateUpdateRenderReadIndex].Primitives.Num() || UpdateStates[LateUpdateRenderReadIndex].bSkip)
 	{
 		return;
@@ -48,9 +51,18 @@ void FLateUpdateManager::Apply_RenderThread(FSceneInterface* Scene, const FTrans
 
 	bool bIndicesHaveChanged = false;
 
+#if WITH_LATE_LATCHING_CODE
+	// Make the list local to avoid the PrimitivePair.Value = -1 spreading into late latching update.
+	TMap<FPrimitiveSceneInfo*, int32> PrimitivesLocal = UpdateStates[LateUpdateRenderReadIndex].Primitives;
+#endif
+
 	// Apply delta to the cached scene proxies
 	// Also check whether any primitive indices have changed, in case the scene has been modified in the meantime.
+#if WITH_LATE_LATCHING_CODE
+	for (auto& PrimitivePair : PrimitivesLocal)
+#else
 	for (auto& PrimitivePair : UpdateStates[LateUpdateRenderReadIndex].Primitives)
+#endif
 	{
 		FPrimitiveSceneInfo* RetrievedSceneInfo = Scene->GetPrimitiveSceneInfo(PrimitivePair.Value);
 		FPrimitiveSceneInfo* CachedSceneInfo = PrimitivePair.Key;
@@ -66,6 +78,10 @@ void FLateUpdateManager::Apply_RenderThread(FSceneInterface* Scene, const FTrans
 		{
 			CachedSceneInfo->Proxy->ApplyLateUpdateTransform(LateUpdateTransform);
 			PrimitivePair.Value = -1; // Set the cached index to -1 to indicate that this primitive was already processed
+#if WITH_LATE_LATCHING_CODE
+			if (FrameNumber >= 0)
+				CachedSceneInfo->Proxy->FlagPatchingFrameNumber(FrameNumber);
+#endif
 		}
 	}
 
@@ -77,9 +93,17 @@ void FLateUpdateManager::Apply_RenderThread(FSceneInterface* Scene, const FTrans
 		RetrievedSceneInfo = Scene->GetPrimitiveSceneInfo(Index++);
 		while(RetrievedSceneInfo)
 		{
+#if WITH_LATE_LATCHING_CODE
+			if (RetrievedSceneInfo->Proxy && PrimitivesLocal.Contains(RetrievedSceneInfo) && PrimitivesLocal[RetrievedSceneInfo] >= 0)
+#else
 			if (RetrievedSceneInfo->Proxy && UpdateStates[LateUpdateRenderReadIndex].Primitives.Contains(RetrievedSceneInfo) && UpdateStates[LateUpdateRenderReadIndex].Primitives[RetrievedSceneInfo] >= 0)
+#endif
 			{
 				RetrievedSceneInfo->Proxy->ApplyLateUpdateTransform(LateUpdateTransform);
+#if WITH_LATE_LATCHING_CODE
+				if (FrameNumber >= 0)
+					RetrievedSceneInfo->Proxy->FlagPatchingFrameNumber(FrameNumber);
+#endif
 			}
 			RetrievedSceneInfo = Scene->GetPrimitiveSceneInfo(Index++);
 		}
