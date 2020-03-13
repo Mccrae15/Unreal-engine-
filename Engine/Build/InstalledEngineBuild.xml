@@ -81,7 +81,7 @@
 	<Option Name="WithFullDebugInfo" Restrict="true|false" DefaultValue="false" Description="Generate full debug info for binary editor and packaged application builds"/>
 	
 	<!-- The local output directory -->
-	<Property Name="LocalInstalledDir" Value="$(BuiltDirectory)"/>
+	<Property Name="LocalInstalledDir" Value="$(BuiltDirectory)/Windows"/>
 	<Property Name="LocalInstalledDirMac" Value="$(BuiltDirectory)/Mac"/>
 	<Property Name="LocalInstalledDirLinux" Value="$(BuiltDirectory)/Linux"/>
 
