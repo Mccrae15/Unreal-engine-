@@ -48,7 +48,6 @@ static FAutoConsoleVariableRef CVarNiagaraForceSystemsToCookOutRapidIterationOnL
 UNiagaraSystem::UNiagaraSystem(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
 , bFixedBounds(false)
-, FastPathMode(ENiagaraFastPathMode::ScriptVMOnly)
 #if WITH_EDITORONLY_DATA
 , bIsolateEnabled(false)
 #endif
@@ -458,7 +457,7 @@ void UNiagaraSystem::PostLoad()
 			InitEmitterCompiledData();
 		}
 
-		if (SystemCompiledData.InstanceParamStore.GetNumParameters() == 0 ||SystemCompiledData.DataSetCompiledData.Variables.Num() == 0)
+		if (SystemCompiledData.InstanceParamStore.ParameterVariables.Num() == 0 ||SystemCompiledData.DataSetCompiledData.Variables.Num() == 0)
 		{
 			InitSystemCompiledData();
 		}

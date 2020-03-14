@@ -67,8 +67,6 @@ public:
 
 	static TSharedRef<SExpanderArrow> CreateCustomActionExpander(const struct FCustomExpanderData& ActionMenuData);
 
-	void SetVariablesObjectSelection(const TSharedRef<FNiagaraObjectSelection>& InVariablesObjectSelection);
-
 private:
 	/** Function to bind to SNiagaraAddParameterMenus to filter types we allow creating */
 	bool AllowMakeType(const FNiagaraTypeDefinition& InType) const;
@@ -80,7 +78,7 @@ private:
 	FReply OnActionDragged(const TArray<TSharedPtr<FEdGraphSchemaAction>>& InActions, const FPointerEvent& MouseEvent);
 	void OnActionSelected(const TArray<TSharedPtr<FEdGraphSchemaAction>>& InActions, ESelectInfo::Type InSelectionType);
 // 	void OnActionDoubleClicked(const TArray<TSharedPtr<FEdGraphSchemaAction>>& InActions); //@todo(ng) impl
-// 	TSharedPtr<SWidget> OnContextMenuOpening();
+	TSharedPtr<SWidget> OnContextMenuOpening();
  	FText OnGetSectionTitle(int32 InSectionID);
 	TSharedRef<SWidget> OnGetSectionWidget(TSharedRef<SWidget> RowWidget, int32 InSectionID);
 	TSharedRef<SWidget> CreateAddToSectionButton(const NiagaraParameterPanelSectionID::Type InSection, TWeakPtr<SWidget> WeakRowWidget, FText AddNewText, FName MetaDataTag);
@@ -103,6 +101,7 @@ private:
 	bool CanRequestRenameOnActionNode() const;
 	void HandlePaletteItemParameterRenamed(const FText& InText, const FNiagaraScriptVarAndViewInfoAction& InAction);
 	void HandlePaletteItemScopeComboSelectionChanged(ENiagaraParameterScope InScope, const FNiagaraScriptVarAndViewInfoAction& InAction);
+	void HandleExternalSelectionChanged(const UObject* Obj);
 
 	/** Delegate handler used to match an FName to an action in the list, used for renaming keys */
 	bool HandleActionMatchesName(struct FEdGraphSchemaAction* InAction, const FName& InName) const;
@@ -122,6 +121,7 @@ private:
 	TSharedPtr<FUICommandList> ToolkitCommands; //@todo(ng) add Find And Rename Parameter command
 
 	bool bNeedsRefresh;
+	bool bGraphActionPendingRename;
 
 	TSharedPtr<INiagaraParameterPanelViewModel> ParameterPanelViewModel;
 };

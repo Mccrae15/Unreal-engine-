@@ -1489,7 +1489,7 @@ public:
 	const FName& DebugName() const { return MNonFrequentData.Read().DebugName; }
 	void SetDebugName(const FName& InDebugName)
 	{
-		MNonFrequentData.Modify(bInvalidate,MDirtyFlags,Proxy,[&InDebugName](auto& Data){ Data.DebugName = InDebugName;});
+		MNonFrequentData.Modify(true,MDirtyFlags,Proxy,[&InDebugName](auto& Data){ Data.DebugName = InDebugName;});
 	}
 #endif
 
@@ -1610,6 +1610,8 @@ public:
 			Shape->SetProxy(Proxy);
 		}
 	}
+
+	const FParticlePositionRotation& XR() const { return MXR.Read(); }
 
 protected:
 
@@ -2070,7 +2072,23 @@ public:
 		{
 			MAwakeEvent |= true;
 		}
+
+		if (InState == EObjectStateType::Sleeping)
+		{
+			// When an object is forced into a sleep state, the velocities must be zeroed and buffered,
+			// in case the velocity is queried during sleep, or in case the object is woken up again.
+			this->SetV(FVec3(0.f), true);
+			this->SetW(FVec3(0.f), true);
+
+			// Dynamic particle properties must be marked clean in order not to actually apply forces which
+			// have been buffered. If another force is added after the object is put to sleep, the old forces
+			// will remain and the new ones will accumulate and re-dirty the dynamic properties which will
+			// wake the body.
+			MDirtyFlags.MarkClean(ParticlePropToFlag(EParticleProperty::Dynamics));
+		}
+
 		MMiscData.Modify(true,MDirtyFlags,Proxy,[&InState](auto& Data){ Data.ObjectState = InState;});
+
 	}
 
 	void ClearEvents() { MAwakeEvent = false; }

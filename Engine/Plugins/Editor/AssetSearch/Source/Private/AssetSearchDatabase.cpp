@@ -10,6 +10,12 @@
 
 #include "AssetData.h"
 #include "Misc/TextFilterExpressionEvaluator.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
+#include "Engine/World.h"
+#include "HAL/PlatformFilemanager.h"
+#include "Misc/StringBuilder.h"
 
 PRAGMA_DISABLE_OPTIMIZATION
 
@@ -17,9 +23,11 @@ DECLARE_LOG_CATEGORY_CLASS(LogAssetSearch, Log, All);
 
 enum class EAssetSearchDatabaseVersion
 {
-	Empty = 0,
-	Initial = 1,
-	IndexingAssetIdsAssetPathsUnique = 2,
+	Empty,
+	Initial,
+	IndexingAssetIdsAssetPathsUnique,
+	IntroducingFileHashing,
+	MovingFileInfoIntoAnotherDatabase,
 
 	// -----<new versions can be added above this line>-------------------------------------------------
 	VersionPlusOne,
@@ -310,76 +318,7 @@ public:
 	FSearchAssetsFTS Statement_SearchAssetsFTS;
 	bool SearchAssets(const FSearchQuery& Query, TFunctionRef<ESQLitePreparedStatementExecuteRowResult(FSearchRecord&&)> InCallback)
 	{
-		//FString BaseSearch(
-		//	" SELECT "
-		//	"     asset_name, "
-		//	"     asset_class, "
-		//	"     asset_path, "
-		//	"     object_name, "
-		//	"     object_path, "
-		//	"     object_native_class, "
-		//	"     property_name, "
-		//	"     property_field, "
-		//	"     property_class, "
-		//	"     value_text, "
-		//	"     value_hidden "
-		//	" FROM view_asset_properties "
-		//	" WHERE ");
-
-		//const bool bEvaledFilter = Eval.SetFilterText(FText::FromString(Query.Query));
-		//if (!ensure(bEvaledFilter))
-		//{
-		//	return false;
-		//}
-
-		//FTextFilterExpressionEvaluator Eval(ETextFilterExpressionEvaluatorMode::BasicString);
-		//const TArray<FExpressionToken>& Tokens = Eval.GetFilterExpressionTokens();
-
-		//for (int32 i = 0; i < Tokens.Num(); i++)
-		//{
-		//	const FStringToken& Token = Tokens[i].Context;
-		//	
-		//	if (Tokens[i].Node.Cast<TextFilterExpressionParser::FEqual>())
-		//	{
-
-		//	}
-		//}
-
-
-		//FSQLitePreparedStatement DynamicSearchStatement = Database.PrepareStatement(ESQLitePreparedStatementFlags::None);
-		
-
-		FString Q;
-
-		FTextFilterExpressionEvaluator Eval(ETextFilterExpressionEvaluatorMode::BasicString);
-		const TArray<FExpressionToken>& Tokens = Eval.GetFilterExpressionTokens();
-		if (Eval.SetFilterText(FText::FromString(Query.Query)))
-		{
-			for (int32 i = 0; i < Tokens.Num(); i++)
-			{
-				const FStringToken& Token = Tokens[i].Context;
-
-				if (Token.GetString().StartsWith(TEXT("\"")) && Token.GetString().EndsWith(TEXT("\"")))
-				{
-					Q += Token.GetString();
-					Q += TEXT(" ");
-				}
-				else
-				{
-					Q += TEXT("\"") + Token.GetString() + TEXT("\" * ");
-				}
-			}
-		}
-		else
-		{
-			TArray<FString> Phrases;
-			Query.Query.ParseIntoArray(Phrases, TEXT(" "), 1);
-
-			for (FString Phrase : Phrases)
-			{
-				Q += TEXT("\"") + Phrase + TEXT("\" * ");
-			}
-		}
+		const FString Q = Query.ConvertToDatabaseQuery();
 
 		return Statement_SearchAssetsFTS.BindAndExecute(Q, [&InCallback](const FSearchAssetsFTS& InStatement)
 		{
@@ -778,6 +717,13 @@ void FAssetSearchDatabase::RemoveAssetsNotInThisSet(const TArray<FAssetData>& In
 	TSet<FString> InAssetPaths;
 	for (const FAssetData& InAsset : InAssets)
 	{
+		// If it's a redirector act like it has been removed from the system,
+		// we don't want old duplicate entries for it.
+		if (InAsset.IsRedirector())
+		{
+			continue;
+		}
+
 		InAssetPaths.Add(InAsset.ObjectPath.ToString());
 	}
 
@@ -787,17 +733,118 @@ void FAssetSearchDatabase::RemoveAssetsNotInThisSet(const TArray<FAssetData>& In
 	{
 		if (!InAssetPaths.Contains(InResult))
 		{
-			MissingAssets.Add(InResult);
+			MissingAssets.Emplace(InResult);
 		}
 
 		return ESQLitePreparedStatementExecuteRowResult::Continue;
 	});
 
-
 	for (const FString& MissingAsset : MissingAssets)
 	{
 		Statements->DeleteEntriesForAsset(MissingAsset);
 	}
+}
+
+FString FSearchQuery::ConvertToDatabaseQuery() const
+{
+	TStringBuilder<512> Q;
+
+	FTextFilterExpressionEvaluator Eval(ETextFilterExpressionEvaluatorMode::BasicString);
+	const TArray<FExpressionToken>& Tokens = Eval.GetFilterExpressionTokens();
+	if (Eval.SetFilterText(FText::FromString(Query)))
+	{
+		TArray<FString> TokenStreak;
+		bool bBreakSteak = false;
+
+		for (int32 i = 0; i < Tokens.Num(); i++)
+		{
+			const FExpressionToken& Token = Tokens[i];
+			const FStringToken& TokenContext = Token.Context;
+			const FString TokenString = TokenContext.GetString();
+			
+			TStringBuilder<64> Phrase;
+			if (Token.Node.Cast<TextFilterExpressionParser::FTextToken>())
+			{
+				if (TokenString.StartsWith(TEXT("\"")) && TokenString.EndsWith(TEXT("\"")))
+				{
+					Phrase.Append(TokenString);
+					Phrase.Append(TEXT(" "));
+					bBreakSteak = true;
+				}
+				else
+				{
+					Phrase.Append(TEXT("\""));
+					Phrase.Append(TokenString);
+					Phrase.Append(TEXT("\" * "));
+
+					TokenStreak.Add(TokenString);
+				}
+			}
+			else if (Token.Node.Cast<TextFilterExpressionParser::FOr>())
+			{
+				Phrase.Append(TEXT(" OR "));
+				bBreakSteak = true;
+			}
+			else if (Token.Node.Cast<TextFilterExpressionParser::FAnd>())
+			{
+				//Phrase.Append(TEXT(" AND "));
+				//bBreakSteak = true;
+			}
+			else
+			{
+				bBreakSteak = true;
+			}
+
+			if (bBreakSteak)
+			{
+				if (TokenStreak.Num() > 1)
+				{
+					Q.Append(TEXT(" OR "));
+					Q.Append(TEXT("\""));
+					for (const FString SimpleString : TokenStreak)
+					{
+						Q.Append(SimpleString);
+					}
+					Q.Append(TEXT("\""));
+				}
+
+				bBreakSteak = false;
+				TokenStreak.Reset();
+			}
+
+			Q.Append(Phrase);
+		}
+
+		if (TokenStreak.Num() > 1)
+		{
+			Q.Append(TEXT(" OR "));
+			Q.Append(TEXT("\""));
+			for (const FString SimpleString : TokenStreak)
+			{
+				Q.Append(SimpleString);
+			}
+			Q.Append(TEXT("\""));
+		}
+	}
+	else
+	{
+		TArray<FString> Phrases;
+		Query.ParseIntoArray(Phrases, TEXT(" "), 1);
+
+		for (FString Phrase : Phrases)
+		{
+			Q.Append(TEXT("\""));
+			Q.Append(Phrase);
+			Q.Append(TEXT("\" * "));
+		}
+
+		Q.Append(TEXT(" OR "));
+		Q.Append(TEXT("\""));
+		Q.Append(Query.Replace(TEXT(" "), TEXT("")));
+		Q.Append(TEXT("\""));
+	}
+
+	return Q.ToString();
 }
 
 PRAGMA_ENABLE_OPTIMIZATION

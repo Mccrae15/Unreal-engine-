@@ -2218,7 +2218,13 @@ void FHlslNiagaraTranslator::DefineMainGPUFunctions(
 							if (FNiagaraParameterMapHistory::IsAttribute(Var))
 							{
 								FString RegisterName = VarName;
-								RegisterName.ReplaceInline(PARAM_MAP_ATTRIBUTE_STR, PARAM_MAP_INDICES_STR);
+								const FString AttribStr = PARAM_MAP_ATTRIBUTE_STR;
+								int32 ParticlesIdx = RegisterName.Find(AttribStr);
+								if (ParticlesIdx != -1 && (ParticlesIdx == 0 || (ParticlesIdx > 0 && RegisterName[ParticlesIdx - 1] == '.')))
+								{
+									RegisterName.RemoveAt(ParticlesIdx, AttribStr.Len());
+									RegisterName.InsertAt(ParticlesIdx, PARAM_MAP_INDICES_STR);
+								}
 								const int32 RegisterValue = Var.GetType().IsFloatPrimitive() ? FloatCounter : IntCounter;
 								HlslOutput += RegisterName + FString::Printf(TEXT(" = %d;\n"), RegisterValue);
 							}
@@ -2462,7 +2468,7 @@ void FHlslNiagaraTranslator::DefineMainGPUFunctions(
 			"	const uint InstanceID = UpdateStartInstance + DispatchThreadId.x; \n"
 			"	if (ReadInstanceCountOffset == 0xFFFFFFFF)\n"
 			"	{\n"
-			"			GSpawnStartInstance = 0; \n"
+			"		GSpawnStartInstance = 0; \n"
 			"	}\n"
 			"	else\n"
 			"	{\n"
@@ -2530,7 +2536,7 @@ void FHlslNiagaraTranslator::DefineMainGPUFunctions(
 		HlslOutput += TEXT(
 			"	// If a stage doesn't kill particles, StoreUpdateVariables() never calls AcquireIndex(), so the\n"
 			"   // count isn't updated. In that case we must manually copy the original count here.\n"
-			"	if (!GStageUsesAlive && GDispatchThreadId.x == 0) \n"
+			"	if (!GStageUsesAlive && WriteInstanceCountOffset != 0xFFFFFFFF && GDispatchThreadId.x == 0) \n"
 			"	{ \n"
 			"		RWInstanceCounts[WriteInstanceCountOffset] = GSpawnStartInstance + SpawnedInstances; \n"
 			"	} \n"
@@ -3813,7 +3819,15 @@ void FHlslNiagaraTranslator::Output(UNiagaraNodeOutput* OutputNode, const TArray
 
 	// Build up the attribute list. We don't auto-expand parameter maps here.
 	TArray<FNiagaraVariable> Outputs = OutputNode->GetOutputs();
-	check(ComputedInputs.Num() == Outputs.Num());
+	int32 NumberOfValidComputedInputs = 0;
+	for (int32 ComputedInput : ComputedInputs)
+	{
+		if (ComputedInput != INDEX_NONE)
+		{
+			NumberOfValidComputedInputs++;
+		}
+	}
+	check(NumberOfValidComputedInputs == Outputs.Num());
 	for (int32 PinIdx = 0; PinIdx < Outputs.Num(); PinIdx++)
 	{
 		Attributes.Add(Outputs[PinIdx]);

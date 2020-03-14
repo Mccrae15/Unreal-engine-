@@ -138,6 +138,8 @@ public:
 	inline void		RemovePrefix(SizeType CharCount)	{ DataPtr += CharCount; Size -= CharCount; }
 	/** Modifies the view to remove the given number of characters from the end. */
 	inline void		RemoveSuffix(SizeType CharCount)	{ Size -= CharCount; }
+	/** Resets to an empty view */
+	inline void		Reset()								{ DataPtr = nullptr; Size = 0; }
 
 	// Operations
 
@@ -173,7 +175,7 @@ public:
 	CORE_API ViewType TrimEnd() const;
 
 	/** Modifies the view to be the given number of characters from the left. */
-	inline void LeftInlineInline(SizeType CharCount) { *this = Left(CharCount); }
+	inline void LeftInline(SizeType CharCount) { *this = Left(CharCount); }
 	/** Modifies the view by chopping the given number of characters from the right. */
 	inline void LeftChopInline(SizeType CharCount) { *this = LeftChop(CharCount); }
 	/** Modifies the view to be the given number of characters from the right. */

@@ -68,6 +68,7 @@ public:
 	static const FName ImplicitsAttribute;
 	static const FName ShapesQueryDataAttribute;
 	static const FName ShapesSimDataAttribute;
+	static const FName SharedImplicitsAttribute;
 	static const FName SimplicialsAttribute;
 	static const FName SimulatableParticlesAttribute;
 
@@ -83,10 +84,8 @@ public:
 	TManagedArray<FTransform> MassToLocal;
 	//TManagedArray<TArray<FCollisionFilterData>> ShapeQueryData;
 	//TManagedArray<TArray<FCollisionFilterData>> ShapeSimData;
-	//TManagedArray<TUniquePtr<FCollisionStructureManager::FSimplicial>> Simplicials;
+	TManagedArray<TUniquePtr<FCollisionStructureManager::FSimplicial>> Simplicials;
 	TManagedArray<bool> SimulatableParticles;
-
-
 };
 
 

@@ -52,14 +52,6 @@ static FAutoConsoleVariableRef CVarNiagaraUseAsyncCompute(
 	ECVF_Default
 );
 
-int32 GNiagaraSubmitCommands = 0;
-static FAutoConsoleVariableRef CVarNiagaraSubmitCommands(
-	TEXT("fx.NiagaraSubmitCommands"),
-	GNiagaraSubmitCommands,
-	TEXT("1 - (Default) Submit commands to the GPU once we have finished dispatching.\n"),
-	ECVF_Default
-);
-
 // @todo REMOVE THIS HACK
 int32 GNiagaraGpuMaxQueuedRenderFrames = 10;
 static FAutoConsoleVariableRef CVarNiagaraGpuMaxQueuedRenderFrames(
@@ -441,7 +433,7 @@ void NiagaraEmitterInstanceBatcher::ResizeBuffersAndGatherResources(FOverlappabl
 			//We must assume all particles survive when allocating here. 
 			//If this is not true, the read back in ResolveDatasetWrites will shrink the buffers.
 			const uint32 RequiredInstances = FMath::Max(PrevNumInstances, NewNumInstances);
-			const uint32 AllocatedInstances = FMath::Max(RequiredInstances, Instance.SpawnInfo.MaxParticleCount);
+			const uint32 AllocatedInstances = FMath::Max(RequiredInstances, Context->ScratchMaxInstances);
 
 			if (bRequiresPersistentIDs)
 			{
@@ -618,11 +610,6 @@ void NiagaraEmitterInstanceBatcher::DispatchAllOnCompute(FOverlappableTicks& Ove
 			}
 		}
 	}
-
-	if (GNiagaraSubmitCommands)
-	{
-		RHICmdList.SubmitCommandsHint();
-	}
 }
 
 void NiagaraEmitterInstanceBatcher::PostRenderOpaque(FRHICommandListImmediate& RHICmdList, FRHIUniformBuffer* ViewUniformBuffer, const class FShaderParametersMetadata* SceneTexturesUniformBufferStruct, FRHIUniformBuffer* SceneTexturesUniformBuffer, bool bAllowGPUParticleUpdate)
@@ -751,7 +738,7 @@ void NiagaraEmitterInstanceBatcher::ExecuteAll(FRHICommandList& RHICmdList, FRHI
 		return;
 	}
 
-	SCOPED_DRAW_EVENT(RHICmdList, NiagaraEmitterInstanceBatcher_ExecuteAll);
+	SCOPED_DRAW_EVENTF(RHICmdList, NiagaraEmitterInstanceBatcher_ExecuteAll, TEXT("NiagaraEmitterInstanceBatcher_ExecuteAll - TickStage(%d)"), TickStage);
 
 	FMemMark Mark(FMemStack::Get());
 	TArray<FOverlappableTicks, TMemStackAllocator<> > SimPasses;
@@ -761,21 +748,47 @@ void NiagaraEmitterInstanceBatcher::ExecuteAll(FRHICommandList& RHICmdList, FRHI
 		for (FNiagaraGPUSystemTick& Tick : Ticks_RT)
 		{
 			FNiagaraComputeInstanceData* Data = Tick.GetInstanceData();
-			FNiagaraComputeExecutionContext* Context = Data->Context;
+			FNiagaraComputeExecutionContext* SharedContext = Data->Context;
 			// This assumes all emitters fallback to the same FNiagaraShaderScript*.
-			FNiagaraShaderRef ComputeShader = Context->GPUScript_RT->GetShader();
+			FNiagaraShaderRef ComputeShader = SharedContext->GPUScript_RT->GetShader();
 			if (ComputeShader.IsNull() || !ShouldTickForStage(Tick, TickStage))
 			{
 				continue;
 			}
 
 			Tick.bIsFinalTick = false; // @todo : this is true sometimes, needs investigation
-			if (Context->ScratchIndex == INDEX_NONE)
+
+			const bool bResetCounts = SharedContext->ScratchIndex == INDEX_NONE;
+			if (bResetCounts)
 			{
-				RelevantContexts.Add(Context);
+				RelevantContexts.Add(SharedContext);
 			}
 			// Here scratch index represent the index of the last tick
-			Context->ScratchIndex = RelevantTicks.Add(&Tick);
+			SharedContext->ScratchIndex = RelevantTicks.Add(&Tick);
+
+			// Allows us to count total required instances across all frames
+			for (uint32 i = 0; i < Tick.Count; ++i)
+			{
+				FNiagaraComputeInstanceData& InstanceData = Tick.GetInstanceData()[i];
+				FNiagaraComputeExecutionContext* ExecContext = InstanceData.Context;
+				if (ExecContext == nullptr)
+				{
+					continue;
+				}
+
+				uint32 PrevNumInstances = 0;
+				if (bResetCounts)
+				{
+					ExecContext->ScratchMaxInstances = InstanceData.SpawnInfo.MaxParticleCount;
+					PrevNumInstances = Tick.bNeedsReset ? 0 : ExecContext->MainDataSet->GetCurrentData()->GetNumInstances();
+				}
+				else
+				{
+					PrevNumInstances = Tick.bNeedsReset ? 0 : ExecContext->ScratchNumInstances;
+				}
+				ExecContext->ScratchNumInstances = InstanceData.SpawnInfo.SpawnRateInstances + InstanceData.SpawnInfo.EventSpawnTotal + PrevNumInstances;
+				ExecContext->ScratchMaxInstances = FMath::Max(ExecContext->ScratchMaxInstances, ExecContext->ScratchNumInstances);
+			}
 		}
 
 		// Set bIsFinalTick for the last tick of each context and reset the scratch index.
@@ -829,58 +842,65 @@ void NiagaraEmitterInstanceBatcher::ExecuteAll(FRHICommandList& RHICmdList, FRHI
 		}
 	}
 
-	RHICmdList.BeginUAVOverlap();
-
-	FEmitterInstanceList InstancesWithPersistentIDs;
-	FNiagaraBufferArray OutputGraphicsBuffers;
-
-	for (int32 SimPassIdx = 0; SimPassIdx < SimPasses.Num(); ++SimPassIdx)
+	// Clear any RT bindings that we may be using
+	// Note: We can not encapsulate the whole Niagara pass as some DI's may not be compatable (i.e. use CopyTexture function), we need to fix this with future RDG conversion
+	if (SimPasses.Num() > 0)
 	{
-		FOverlappableTicks& SimPass = SimPasses[SimPassIdx];
-		InstancesWithPersistentIDs.SetNum(0, false);
+		RHICmdList.BeginComputePass(TEXT("NiagaraCompute"));
+		RHICmdList.BeginUAVOverlap();
 
-		// This initial pass gathers all the buffers that are read from and written to so we can do batch resource transitions.
-		// It also ensures the GPU buffers are large enough to hold everything.
-		ResizeBuffersAndGatherResources(SimPass, RHICmdList, OutputGraphicsBuffers, InstancesWithPersistentIDs);
+		FEmitterInstanceList InstancesWithPersistentIDs;
+		FNiagaraBufferArray OutputGraphicsBuffers;
 
+		for (int32 SimPassIdx = 0; SimPassIdx < SimPasses.Num(); ++SimPassIdx)
 		{
-			SCOPED_DRAW_EVENT(RHICmdList, NiagaraGPUSimulation);
-			SCOPED_GPU_STAT(RHICmdList, NiagaraGPUSimulation);
-			DispatchAllOnCompute(SimPass, RHICmdList, ViewUniformBuffer);
+			FOverlappableTicks& SimPass = SimPasses[SimPassIdx];
+			InstancesWithPersistentIDs.SetNum(0, false);
+
+			// This initial pass gathers all the buffers that are read from and written to so we can do batch resource transitions.
+			// It also ensures the GPU buffers are large enough to hold everything.
+			ResizeBuffersAndGatherResources(SimPass, RHICmdList, OutputGraphicsBuffers, InstancesWithPersistentIDs);
+
+			{
+				SCOPED_DRAW_EVENT(RHICmdList, NiagaraGPUSimulation);
+				SCOPED_GPU_STAT(RHICmdList, NiagaraGPUSimulation);
+				DispatchAllOnCompute(SimPass, RHICmdList, ViewUniformBuffer);
+			}
+
+			if (InstancesWithPersistentIDs.Num() == 0)
+			{
+				continue;
+			}
+
+			// If we're doing multiple ticks (e.g. when scrubbing the timeline in the editor), we must update the free ID buffers before running
+			// the next tick, which will cause stalls (because the ID to index buffer is written by DispatchAllOnCompute and read by UpdateFreeIDBuffers).
+			// However, when we're at the last tick, we can postpone the update until later in the frame and avoid the stall. This will be the case when
+			// running normally, with one tick per frame.
+			if (SimPassIdx < SimPasses.Num() - 1)
+			{
+				ResizeFreeIDsListSizesBuffer(InstancesWithPersistentIDs.Num());
+				ClearFreeIDsListSizesBuffer(RHICmdList);
+				UpdateFreeIDBuffers(RHICmdList, InstancesWithPersistentIDs);
+			}
+			else
+			{
+				DeferredIDBufferUpdates.Append(InstancesWithPersistentIDs);
+				ResizeFreeIDsListSizesBuffer(DeferredIDBufferUpdates.Num());
+
+				// Speculatively clear the list sizes buffer here. Under normal circumstances, this happens in the first stage which finds instances with persistent IDs
+				// (usually PreInitViews) and it's finished by the time the deferred updates need to be processed. If a subsequent tick stage runs multiple time ticks,
+				// the first step will find the buffer already cleared and will not clear again. The only time when this clear is superfluous is when a following stage
+				// reallocates the buffer, but that's unlikely (and amortized) because we allocate in chunks.
+				ClearFreeIDsListSizesBuffer(RHICmdList);
+			}
 		}
 
-		if (InstancesWithPersistentIDs.Num() == 0)
-		{
-			continue;
-		}
+		OutputGraphicsBuffers.Add(GPUInstanceCounterManager.GetInstanceCountBuffer().UAV);
+		RHICmdList.TransitionResources(EResourceTransitionAccess::EReadable, EResourceTransitionPipeline::EComputeToGfx, OutputGraphicsBuffers.GetData(), OutputGraphicsBuffers.Num());
 
-		// If we're doing multiple ticks (e.g. when scrubbing the timeline in the editor), we must update the free ID buffers before running
-		// the next tick, which will cause stalls (because the ID to index buffer is written by DispatchAllOnCompute and read by UpdateFreeIDBuffers).
-		// However, when we're at the last tick, we can postpone the update until later in the frame and avoid the stall. This will be the case when
-		// running normally, with one tick per frame.
-		if (SimPassIdx < SimPasses.Num() - 1)
-		{
-			ResizeFreeIDsListSizesBuffer(InstancesWithPersistentIDs.Num());
-			ClearFreeIDsListSizesBuffer(RHICmdList);
-			UpdateFreeIDBuffers(RHICmdList, InstancesWithPersistentIDs);
-		}
-		else
-		{
-			DeferredIDBufferUpdates.Append(InstancesWithPersistentIDs);
-			ResizeFreeIDsListSizesBuffer(DeferredIDBufferUpdates.Num());
-
-			// Speculatively clear the list sizes buffer here. Under normal circumstances, this happens in the first stage which finds instances with persistent IDs
-			// (usually PreInitViews) and it's finished by the time the deferred updates need to be processed. If a subsequent tick stage runs multiple time ticks,
-			// the first step will find the buffer already cleared and will not clear again. The only time when this clear is superfluous is when a following stage
-			// reallocates the buffer, but that's unlikely (and amortized) because we allocate in chunks.
-			ClearFreeIDsListSizesBuffer(RHICmdList);
-		}
+		RHICmdList.EndUAVOverlap();
+		RHICmdList.EndComputePass();
 	}
-
-	OutputGraphicsBuffers.Add(GPUInstanceCounterManager.GetInstanceCountBuffer().UAV);
-	RHICmdList.TransitionResources(EResourceTransitionAccess::EReadable, EResourceTransitionPipeline::EComputeToGfx, OutputGraphicsBuffers.GetData(), OutputGraphicsBuffers.Num());
-
-	RHICmdList.EndUAVOverlap();
 }
 
 void NiagaraEmitterInstanceBatcher::PreInitViews(FRHICommandListImmediate& RHICmdList, bool bAllowGPUParticleUpdate)
@@ -1337,6 +1357,8 @@ void NiagaraEmitterInstanceBatcher::Run(const FNiagaraGPUSystemTick& Tick, const
 		if (IterationInterface)
 		{
 			RHICmdList.SetUAVParameter(ComputeShader, Shader->InstanceCountsParam.GetUAVIndex(), GetEmptyRWBufferFromPool(RHICmdList, PF_R32_UINT));
+			SetShaderValue(RHICmdList, ComputeShader, Shader->ReadInstanceCountOffsetParam, -1);
+			SetShaderValue(RHICmdList, ComputeShader, Shader->WriteInstanceCountOffsetParam, -1);
 		}
 		else
 		{

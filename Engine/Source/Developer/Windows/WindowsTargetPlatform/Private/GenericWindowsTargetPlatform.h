@@ -20,7 +20,6 @@
 
 #define LOCTEXT_NAMESPACE "TGenericWindowsTargetPlatform"
 
-
 /**
  * Template for Windows target platforms
  */

@@ -249,8 +249,6 @@ public:
 	/** Second phase of system sim tick that can run on any thread. */
 	void Tick_Concurrent(FNiagaraSystemSimulationTickContext& Context);
 
-	void TickFastPath(FNiagaraSystemSimulationTickContext& Context);
-
 	/** Update TickGroups for pending instances and execute tick group promotions. */
 	void UpdateTickGroups_GameThread();
 	/** Spawn any pending instances, assumes that you have update tick groups ahead of time. */
@@ -290,6 +288,7 @@ public:
 
 	void AddTickGroupPromotion(FNiagaraSystemInstance* Instance);
 
+	const FString& GetCrashReporterTag()const;
 protected:
 	/** Sets constant parameter values */
 	void SetupParameters_GameThread(float DeltaSeconds);
@@ -408,4 +407,6 @@ protected:
 
 	/** Current task that is executing */
 	FGraphEventRef SystemTickGraphEvent;
+
+	mutable FString CrashReporterTag;
 };

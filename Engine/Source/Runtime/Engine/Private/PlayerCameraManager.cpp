@@ -591,11 +591,13 @@ void APlayerCameraManager::UpdateCameraLensEffects(const FTViewTarget& OutVT)
 
 void APlayerCameraManager::ApplyAudioFade()
 {
+	// If an audio fade event has been bound, we'd like it to override the default fade behavior.
 	if (OnAudioFadeChangeEvent.IsBound())
 	{
-		OnAudioFadeChangeEvent.Broadcast(true, 1.f - FadeAmount);
+		return;
 	}
-	else if (GEngine)
+
+	if (GEngine)
 	{
 		UWorld* World = GetWorld();
 		if (World)
@@ -610,11 +612,15 @@ void APlayerCameraManager::ApplyAudioFade()
 
 void APlayerCameraManager::StopAudioFade()
 {
+	// If an audio fade event has been bound, we'd like it to override the default fade behavior.
 	if (OnAudioFadeChangeEvent.IsBound())
 	{
-		OnAudioFadeChangeEvent.Broadcast(false, 1.f);
+		const bool bFadeOut = false;
+		OnAudioFadeChangeEvent.Broadcast(bFadeOut, 0.f);
+		return;
 	}
-	else if (GEngine)
+
+	if (GEngine)
 	{
 		UWorld* World = GetWorld();
 		if (World)
@@ -1393,6 +1399,12 @@ void APlayerCameraManager::StartCameraFade(float FromAlpha, float ToAlpha, float
 	FadeTime = InFadeTime;
 	FadeTimeRemaining = InFadeTime;
 	bFadeAudio = bInFadeAudio;
+
+	if (bInFadeAudio && OnAudioFadeChangeEvent.IsBound())
+	{
+		const bool bFadeOut = FromAlpha < ToAlpha || FMath::IsNearlyEqual(ToAlpha, 1.0f);
+		OnAudioFadeChangeEvent.Broadcast(bFadeOut, FadeTime);
+	}
 
 	bAutoAnimateFade = true;
 	bHoldFadeWhenFinished = bInHoldWhenFinished;

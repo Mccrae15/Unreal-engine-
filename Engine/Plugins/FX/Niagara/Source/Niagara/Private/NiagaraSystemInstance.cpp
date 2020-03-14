@@ -1006,11 +1006,6 @@ void FNiagaraSystemInstance::ReInitInternal()
 
 	bAlreadyBound = false;
 
-	FastPathIntUserParameterInputBindings.Empty();
-	FastPathFloatUserParameterInputBindings.Empty();
-	FastPathIntUpdateRangedInputBindings.Empty();
-	FastPathFloatUpdateRangedInputBindings.Empty();
-
 	UNiagaraSystem* System = GetSystem();
 	if (System == nullptr || Component == nullptr)
 	{
@@ -1721,37 +1716,6 @@ void FNiagaraSystemInstance::TickInstanceParameters_Concurrent()
 	InstanceParameters.MarkParametersDirty();
 }
 
-void FNiagaraSystemInstance::TickFastPathBindings()
-{
-	for (TNiagaraFastPathUserParameterInputBinding<int32>& IntUserParameterInputBinding : FastPathIntUserParameterInputBindings)
-	{
-		IntUserParameterInputBinding.Tick();
-	}
-
-	for (TNiagaraFastPathUserParameterInputBinding<float>& FloatUserParameterInputBinding : FastPathFloatUserParameterInputBindings)
-	{
-		FloatUserParameterInputBinding.Tick();
-	}
-
-	for (TNiagaraFastPathRangedInputBinding<int32>& IntUpdateRangedInputBinding : FastPathIntUpdateRangedInputBindings)
-	{
-		IntUpdateRangedInputBinding.Tick();
-	}
-
-	for (TNiagaraFastPathRangedInputBinding<float>& FloatUpdateRangedInputBinding : FastPathFloatUpdateRangedInputBindings)
-	{
-		FloatUpdateRangedInputBinding.Tick();
-	}
-}
-
-void FNiagaraSystemInstance::ResetFastPathBindings()
-{
-	FastPathIntUserParameterInputBindings.Empty();
-	FastPathFloatUserParameterInputBindings.Empty();
-	FastPathIntUpdateRangedInputBindings.Empty();
-	FastPathFloatUpdateRangedInputBindings.Empty();
-}
-
 void
 FNiagaraSystemInstance::ClearEventDataSets()
 {
@@ -2056,7 +2020,7 @@ void FNiagaraSystemInstance::Tick_Concurrent()
 			Inst.Tick(CachedDeltaSeconds);
 		}
 
-		if (Inst.GetCachedEmitter() && Inst.GetCachedEmitter()->SimTarget == ENiagaraSimTarget::GPUComputeSim && Inst.GetGPUContext() != nullptr && (Inst.GetExecutionState() != ENiagaraExecutionState::Complete))
+		if (Inst.GetCachedEmitter() && Inst.GetCachedEmitter()->SimTarget == ENiagaraSimTarget::GPUComputeSim && Inst.GetGPUContext() != nullptr && !Inst.IsComplete())
 		{
 			if (FirstGpuEmitter)
 			{
@@ -2252,3 +2216,19 @@ FNiagaraSystemInstance::FOnDestroyed& FNiagaraSystemInstance::OnDestroyed()
 	return OnDestroyedDelegate;
 }
 #endif
+
+const FString& FNiagaraSystemInstance::GetCrashReporterTag()const
+{
+	if(CrashReporterTag.IsEmpty())
+	{
+		UNiagaraSystem* Sys = Component ? Component->GetAsset() : nullptr;
+		USceneComponent* AttachParent = Component ? Component->GetAttachParent() : nullptr;
+
+		const FString& CompName = Component ? Component->GetFullName() : TEXT("nullptr");
+		const FString& AssetName = Sys ? Sys->GetFullName() : TEXT("nullptr");
+		const FString& AttachName = AttachParent ? AttachParent->GetFullName() : TEXT("nullptr");
+
+		CrashReporterTag = FString::Printf(TEXT("SystemInstance | System: %s | bSolo: %s | Component: %s | AttachedTo: %s |"), *AssetName, IsSolo() ? TEXT("true") : TEXT("false"), *CompName, *AttachName);
+	}
+	return CrashReporterTag;
+}

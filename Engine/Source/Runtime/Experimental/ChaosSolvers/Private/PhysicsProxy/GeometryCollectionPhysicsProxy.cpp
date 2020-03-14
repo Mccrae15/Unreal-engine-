@@ -251,7 +251,7 @@ void PopulateSimulatedParticle(
 	{
 		Handle->SetObjectState(Chaos::EObjectStateType::Uninitialized);
 
-		if (ensureMsgf(FMath::IsWithin(MassIn, SharedParams.MinimumMassClamp, SharedParams.MaximumMassClamp),
+		if (ensureMsgf(FMath::IsWithinInclusive(MassIn, SharedParams.MinimumMassClamp, SharedParams.MaximumMassClamp),
 			TEXT("Clamped mass[%3.5f] to range [%3.5f,%3.5f]"), MassIn, SharedParams.MinimumMassClamp, SharedParams.MaximumMassClamp))
 		{
 			MassIn = FMath::Clamp(MassIn, SharedParams.MinimumMassClamp, SharedParams.MaximumMassClamp);
@@ -262,9 +262,9 @@ void PopulateSimulatedParticle(
 		{
 			InertiaTensorVec = FVector(1);
 		}
-		else if (ensureMsgf(FMath::IsWithin(InertiaTensorVec[0], SharedParams.MinimumInertiaTensorDiagonalClamp, SharedParams.MaximumInertiaTensorDiagonalClamp)
-			&& FMath::IsWithin(InertiaTensorVec[1], SharedParams.MinimumInertiaTensorDiagonalClamp, SharedParams.MaximumInertiaTensorDiagonalClamp)
-			&& FMath::IsWithin(InertiaTensorVec[2], SharedParams.MinimumInertiaTensorDiagonalClamp, SharedParams.MaximumInertiaTensorDiagonalClamp),
+		else if (ensureMsgf(FMath::IsWithinInclusive(InertiaTensorVec[0], SharedParams.MinimumInertiaTensorDiagonalClamp, SharedParams.MaximumInertiaTensorDiagonalClamp)
+			&& FMath::IsWithinInclusive(InertiaTensorVec[1], SharedParams.MinimumInertiaTensorDiagonalClamp, SharedParams.MaximumInertiaTensorDiagonalClamp)
+			&& FMath::IsWithinInclusive(InertiaTensorVec[2], SharedParams.MinimumInertiaTensorDiagonalClamp, SharedParams.MaximumInertiaTensorDiagonalClamp),
 			TEXT("Clamped Inertia tensor[%3.5f,%3.5f,%3.5f]. Clamped each element to [%3.5f, %3.5f,]"), InertiaTensorVec[0], InertiaTensorVec[1], InertiaTensorVec[2],
 			SharedParams.MinimumInertiaTensorDiagonalClamp, SharedParams.MaximumInertiaTensorDiagonalClamp))
 		{
@@ -552,7 +552,35 @@ void FGeometryCollectionPhysicsProxy::Initialize()
 		}
 	}
 
-	PhysicsThreadCollection.CopyMatchingAttributesFrom(DynamicCollection);
+	// Skip simplicials, as they're owned by unique pointers.
+	TMap<FName, TSet<FName>> SkipList;
+	TSet<FName>& TransformGroupSkipList = SkipList.Emplace(FTransformCollection::TransformGroup);
+	TransformGroupSkipList.Add(DynamicCollection.SimplicialsAttribute);
+
+	PhysicsThreadCollection.CopyMatchingAttributesFrom(DynamicCollection, &SkipList);
+
+	// Copy simplicials.
+	// TODO: Ryan - Should we just transfer ownership of the SimplicialsAttribute from the DynamicCollection to
+	// the PhysicsThreadCollection?
+	{
+		if (DynamicCollection.HasAttribute(DynamicCollection.SimplicialsAttribute, FTransformCollection::TransformGroup))
+		{
+			const auto& SourceSimplicials = DynamicCollection.GetAttribute<TUniquePtr<FSimplicial>>(
+				DynamicCollection.SimplicialsAttribute, FTransformCollection::TransformGroup);
+			for (int32 Index = PhysicsThreadCollection.NumElements(FTransformCollection::TransformGroup) - 1; 0 <= Index; Index--)
+			{
+				PhysicsThreadCollection.Simplicials[Index].Reset(
+					SourceSimplicials[Index] ? SourceSimplicials[Index]->NewCopy() : nullptr);
+			}
+		}
+		else
+		{
+			for (int32 Index = PhysicsThreadCollection.NumElements(FTransformCollection::TransformGroup) - 1; 0 <= Index; Index--)
+			{
+				PhysicsThreadCollection.Simplicials[Index].Reset();
+			}
+		}
+	}
 }
 
 void FGeometryCollectionPhysicsProxy::InitializeDynamicCollection(FGeometryDynamicCollection& DynamicCollection, const FGeometryCollection& RestCollection, const FSimulationParameters& Params)
@@ -561,7 +589,10 @@ void FGeometryCollectionPhysicsProxy::InitializeDynamicCollection(FGeometryDynam
 	// This function will use the rest collection to populate the dynamic collection. 
 	//
 
-	DynamicCollection.CopyMatchingAttributesFrom(RestCollection);
+	TMap<FName, TSet<FName>> SkipList;
+	TSet<FName>& TransformGroupSkipList = SkipList.Emplace(FTransformCollection::TransformGroup);
+	TransformGroupSkipList.Add(DynamicCollection.SimplicialsAttribute);
+	DynamicCollection.CopyMatchingAttributesFrom(RestCollection, &SkipList);
 
 	check(DynamicCollection.HasAttribute(FGeometryDynamicCollection::ImplicitsAttribute, FTransformCollection::TransformGroup));
 	check(RestCollection.HasAttribute(FGeometryDynamicCollection::ImplicitsAttribute, FTransformCollection::TransformGroup));
@@ -579,26 +610,24 @@ void FGeometryCollectionPhysicsProxy::InitializeDynamicCollection(FGeometryDynam
 
 	// process simplicials
 	{
-		/*
 		if (RestCollection.HasAttribute(DynamicCollection.SimplicialsAttribute, FTransformCollection::TransformGroup))
 		{
 			const auto& RestSimplicials = RestCollection.GetAttribute<TUniquePtr<FSimplicial>>(
 				DynamicCollection.SimplicialsAttribute, FTransformCollection::TransformGroup);
 			for (int32 Index = DynamicCollection.NumElements(FTransformCollection::TransformGroup) - 1; 0 <= Index; Index--)
 			{
-				DynamicCollection.Simplicials[Index] = TSharedPtr<FSimplicial>(RestSimplicials[Index] ? RestSimplicials[Index]->NewCopy() : nullptr);
+				DynamicCollection.Simplicials[Index].Reset(
+					RestSimplicials[Index] ? RestSimplicials[Index]->NewCopy() : nullptr);
 			}
 		}
 		else
 		{
 			for (int32 Index = DynamicCollection.NumElements(FTransformCollection::TransformGroup) - 1; 0 <= Index; Index--)
 			{
-				DynamicCollection.Simplicials[Index] = TSharedPtr<FSimplicial>(nullptr);
+				DynamicCollection.Simplicials[Index].Reset();
 			}
 		}
-		*/
 	}
-
 
 	// Process Activity
 	{
@@ -653,6 +682,7 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(
 		const TManagedArray<FVector>& InitialAngularVelocity = DynamicCollection.InitialAngularVelocity;
 		const TManagedArray<FVector>& InitialLinearVelocity = DynamicCollection.InitialLinearVelocity;
 		const TManagedArray<FGeometryDynamicCollection::FSharedImplicit>& Implicits = DynamicCollection.Implicits;
+		const TManagedArray<TUniquePtr<FCollisionStructureManager::FSimplicial>>& Simplicials = DynamicCollection.Simplicials;
 
 		TArray<FTransform> Transform;
 		GeometryCollectionAlgo::GlobalMatrices(DynamicCollection.Transform, DynamicCollection.Parent, Transform);
@@ -725,7 +755,7 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(
 					Handle,
 					//Particles, 
 					Parameters.Shared,
-					nullptr,///Simplicials[TransformGroupIndex].Get(),
+					Simplicials[TransformGroupIndex].Get(),
 					Implicits[TransformGroupIndex],
 					SimFilter,
 					QueryFilter,
@@ -1670,6 +1700,8 @@ void FGeometryCollectionPhysicsProxy::PullFromPhysicsState()
 			}
 
 			DynamicCollection.DynamicState[TmIndex] = TR.DynamicState[TmIndex];
+
+			DynamicCollection.Active[TmIndex] = !TR.DisabledStates[TmIndex];
 		}
 
 		//question: why do we need this? Sleeping objects will always have to update GPU
@@ -2134,7 +2166,8 @@ void FGeometryCollectionPhysicsProxy::InitializeSharedCollisionStructures(
 
 			if (CollectionImplicits[TransformGroupIndex] && CollectionImplicits[TransformGroupIndex]->HasBoundingBox())
 			{
-				const auto BBox = CollectionImplicits[TransformGroupIndex]->BoundingBox();
+				const auto Implicit = CollectionImplicits[TransformGroupIndex];
+				const auto BBox = Implicit->BoundingBox();
 				const TVector<float, 3> Extents = BBox.Extents(); // Chaos::TAABB::Extents() is Max - Min
 				MaxChildBounds = MaxChildBounds.ComponentwiseMax(Extents);
 			}

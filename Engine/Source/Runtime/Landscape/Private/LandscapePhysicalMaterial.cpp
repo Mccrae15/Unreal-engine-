@@ -6,6 +6,7 @@
 
 #include "EngineModule.h"
 #include "LandscapeComponent.h"
+#include "LandscapePrivate.h"
 #include "LandscapeRender.h"
 #include "Materials/MaterialExpressionLandscapePhysicalMaterialOutput.h"
 #include "Materials/MaterialInstanceConstant.h"
@@ -307,7 +308,8 @@ namespace
 
 			// Copy to the read back texture
 			RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, RenderTargetTexture);
-			RHICmdList.CopyTexture(RenderTargetTexture, ReadbackTexture, FRHICopyTextureInfo());
+			RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, ReadbackTexture);
+			RHICmdList.CopyToResolveTarget(RenderTargetTexture, ReadbackTexture, FResolveParams());
 			RHICmdList.WriteGPUFence(ReadbackFence);
 		}
 	}
@@ -358,6 +360,7 @@ namespace
 	{
 		// Create on game thread
 		ULandscapeComponent const* LandscapeComponent;
+		uint32 InitFrameId;
 		FIntPoint TargetSize;
 		FVector ViewOrigin;
 		FMatrix ViewRotationMatrix;
@@ -376,13 +379,14 @@ namespace
 	};
 
 	/** Initialize the physical material render task data. */
-	bool InitTask(FLandscapePhysicalMaterialRenderTaskImpl& Task, ULandscapeComponent const* InLandscapeComponent)
+	bool InitTask(FLandscapePhysicalMaterialRenderTaskImpl& Task, ULandscapeComponent const* InLandscapeComponent, uint32 InFrameId)
 	{
 		if (InLandscapeComponent != nullptr)
 		{
 			if (GetPhysicalMaterials(InLandscapeComponent, Task.ResultMaterials))
 			{
 				Task.LandscapeComponent = InLandscapeComponent;
+				Task.InitFrameId = InFrameId;
 				Task.CompletionState = ECompletionState::None;
 
 				const FTransform& ComponentTransform = InLandscapeComponent->GetComponentTransform();
@@ -413,7 +417,7 @@ namespace
 		//todo: Consider pooling these and throttling to the pool size?
 		if (!Task.ReadbackTexture.IsValid() || Task.ReadbackTexture->GetSizeXYZ() != FIntVector(Task.TargetSize.X, Task.TargetSize.Y, 1))
 		{
-			FRHIResourceCreateInfo CreateInfo(TEXT(""));
+			FRHIResourceCreateInfo CreateInfo(TEXT("LandscapePhysicalMaterialReadback"));
 			Task.ReadbackTexture = RHICreateTexture2D(Task.TargetSize.X, Task.TargetSize.Y, PF_G8, 1, 1, TexCreate_CPUReadback | TexCreate_HideInVisualizeTexture, CreateInfo);
 		}
 		if (!Task.ReadbackFence.IsValid())
@@ -467,18 +471,19 @@ namespace
 }
 
 
-/** 
- * Pool for storing physical material render task data. 
- * todo: Would be good to garbage collect the render resources from the pool but that would require some global tick function.
+/**
+ * Pool for storing physical material render task data.
  */
 class FLandscapePhysicalMaterialRenderTaskPool
 {
 public:
 	/** Pool uses chunked array to avoid task data being moved by a realloc. */
 	TChunkedArray< FLandscapePhysicalMaterialRenderTaskImpl > Pool;
+	/** Frame count used to validate and garbage collect. */
+	uint32 FrameCount = 0;
 
 	/** Allocate task data from the pool. */
-	void Allocate(FLandscapePhysicalMaterialRenderTask& InTask, ULandscapeComponent const* LandscapeComponent)
+	void Allocate(FLandscapePhysicalMaterialRenderTask& InTask, ULandscapeComponent const* InLandscapeComponent)
 	{
 		check(InTask.PoolHandle == -1);
 
@@ -497,7 +502,7 @@ public:
 			Pool.Add();
 		}
 
-		const bool bSuccess = InitTask(Pool[Index], LandscapeComponent);
+		const bool bSuccess = InitTask(Pool[Index], InLandscapeComponent, FrameCount);
 		InTask.PoolHandle = bSuccess ? Index : -1;
 	}
 
@@ -507,7 +512,7 @@ public:
 		check(InTask.PoolHandle != -1);
 
 		FLandscapePhysicalMaterialRenderTaskImpl* Task = &Pool[InTask.PoolHandle];
-		
+
 		// Invalidate the task object.
 		InTask.PoolHandle = -1;
 
@@ -517,6 +522,41 @@ public:
 			{
 				Task->LandscapeComponent = nullptr;
 			});
+	}
+
+	/** Free render resources that have been unused for long enough. */
+	void GarbageCollect()
+	{
+		const uint32 PoolSize = Pool.Num();
+		if (PoolSize > 0)
+		{
+			// Garbage collect a maximum of one item per call to reduce overhead if pool has grown large.
+			FLandscapePhysicalMaterialRenderTaskImpl* Task = &Pool[FrameCount % PoolSize];
+			if (Task->InitFrameId + 100 < FrameCount)
+			{
+				if (Task->LandscapeComponent != nullptr)
+				{
+					// Task not completed after 100 updates. We are probably leaking tasks!
+					UE_LOG(LogLandscape, Warning, TEXT("Leaking landscape physical material tasks."))
+				}
+				else
+				{
+					// Free the array allocations
+					Task->ResultMaterials.Empty();
+					Task->ResultIds.Empty();
+
+					// Free the render resources (which may already be free)
+					ENQUEUE_RENDER_COMMAND(FLandscapePhysicalMaterialUpdaterTick)(
+						[Task](FRHICommandListImmediate& RHICmdList)
+						{
+							Task->ReadbackTexture.SafeRelease();
+							Task->ReadbackFence.SafeRelease();
+						});
+				}
+			}
+		}
+
+		FrameCount++;
 	}
 };
 
@@ -604,6 +644,16 @@ TArray<UPhysicalMaterial*> const& FLandscapePhysicalMaterialRenderTask::GetResul
 	check(IsInGameThread());
 	check(IsValid() && IsComplete());
 	return GTaskPool.Pool[PoolHandle].ResultMaterials;
+}
+
+
+namespace LandscapePhysicalMaterial
+{
+	void GarbageCollectTasks()
+	{
+		check(IsInGameThread());
+		GTaskPool.GarbageCollect();
+	}
 }
 
 #endif // WITH_EDITOR

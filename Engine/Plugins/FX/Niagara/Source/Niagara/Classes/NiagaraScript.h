@@ -309,6 +309,8 @@ public:
 	UPROPERTY()
 	TArray<FVMExternalFunctionBindingInfo> CalledVMExternalFunctions;
 
+	TArray<FVMExternalFunction> CalledVMExternalFunctionBindings;
+
 	UPROPERTY()
 	TArray<FNiagaraDataSetID> ReadDataSets;
 
@@ -666,8 +668,9 @@ public:
 		false if not.*/
 	NIAGARA_API bool SynchronizeExecutablesWithMaster(const UNiagaraScript* Script, const TMap<FString, FString>& RenameMap);
 
-	NIAGARA_API void SyncAliases(const TMap<FString, FString>& RenameMap);
+	NIAGARA_API FString GetFriendlyName() const;
 
+	NIAGARA_API void SyncAliases(const TMap<FString, FString>& RenameMap);
 #endif
 	
 	UFUNCTION()
@@ -689,7 +692,7 @@ public:
 	
 	virtual ~UNiagaraScript();
 
-	FNiagaraScriptExecutionParameterStore* GetExecutionReadyParameterStore(ENiagaraSimTarget SimTarget);
+	const FNiagaraScriptExecutionParameterStore* GetExecutionReadyParameterStore(ENiagaraSimTarget SimTarget);
 	void InvalidateExecutionReadyParameterStores();
 
 private:
@@ -701,6 +704,9 @@ private:
 
 	/** Kicks off an async job to convert the ByteCode into an optimized version for the platform we are running on. */
 	void AsyncOptimizeByteCode();
+
+	/** Generates all of the function bindings for DI that don't require user data */
+	void GenerateDefaultFunctionBindings();
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(Transient)

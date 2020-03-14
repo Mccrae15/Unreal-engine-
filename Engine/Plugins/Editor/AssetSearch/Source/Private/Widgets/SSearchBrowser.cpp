@@ -32,6 +32,9 @@
 #include "Widgets/Views/STreeView.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Input/SHyperlink.h"
+#include "Widgets/Images/SThrobber.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Settings/SearchUserSettings.h"
 
 #define LOCTEXT_NAMESPACE "SObjectBrowser"
 
@@ -43,8 +46,16 @@ namespace AssetSearchConstants
 	const int32 ThumbnailPoolSize = 64;
 }
 
+//TODO Expose TSharedRef<SWidget> SAssetViewItem::CreateToolTipWidget() const via IContentBrowserSingleton.
+
 void SSearchBrowser::Construct( const FArguments& InArgs )
 {
+	if (!GetDefault<USearchUserSettings>()->bEnableSearch)
+	{
+		GetMutableDefault<USearchUserSettings>()->bEnableSearch = true;
+		GetMutableDefault<USearchUserSettings>()->SaveConfig();
+	}
+
 	SortByColumn = SSearchTreeRow::NAME_ColumnName;
 	SortMode = EColumnSortMode::Ascending;
 
@@ -81,11 +92,12 @@ void SSearchBrowser::Construct( const FArguments& InArgs )
 				+ SHorizontalBox::Slot()
 				.FillWidth(1.0f)
 				[
-					SNew(SEditableTextBox)
-					.ClearKeyboardFocusOnCommit(false)
+					SNew(SSearchBox)
 					.HintText(LOCTEXT("SearchHint", "Search"))
 					.OnTextCommitted(this, &SSearchBrowser::OnSearchTextCommited)
 					.OnTextChanged(this, &SSearchBrowser::OnSearchTextChanged)
+					.IsSearching(this, &SSearchBrowser::IsSearching)
+					.DelayChangeNotificationsWhileTyping(true)
 				]
 			]
 
@@ -114,31 +126,6 @@ void SSearchBrowser::Construct( const FArguments& InArgs )
 						+ SHeaderRow::Column(SSearchTreeRow::NAME_ColumnType)
 						.ManualWidth(300)
 						.DefaultLabel(LOCTEXT("ColumnType", "Type"))
-						//.SortMode(this, &SSearchBrowser::GetColumnSortMode, SObjectBrowserTableRow::CategoryClass)
-						//.OnSort(this, &SSearchBrowser::OnColumnSortModeChanged)
-
-					//	+ SHeaderRow::Column(SObjectBrowserTableRow::CategoryWorld)
-					//	.FixedWidth(22)
-					//	.DefaultLabel(LOCTEXT("CategoryWorld", ""))
-					//	.SortMode(this, &SSearchBrowser::GetColumnSortMode, SObjectBrowserTableRow::CategoryWorld)
-					//	.OnSort(this, &SSearchBrowser::OnColumnSortModeChanged)
-
-					//	+ SHeaderRow::Column(SObjectBrowserTableRow::CategoryClass)
-					//	.ManualWidth(300)
-					//	.DefaultLabel(LOCTEXT("CategoryAsset", "Asset"))
-					//	.SortMode(this, &SSearchBrowser::GetColumnSortMode, SObjectBrowserTableRow::CategoryClass)
-					//	.OnSort(this, &SSearchBrowser::OnColumnSortModeChanged)
-
-					//	+ SHeaderRow::Column(SObjectBrowserTableRow::CategoryProperty)
-					//	.FillWidth(1.0f)
-					//	.DefaultLabel(LOCTEXT("CategoryProperty", "Text"))
-					//	.SortMode(this, &SSearchBrowser::GetColumnSortMode, SObjectBrowserTableRow::CategoryProperty)
-					//	.OnSort(this, &SSearchBrowser::OnColumnSortModeChanged)
-
-					//	//+ SHeaderRow::Column(SObjectBrowserTableRow::CategoryPropertyValue)
-					//	//.DefaultLabel(LOCTEXT("CategoryPropertyValue", "Value"))
-					//	//.SortMode(this, &SSearchBrowser::GetColumnSortMode, SObjectBrowserTableRow::CategoryPropertyValue)
-					//	//.OnSort(this, &SSearchBrowser::OnColumnSortModeChanged)
 					)
 				]
 			]
@@ -162,13 +149,29 @@ void SSearchBrowser::Construct( const FArguments& InArgs )
 				.VAlign(VAlign_Center)
 				.Padding(8, 0)
 				[
-					SNew(STextBlock)
-					.Text(this, &SSearchBrowser::GetStatusText)
+					SNew(SVerticalBox)
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(STextBlock)
+						.Visibility_Lambda([] { return GetDefault<USearchUserSettings>()->bShowAdvancedData ? EVisibility::Visible : EVisibility::Collapsed; })
+						.Text(this, &SSearchBrowser::GetStatusText)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(STextBlock)
+						.Visibility_Lambda([] { return GetDefault<USearchUserSettings>()->bShowAdvancedData ? EVisibility::Visible : EVisibility::Collapsed; })
+						.Text(this, &SSearchBrowser::GetAdvancedStatus)
+					]
 				]
 
 				// Index unindexed items
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
+				.VAlign(VAlign_Top)
 				[
 					SNew(SHyperlink)
 					.Text(this, &SSearchBrowser::GetUnindexedAssetsText)
@@ -185,7 +188,23 @@ FText SSearchBrowser::GetStatusText() const
 {
 	IAssetSearchModule& SearchModule = IAssetSearchModule::Get();
 	FSearchStats SearchStats = SearchModule.GetStats();
-	return FText::Format(LOCTEXT("SearchStatusTextFmt", "Scanning {0}   Downloading {1}   Updating {2}            Total Records {3}"), SearchStats.Scanning, SearchStats.Downloading, SearchStats.PendingDatabaseUpdates, SearchStats.TotalRecords);
+	int32 UpdatingCount = SearchStats.Scanning + SearchStats.Downloading + SearchStats.PendingDatabaseUpdates;
+
+	if (UpdatingCount > 0)
+	{
+		return LOCTEXT("Updating", "Updating...  (You can search any time)");
+	}
+	else
+	{
+		return LOCTEXT("Ready", "Ready");
+	}
+}
+
+FText SSearchBrowser::GetAdvancedStatus() const
+{
+	IAssetSearchModule& SearchModule = IAssetSearchModule::Get();
+	FSearchStats SearchStats = SearchModule.GetStats();
+	return FText::Format(LOCTEXT("AdvancedSearchStatusTextFmt", "Scanning {0}   Downloading {1}   Updating {2}            Total Records {3}"), SearchStats.Scanning, SearchStats.Downloading, SearchStats.PendingDatabaseUpdates, SearchStats.TotalRecords);
 }
 
 FText SSearchBrowser::GetUnindexedAssetsText() const
@@ -238,8 +257,11 @@ void SSearchBrowser::RefreshList()
 		FSearchQuery Query;
 		Query.Query = FilterText.ToString();
 
+		SearchesActive++;
+
 		IAssetSearchModule& SearchModule = IAssetSearchModule::Get();
 		SearchModule.Search(Query, [this](TArray<FSearchRecord>&& InResults) {
+			check(IsInGameThread());
 
 			SearchResults.Reset();
 			SearchResultHierarchy.Reset();
@@ -261,6 +283,7 @@ void SSearchBrowser::RefreshList()
 			});
 
 			SearchTreeView->RequestListRefresh();
+			SearchesActive--;
 		});
 	}
 }
@@ -286,7 +309,13 @@ void SSearchBrowser::OnSearchTextCommited(const FText& InText, ETextCommit::Type
 
 void SSearchBrowser::OnSearchTextChanged(const FText& InText)
 {
-	if (InText.ToString().Len() > 3)
+	const int32 Length = InText.ToString().Len();
+
+	if (Length > 3)
+	{
+		TryRefreshingSearch(InText);
+	}
+	else if (Length == 0)
 	{
 		TryRefreshingSearch(InText);
 	}
@@ -317,6 +346,11 @@ void SSearchBrowser::GetChildrenForInfo(TSharedPtr<FSearchNode> InNode, TArray< 
 
 void SSearchBrowser::HandleListSelectionChanged(TSharedPtr<FSearchNode> InNode, ESelectInfo::Type SelectInfo)
 {
+}
+
+bool SSearchBrowser::IsSearching() const
+{
+	return SearchesActive > 0;
 }
 
 #undef LOCTEXT_NAMESPACE

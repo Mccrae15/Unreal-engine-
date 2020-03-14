@@ -149,18 +149,23 @@ struct FNiagaraScriptExecutionContext
 {
 	UNiagaraScript* Script;
 
-	/** Table of external function delegates called from the VM. */
-	TArray<FVMExternalFunction> FunctionTable;
+	/** Table of external function delegate handles called from the VM. */
+	TArray<const FVMExternalFunction*> FunctionTable;
 
+private:
+	/** Table of external function delegates unique to the instance */
+	TArray<FVMExternalFunction> LocalFunctionTable;
+
+public:
 	/** Table of instance data for data interfaces that require it. */
 	TArray<void*> DataInterfaceInstDataTable;
 
 	/** Parameter store. Contains all data interfaces and a parameter buffer that can be used directly by the VM or GPU. */
-	FNiagaraScriptExecutionParameterStore Parameters;
+	FNiagaraScriptInstanceParameterStore Parameters;
 
-	TArray<FDataSetMeta, TInlineAllocator<4>> DataSetMetaTable;
+	TArray<FDataSetMeta, TInlineAllocator<2>> DataSetMetaTable;
 
-	TArray<FNiagaraDataSetExecutionInfo, TInlineAllocator<4>> DataSetInfo;
+	TArray<FNiagaraDataSetExecutionInfo, TInlineAllocator<2>> DataSetInfo;
 
 	static uint32 TickCounter;
 
@@ -171,7 +176,7 @@ struct FNiagaraScriptExecutionContext
 
 	bool Init(UNiagaraScript* InScript, ENiagaraSimTarget InTarget);
 	
-	bool Tick(class FNiagaraSystemInstance* Instance, ENiagaraSimTarget SimTarget = ENiagaraSimTarget::CPUSim);
+	bool Tick(class FNiagaraSystemInstance* Instance, ENiagaraSimTarget SimTarget);
 	void PostTick();
 
 	void BindData(int32 Index, FNiagaraDataSet& DataSet, int32 StartInstance, bool bUpdateInstanceCounts);
@@ -255,7 +260,7 @@ public:
 
 	//Dynamic state updated either from GT via RT commands or from the RT side sim code itself.
 	//TArray<uint8, TAlignedHeapAllocator<16>> ParamData_RT;		// RT side copy of the parameter data
-	FNiagaraScriptExecutionParameterStore CombinedParamStore;
+	FNiagaraScriptInstanceParameterStore CombinedParamStore;
 #if DO_CHECK
 	TArray< FString >  DIClassNames;
 #endif
@@ -276,6 +281,8 @@ public:
 
 	/** Temp data used in NiagaraEmitterInstanceBatcher::ExecuteAll() to avoid creating a map per FNiagaraComputeExecutionContext */
 	mutable int32 ScratchIndex = INDEX_NONE;
+	mutable uint32 ScratchNumInstances = 0;
+	mutable uint32 ScratchMaxInstances = 0;
 
 	TArray < FSimulationStageMetaData> SimStageInfo;
 
