@@ -45,11 +45,13 @@ TLevelSet<T, d>::TLevelSet(FErrorReporter& ErrorReporter, const TUniformGrid<T, 
 	check(MGrid.Counts()[0] > 1 && MGrid.Counts()[1] > 1 && MGrid.Counts()[2] > 1);
 	check(Mesh.GetSurfaceElements().Num());
 
-	const TArray<TVector<T, 3>> Normals = Mesh.GetFaceNormals(InParticles);
-
+	const TArray<TVector<T, 3>> Normals = 
+		Mesh.GetFaceNormals(
+			InParticles, 
+			false);			// Don't fail if the mesh has small faces
 	if (Normals.Num() == 0)
 	{
-		ErrorReporter.ReportError(TEXT("Normals came back empty. Does mesh contain coincident points?"));
+		ErrorReporter.ReportError(TEXT("Normals came back empty."));
 		return;
 	}
 
@@ -171,6 +173,19 @@ TLevelSet<T, d>::TLevelSet(TLevelSet<T, d>&& Other)
 template<class T, int d>
 TLevelSet<T, d>::~TLevelSet()
 {
+}
+
+template<typename T, int d>
+TUniquePtr<FImplicitObject> TLevelSet<T, d>::DeepCopy() const
+{
+	TLevelSet<T, d>* Copy = new TLevelSet<T, d>();
+	Copy->MGrid = MGrid;
+	Copy->MPhi.Copy(MPhi);
+	Copy->MNormals.Copy(MNormals);
+	Copy->MLocalBoundingBox = MLocalBoundingBox;
+	Copy->MOriginalLocalBoundingBox = MOriginalLocalBoundingBox;
+	Copy->MBandWidth = MBandWidth;
+	return TUniquePtr<FImplicitObject>(Copy);
 }
 
 template<typename T, int d>

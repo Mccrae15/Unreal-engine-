@@ -108,7 +108,7 @@ static FVector FindGeomOpposingNormal(ECollisionShapeType QueryGeomType, const F
 			const FTransform ActorTM(Hit.Actor->R(), Hit.Actor->X());
 			const FVector LocalInNormal = ActorTM.InverseTransformVectorNoScale(InNormal);
 			const FVector LocalTraceDirectionDenorm = ActorTM.InverseTransformVectorNoScale(TraceDirectionDenorm);
-			const FVector LocalNormal = Shape->Geometry->FindGeometryOpposingNormal(LocalTraceDirectionDenorm, Hit.FaceIndex, LocalInNormal);
+			const FVector LocalNormal = Shape->GetGeometry()->FindGeometryOpposingNormal(LocalTraceDirectionDenorm, Hit.FaceIndex, LocalInNormal);
 			return ActorTM.TransformVectorNoScale(LocalNormal);
 #else
 			ECollisionShapeType GeomType = GetGeometryType(*Shape);
@@ -171,7 +171,23 @@ static void SetHitResultFromShapeAndFaceIndex(const FPhysicsShape& Shape,  const
 #endif
 	else
 	{
-		ensureMsgf(false, TEXT("SetHitResultFromShapeAndFaceIndex hit shape with invalid userData"));
+#if WITH_CHAOS
+		// Currently geom collections are registered with a primitive component user data, but maybe custom should be adapted
+		// to be more general so we can support leaf identification #BGTODO
+		void* UserData = Actor.UserData();
+		UPrimitiveComponent* PossibleOwner = FPhysxUserData::Get<UPrimitiveComponent>(UserData);
+
+		if(PossibleOwner)
+		{
+			OwningComponent = PossibleOwner;
+			OutResult.Item = INDEX_NONE;
+			OutResult.BoneName = NAME_None;
+		}
+		else
+#endif
+		{
+			ensureMsgf(false, TEXT("SetHitResultFromShapeAndFaceIndex hit shape with invalid userData"));
+		}
 	}
 
 	OutResult.PhysMaterial = nullptr;

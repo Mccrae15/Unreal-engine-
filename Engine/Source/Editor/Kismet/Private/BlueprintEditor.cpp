@@ -6669,6 +6669,10 @@ void FBlueprintEditor::OnAssignReferencedActor()
 						// Store the node's current state and replace the referenced actor
 						CurrentEvent->Modify();
 						CurrentEvent->EventOwner = SelectedActor;
+						if (!SelectedActor->IsA(CurrentEvent->DelegateOwnerClass))
+						{
+							CurrentEvent->DelegateOwnerClass = SelectedActor->GetClass();
+						}
 						CurrentEvent->ReconstructNode();
 					}
 					FBlueprintEditorUtils::MarkBlueprintAsModified(GetBlueprintObj());
@@ -8165,8 +8169,13 @@ bool FBlueprintEditor::CanAddNewLocalVariable() const
 {
 	if (InEditingMode())
 	{
-		UEdGraph* TargetGraph = FBlueprintEditorUtils::GetTopLevelGraph(FocusedGraphEdPtr.Pin()->GetCurrentGraph());
+		TSharedPtr<SGraphEditor> FocusedGraphEd = FocusedGraphEdPtr.Pin();
+		if (!FocusedGraphEd.IsValid())
+		{
+			return false;
+		}
 
+		UEdGraph* TargetGraph = FBlueprintEditorUtils::GetTopLevelGraph(FocusedGraphEd->GetCurrentGraph());
 		return TargetGraph->GetSchema()->GetGraphType(TargetGraph) == GT_Function;
 	}
 	return false;

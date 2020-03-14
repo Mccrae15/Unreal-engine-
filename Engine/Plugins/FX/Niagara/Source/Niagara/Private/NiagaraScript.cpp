@@ -246,6 +246,10 @@ void FNiagaraVMExecutableDataId::AppendKeyString(FString& KeyString, const FStri
 
 #endif
 
+#if WITH_EDITORONLY_DATA
+const FName UNiagaraScript::NiagaraCustomVersionTagName("NiagaraCustomVersion");
+#endif
+
 UNiagaraScript::UNiagaraScript(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, Usage(ENiagaraScriptUsage::Function)
@@ -317,6 +321,10 @@ void UNiagaraScript::ComputeVMCompilationId(FNiagaraVMExecutableDataId& Id) cons
 		if (EmitterOwner && EmitterOwner->bBakeOutRapidIteration)
 		{
 			Id.bUsesRapidIterationParams = false;
+		}
+		if (EmitterOwner && EmitterOwner->bCompressAttributes)
+		{
+			Id.AdditionalDefines.Add(TEXT("CompressAttributes"));
 		}
 
 		if ((Emitter->bInterpolatedSpawning && Usage == ENiagaraScriptUsage::ParticleGPUComputeScript) || 
@@ -390,6 +398,10 @@ void UNiagaraScript::ComputeVMCompilationId(FNiagaraVMExecutableDataId& Id) cons
 		if (System->bBakeOutRapidIteration)
 		{
 			Id.bUsesRapidIterationParams = false;
+		}
+		if (System->bCompressAttributes)
+		{
+			Id.AdditionalDefines.Add(TEXT("CompressAttributes"));
 		}
 
 		for (const FNiagaraEmitterHandle& EmitterHandle: System->GetEmitterHandles())
@@ -1588,6 +1600,11 @@ void UNiagaraScript::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) co
 
 		OutTags.Add(FAssetRegistryTag(HighlightsName, *HighlightsTags, UObject::FAssetRegistryTag::TT_Hidden));
 	}
+
+	// Add the current custom version to the tags so that tags can be fixed up in the future without having to load
+	// the whole asset.
+	const int32 NiagaraVer = GetLinkerCustomVersion(FNiagaraCustomVersion::GUID);
+	OutTags.Add(FAssetRegistryTag(NiagaraCustomVersionTagName, FString::FromInt(NiagaraVer), UObject::FAssetRegistryTag::TT_Hidden));
 #endif
 }
 

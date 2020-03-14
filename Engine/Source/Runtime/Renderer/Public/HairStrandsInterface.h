@@ -94,6 +94,7 @@ public:
 		float HairLength = 0;
 		float HairDensity = 0;
 		bool bUseStableRasterization = false;
+		bool bScatterSceneLighting = false;
 		FTransform LocalToWorldTransform;
 	};
 	VertexFactoryInput VFInput;
@@ -282,6 +283,8 @@ struct FHairStrandsDebugInfo
 {
 	uint32 ComponentId = 0;
 	EWorldType::Type WorldType = EWorldType::None;
+	FString GroomAssetName;
+	FString SkeletalComponentName;
 
 	struct HairGroup
 	{
@@ -318,6 +321,9 @@ struct FHairStrandsProjectionDebugInfo
 	FHairStrandsProjectionMeshData SourceMeshData;
 	FHairStrandsProjectionMeshData TargetMeshData;
 	TArray<FRWBuffer> TransferredPositions;
+	FString GroomAssetName;
+	FString SkeletalComponentName;
+
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -415,3 +421,7 @@ RENDERER_API void EnqueueFollicleMaskUpdateQuery(const TArray<FFollicleInfo>& In
 
 void RunHairStrandsProcess(FRHICommandListImmediate& RHICmdList, class FGlobalShaderMap* ShaderMap); 
 bool HasHairStrandsProcess(EShaderPlatform Platform);
+
+
+typedef TArray<FRHIUnorderedAccessView*> FBufferTransitionQueue;
+RENDERER_API void TransitBufferToReadable(FRHICommandListImmediate& RHICmdList, FBufferTransitionQueue& BuffersToTransit);

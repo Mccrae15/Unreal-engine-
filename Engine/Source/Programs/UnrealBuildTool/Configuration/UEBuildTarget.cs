@@ -1705,7 +1705,7 @@ namespace UnrealBuildTool
 
 						FileItem DefaultResourceFile = FileItem.GetItemByFileReference(FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build", "Windows", "Resources", "Default.rc2"));
 
-						CPPOutput DefaultResourceOutput = TargetToolChain.CompileRCFiles(DefaultResourceCompileEnvironment, new List<FileItem> { DefaultResourceFile }, EngineIntermediateDirectory, Makefile.Actions);
+						CPPOutput DefaultResourceOutput = TargetToolChain.CompileRCFiles(DefaultResourceCompileEnvironment, new List<FileItem> { DefaultResourceFile }, EngineIntermediateDirectory, Makefile);
 						GlobalLinkEnvironment.DefaultResourceFiles.AddRange(DefaultResourceOutput.ObjectFiles);
 					}
 				}
@@ -1746,7 +1746,7 @@ namespace UnrealBuildTool
 			{
 				if(!UnrealBuildTool.IsFileInstalled(Pair.Key))
 				{
-					Makefile.OutputItems.Add(CreateCopyAction(Pair.Value, Pair.Key, Makefile.Actions));
+					Makefile.OutputItems.Add(Makefile.CreateCopyAction(Pair.Value, Pair.Key));
 				}
 			}
 
@@ -1852,14 +1852,13 @@ namespace UnrealBuildTool
 					WriteMetadataArguments.Append(" -NoManifestChanges");
 				}
 
-				Action WriteMetadataAction = Action.CreateRecursiveAction<WriteMetadataMode>(ActionType.WriteMetadata, WriteMetadataArguments.ToString());
+				Action WriteMetadataAction = Makefile.CreateRecursiveAction<WriteMetadataMode>(ActionType.WriteMetadata, WriteMetadataArguments.ToString());
 				WriteMetadataAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
 				WriteMetadataAction.StatusDescription = ReceiptFileName.GetFileName();
 				WriteMetadataAction.bCanExecuteRemotely = false;
 				WriteMetadataAction.PrerequisiteItems.Add(FileItem.GetItemByFileReference(MetadataTargetFile));
 				WriteMetadataAction.PrerequisiteItems.AddRange(Makefile.OutputItems);
 				WriteMetadataAction.ProducedItems.Add(FileItem.GetItemByFileReference(ReceiptFileName));
-				Makefile.Actions.Add(WriteMetadataAction);
 
 				Makefile.OutputItems.AddRange(WriteMetadataAction.ProducedItems);
 
@@ -1869,7 +1868,7 @@ namespace UnrealBuildTool
 				{
 					FileReference OutputFile = new FileReference(PostBuildScript.FullName + ".ran");
 
-					Action PostBuildStepAction = new Action(ActionType.PostBuildStep);
+					Action PostBuildStepAction = Makefile.CreateAction(ActionType.PostBuildStep);
 					PostBuildStepAction.CommandPath = BuildHostPlatform.Current.Shell;
 					if(BuildHostPlatform.Current.ShellType == ShellType.Cmd)
 					{
@@ -1884,7 +1883,6 @@ namespace UnrealBuildTool
 					PostBuildStepAction.bCanExecuteRemotely = false;
 					PostBuildStepAction.PrerequisiteItems.Add(FileItem.GetItemByFileReference(ReceiptFileName));
 					PostBuildStepAction.ProducedItems.Add(FileItem.GetItemByFileReference(OutputFile));
-					Makefile.Actions.Add(PostBuildStepAction);
 
 					Makefile.OutputItems.AddRange(PostBuildStepAction.ProducedItems);
 				}
@@ -1950,35 +1948,25 @@ namespace UnrealBuildTool
 			}
 
 			// Add all the input files to the predicate store
-			Makefile.AdditionalDependencies.Add(FileItem.GetItemByFileReference(TargetRulesFile));
+			Makefile.ExternalDependencies.Add(FileItem.GetItemByFileReference(TargetRulesFile));
 			foreach(UEBuildModule Module in Modules.Values)
 			{
-				Makefile.AdditionalDependencies.Add(FileItem.GetItemByFileReference(Module.RulesFile));
+				Makefile.ExternalDependencies.Add(FileItem.GetItemByFileReference(Module.RulesFile));
 				foreach(string ExternalDependency in Module.Rules.ExternalDependencies)
 				{
 					FileReference Location = FileReference.Combine(Module.RulesFile.Directory, ExternalDependency);
-					Makefile.AdditionalDependencies.Add(FileItem.GetItemByFileReference(Location));
+					Makefile.ExternalDependencies.Add(FileItem.GetItemByFileReference(Location));
 				}
 				if (Module.Rules.SubclassRules != null)
 				{
 					foreach (string SubclassRule in Module.Rules.SubclassRules)
 					{
 						FileItem SubclassRuleFileItem = FileItem.GetItemByFileReference(new FileReference(SubclassRule));
-						Makefile.AdditionalDependencies.Add(SubclassRuleFileItem);
+						Makefile.ExternalDependencies.Add(SubclassRuleFileItem);
 					}
 				}
 			}
-			Makefile.AdditionalDependencies.UnionWith(Makefile.PluginFiles);
-
-			// Add any leaf dependencies (eg. response files) to the dependencies list
-			IEnumerable<FileItem> LeafPrerequisiteItems = Makefile.Actions.SelectMany(x => x.PrerequisiteItems).Except(Makefile.Actions.SelectMany(x => x.ProducedItems));
-			foreach (FileItem LeafPrerequisiteItem in LeafPrerequisiteItems)
-			{
-				if (LeafPrerequisiteItem.Exists)
-				{
-					Makefile.AdditionalDependencies.Add(LeafPrerequisiteItem);
-				}
-			}
+			Makefile.ExternalDependencies.UnionWith(Makefile.PluginFiles);
 
 			// Write a header containing public definitions for this target
 			if (Rules.ExportPublicHeader != null)
@@ -2053,23 +2041,6 @@ namespace UnrealBuildTool
 
 			// Find the restricted folders under the base directory
 			return RestrictedFolders.FindPermittedRestrictedFolderReferences(BaseDir, File.Directory);
-		}
-
-		/// <summary>
-		/// Creates an action which copies a file from one location to another
-		/// </summary>
-		/// <param name="SourceFile">The source file location</param>
-		/// <param name="TargetFile">The target file location</param>
-		/// <param name="Actions">List of actions to be executed. Additional actions will be added to this list.</param>
-		/// <returns>File item for the output file</returns>
-		static FileItem CreateCopyAction(FileReference SourceFile, FileReference TargetFile, List<Action> Actions)
-		{
-			FileItem SourceFileItem = FileItem.GetItemByFileReference(SourceFile);
-			FileItem TargetFileItem = FileItem.GetItemByFileReference(TargetFile);
-
-			Actions.Add(Action.CreateCopyAction(SourceFileItem, TargetFileItem));
-
-			return TargetFileItem;
 		}
 
 		/// <summary>

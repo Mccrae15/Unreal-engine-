@@ -5,6 +5,7 @@
 #include "Sound/SoundEffectSource.h"
 #include "Engine/Engine.h"
 #include "AudioDeviceManager.h"
+#include "CoreGlobals.h"
 
 USoundEffectPreset::USoundEffectPreset(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -17,16 +18,12 @@ USoundEffectPreset::~USoundEffectPreset()
 {
 }
 
-
 void USoundEffectPreset::EffectCommand(TFunction<void()> Command)
 {
-	for (int32 i = 0; i < Instances.Num(); ++i)
+	IterateEffects<FSoundEffectBase>([Command](FSoundEffectBase& Instance)
 	{
-		if (Instances[i])
-		{
-			Instances[i]->EffectCommand(Command);
-		}
-	}
+		Instance.EffectCommand(Command);
+	});
 }
 
 void USoundEffectPreset::Update()
@@ -58,26 +55,24 @@ void USoundEffectPreset::AddEffectInstance(FSoundEffectBase* InSource)
 	Instances.AddUnique(InSource);
 }
 
-void USoundEffectPreset::AddReferencedEffects(FReferenceCollector& Collector)
+void USoundEffectPreset::AddReferencedEffects(FReferenceCollector& InCollector)
 {
-	for (FSoundEffectBase* Effect : Instances)
+	FReferenceCollector* Collector = &InCollector;
+	IterateEffects<FSoundEffectBase>([Collector](FSoundEffectBase& Instance)
 	{
-		if (Effect)
-		{
-			const USoundEffectPreset* EffectPreset = Effect->GetPreset();
-			Collector.AddReferencedObject(EffectPreset);
-		}
-	}
+		const USoundEffectPreset* EffectPreset = Instance.GetPreset();
+		Collector->AddReferencedObject(EffectPreset);
+	});
 }
 
 void USoundEffectPreset::BeginDestroy()
 {
-	for (int32 i = 0; i < Instances.Num(); ++i)
+	if (!GExitPurge)
 	{
-		if (Instances[i])
+		IterateEffects<FSoundEffectBase>([](FSoundEffectBase& Instance)
 		{
-			Instances[i]->ClearPreset(false /* bRemoveFromPreset */);
-		}
+			Instance.ClearPreset(false /* bRemoveFromPreset */);
+		});
 	}
 	Instances.Reset();
 
@@ -94,6 +89,7 @@ void USoundEffectPreset::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 {
 	// Copy the settings to the thread safe version
 	Init();
+	OnInit();
 	Update();
 }
 

@@ -309,6 +309,8 @@ public:
 	/** Duplicates a set of emitters and refreshes everything.*/
 	void DuplicateEmitters(TArray<FEmitterHandleToDuplicate> EmitterHandlesToDuplicate);
 
+	FGuid GetMessageLogGuid() const;
+
 private:
 
 	/** Sends message jobs to FNiagaraMessageManager for all compile events from the last compile. */
@@ -557,7 +559,7 @@ private:
 	TMap<FGuid, TArray<FNiagaraStackModuleData>> GuidToCachedStackModuleData;
 	
 	/** A handle to the on graph changed delegate for the system script. */
-	FDelegateHandle SystemScriptGraphChangedHandler;
+	FDelegateHandle SystemScriptGraphChangedHandle;
 
 	/** An array of emitter handle ids which need their sequencer tracks refreshed next frame. */
 	TArray<FGuid> EmitterIdsRequiringSequencerTrackUpdate;

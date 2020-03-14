@@ -1282,6 +1282,10 @@ void FNiagaraEditorUtilities::GetFilteredScriptAssets(FGetFilteredScriptAssetsOp
 
 	for (int i = 0; i < FilteredScriptAssets.Num(); ++i)
 	{
+		// Get the custom version the asset was saved with so it can be used below.
+		int32 NiagaraVersion = INDEX_NONE;
+		FilteredScriptAssets[i].GetTagValue(UNiagaraScript::NiagaraCustomVersionTagName, NiagaraVersion);
+
 		// Check if the script is deprecated
 		if (InFilter.bIncludeDeprecatedScripts == false)
 		{
@@ -1307,11 +1311,26 @@ void FNiagaraEditorUtilities::GetFilteredScriptAssets(FGetFilteredScriptAssetsOp
 		// Check if usage bitmask matches
 		if (InFilter.TargetUsageToMatch.IsSet())
 		{
-			FString BitfieldTagValue;
-			int32 BitfieldValue, TargetBit;
-			BitfieldTagValue = FilteredScriptAssets[i].GetTagValueRef<FString>(GET_MEMBER_NAME_CHECKED(UNiagaraScript, ModuleUsageBitmask));
-			BitfieldValue = FCString::Atoi(*BitfieldTagValue);
-			TargetBit = (BitfieldValue >> (int32)InFilter.TargetUsageToMatch.GetValue()) & 1;
+			int32 BitfieldValue = 0;
+			if (NiagaraVersion == INDEX_NONE || NiagaraVersion < FNiagaraCustomVersion::AddSimulationStageUsageEnum)
+			{
+				// If there is no custom version, or it's less than the simulation stage enum fix up, we need to load the 
+				// asset to get the correct bitmask since the shader stage enum broke the old ones.
+				UNiagaraScript* AssetScript = Cast<UNiagaraScript>(FilteredScriptAssets[i].GetAsset());
+				if (AssetScript != nullptr)
+				{
+					BitfieldValue = AssetScript->ModuleUsageBitmask;
+				}
+			}
+			else
+			{
+				// Otherwise the asset is new enough to have a valid bitmask.
+				FString BitfieldTagValue;
+				BitfieldTagValue = FilteredScriptAssets[i].GetTagValueRef<FString>(GET_MEMBER_NAME_CHECKED(UNiagaraScript, ModuleUsageBitmask));
+				BitfieldValue = FCString::Atoi(*BitfieldTagValue);
+			}
+
+			int32 TargetBit = (BitfieldValue >> (int32)InFilter.TargetUsageToMatch.GetValue()) & 1;
 			if (TargetBit != 1)
 			{
 				continue;
@@ -2161,7 +2180,9 @@ FName FNiagaraEditorUtilities::GetScopeNameForParameterScope(ENiagaraParameterSc
 	case ENiagaraParameterScope::ScriptPersistent:
 		return FNiagaraConstants::ScriptPersistentScopeName;
 	case ENiagaraParameterScope::ScriptTransient:
-		return FNiagaraConstants::ScriptTransientScopeName;
+		return FNiagaraConstants::ScriptTransientScopeName; 
+	case ENiagaraParameterScope::Output:
+		return FNiagaraConstants::OutputScopeName;
 	default:
 		ensureMsgf(false, TEXT("Tried to get scope name for unknown parameter scope!"));
 	}
@@ -2183,6 +2204,36 @@ TArray<FName> FNiagaraEditorUtilities::DecomposeVariableNamespace(const FName& I
 	return OutNamespaces;
 }
 
+void  FNiagaraEditorUtilities::RecomposeVariableNamespace(const FName& InVarNameToken, const TArray<FName>& InParentNamespaces, FName& OutName)
+{
+	FString VarNameString;
+	for (FName Name : InParentNamespaces)
+	{
+		VarNameString += Name.ToString() + TEXT(".");
+	}
+	VarNameString += InVarNameToken.ToString();
+	OutName = FName(*VarNameString);
+}
+
+bool FNiagaraEditorUtilities::IsScopeEditable(const FName& InScopeName)
+{
+	if (InScopeName == FNiagaraConstants::EngineNamespace || InScopeName == FNiagaraConstants::EngineOwnerScopeName || InScopeName == FNiagaraConstants::EngineSystemScopeName || InScopeName == FNiagaraConstants::EngineEmitterScopeName)
+	{
+		return false;
+	}
+	return true;
+}
+
+bool FNiagaraEditorUtilities::IsScopeUserAssignable(const FName& InScopeName)
+{
+	if (InScopeName == FNiagaraConstants::EngineNamespace || InScopeName == FNiagaraConstants::EngineOwnerScopeName || InScopeName == FNiagaraConstants::EngineSystemScopeName || InScopeName == FNiagaraConstants::EngineEmitterScopeName)
+	{
+		return false;
+	}
+	return true;
+}
+
+
 void FNiagaraEditorUtilities::GetParameterMetaDataFromName(const FName& InVarNameToken, FNiagaraVariableMetaData& OutMetaData)
 {
 	auto MarkAsLegacyCustomName = [&OutMetaData]() {
@@ -2200,31 +2251,37 @@ void FNiagaraEditorUtilities::GetParameterMetaDataFromName(const FName& InVarNam
 		else if (Namespace == FNiagaraConstants::ModuleNamespace)
 		{
 			OutMetaData.SetScopeName(FNiagaraConstants::InputScopeName);
+			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
 			return false;
 		}
 		else if (Namespace == FNiagaraConstants::UserNamespace)
 		{
 			OutMetaData.SetScopeName(Namespace);
+			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
 			return false;
 		}
 		else if (Namespace == FNiagaraConstants::EngineNamespace)
 		{
 			OutMetaData.SetScopeName(Namespace);
+			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
 			return true;
 		}
 		else if (Namespace == FNiagaraConstants::SystemNamespace)
 		{
 			OutMetaData.SetScopeName(Namespace);
+			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
 			return true;
 		}
 		else if (Namespace == FNiagaraConstants::EmitterNamespace)
 		{
 			OutMetaData.SetScopeName(Namespace);
+			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
 			return true;
 		}
 		else if (Namespace == FNiagaraConstants::ParticleAttributeNamespace)
 		{
 			OutMetaData.SetScopeName(Namespace);
+			OutMetaData.SetUsage(ENiagaraScriptParameterUsage::Input);
 			return true;
 		}
 

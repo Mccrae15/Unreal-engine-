@@ -943,6 +943,8 @@ void FVulkanDynamicRHI::RHIMapStagingSurface(FRHITexture* TextureRHI, FRHIGPUFen
 		VulkanRHI::vkGetImageSubresourceLayout(Device->GetInstanceHandle(), Texture2D->Surface.Image, &ImageSubResource, &SubResourceLayout);
 
 		int32 BytesPerPixel = GetNumBitsPerPixel(Texture2D->Surface.StorageFormat) / 8;
+		CA_ASSUME(BytesPerPixel > 0);
+
 		Pitch = SubResourceLayout.rowPitch / BytesPerPixel;
 	}
 
@@ -1299,11 +1301,7 @@ bool FVulkanCommandListContext::FPendingTransition::GatherBarriers(FTransitionAn
 			VkBufferMemoryBarrier& Barrier = OutBufferBarriers[OutBufferBarriers.AddUninitialized()];
 			if (BUF_DrawIndirect == (UAV->SourceVertexBuffer->GetUEUsage() & BUF_DrawIndirect)) //for indirect read we translate Read INDIRECT_COMMAND_READ
 			{
-				if (SrcAccess == VK_ACCESS_SHADER_READ_BIT)
-				{
-					SrcAccess = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-				}
-				else if (DestAccess == VK_ACCESS_SHADER_READ_BIT)
+				if (DestAccess == VK_ACCESS_SHADER_READ_BIT)
 				{
 					DestAccess = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
 				}

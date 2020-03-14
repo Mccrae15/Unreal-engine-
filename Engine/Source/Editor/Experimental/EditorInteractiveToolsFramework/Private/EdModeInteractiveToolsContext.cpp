@@ -704,6 +704,13 @@ bool UEdModeInteractiveToolsContext::InputKey(FEditorViewportClient* ViewportCli
 				{
 					return false;
 				}
+				// This is a special-case hack for UMultiClickSequenceInputBehavior, because it holds capture across multiple
+				// mouse clicks, which prevents alt+mouse navigation from working between clicks (very annoying in draw polygon).
+				// Remove this special-case once that tool is fixed to use CollectSurfacePathMechanic instead
+				if (Event == IE_Pressed && bIsLeftMouse && ViewportClient->IsAltPressed() && InputRouter->HasActiveMouseCapture())
+				{
+					return false;
+				}
 
 				FInputDeviceState InputState = CurrentMouseState;
 				InputState.InputDevice = EInputDevices::Mouse;
@@ -983,7 +990,8 @@ void UEdModeInteractiveToolsContext::SaveEditorStateAndSetForTool()
 				{
 					Flags.SetTemporalAA(false);
 					Flags.SetMotionBlur(false);
-					Flags.SetEyeAdaptation(false);
+					// disable this as depending on fixed exposure settings the entire scene may turn black
+					//Flags.SetEyeAdaptation(false);
 				});
 			}
 		}
