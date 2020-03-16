@@ -1315,7 +1315,7 @@ void FSteamVRHMD::SetBaseRotation(const FRotator& BaseRot)
 }
 FRotator FSteamVRHMD::GetBaseRotation() const
 {
-	return FRotator::ZeroRotator;
+	return FSteamVRHMD::GetBaseOrientation().Rotator();
 }
 
 void FSteamVRHMD::SetBaseOrientation(const FQuat& BaseOrient)

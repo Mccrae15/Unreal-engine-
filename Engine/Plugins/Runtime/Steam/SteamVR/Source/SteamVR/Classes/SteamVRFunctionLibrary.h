@@ -73,6 +73,15 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "SteamVR")
 	static FVector GetBasePosition();
+
+	UFUNCTION(BlueprintPure, Category = "SteamVR")
+	static FRotator GetBaseRotation();
+
+	UFUNCTION(BlueprintCallable, Category = "SteamVR")
+	static void SetBasePosition(FVector NewPosition);
+	
+	UFUNCTION(BlueprintCallable, Category = "SteamVR")
+	static void SetBaseRotation(FRotator NewRotation);
 	
 };
 
