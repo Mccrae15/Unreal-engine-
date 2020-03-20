@@ -545,7 +545,6 @@ void UGroomComponent::UpdateHairSimulation()
 {
 	static UNiagaraSystem* CosseratRodsSystem = LoadObject<UNiagaraSystem>(nullptr, TEXT("/HairStrands/Emitters/GroomRodsSystem.GroomRodsSystem"));
 	static UNiagaraSystem* AngularSpringsSystem = LoadObject<UNiagaraSystem>(nullptr, TEXT("/HairStrands/Emitters/GroomSpringsSystem.GroomSpringsSystem"));
-
 	const int32 NumGroups = GroomAsset ? GroomAsset->HairGroupsPhysics.Num() : 0;
 	const int32 NumComponents = FMath::Max(NumGroups, NiagaraComponents.Num());
 
@@ -582,13 +581,16 @@ void UGroomComponent::UpdateHairSimulation()
 			if (GroomAsset->HairGroupsPhysics[i].SolverSettings.NiagaraSolver == EGroomNiagaraSolvers::AngularSprings)
 			{
 				NiagaraComponent->SetAsset(AngularSpringsSystem);
-				NiagaraComponent->Activate(true);
 			}
 			else if (GroomAsset->HairGroupsPhysics[i].SolverSettings.NiagaraSolver == EGroomNiagaraSolvers::CosseratRods)
 			{
 				NiagaraComponent->SetAsset(CosseratRodsSystem);
-				NiagaraComponent->Activate(true);
 			}
+			else 
+			{
+				NiagaraComponent->SetAsset(GroomAsset->HairGroupsPhysics[i].SolverSettings.CustomSystem.LoadSynchronous());
+			}
+			NiagaraComponent->Activate(true);
 			if (NiagaraComponent->GetSystemInstance())
 			{
 				NiagaraComponent->GetSystemInstance()->Reset(FNiagaraSystemInstance::EResetMode::ReInit);
@@ -1379,6 +1381,10 @@ void UGroomComponent::OnRegister()
 	{
 		InitResources();
 	}
+	else
+	{
+		UpdateHairGroupsDescAndInvalidateRenderState();
+	}
 
 	// Insure the ticking of the Groom component always happens after the skeletalMeshComponent.
 	USkeletalMeshComponent* SkeletalMeshComponent = GetAttachParent() ? Cast<USkeletalMeshComponent>(GetAttachParent()) : nullptr;
@@ -1614,15 +1620,16 @@ void UGroomComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 		GroomAsset = nullptr;
 	}
 
+	bool bIsEventProcess = false;
+
 	const bool bRecreateResources = bAssetChanged || bBindingAssetChanged || PropertyThatChanged == nullptr || bBindToSkeletalChanged || bSourceSkeletalMeshChanged;
 	if (bRecreateResources)
 	{
 		// Release the resources before Super::PostEditChangeProperty so that they get
 		// re-initialized in OnRegister
 		ReleaseResources();
+		bIsEventProcess = true;
 	}
-
-	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	const bool bSupportSkinProjection = GetDefault<URendererSettings>()->bSupportSkinCacheShaders;
 	if (!bSupportSkinProjection)
@@ -1665,6 +1672,12 @@ void UGroomComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 		PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, bScatterSceneLighting))
 	{	
 		UpdateHairGroupsDescAndInvalidateRenderState();
+		bIsEventProcess = true;
+	}
+
+	if (!bIsEventProcess)
+	{
+		Super::PostEditChangeProperty(PropertyChangedEvent);
 	}
 
 #if WITH_EDITOR

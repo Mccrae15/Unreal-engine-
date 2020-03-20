@@ -46,6 +46,7 @@ public:
 	/** Call this init function if you are using a Niagara parameter store within a UNiagaraScript.*/
 	void InitFromOwningScript(UNiagaraScript* Script, ENiagaraSimTarget SimTarget, bool bNotifyAsDirty);
 	void AddScriptParams(UNiagaraScript* Script, ENiagaraSimTarget SimTarget, bool bTriggerRebind);
+	void CoalescePaddingInfo();
 #endif
 
 	virtual bool AddParameter(const FNiagaraVariable& Param, bool bInitInterfaces = true, bool bTriggerRebind = true, int32* OutOffset = nullptr) override
@@ -109,6 +110,10 @@ public:
 
 	UPROPERTY()
 	uint8 bInitialized : 1;
+
+#if WITH_EDITORONLY_DATA
+	TArray<uint8> CachedScriptLiterals;
+#endif
 
 protected:
 	void AddPaddedParamSize(const FNiagaraTypeDefinition& InParamType, uint32 InOffset);
@@ -177,8 +182,11 @@ public:
 	// Helper that converts the data from the base type array internally into the padded out renderer-ready format.
 	void CopyParameterDataToPaddedBuffer(uint8* InTargetBuffer, uint32 InTargetBufferSizeInBytes) const;
 
-protected:
-	virtual void InternalStorageChanged() override;
+#if WITH_EDITORONLY_DATA
+	TArrayView<const uint8> GetScriptLiterals() const;
+#endif
+
+	virtual TArrayView<const FNiagaraVariableWithOffset> ReadParameterVariables() const override;
 
 private:
 	FNiagaraCompiledDataReference<FNiagaraScriptExecutionParameterStore> ScriptParameterStore;

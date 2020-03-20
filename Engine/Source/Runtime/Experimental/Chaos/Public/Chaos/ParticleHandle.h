@@ -428,6 +428,8 @@ public:
 	TSharedPtr<FImplicitObject, ESPMode::ThreadSafe> SharedGeometry() const { return GeometryParticles->SharedGeometry(ParticleIdx); }
 	void SetSharedGeometry(TSharedPtr<FImplicitObject, ESPMode::ThreadSafe> InGeometry) { GeometryParticles->SetSharedGeometry(ParticleIdx, InGeometry); }
 
+	TSharedPtr<FImplicitObject, ESPMode::ThreadSafe> SharedGeometryLowLevel() const { return GeometryParticles->SharedGeometry(ParticleIdx); }
+
 	const TUniquePtr<FImplicitObject>& DynamicGeometry() const { return GeometryParticles->DynamicGeometry(ParticleIdx); }
 	void SetDynamicGeometry(TUniquePtr<FImplicitObject>&& Unique) { GeometryParticles->SetDynamicGeometry(ParticleIdx, MoveTemp(Unique)); }
 
@@ -1611,8 +1613,6 @@ public:
 		}
 	}
 
-	const FParticlePositionRotation& XR() const { return MXR.Read(); }
-
 protected:
 
 	// Pointer to any data that the solver wants to associate with this particle
@@ -1622,9 +1622,9 @@ protected:
 private:
 
 	TParticleProperty<FParticlePositionRotation, EParticleProperty::XR> MXR;
-	TParticleProperty<FParticleNonFrequentData, EParticleProperty::NonFrequentData> MNonFrequentData;
 
 protected:
+	TParticleProperty<FParticleNonFrequentData,EParticleProperty::NonFrequentData> MNonFrequentData;
 	TParticleProperty<FParticleMisc,EParticleProperty::Misc> MMiscData;
 private:
 
@@ -2039,16 +2039,16 @@ public:
 		MMassProps.Modify(true,MDirtyFlags,Proxy,[InInvM](auto& Data){ Data.InvM = InInvM;});
 	}
 
-	T LinearEtherDrag() const { return MDynamics.Read().LinearEtherDrag; }
+	T LinearEtherDrag() const { return this->MNonFrequentData.Read().LinearEtherDrag; }
 	void SetLinearEtherDrag(const T& InLinearEtherDrag)
 	{
-		MDynamics.Modify(true,MDirtyFlags,Proxy,[&InLinearEtherDrag](auto& Data){ Data.LinearEtherDrag = InLinearEtherDrag;});
+		this->MNonFrequentData.Modify(true,MDirtyFlags,Proxy,[&InLinearEtherDrag](auto& Data){ Data.LinearEtherDrag = InLinearEtherDrag;});
 	}
 
-	T AngularEtherDrag() const { return MDynamics.Read().AngularEtherDrag; }
+	T AngularEtherDrag() const { return this->MNonFrequentData.Read().AngularEtherDrag; }
 	void SetAngularEtherDrag(const T& InAngularEtherDrag)
 	{
-		MDynamics.Modify(true,MDirtyFlags,Proxy,[&InAngularEtherDrag](auto& Data){ Data.AngularEtherDrag = InAngularEtherDrag;});
+		this->MNonFrequentData.Modify(true,MDirtyFlags,Proxy,[&InAngularEtherDrag](auto& Data){ Data.AngularEtherDrag = InAngularEtherDrag;});
 	}
 
 	int32 Island() const { return MIsland; }

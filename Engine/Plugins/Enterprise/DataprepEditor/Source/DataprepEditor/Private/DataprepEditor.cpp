@@ -52,6 +52,7 @@
 #include "Misc/ScopedSlowTask.h"
 #include "Modules/ModuleManager.h"
 #include "ObjectTools.h"
+#include "SceneOutlinerModule.h"
 #include "SceneOutlinerPublicTypes.h"
 #include "ScopedTransaction.h"
 #include "StatsViewerModule.h"
@@ -108,29 +109,6 @@ private:
 	uint64 StartTime;
 	FString Text;
 };
-
-namespace DataprepEditorUtil
-{
-	void DeleteActor(AActor* Actor, UWorld* World)
-	{
-		if (Actor == nullptr || World != Actor->GetWorld())
-		{
-			return;
-		}
-
-		TArray<AActor*> Children;
-		Actor->GetAttachedActors(Children);
-
-		for (AActor* ChildActor : Children)
-		{
-			DeleteActor(ChildActor, World);
-		}
-
-		World->DestroyActor(Actor, false, true);
-	}
-
-	void DeleteTemporaryPackage( const FString& PathToDelete );
-}
 
 FDataprepEditor::FDataprepEditor()
 	: bWorldBuilt(false)
@@ -573,7 +551,7 @@ void FDataprepEditor::ResetBuildWorld()
 	bWorldBuilt = false;
 	CleanPreviewWorld();
 	UpdatePreviewPanels();
-	DataprepEditorUtil::DeleteTemporaryPackage( GetTransientContentFolder() );
+	FDataprepCoreUtils::DeleteTemporaryFolders( GetTransientContentFolder() );
 }
 
 void FDataprepEditor::CleanPreviewWorld()
@@ -1166,6 +1144,31 @@ void FDataprepEditor::OnActionsContextChanged( const UDataprepActionAsset* Actio
 	}
 }
 
+void FDataprepEditor::RefreshColumnsForPreviewSystem()
+{
+	if ( PreviewSystem->HasObservedObjects() )
+	{
+		SceneOutliner->RemoveColumn( SceneOutliner::FBuiltInColumnTypes::ActorInfo() );
+		SceneOutliner::FColumnInfo ColumnInfo( SceneOutliner::EColumnVisibility::Visible, 100, FCreateSceneOutlinerColumn::CreateLambda( [Preview = PreviewSystem](ISceneOutliner& InSceneOutliner) -> TSharedRef< ISceneOutlinerColumn >
+			{
+				return MakeShared<FDataprepPreviewOutlinerColumn>( InSceneOutliner, Preview );
+			} ) );
+		SceneOutliner->AddColumn( FDataprepPreviewOutlinerColumn::ColumnID, ColumnInfo );
+
+		AssetPreviewView->AddColumn( MakeShared<FDataprepPreviewAssetColumn>(PreviewSystem) );
+	}
+	else
+	{
+		SceneOutliner->RemoveColumn( FDataprepPreviewOutlinerColumn::ColumnID );
+		FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::Get().LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
+		SceneOutliner::FDefaultColumnInfo* ActorInfoColumPtr = SceneOutlinerModule.DefaultColumnMap.Find( SceneOutliner::FBuiltInColumnTypes::ActorInfo() );
+		check( ActorInfoColumPtr );
+		SceneOutliner->AddColumn( SceneOutliner::FBuiltInColumnTypes::ActorInfo(), ActorInfoColumPtr->ColumnInfo );
+
+		AssetPreviewView->RemoveColumn( FDataprepPreviewAssetColumn::ColumnID );
+	}
+}
+
 void FDataprepEditor::UpdateDataForPreviewSystem()
 {
 	TArray<UObject*> ObjectsForThePreviewSystem;
@@ -1183,24 +1186,32 @@ void FDataprepEditor::UpdateDataForPreviewSystem()
 
 bool FDataprepEditor::IsPreviewingStep(const UDataprepParameterizableObject* StepObject) const 
 {
-	return PreviewSystem->IsObservingObject( StepObject );
+	return PreviewSystem->IsObservingStepObject( StepObject );
+}
+
+int32 FDataprepEditor::GetCountOfPreviewedSteps() const
+{
+	return PreviewSystem->GetObservedStepsCount();
 }
 
 void FDataprepEditor::OnStepObjectsAboutToBeDeleted(const TArrayView<UDataprepParameterizableObject*>& StepObjects)
 {
-	// Todo Implement removal of objects from the preview system
+	for ( UDataprepParameterizableObject* StepObject : StepObjects )
+	{
+		if ( IsPreviewingStep( StepObject ) )
+		{
+			ClearPreviewedObjects();
+			break;
+		}
+	}
 }
 
 void FDataprepEditor::PostUndo(bool bSuccess)
 {
 	if ( bSuccess )
 	{
-		if ( PreviewSystem->HasObservedObjects() )
-		{
-			// Check if a object as disappear
-			PreviewSystem->RestartProcessing();
-			// Set Preview view
-		}
+		PreviewSystem->EnsureValidityOfTheObservedObjects();
+		RefreshColumnsForPreviewSystem();
 	}
 }
 
@@ -1208,33 +1219,13 @@ void FDataprepEditor::PostRedo(bool bSuccess)
 {
 	if ( bSuccess )
 	{
-		if ( PreviewSystem->HasObservedObjects() )
-		{
-			// Check if a object as disappear
-			PreviewSystem->RestartProcessing();
-			// Set Preview view
-		}
+		PreviewSystem->EnsureValidityOfTheObservedObjects();
+		RefreshColumnsForPreviewSystem();
 	}
 }
 
 void FDataprepEditor::SetPreviewedObjects(const TArrayView<UDataprepParameterizableObject*>& ObservedObjects)
 {
-	// (possible improvement) A validation that the observed object are from the same action in that the action is from the edited dataprep could help here.
-
-	if ( !PreviewSystem->HasObservedObjects() )
-	{ 
-		SceneOutliner->RemoveColumn( SceneOutliner::FBuiltInColumnTypes::ActorInfo() );
-		
-		SceneOutliner::FColumnInfo ColumnInfo( SceneOutliner::EColumnVisibility::Visible, 100, FCreateSceneOutlinerColumn::CreateLambda([Preview = PreviewSystem](ISceneOutliner& InSceneOutliner) -> TSharedRef< ISceneOutlinerColumn >
-			{
-				return MakeShared<FDataprepPreviewOutlinerColumn>( InSceneOutliner, Preview );
-			}));
-
-		SceneOutliner->AddColumn( FDataprepPreviewOutlinerColumn::ColumnID, ColumnInfo );
-
-		AssetPreviewView->AddColumn( MakeShared<FDataprepPreviewAssetColumn>( PreviewSystem ) );
-	}
-
 	PreviewSystem->SetObservedObjects( ObservedObjects );
 	
 	if ( SDataprepGraphEditor* RawGraphEditor = GraphEditor.Get() )
@@ -1242,93 +1233,13 @@ void FDataprepEditor::SetPreviewedObjects(const TArrayView<UDataprepParameteriza
 		// Refresh the graph
 		RawGraphEditor->NotifyGraphChanged();
 	}
+
+	RefreshColumnsForPreviewSystem();
 }
 
-void DataprepEditorUtil::DeleteTemporaryPackage( const FString& PathToDelete )
+void FDataprepEditor::ClearPreviewedObjects()
 {
-	// See ContentBrowserUtils::LoadAssetsIfNeeded
-	// See ContentBrowserUtils::DeleteFolders
-
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-
-	// Form a filter from the path to delete
-	FARFilter Filter;
-	Filter.bRecursivePaths = true;
-	new (Filter.PackagePaths) FName( *PathToDelete );
-
-	// Query for a list of assets in the path to delete
-	TArray<FAssetData> AssetDataList;
-	AssetRegistryModule.Get().GetAssets(Filter, AssetDataList);
-
-	// Delete all registered objects which are in  memory and under this path
-	{
-		TArray<UObject*> AssetsToDelete;
-		AssetsToDelete.Reserve(AssetDataList.Num());
-		for(const FAssetData& AssetData : AssetDataList)
-		{
-			FSoftObjectPath ObjectPath( AssetData.ObjectPath.ToString() );
-
-			if(UObject* Object = ObjectPath.ResolveObject())
-			{
-				AssetsToDelete.Add(Object);
-			}
-		}
-
-		if(AssetsToDelete.Num() > 0)
-		{
-			ObjectTools::DeleteObjects(AssetsToDelete, false);
-		}
-	}
-
-	// Delete all assets not in memory but on disk
-	{
-		struct FEmptyFolderVisitor : public IPlatformFile::FDirectoryVisitor
-		{
-			bool bIsEmpty;
-
-			FEmptyFolderVisitor()
-				: bIsEmpty(true)
-			{
-			}
-
-			virtual bool Visit(const TCHAR* FilenameOrDirectory, bool bIsDirectory) override
-			{
-				if (!bIsDirectory)
-				{
-					bIsEmpty = false;
-					return false; // abort searching
-				}
-
-				return true; // continue searching
-			}
-		};
-
-		FString PathToDeleteOnDisk;
-		if (FPackageName::TryConvertLongPackageNameToFilename(PathToDelete, PathToDeleteOnDisk))
-		{
-			if(IFileManager::Get().DirectoryExists( *PathToDeleteOnDisk ))
-			{
-				// Look for files on disk in case the folder contains things not tracked by the asset registry
-				FEmptyFolderVisitor EmptyFolderVisitor;
-				IFileManager::Get().IterateDirectoryRecursively(*PathToDeleteOnDisk, EmptyFolderVisitor);
-
-				if (EmptyFolderVisitor.bIsEmpty && IFileManager::Get().DeleteDirectory(*PathToDeleteOnDisk, false, true))
-				{
-					AssetRegistryModule.Get().RemovePath(PathToDelete);
-				}
-			}
-			// Request deletion anyway
-			else
-			{
-				AssetRegistryModule.Get().RemovePath(PathToDelete);
-			}
-		}
-	}
-
-	// Check that no asset remains
-	AssetDataList.Reset();
-	AssetRegistryModule.Get().GetAssets(Filter, AssetDataList);
-	//ensure(AssetDataList.Num() == 0);
+	SetPreviewedObjects( MakeArrayView<UDataprepParameterizableObject*>( nullptr, 0 ) );
 }
 
 #undef LOCTEXT_NAMESPACE

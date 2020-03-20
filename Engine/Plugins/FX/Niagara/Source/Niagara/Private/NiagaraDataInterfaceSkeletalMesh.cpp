@@ -1267,9 +1267,9 @@ USkeletalMesh* UNiagaraDataInterfaceSkeletalMesh::GetSkeletalMesh(UNiagaraCompon
 	}
 
 #if WITH_EDITORONLY_DATA
-	if (!Mesh && DefaultMesh)
+	if (!Mesh && PreviewMesh)
 	{
-		Mesh = DefaultMesh;
+		Mesh = PreviewMesh;
 	}
 #endif
 
@@ -1322,7 +1322,7 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 	}
 
 	Transform = Component->GetComponentToWorld().ToMatrixWithScale();
-	TransformInverseTransposed = Transform.InverseFast().GetTransposed();
+	TransformInverseTransposed = Transform.Inverse().GetTransposed();
 	PrevTransform = Transform;
 	
 	CachedAttachParent = Component->GetAttachParent();
@@ -1522,19 +1522,11 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 				NewSkelComp->GetSocketInfoByName(SpecificSockets[i], SpecificSocketInfo[i].Transform, SpecificSocketInfo[i].BoneIdx);
 			}
 		}
-		else if (Mesh != nullptr)
-		{
-			for (int32 i = 0; i < SpecificSocketInfo.Num(); ++i)
-			{
-				SpecificSocketInfo[i].Transform = FTransform(Mesh->GetComposedRefPoseMatrix(SpecificSockets[i]));
-				SpecificSocketInfo[i].BoneIdx = INDEX_NONE;
-			}
-		}
 		else
 		{
 			for (int32 i = 0; i < SpecificSocketInfo.Num(); ++i)
 			{
-				SpecificSocketInfo[i].Transform = FTransform::Identity;
+				SpecificSocketInfo[i].Transform = FTransform(Mesh->GetComposedRefPoseMatrix(SpecificSockets[i]));
 				SpecificSocketInfo[i].BoneIdx = INDEX_NONE;
 			}
 		}
@@ -1651,7 +1643,7 @@ bool FNDISkeletalMesh_InstanceData::ResetRequired(UNiagaraDataInterfaceSkeletalM
 	else
 	{
 #if WITH_EDITORONLY_DATA
-		if (!Interface->DefaultMesh)
+		if (!Interface->PreviewMesh)
 		{
 			return true;
 		}
@@ -1766,7 +1758,7 @@ void FNDISkeletalMesh_InstanceData::Release()
 UNiagaraDataInterfaceSkeletalMesh::UNiagaraDataInterfaceSkeletalMesh(FObjectInitializer const& ObjectInitializer)
 	: Super(ObjectInitializer)
 #if WITH_EDITORONLY_DATA
-	, DefaultMesh(nullptr)
+	, PreviewMesh(nullptr)
 #endif
 	, Source(nullptr)
 	, SkinningMode(ENDISkeletalMesh_SkinningMode::SkinOnTheFly)
@@ -1811,7 +1803,6 @@ void UNiagaraDataInterfaceSkeletalMesh::PostEditChangeProperty(FPropertyChangedE
 }
 
 #endif //WITH_EDITOR
-
 
 void UNiagaraDataInterfaceSkeletalMesh::GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions)
 {
@@ -1890,7 +1881,7 @@ bool UNiagaraDataInterfaceSkeletalMesh::CopyToInternal(UNiagaraDataInterface* De
 	OtherTyped->SpecificBones = SpecificBones;
 	OtherTyped->SpecificSockets = SpecificSockets;
 #if WITH_EDITORONLY_DATA
-	OtherTyped->DefaultMesh = DefaultMesh;
+	OtherTyped->PreviewMesh = PreviewMesh;
 	OtherTyped->bRequiresCPUAccess = bRequiresCPUAccess;
 #endif
 	return true;
@@ -1905,7 +1896,7 @@ bool UNiagaraDataInterfaceSkeletalMesh::Equals(const UNiagaraDataInterface* Othe
 	const UNiagaraDataInterfaceSkeletalMesh* OtherTyped = CastChecked<const UNiagaraDataInterfaceSkeletalMesh>(Other);
 	return OtherTyped->Source == Source &&
 #if WITH_EDITORONLY_DATA
-		OtherTyped->DefaultMesh == DefaultMesh &&
+		OtherTyped->PreviewMesh == PreviewMesh &&
 #endif
 		OtherTyped->MeshUserParameter == MeshUserParameter &&
 		OtherTyped->SkinningMode == SkinningMode &&
@@ -1964,11 +1955,11 @@ TArray<FNiagaraDataInterfaceError> UNiagaraDataInterfaceSkeletalMesh::GetErrors(
 	
 	// Collect Errors
 #if WITH_EDITORONLY_DATA
-	if (DefaultMesh != nullptr)
+	if (PreviewMesh != nullptr)
 	{
 		if (bRequiresCPUAccess)
 		{
-			for (const FSkeletalMeshLODInfo& LODInfo : DefaultMesh->GetLODInfoArray())
+			for (const FSkeletalMeshLODInfo& LODInfo : PreviewMesh->GetLODInfoArray())
 			{
 				if (!LODInfo.bAllowCPUAccess)
 				{
@@ -1986,12 +1977,12 @@ TArray<FNiagaraDataInterfaceError> UNiagaraDataInterfaceSkeletalMesh::GetErrors(
 	// Report Errors
 	if (Source == nullptr && bHasCPUAccessError)
 	{
-		FNiagaraDataInterfaceError CPUAccessNotAllowedError(FText::Format(LOCTEXT("CPUAccessNotAllowedError", "This mesh needs CPU access in order to be used properly.({0})"), FText::FromString(DefaultMesh->GetName())),
+		FNiagaraDataInterfaceError CPUAccessNotAllowedError(FText::Format(LOCTEXT("CPUAccessNotAllowedError", "This mesh needs CPU access in order to be used properly.({0})"), FText::FromString(PreviewMesh->GetName())),
 			LOCTEXT("CPUAccessNotAllowedErrorSummary", "CPU access error"),
 			FNiagaraDataInterfaceFix::CreateLambda([=]()
 		{
-			DefaultMesh->Modify();
-			for (FSkeletalMeshLODInfo& LODInfo : DefaultMesh->GetLODInfoArray())
+			PreviewMesh->Modify();
+			for (FSkeletalMeshLODInfo& LODInfo : PreviewMesh->GetLODInfoArray())
 			{
 				LODInfo.bAllowCPUAccess = true;
 			}

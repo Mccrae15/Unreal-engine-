@@ -1112,7 +1112,6 @@ void FNiagaraSystemSimulation::Tick_Concurrent(FNiagaraSystemSimulationTickConte
 			while (SystemInstIndex < Context.Instances.Num())
 			{
 				FNiagaraSystemInstance* Inst = Context.Instances[SystemInstIndex];
-				checkSlow(!Inst->IsComplete());
 				Inst->FinalizeTick_GameThread();
 
 				// If the system completes during finalize it will be removed from the instances, therefore we do not need to increment our system index;
@@ -1439,7 +1438,7 @@ void FNiagaraSystemSimulation::TransferSystemSimResults(FNiagaraSystemSimulation
 					DataSetToEmitterGPUParameters[EmitterIdx].DataSetToParameterStore(GPUContext->CombinedParamStore, Context.DataSet, SystemIndex);
 				}
 
-				TArray<FNiagaraScriptExecutionContext>& EventContexts = EmitterInst.GetEventExecutionContexts();
+				TArrayView<FNiagaraScriptExecutionContext> EventContexts = EmitterInst.GetEventExecutionContexts();
 				for (int32 EventIdx = 0; EventIdx < EventContexts.Num(); ++EventIdx)
 				{
 					FNiagaraScriptExecutionContext& EventContext = EventContexts[EventIdx];
@@ -1743,7 +1742,7 @@ void FNiagaraSystemSimulation::InitParameterDataSetBindings(FNiagaraSystemInstan
 					DataSetToEmitterGPUParameters[EmitterIdx].Init(MainDataSet, GPUContext->CombinedParamStore);
 				}
 
-				TArray<FNiagaraScriptExecutionContext>& EventContexts = EmitterInst.GetEventExecutionContexts();
+				TArrayView<FNiagaraScriptExecutionContext> EventContexts = EmitterInst.GetEventExecutionContexts();
 				const int32 EventCount = EventContexts.Num();
 				DataSetToEmitterEventParameters[EmitterIdx].SetNum(EventCount);
 
@@ -1846,17 +1845,16 @@ void FNiagaraSystemSimulation::BuildConstantBufferTable(
 	FNiagaraScriptExecutionContext& ExecContext,
 	FScriptExecutionConstantBufferTable& ConstantBufferTable) const
 {
+	const auto ScriptLiterals = ExecContext.GetScriptLiterals();
+
 	check(!ExecContext.HasInterpolationParameters);
 
 	const auto& ExternalParameterData = ExecContext.Parameters.GetParameterDataArray();
 	uint8* ExternalParameterBuffer = const_cast<uint8*>(ExternalParameterData.GetData());
-
 	const uint32 ExternalParameterSize = ExecContext.Parameters.GetExternalParameterSize();
-	const uint32 LiteralConstantOffset = ExternalParameterSize;
-	const uint32 LiteralConstantSize = ExternalParameterData.Num() - LiteralConstantOffset;
 
 	ConstantBufferTable.Reset(3);
 	ConstantBufferTable.AddTypedBuffer(GlobalParameters);
 	ConstantBufferTable.AddRawBuffer(ExternalParameterBuffer, ExternalParameterSize);
-	ConstantBufferTable.AddRawBuffer(ExternalParameterBuffer + LiteralConstantOffset, LiteralConstantSize);
+	ConstantBufferTable.AddRawBuffer(ScriptLiterals.GetData(), ScriptLiterals.Num());
 }

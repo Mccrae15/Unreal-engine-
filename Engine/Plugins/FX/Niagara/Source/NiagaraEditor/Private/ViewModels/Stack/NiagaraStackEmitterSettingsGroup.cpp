@@ -9,7 +9,9 @@
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraScriptMergeManager.h"
 #include "NiagaraEmitterDetailsCustomization.h"
+#include "NiagaraEditorStyle.h"
 #include "NiagaraSystem.h"
+#include "NiagaraEditorStyle.h"
 
 #define LOCTEXT_NAMESPACE "UNiagaraStackEmitterItemGroup"
 
@@ -80,6 +82,19 @@ void UNiagaraStackEmitterPropertiesItem::ResetToBase()
 bool UNiagaraStackEmitterPropertiesItem::IsExpandedByDefault() const
 {
 	return false;
+}
+
+const FSlateBrush* UNiagaraStackEmitterPropertiesItem::GetIconBrush() const
+{
+	if (Emitter->SimTarget == ENiagaraSimTarget::CPUSim)
+	{
+		return FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Stack.CPUIcon");
+	}
+	if (Emitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)
+	{
+		return FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Stack.GPUIcon");
+	}
+	return FEditorStyle::GetBrush("NoBrush");
 }
 
 void UNiagaraStackEmitterPropertiesItem::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)

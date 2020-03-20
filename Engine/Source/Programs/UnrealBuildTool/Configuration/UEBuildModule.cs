@@ -57,11 +57,6 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Is this module allowed to be redistributed.
-		/// </summary>
-		private readonly bool? IsRedistributableOverride;
-
-		/// <summary>
 		/// The binary the module will be linked into for the current target.  Only set after UEBuildBinary.BindModules is called.
 		/// </summary>
 		public UEBuildBinary Binary = null;
@@ -213,13 +208,15 @@ namespace UnrealBuildTool
 				foreach(ModuleRules.Framework FrameworkRules in Rules.PublicAdditionalFrameworks)
 				{
 					UEBuildFramework Framework;
-					if(String.IsNullOrEmpty(FrameworkRules.ZipPath))
+					if (FrameworkRules.IsZipFile())
 					{
-						Framework = new UEBuildFramework(FrameworkRules.Name, FrameworkRules.CopyBundledAssets);
+						// If FrameworkPath ends in .zip, it needs to be extracted
+						Framework = new UEBuildFramework(FrameworkRules.Name, FileReference.Combine(ModuleDirectory, FrameworkRules.Path), DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "UnzippedFrameworks", FrameworkRules.Name, Path.GetFileNameWithoutExtension(FrameworkRules.Path)), FrameworkRules.CopyBundledAssets, FrameworkRules.bCopyFramework);
 					}
 					else
 					{
-						Framework = new UEBuildFramework(FrameworkRules.Name, FileReference.Combine(ModuleDirectory, FrameworkRules.ZipPath), DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "UnzippedFrameworks", FrameworkRules.Name, Path.GetFileNameWithoutExtension(FrameworkRules.ZipPath)), FrameworkRules.CopyBundledAssets);
+						// Framework on disk
+						Framework = new UEBuildFramework(FrameworkRules.Name, null, DirectoryReference.Combine(ModuleDirectory, FrameworkRules.Path), FrameworkRules.CopyBundledAssets, FrameworkRules.bCopyFramework);
 					}
 					PublicAdditionalFrameworks.Add(Framework);
 				}
@@ -235,7 +232,6 @@ namespace UnrealBuildTool
 			{
 				PrivateIncludePaths = CreateDirectoryHashSet(Rules.PrivateIncludePaths);
 			}
-			IsRedistributableOverride = Rules.IsRedistributableOverride;
 
 			WhitelistRestrictedFolders = new HashSet<DirectoryReference>(Rules.WhitelistRestrictedFolders.Select(x => DirectoryReference.Combine(ModuleDirectory, x)));
 

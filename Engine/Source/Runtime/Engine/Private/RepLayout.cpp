@@ -1521,6 +1521,7 @@ ERepLayoutResult FRepLayout::CompareProperties(
 		const uint32 ReplicateParentPropertiesStartTime = SharedParams.bIsNetworkProfilerActive ? FPlatformTime::Cycles() : 0;
 		if (SharedParams.bIsNetworkProfilerActive)
 		{
+			CSV_SCOPED_TIMING_STAT_EXCLUSIVE(NetworkProfiler);
 			SharedParams.PropertiesChanged.Init(false, Parents.Num());
 			SharedParams.PropertiesCompared.Init(false, Parents.Num());
 		}
@@ -6991,7 +6992,11 @@ ERepLayoutResult FRepLayout::DeltaSerializeFastArrayProperty(FFastArrayDeltaSeri
 
 							CompareProperties_r(SharedParams, StackParams, ItemLayoutStart, ItemLayoutEnd, 0);
 
-							if (UNLIKELY(ERepLayoutResult::FatalError == UpdateResult))
+							// NOTE: Currently, SA always throws "Warning: Expression 'ERepLayoutResult::FatalError == UpdateResult' is always false" here.
+							//			It gets tripped up by the indirection / reference semantics of Stack Params and assumes that
+							//			result just remains the same value as it was assigned above.
+							//			Because of this, the error is disabled.
+							if (UNLIKELY(ERepLayoutResult::FatalError == UpdateResult)) // -V547
 							{
 								return UpdateResult;
 							}

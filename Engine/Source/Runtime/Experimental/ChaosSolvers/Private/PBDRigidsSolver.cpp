@@ -97,6 +97,12 @@ namespace Chaos
 				//MSolver->StartFrameCallback(MDeltaTime, MSolver->GetSolverTime());
 			}
 
+
+			if(FRewindData* RewindData = MSolver->GetRewindData())
+			{
+				RewindData->AdvanceFrame();
+			}
+
 			{
 				SCOPE_CYCLE_COUNTER(STAT_EvolutionAndKinematicUpdate);
 
@@ -519,6 +525,11 @@ namespace Chaos
 
 		DirtyPropertiesManager = MakeUnique<FDoubleBuffer<FDirtyPropertiesManager>>();
 
+		MEvolution->SetCaptureRewindDataFunction([this](const TParticleView<TPBDRigidParticles<FReal,3>>& ActiveParticles)
+		{
+			FinalizeRewindData(ActiveParticles);
+		});
+
 		FEventDefaults::RegisterSystemEvents(*GetEventManager());
 	}
 
@@ -632,41 +643,6 @@ namespace Chaos
 		Solver->RemoveDirtyProxy(Proxy);
 	}
 
-	void FPBDRigidsSolver::PushPhysicsStatePooled(IDispatcher* Dispatcher)
-	{
-#if 0
-		ensure(Dispatcher != nullptr);
-
-		// reset the per frame pool
-		RigidParticlePool.ResetPool();
-		KinematicGeometryParticlePool.ResetPool();
-		GeometryParticlePool.ResetPool();
-
-		const TArray< IPhysicsProxyBase *>& DirtyProxiesArray = DirtyProxiesSet.GetProxies();
-		for (auto & Proxy : DirtyProxiesArray)
-		{
-			switch (Proxy->GetType())
-			{
-			case EPhysicsProxyType::SingleRigidParticleType:
-				PushPhysicsStateExec(this, static_cast<FSingleParticlePhysicsProxy< Chaos::TPBDRigidParticle<float, 3> >*>(Proxy), RigidParticlePool, Dispatcher);
-				break;
-			case EPhysicsProxyType::SingleKinematicParticleType:
-				PushPhysicsStateExec(this, static_cast<FSingleParticlePhysicsProxy< Chaos::TKinematicGeometryParticle<float, 3> >*>(Proxy), KinematicGeometryParticlePool, Dispatcher);
-				break;
-			case EPhysicsProxyType::SingleGeometryParticleType:
-				PushPhysicsStateExec(this, static_cast<FSingleParticlePhysicsProxy< Chaos::TGeometryParticle<float, 3> >*>(Proxy), GeometryParticlePool, Dispatcher);
-				break;
-			default:
-				ensure("Unknown proxy type in physics solver.");
-			}
-		}
-
-		FlushExec(RigidParticlePool, Dispatcher, this);
-		FlushExec(KinematicGeometryParticlePool, Dispatcher, this);
-		FlushExec(GeometryParticlePool, Dispatcher, this);
-#endif
-	}
-	
 	void PushPhysicsStateExec(FPBDRigidsSolver* Solver, FGeometryCollectionPhysicsProxy* Proxy, Chaos::IDispatcher* Dispatcher)
 	{
 		Proxy->NewData();
@@ -696,6 +672,48 @@ namespace Chaos
 			Cmd(nullptr);
 		Proxy->ClearAccumulatedData();
 		Solver->RemoveDirtyProxy(Proxy);
+	}
+
+	void FPBDRigidsSolver::PushPhysicsStatePooled(IDispatcher* Dispatcher)
+	{
+#if 0
+		ensure(Dispatcher != nullptr);
+
+		// reset the per frame pool
+		RigidParticlePool.ResetPool();
+		KinematicGeometryParticlePool.ResetPool();
+		GeometryParticlePool.ResetPool();
+
+		TArray< IPhysicsProxyBase*> DirtyProxiesArray = DirtyProxiesSet.Array();
+		for (auto& Proxy : DirtyProxiesArray)
+		{
+			switch (Proxy->GetType())
+			{
+				//case EPhysicsProxyType::NoneType: // 0
+				//case EPhysicsProxyType::StaticMeshType: // 1
+			case EPhysicsProxyType::GeometryCollectionType: // 2
+				PushPhysicsStateExec(this, static_cast<FGeometryCollectionPhysicsProxy*>(Proxy), Dispatcher); // non pool api
+				break;
+			case EPhysicsProxyType::SingleRigidParticleType: // 7
+				PushPhysicsStateExec(this, static_cast<FSingleParticlePhysicsProxy< Chaos::TPBDRigidParticle<float, 3> >*>(Proxy), RigidParticlePool, Dispatcher);
+				break;
+				// case EPhysicsProxyType::FieldType: // 3
+				// case EPhysicsProxyType::SkeletalMeshType: // 4
+			case EPhysicsProxyType::SingleKinematicParticleType: // 6
+				PushPhysicsStateExec(this, static_cast<FSingleParticlePhysicsProxy< Chaos::TKinematicGeometryParticle<float, 3> >*>(Proxy), KinematicGeometryParticlePool, Dispatcher);
+				break;
+			case EPhysicsProxyType::SingleGeometryParticleType: // 5
+				PushPhysicsStateExec(this, static_cast<FSingleParticlePhysicsProxy< Chaos::TGeometryParticle<float, 3> >*>(Proxy), GeometryParticlePool, Dispatcher);
+				break;
+			default:
+				ensure("Unknown proxy type in physics solver.");
+			}
+		}
+
+		FlushExec(RigidParticlePool, Dispatcher, this);
+		FlushExec(KinematicGeometryParticlePool, Dispatcher, this);
+		FlushExec(GeometryParticlePool, Dispatcher, this);
+#endif
 	}
 
 	void FPBDRigidsSolver::PushPhysicsState(IDispatcher* Dispatcher)
@@ -768,6 +786,11 @@ namespace Chaos
 					Proxy->SetHandle(CreateHandleFunc(UniqueIdx));
 				}
 
+				if(RewindData)
+				{
+					RewindData->PushGTDirtyData(*Manager,DataIdx,Dirty);
+				}
+
 				Proxy->PushToPhysicsState(*Manager, DataIdx, Dirty, ShapeDirtyData);
 
 				if(bIsNew)
@@ -784,7 +807,7 @@ namespace Chaos
 
 			if(RewindData)
 			{
-				RewindData->SavePrevFrameState(*DirtyProxiesData);
+				RewindData->PrepareFrame(DirtyProxiesData->NumDirtyProxies());
 			}
 
 			//need to create new particle handles
@@ -998,6 +1021,29 @@ namespace Chaos
 	void FPBDRigidsSolver::EnableRewindCapture(int32 NumFrames)
 	{
 		MRewindData = MakeUnique<FRewindData>(NumFrames);
+	}
+
+	void FPBDRigidsSolver::FinalizeRewindData(const TParticleView<TPBDRigidParticles<FReal,3>>& ActiveParticles)
+	{
+		using namespace Chaos;
+		//Simulated objects must have their properties captured for rewind
+		if(MRewindData && ActiveParticles.Num())
+		{
+			QUICK_SCOPE_CYCLE_COUNTER(RecordRewindData);
+
+			int32 DataIdx = MRewindData->PrepareFrameForPTDirty(ActiveParticles.Num());
+			
+			for(TPBDRigidParticleHandleImp<float,3,false>& ActiveObject : ActiveParticles)
+			{
+				const IPhysicsProxyBase* Proxy = GetProxy(ActiveObject.Handle());
+				{
+					if(ActiveObject.GetParticleType() == EParticleType::Rigid)
+					{
+						MRewindData->PushPTDirtyData(*static_cast<const FRigidParticlePhysicsProxy*>(Proxy)->GetHandle(), DataIdx++);
+					}
+				}
+			}
+		}
 	}
 
 }; // namespace Chaos

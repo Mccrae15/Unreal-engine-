@@ -72,6 +72,13 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, Chaos:
 			Handle->SetSharedGeometry(NewNonFrequentData->Geometry);
 			Handle->SetUniqueIdx(NewNonFrequentData->UniqueIdx);
 			Handle->SetUserData(NewNonFrequentData->UserData);
+
+			if(bHasDynamicData)
+			{
+				RigidHandle->SetLinearEtherDrag(NewNonFrequentData->LinearEtherDrag);
+				RigidHandle->SetAngularEtherDrag(NewNonFrequentData->AngularEtherDrag);
+			}
+			
 #if CHAOS_CHECKED
 			Handle->SetDebugName(NewNonFrequentData->DebugName);
 #endif
@@ -142,9 +149,6 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, Chaos:
 				RigidHandle->SetTorque(NewData->Torque);
 				RigidHandle->SetLinearImpulse(NewData->LinearImpulse);
 				RigidHandle->SetAngularImpulse(NewData->AngularImpulse);
-
-				RigidHandle->SetLinearEtherDrag(NewData->LinearEtherDrag);
-				RigidHandle->SetAngularEtherDrag(NewData->AngularEtherDrag);
 			}
 		}
 
@@ -477,12 +481,20 @@ void FSingleParticlePhysicsProxy<Chaos::TPBDRigidParticle<float, 3>>::PushToPhys
 		if (Data->DirtyFlags.IsDirty(Chaos::EParticleFlags::V))
 		{
 			RigidHandle->SetV(Data->MV);
-			bDynamicPropertyUpdated = true;
+			//TODO: This is gross, we should clean it up
+			if (!(Data->MV.IsNearlyZero() && Data->MObjectState == Chaos::EObjectStateType::Sleeping))
+			{
+				bDynamicPropertyUpdated = true;
+			}
 		}
 		if (Data->DirtyFlags.IsDirty(Chaos::EParticleFlags::W))
 		{
 			RigidHandle->SetW(Data->MW);
-			bDynamicPropertyUpdated = true;
+			//TODO: Same as above
+			if (!(Data->MW.IsNearlyZero() && Data->MObjectState == Chaos::EObjectStateType::Sleeping))
+			{
+				bDynamicPropertyUpdated = true;
+			}
 		}
 
 		RigidHandle->SetCenterOfMass(Data->MCenterOfMass);

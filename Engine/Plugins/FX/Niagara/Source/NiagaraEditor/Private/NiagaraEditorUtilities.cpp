@@ -2052,6 +2052,17 @@ void FNiagaraEditorUtilities::WarnWithToastAndLog(FText WarningMessage)
 	UE_LOG(LogNiagaraEditor, Warning, TEXT("%s"), *WarningMessage.ToString());
 }
 
+void FNiagaraEditorUtilities::InfoWithToastAndLog(FText InfoMessage)
+{
+	FNotificationInfo WarningNotification(InfoMessage);
+	WarningNotification.ExpireDuration = 5.0f;
+	WarningNotification.bFireAndForget = true;
+	WarningNotification.bUseLargeFont = false;
+	WarningNotification.Image = FCoreStyle::Get().GetBrush(TEXT("MessageLog.Note"));
+	FSlateNotificationManager::Get().AddNotification(WarningNotification);
+	UE_LOG(LogNiagaraEditor, Warning, TEXT("%s"), *InfoMessage.ToString());
+}
+
 FName FNiagaraEditorUtilities::GetUniqueObjectName(UObject* Outer, UClass* ObjectClass, const FString& CandidateName)
 {
 	if (StaticFindObject(ObjectClass, Outer, *CandidateName) == nullptr)
@@ -2401,6 +2412,18 @@ FString FNiagaraEditorUtilities::GetNamespacelessVariableNameString(const FName&
 	}
 	// No dot index, must be a namespaceless variable name (e.g. static switch name) just return the name to string.
 	return VarNameString;
+}
+
+void FNiagaraEditorUtilities::GetReferencingFunctionCallNodes(UNiagaraScript* Script, TArray<UNiagaraNodeFunctionCall*>& OutReferencingFunctionCallNodes)
+{
+	for (TObjectIterator<UNiagaraNodeFunctionCall> It; It; ++It)
+	{
+		UNiagaraNodeFunctionCall* FunctionCallNode = *It;
+		if (FunctionCallNode->FunctionScript == Script)
+		{
+			OutReferencingFunctionCallNodes.Add(FunctionCallNode);
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

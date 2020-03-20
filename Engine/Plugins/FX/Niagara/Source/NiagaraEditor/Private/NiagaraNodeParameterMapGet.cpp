@@ -19,6 +19,7 @@
 #include "EdGraph/EdGraphNode.h"
 #include "NiagaraParameterCollection.h"
 #include "NiagaraScriptVariable.h"
+#include "NiagaraConstants.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraNodeParameterMapGet"
 
@@ -60,7 +61,12 @@ bool UNiagaraNodeParameterMapGet::IsPinNameEditableUponCreation(const UEdGraphPi
 {
 	if (GraphPinObj == PinPendingRename && GraphPinObj->Direction == EEdGraphPinDirection::EGPD_Output)
 	{
-		return true;
+		const UEdGraphSchema_Niagara* Schema = GetDefault<UEdGraphSchema_Niagara>();
+		FNiagaraVariable Var = Schema->PinToNiagaraVariable(GraphPinObj);
+		if (!FNiagaraConstants::IsNiagaraConstant(Var))
+			return true;
+		else
+			return false;
 	}
 	else
 	{
@@ -430,18 +436,32 @@ bool UNiagaraNodeParameterMapGet::CancelEditablePinName(const FText& InName, UEd
 	return true;
 }
 
-bool UNiagaraNodeParameterMapGet::CommitEditablePinName(const FText& InName, UEdGraphPin* InGraphPinObj) 
+bool UNiagaraNodeParameterMapGet::CommitEditablePinName(const FText& InName, UEdGraphPin* InGraphPinObj, bool bSuppressEvents)
 {
+	if (InGraphPinObj == PinPendingRename)
+	{
+		PinPendingRename = nullptr;
+	}
+
 	if (Pins.Contains(InGraphPinObj) && InGraphPinObj->Direction == EEdGraphPinDirection::EGPD_Output)
 	{
+		FString OldPinName = InGraphPinObj->PinName.ToString();
+		FString NewPinName = InName.ToString();
+
+		// Early out if the same!
+		if (OldPinName == NewPinName)
+		{
+			return true;
+		}
+
 		FScopedTransaction AddNewPinTransaction(LOCTEXT("Rename Pin", "Renamed pin"));
 		Modify();
 		InGraphPinObj->Modify();
 
-		FString OldPinName = InGraphPinObj->PinName.ToString();
 		InGraphPinObj->PinName = *InName.ToString();
 
-		OnPinRenamed(InGraphPinObj, OldPinName);
+		if (!bSuppressEvents)
+			OnPinRenamed(InGraphPinObj, OldPinName);
 
 		return true;
 	}
@@ -510,13 +530,23 @@ void UNiagaraNodeParameterMapGet::GetPinHoverText(const UEdGraphPin& Pin, FStrin
 				FNiagaraVariable Var = FNiagaraVariable(TypeDef, Pin.PinName);
 				TOptional<FNiagaraVariableMetaData> Metadata = NiagaraGraph->GetMetaData(Var);
 
-				FText Description = Metadata.IsSet() ? Metadata->Description : FText::GetEmpty();
-				const FText TooltipFormat = LOCTEXT("Parameters", "Name: {0} \nType: {1}\nDescription: {2}\nScope: {3}\nUsage: {4}"); 
-				const FText Name = FText::FromName(Var.GetName());
-				const FText ScopeText = FText::FromName(Metadata->GetScopeName());
-				const FText UsageText = StaticEnum<ENiagaraScriptParameterUsage>()->GetDisplayNameTextByValue((int64)Metadata->GetUsage());
-				const FText ToolTipText = FText::Format(TooltipFormat, FText::FromName(Var.GetName()), Var.GetType().GetNameText(), Description, ScopeText, UsageText);
-				HoverTextOut = ToolTipText.ToString();
+				if (Metadata.IsSet())
+				{
+					FText Description = Metadata->Description;
+					const FText TooltipFormat = LOCTEXT("Parameters", "Name: {0} \nType: {1}\nDescription: {2}\nScope: {3}\nUser Editable: {4}\nUsage: {5}");
+					const FText Name = FText::FromName(Var.GetName());
+					FName CachedParamName;
+					Metadata->GetParameterName(CachedParamName);
+					const FText ScopeText = FText::FromName(Metadata->GetScopeName());
+					const FText UserEditableText = FText::FromName(CachedParamName);
+					const FText UsageText = StaticEnum<ENiagaraScriptParameterUsage>()->GetDisplayNameTextByValue((int64)Metadata->GetUsage());
+					const FText ToolTipText = FText::Format(TooltipFormat, FText::FromName(Var.GetName()), Var.GetType().GetNameText(), Description, ScopeText, UserEditableText, UsageText);
+					HoverTextOut = ToolTipText.ToString();
+				}
+				else
+				{
+					HoverTextOut = TEXT("");
+				}
 			}
 		}
 	}

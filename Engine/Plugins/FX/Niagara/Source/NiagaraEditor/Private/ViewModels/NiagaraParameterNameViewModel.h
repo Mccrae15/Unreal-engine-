@@ -6,6 +6,7 @@
 #include "Templates/SharedPointer.h"
 #include "Types/SlateEnums.h"
 #include "Misc/Attribute.h"
+#include "Widgets/Text/SInlineEditableTextBlock.h"
 
 struct FCreateWidgetForActionData;
 class FNiagaraScriptToolkitParameterPanelViewModel;
@@ -20,7 +21,7 @@ public:
 	virtual ~INiagaraParameterNameViewModel() { }
 
 	virtual TSharedRef<SWidget> CreateScopeSlotWidget() const = 0;
-	virtual TSharedRef<SWidget> CreateTextSlotWidget() const = 0;
+	virtual TSharedRef<SInlineEditableTextBlock> CreateTextSlotWidget() const = 0;
 
 	virtual int32 GetScopeValue() const = 0;
 	virtual void OnScopeValueChanged(int32 NewScopeValue, ESelectInfo::Type SelectionType) const = 0;
@@ -43,7 +44,7 @@ public:
 
 	/** Begin INiagaraParameterNameViewModel Interface */
 	virtual TSharedRef<SWidget> CreateScopeSlotWidget() const override;
-	virtual TSharedRef<SWidget> CreateTextSlotWidget() const override;
+	virtual TSharedRef<SInlineEditableTextBlock> CreateTextSlotWidget() const override;
 
 	virtual int32 GetScopeValue() const override;
 	virtual void OnScopeValueChanged(int32 NewScopeValue, ESelectInfo::Type SelectionType) const override;
@@ -74,14 +75,14 @@ class FNiagaraGraphPinParameterNameViewModel : public INiagaraParameterNameViewM
 {
 public:
 	FNiagaraGraphPinParameterNameViewModel(
-		  const UEdGraphPin* InOwningPin
+		  UEdGraphPin* InOwningPin
 		, const FNiagaraScriptVariableAndViewInfo& InScriptVarAndViewInfo
 		, const FNiagaraScriptToolkitParameterPanelViewModel* InParameterPanelViewModel
 	);
 
 	/** Begin INiagaraParameterNameViewModel Interface */
 	virtual TSharedRef<SWidget> CreateScopeSlotWidget() const override;
-	virtual TSharedRef<SWidget> CreateTextSlotWidget() const override;
+	virtual TSharedRef<SInlineEditableTextBlock> CreateTextSlotWidget() const override;
 
 	virtual int32 GetScopeValue() const override;
 	virtual void OnScopeValueChanged(int32 NewScopeValue, ESelectInfo::Type SelectionType) const override;
@@ -94,7 +95,7 @@ public:
 	/** End INiagaraParameterNameViewModel Interface */
 
 private:
-	const UEdGraphPin* OwningPin;
+	UEdGraphPin* OwningPin;
 	const FNiagaraScriptVariableAndViewInfo CachedScriptVarAndViewInfo;
 	const FNiagaraScriptToolkitParameterPanelViewModel* ParameterPanelViewModel;
 

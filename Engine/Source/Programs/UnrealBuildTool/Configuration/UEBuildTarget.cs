@@ -830,7 +830,8 @@ namespace UnrealBuildTool
 			}
 
 			// Make sure that we don't explicitly enable or disable any plugins through the target rules. We can't do this with the shared build environment because it requires recompiling the "Projects" engine module.
-			if(ThisRules.EnablePlugins.Count > 0 || ThisRules.DisablePlugins.Count > 0)
+			bool bUsesTargetReceiptToEnablePlugins = (ThisRules.Type == TargetType.Editor && ThisRules.LinkType != TargetLinkType.Monolithic);
+			if (!bUsesTargetReceiptToEnablePlugins && (ThisRules.EnablePlugins.Count > 0 || ThisRules.DisablePlugins.Count > 0))
 			{
 				throw new BuildException("Explicitly enabling and disabling plugins for a target is only supported when using a unique build environment (eg. for monolithic game targets).");
 			}
@@ -1192,9 +1193,9 @@ namespace UnrealBuildTool
 				// Add any zip files from Additional Frameworks
 				foreach (ModuleRules.Framework Framework in Rules.PublicAdditionalFrameworks)
 				{
-					if (!String.IsNullOrEmpty(Framework.ZipPath))
+					if (Framework.IsZipFile())
 					{
-						Files.Add(FileReference.Combine(Module.ModuleDirectory, Framework.ZipPath));
+						Files.Add(FileReference.Combine(Module.ModuleDirectory, Framework.Path));
 					}
 				}
 
@@ -1459,6 +1460,16 @@ namespace UnrealBuildTool
 				{
 					Receipt.RuntimeDependencies.Add(RuntimeDependency);
 				}
+			}
+
+			// Add Rules-enabled and disabled plugins
+			foreach (string EnabledPluginName in Rules.EnablePlugins)
+			{
+				Receipt.PluginNameToEnabledState[EnabledPluginName] = true;
+			}
+			foreach (string DisabledPluginName in Rules.DisablePlugins)
+			{
+				Receipt.PluginNameToEnabledState[DisabledPluginName] = false;
 			}
 
 			// Find all the modules which are part of this target
@@ -3211,7 +3222,7 @@ namespace UnrealBuildTool
 				string PluginReferenceChain = String.Format("{0} -> {1}", ReferenceChain, Info.File.GetFileName());
 
 				// Create modules for this plugin
-				UEBuildBinaryType BinaryType = ShouldCompileMonolithic() ? UEBuildBinaryType.StaticLibrary : UEBuildBinaryType.DynamicLinkLibrary;
+				//UEBuildBinaryType BinaryType = ShouldCompileMonolithic() ? UEBuildBinaryType.StaticLibrary : UEBuildBinaryType.DynamicLinkLibrary;
 				if (Info.Descriptor.Modules != null)
 				{
 					foreach (ModuleDescriptor ModuleInfo in Info.Descriptor.Modules)
