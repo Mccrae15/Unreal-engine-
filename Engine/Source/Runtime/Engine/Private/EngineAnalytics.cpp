@@ -33,6 +33,125 @@ static TSharedPtr<FEditorSessionSummaryWriter> SessionSummaryWriter;
 static TSharedPtr<FEditorSessionSummarySender> SessionSummarySender;
 #endif
 
+class FStudioAnalyticsShimProvider : public IAnalyticsProviderET
+{
+public:
+	FStudioAnalyticsShimProvider(TSharedPtr<IAnalyticsProviderET> InAnalytics)
+		: Analytics(InAnalytics)
+	{
+	}
+
+	virtual void SetAppID(FString&& AppID) override
+	{
+		Analytics->SetAppID(MoveTemp(AppID));
+	}
+
+	virtual const FString& GetAppID() const override
+	{
+		return Analytics->GetAppID();
+	}
+
+	virtual void SetAppVersion(FString&& AppVersion) override
+	{
+		Analytics->SetAppVersion(MoveTemp(AppVersion));
+	}
+
+	virtual const FString& GetAppVersion() const override
+	{
+		return Analytics->GetAppVersion();
+	}
+
+	virtual bool StartSession(TArray<FAnalyticsEventAttribute>&& Attributes) override
+	{
+		return Analytics->StartSession(MoveTemp(Attributes));
+	}
+
+	virtual void RecordEvent(FString EventName, TArray<FAnalyticsEventAttribute>&& Attributes) override
+	{
+		Analytics->RecordEvent(EventName, MoveTemp(Attributes));
+	}
+
+	virtual void RecordEventJson(FString EventName, TArray<FAnalyticsEventAttribute>&& AttributesJson) override
+	{
+		Analytics->RecordEventJson(EventName, MoveTemp(AttributesJson));
+	}
+
+	virtual void SetDefaultEventAttributes(TArray<FAnalyticsEventAttribute>&& Attributes) override
+	{
+		Analytics->SetDefaultEventAttributes(MoveTemp(Attributes));
+	}
+
+	virtual const TArray<FAnalyticsEventAttribute>& GetDefaultEventAttributes() const override
+	{
+		return Analytics->GetDefaultEventAttributes();
+	}
+
+	virtual void SetURLEndpoint(const FString& UrlEndpoint, const TArray<FString>& AltDomains) override
+	{
+		Analytics->SetURLEndpoint(UrlEndpoint, AltDomains);
+	}
+
+	virtual void SetEventCallback(const OnEventRecorded& Callback) override
+	{
+		Analytics->SetEventCallback(Callback);
+	}
+
+	virtual void BlockUntilFlushed(float InTimeoutSec) override
+	{
+		Analytics->BlockUntilFlushed(InTimeoutSec);
+	}
+
+	virtual const FAnalyticsET::Config& GetConfig() const override
+	{
+		return Analytics->GetConfig();
+	}
+
+	virtual bool StartSession(const TArray<FAnalyticsEventAttribute>& Attributes) override
+	{
+		return Analytics->StartSession(Attributes);
+	}
+
+	virtual void EndSession() override
+	{
+		Analytics->EndSession();
+	}
+	
+	virtual FString GetSessionID() const override
+	{
+		return Analytics->GetSessionID();
+	}
+
+	virtual bool SetSessionID(const FString& InSessionID) override
+	{
+		return Analytics->SetSessionID(InSessionID);
+	}
+
+	virtual void FlushEvents() override
+	{
+		Analytics->FlushEvents();
+	}
+
+	virtual void SetUserID(const FString& InUserID) override
+	{
+		Analytics->SetUserID(InUserID);
+	}
+
+	virtual FString GetUserID() const override
+	{
+		return Analytics->GetUserID();
+	}
+
+	virtual void RecordEvent(const FString& EventName, const TArray<FAnalyticsEventAttribute>& Attributes) override
+	{
+		FStudioAnalytics::ReportEvent(EventName, Attributes);
+
+		Analytics->RecordEvent(EventName, Attributes);
+	}
+
+private:
+	TSharedPtr<IAnalyticsProviderET> Analytics;
+};
+
 /**
 * Default config func.
 */
@@ -93,7 +212,8 @@ IAnalyticsProviderET& FEngineAnalytics::GetProvider()
 {
 	checkf(bIsInitialized && IsAvailable(), TEXT("FEngineAnalytics::GetProvider called outside of Initialize/Shutdown."));
 
-	return *Analytics.Get();
+	static FStudioAnalyticsShimProvider StudioAnalyticsShim(Analytics);
+	return StudioAnalyticsShim;
 }
 
 void FEngineAnalytics::Initialize()
@@ -234,16 +354,6 @@ void FEngineAnalytics::Tick(float DeltaTime)
 		SessionSummarySender->Tick(DeltaTime);
 	}
 #endif
-}
-
-void FEngineAnalytics::ReportEvent(const FString& EventName, const TArray<FAnalyticsEventAttribute>& Attributes)
-{
-	if (FEngineAnalytics::IsAvailable())
-	{
-		FEngineAnalytics::GetProvider().RecordEvent(EventName, Attributes);
-	}
-
-	FStudioAnalytics::ReportEvent(EventName, Attributes);
 }
 
 void FEngineAnalytics::LowDriveSpaceDetected()

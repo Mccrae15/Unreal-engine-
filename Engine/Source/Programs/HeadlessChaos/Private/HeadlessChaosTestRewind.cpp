@@ -86,33 +86,25 @@ namespace ChaosTest {
 		for(int Step = 0; Step < 10; ++Step)
 		{
 			const auto ParticleState = RewindData->GetStateAtFrame(*Particle,Step);
+			EXPECT_EQ(ParticleState.X()[2],100 - Step);
 
-			EXPECT_TRUE(ParticleState != nullptr);
-			if(ParticleState)
+			if(Step < 3)
 			{
-				EXPECT_EQ(ParticleState->X()[2],100 - Step);
-
-				if(Step < 3)
-				{
-					//was sphere
-					EXPECT_EQ(ParticleState->Geometry().Get(),Sphere.Get());
-				}
-				else if(Step < 5 || Step >= 7)
-				{
-					//then became box
-					EXPECT_EQ(ParticleState->Geometry().Get(),Box.Get());
-				}
-				else
-				{
-					//second box
-					EXPECT_EQ(ParticleState->Geometry().Get(),Box2.Get());
-				}
+				//was sphere
+				EXPECT_EQ(ParticleState.Geometry().Get(),Sphere.Get());
+			}
+			else if(Step < 5 || Step >= 7)
+			{
+				//then became box
+				EXPECT_EQ(ParticleState.Geometry().Get(),Box.Get());
+			}
+			else
+			{
+				//second box
+				EXPECT_EQ(ParticleState.Geometry().Get(),Box2.Get());
 			}
 		}
 		
-		//no data at head
-		EXPECT_EQ(RewindData->GetStateAtFrame(*Particle,10), nullptr);
-
 		// Throw out the proxy
 		Solver->UnregisterObject(Particle.Get());
 
@@ -155,12 +147,7 @@ namespace ChaosTest {
 		for(int Step = 0; Step < 10; ++Step)
 		{
 			const auto ParticleState = RewindData->GetStateAtFrame(*Particle,Step);
-
-			EXPECT_NE(ParticleState, nullptr);
-			if(ParticleState)
-			{
-				EXPECT_EQ(ParticleState->F()[2],Step+1);
-			}
+			EXPECT_EQ(ParticleState.F()[2],Step+1);
 		}
 
 		// Throw out the proxy
@@ -212,27 +199,17 @@ namespace ChaosTest {
 		{
 			const auto ParticleState = RewindData->GetStateAtFrame(*Particle,Step);
 
-			//Should have data up to frame 5 and then nothing (includes 5 because dynamic is record on current frame)
-			if(Step <= 5)
+			if(Step == 3)
 			{
-				EXPECT_NE(ParticleState, nullptr);
+				EXPECT_EQ(ParticleState.F()[2],3);
+			}
+			else if(Step == 5)
+			{
+				EXPECT_EQ(ParticleState.F()[2],5);
 			}
 			else
 			{
-				EXPECT_EQ(ParticleState,nullptr);
-			}
-			
-
-			if(ParticleState)
-			{
-				if(Step == 3)
-				{
-					EXPECT_EQ(ParticleState->F()[2],3);
-				}
-				else if(Step == 5)
-				{
-					EXPECT_EQ(ParticleState->F()[2],5);
-				}
+				EXPECT_EQ(ParticleState.F()[2],0);
 			}
 		}
 
@@ -292,34 +269,21 @@ namespace ChaosTest {
 		{
 			const auto ParticleState = RewindData->GetStateAtFrame(*Particle,Step);
 
-			//Should have data up to frame 6 and then nothing
-			if(Step < 7)
+			
+			if(Step < 3)
 			{
-				EXPECT_NE(ParticleState,nullptr);
-			} else
-			{
-				EXPECT_EQ(ParticleState,nullptr);
+				//was sphere
+				EXPECT_EQ(ParticleState.Geometry().Get(),Sphere.Get());
 			}
-
-			if(ParticleState)
+			else if(Step < 5 || Step >= 7)
 			{
-				if(Step < 3)
-				{
-					//was sphere
-					EXPECT_EQ(ParticleState->Geometry().Get(),Sphere.Get());
-				} else if(Step < 5)
-				{
-					//then became box
-					EXPECT_EQ(ParticleState->Geometry().Get(),Box.Get());
-				} else
-				{
-					//second box
-					EXPECT_EQ(ParticleState->Geometry().Get(),Box2.Get());
-				}
+				//then became box
+				EXPECT_EQ(ParticleState.Geometry().Get(),Box.Get());
 			}
 			else
 			{
-				EXPECT_EQ(Particle->Geometry().Get(),Box.Get());
+				//second box
+				EXPECT_EQ(ParticleState.Geometry().Get(),Box2.Get());
 			}
 		}
 
@@ -374,10 +338,9 @@ namespace ChaosTest {
 		for(int Step = 0; Step < 9; ++Step)
 		{
 			const auto ParticleState = RewindData->GetStateAtFrame(*Particle,Step);
-			EXPECT_NE(ParticleState,nullptr);
 			
-			EXPECT_EQ(ParticleState->X()[2],X[Step][2]);
-			EXPECT_EQ(ParticleState->V()[2],V[Step][2]);
+			EXPECT_EQ(ParticleState.X()[2],X[Step][2]);
+			EXPECT_EQ(ParticleState.V()[2],V[Step][2]);
 		}
 
 		// Throw out the proxy
@@ -433,6 +396,57 @@ namespace ChaosTest {
 
 		// Throw out the proxy
 		Solver->UnregisterObject(Particle.Get());
+
+		Module->DestroySolver(Solver);
+	}
+
+	GTEST_TEST(RewindTest,Remove)
+	{
+		auto Sphere = TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>(new TSphere<float,3>(TVector<float,3>(0),10));
+
+		FChaosSolversModule* Module = FChaosSolversModule::GetModule();
+		Module->ChangeThreadingMode(EChaosThreadingMode::SingleThread);
+
+		// Make a solver
+		FPhysicsSolver* Solver = Module->CreateSolver(nullptr,ESolverFlags::Standalone);
+		Solver->SetEnabled(true);
+
+		Solver->EnableRewindCapture(20);
+
+
+		// Make particles
+		auto Particle = TPBDRigidParticle<float,3>::CreateParticle();
+
+		Particle->SetGeometry(Sphere);
+		Solver->RegisterObject(Particle.Get());
+		Particle->SetGravityEnabled(true);
+		Particle->SetX(FVec3(0,0,100));
+
+		TArray<FVec3> X;
+		TArray<FVec3> V;
+
+		for(int Step = 0; Step < 10; ++Step)
+		{
+			X.Add(Particle->X());
+			V.Add(Particle->V());
+			TickSolverHelper(Module,Solver);
+		}
+
+		FRewindData* RewindData = Solver->GetRewindData();
+
+		{
+			const FGeometryParticleState State = RewindData->GetStateAtFrame(*Particle,5);
+			EXPECT_EQ(State.X(),X[5]);
+		}
+
+		// Throw out the proxy
+		Solver->UnregisterObject(Particle.Get());
+
+		// State should be the same as being at head because we removed it from solver
+		{
+			const FGeometryParticleState State = RewindData->GetStateAtFrame(*Particle,5);
+			EXPECT_EQ(Particle->X(), State.X());
+		}
 
 		Module->DestroySolver(Solver);
 	}

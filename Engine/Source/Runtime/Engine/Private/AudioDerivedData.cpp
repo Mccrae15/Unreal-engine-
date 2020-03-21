@@ -1630,16 +1630,7 @@ void USoundWave::WillNeverCacheCookedPlatformDataAgain()
 	RawData.RemoveBulkData();
 	CompressedFormatData.FlushData();
 	
-	// Clear streamed chunks.
-	if (RunningPlatformData && RunningPlatformData->Chunks.Num() > 0)
-	{
-		// Iterate through all compressed streamed chunks and release them. 
-		for (int32 ChunkIndex = 0; ChunkIndex < RunningPlatformData->Chunks.Num(); ChunkIndex++)
-		{
-			RunningPlatformData->Chunks[ChunkIndex].BulkData.RemoveBulkData();
-		}
-	}
-
+	// Clear streamed chunks cooked specifically for other platforms.
 	for (auto& PlatformData : CookedPlatformData)
 	{
 		FStreamedAudioPlatformData* PlatformDataPtr = PlatformData.Value;
