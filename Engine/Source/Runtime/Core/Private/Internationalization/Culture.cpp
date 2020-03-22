@@ -1,12 +1,67 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/Culture.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/App.h"
 
 #if UE_ENABLE_ICU
 #include "Internationalization/ICUCulture.h"
 #else
 #include "Internationalization/LegacyCulture.h"
 #endif
+
+void ApplyCultureDisplayNameSubstitutes(FString& InOutDisplayName)
+{
+	static TArray<TTuple<FString, FString>> CultureDisplayNameSubstitutes;
+
+	// Conditionally load the required config data
+	{
+		static bool bHasInitializedCultureDisplayNameSubstitutes = false;
+		if (!bHasInitializedCultureDisplayNameSubstitutes && GConfig && GConfig->IsReadyForUse())
+		{
+			bHasInitializedCultureDisplayNameSubstitutes = true;
+
+			TArray<FString> CultureDisplayNameSubstitutesStrArray;
+			{
+				const bool ShouldLoadEditor = GIsEditor;
+				const bool ShouldLoadGame = FApp::IsGame();
+
+				GConfig->GetArray(TEXT("Internationalization"), TEXT("CultureDisplayNameSubstitutes"), CultureDisplayNameSubstitutesStrArray, GEngineIni);
+
+				if (ShouldLoadEditor)
+				{
+					TArray<FString> EditorArray;
+					GConfig->GetArray(TEXT("Internationalization"), TEXT("CultureDisplayNameSubstitutes"), EditorArray, GEditorIni);
+					CultureDisplayNameSubstitutesStrArray.Append(MoveTemp(EditorArray));
+				}
+
+				if (ShouldLoadGame)
+				{
+					TArray<FString> GameArray;
+					GConfig->GetArray(TEXT("Internationalization"), TEXT("CultureDisplayNameSubstitutes"), GameArray, GGameIni);
+					CultureDisplayNameSubstitutesStrArray.Append(MoveTemp(GameArray));
+				}
+			}
+
+			// Each substitute should be a semi-colon separated pair of data: Old;New
+			CultureDisplayNameSubstitutes.Reserve(CultureDisplayNameSubstitutesStrArray.Num());
+			for (const FString& CultureDisplayNameSubstituteStr : CultureDisplayNameSubstitutesStrArray)
+			{
+				FString OldDisplayFragment;
+				FString NewDisplayFragment;
+				if (CultureDisplayNameSubstituteStr.Split(TEXT(";"), &OldDisplayFragment, &NewDisplayFragment, ESearchCase::CaseSensitive))
+				{
+					CultureDisplayNameSubstitutes.Add(MakeTuple(MoveTemp(OldDisplayFragment), MoveTemp(NewDisplayFragment)));
+				}
+			}
+		}
+	}
+
+	for (const auto& CultureDisplayNameSubstitutePair : CultureDisplayNameSubstitutes)
+	{
+		InOutDisplayName.ReplaceInline(*CultureDisplayNameSubstitutePair.Key, *CultureDisplayNameSubstitutePair.Value, ESearchCase::CaseSensitive);
+	}
+}
 
 FCultureRef FCulture::Create(TUniquePtr<FCultureImplementation>&& InImplementation)
 {
@@ -16,20 +71,16 @@ FCultureRef FCulture::Create(TUniquePtr<FCultureImplementation>&& InImplementati
 
 FCulture::FCulture(TUniquePtr<FCultureImplementation>&& InImplementation)
 	: Implementation(MoveTemp(InImplementation))
-	, CachedDisplayName(Implementation->GetDisplayName())
-	, CachedEnglishName(Implementation->GetEnglishName())
 	, CachedName(Implementation->GetName())
-	, CachedNativeName(Implementation->GetNativeName())
 	, CachedUnrealLegacyThreeLetterISOLanguageName(Implementation->GetUnrealLegacyThreeLetterISOLanguageName())
 	, CachedThreeLetterISOLanguageName(Implementation->GetThreeLetterISOLanguageName())
 	, CachedTwoLetterISOLanguageName(Implementation->GetTwoLetterISOLanguageName())
-	, CachedNativeLanguage(Implementation->GetNativeLanguage())
 	, CachedRegion(Implementation->GetRegion())
-	, CachedNativeRegion(Implementation->GetNativeRegion())
 	, CachedScript(Implementation->GetScript())
 	, CachedVariant(Implementation->GetVariant())
 	, CachedIsRightToLeft(Implementation->IsRightToLeft())
-{ 
+{
+	RefreshCultureDisplayNames();
 }
 
 FCulture::~FCulture()
@@ -239,8 +290,23 @@ const TArray<ETextPluralForm>& FCulture::GetValidPluralForms(const ETextPluralTy
 	return Implementation->GetValidPluralForms(PluralType);
 }
 
-void FCulture::HandleCultureChanged()
+void FCulture::RefreshCultureDisplayNames(const bool bFullRefresh)
 {
-	// Re-cache the DisplayName, as this may change when the active culture is changed
 	CachedDisplayName = Implementation->GetDisplayName();
+	ApplyCultureDisplayNameSubstitutes(CachedDisplayName);
+
+	if (bFullRefresh)
+	{
+		CachedEnglishName = Implementation->GetEnglishName();
+		ApplyCultureDisplayNameSubstitutes(CachedEnglishName);
+
+		CachedNativeName = Implementation->GetNativeName();
+		ApplyCultureDisplayNameSubstitutes(CachedNativeName);
+
+		CachedNativeLanguage = Implementation->GetNativeLanguage();
+		ApplyCultureDisplayNameSubstitutes(CachedNativeLanguage);
+
+		CachedNativeRegion = Implementation->GetNativeRegion();
+		ApplyCultureDisplayNameSubstitutes(CachedNativeRegion);
+	}
 }

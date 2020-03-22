@@ -31,10 +31,6 @@
 
 #include "WindowsMixedRealityAvailability.h"
 
-#if SUPPORTS_WINDOWS_MIXED_REALITY_AR
-	#include "HoloLensModule.h"
-#endif
-
 #if WITH_INPUT_SIMULATION
 	#include "WindowsMixedRealityInputSimulationEngineSubsystem.h"
 #endif
@@ -152,7 +148,11 @@ namespace WindowsMixedReality
 			if (HMD)
 			{
 #if SUPPORTS_WINDOWS_MIXED_REALITY_AR
-				FHoloLensModuleAR::SetInterop(nullptr);
+				HololensARModule = (IHoloLensModuleARInterface*)FModuleManager::Get().LoadModule("HoloLensAR");
+				if (HololensARModule)
+				{
+					HololensARModule->SetInterop(nullptr);
+				}
 #endif
 				HMD->Dispose(true);
 				delete HMD;
@@ -174,6 +174,7 @@ namespace WindowsMixedReality
 
 #if WITH_WINDOWS_MIXED_REALITY
 		MixedRealityInterop* HMD = nullptr;
+		IHoloLensModuleARInterface * HololensARModule = nullptr;
 #endif
 	};
 
@@ -184,14 +185,22 @@ namespace WindowsMixedReality
 		{
 			IARSystemSupport* ARSystem = nullptr;
 #if SUPPORTS_WINDOWS_MIXED_REALITY_AR
-			ARSystem = FHoloLensModuleAR::CreateARSystem();
+			HololensARModule = (IHoloLensModuleARInterface *)FModuleManager::Get().LoadModule("HoloLensAR");
+			if (HololensARModule)
+			{
+				ARSystem = HololensARModule->CreateARSystem();
+			}
 #endif
 			auto WindowsMRHMD = FSceneViewExtensions::NewExtension<WindowsMixedReality::FWindowsMixedRealityHMD>(ARSystem, HMD);
 			if (WindowsMRHMD->IsInitialized())
 			{
 #if SUPPORTS_WINDOWS_MIXED_REALITY_AR
-				FHoloLensModuleAR::SetTrackingSystem(WindowsMRHMD);
-				FHoloLensModuleAR::SetInterop(HMD);
+				HololensARModule = (IHoloLensModuleARInterface*)FModuleManager::Get().LoadModule("HoloLensAR");
+				if (HololensARModule)
+				{
+					HololensARModule->SetTrackingSystem(WindowsMRHMD);
+					HololensARModule->SetInterop(HMD);
+				}
 				// Register the AR modular features
 				WindowsMRHMD->GetARCompositionComponent()->InitializeARSystem();
 #endif
@@ -2034,7 +2043,16 @@ namespace WindowsMixedReality
 
 	HMDTrackingStatus FWindowsMixedRealityHMD::GetControllerTrackingStatus(HMDHand hand)
 	{
-		return HMD->GetControllerTrackingStatus(hand);
+#if WITH_INPUT_SIMULATION
+		if (auto* InputSim = UWindowsMixedRealityInputSimulationEngineSubsystem::GetInputSimulationIfEnabled())
+		{
+			return (HMDTrackingStatus)InputSim->GetControllerTrackingStatus((EControllerHand)hand);
+		}
+		else
+#endif
+		{
+			return HMD->GetControllerTrackingStatus(hand);
+		}
 	}
 
 	// GetControllerOrientationAndPosition() is pre-scaled to UE4 world scale
@@ -2156,21 +2174,41 @@ namespace WindowsMixedReality
 
 	void FWindowsMixedRealityHMD::GetPointerPose(EControllerHand hand, PointerPoseInfo& pi)
 	{
-		HMD->GetPointerPose((HMDHand)hand, pi);
+#if WITH_INPUT_SIMULATION
+		if (auto* InputSim = UWindowsMixedRealityInputSimulationEngineSubsystem::GetInputSimulationIfEnabled())
+		{
+			FWindowsMixedRealityInputSimulationPointerPose InputSimPointerPose;
+			if (InputSim->GetHandPointerPose(hand, InputSimPointerPose))
+			{
+				FVector pos = InputSimPointerPose.Origin;
+				FVector dir = InputSimPointerPose.Direction;
+				FVector up = InputSimPointerPose.Up;
+				FQuat rot = InputSimPointerPose.Orientation;
+				pi.origin = DirectX::XMFLOAT3(pos.X, pos.Y, pos.Z);
+				pi.orientation = DirectX::XMFLOAT4(rot.X, rot.Y, rot.Z, rot.W);
+				pi.up = DirectX::XMFLOAT3(up.X, up.Y, up.Z);
+				pi.direction = DirectX::XMFLOAT3(dir.X, dir.Y, dir.Z);
+			}
+		}
+		else
+#endif
+		{
+			HMD->GetPointerPose((HMDHand)hand, pi);
 
-		FTransform TrackingSpaceTransformOrigin(WMRUtility::FromMixedRealityQuaternion(pi.orientation), WMRUtility::FromMixedRealityVector(pi.origin) * GetWorldToMetersScale());
+			FTransform TrackingSpaceTransformOrigin(WMRUtility::FromMixedRealityQuaternion(pi.orientation), WMRUtility::FromMixedRealityVector(pi.origin) * GetWorldToMetersScale());
 
-		FTransform tOrigin = (TrackingSpaceTransformOrigin * CachedTrackingToWorld);
-		FVector pos = tOrigin.GetLocation();
-		FQuat rot = tOrigin.GetRotation();
+			FTransform tOrigin = (TrackingSpaceTransformOrigin * CachedTrackingToWorld);
+			FVector pos = tOrigin.GetLocation();
+			FQuat rot = tOrigin.GetRotation();
 
-		FVector up = CachedTrackingToWorld.GetRotation() * WMRUtility::FromMixedRealityVector(pi.up);
-		FVector dir = CachedTrackingToWorld.GetRotation() * WMRUtility::FromMixedRealityVector(pi.direction);
+			FVector up = CachedTrackingToWorld.GetRotation() * WMRUtility::FromMixedRealityVector(pi.up);
+			FVector dir = CachedTrackingToWorld.GetRotation() * WMRUtility::FromMixedRealityVector(pi.direction);
 
-		pi.origin = DirectX::XMFLOAT3(pos.X, pos.Y, pos.Z);
-		pi.orientation = DirectX::XMFLOAT4(rot.X, rot.Y, rot.Z, rot.W);
-		pi.up = DirectX::XMFLOAT3(up.X, up.Y, up.Z);
-		pi.direction = DirectX::XMFLOAT3(dir.X, dir.Y, dir.Z);
+			pi.origin = DirectX::XMFLOAT3(pos.X, pos.Y, pos.Z);
+			pi.orientation = DirectX::XMFLOAT4(rot.X, rot.Y, rot.Z, rot.W);
+			pi.up = DirectX::XMFLOAT3(up.X, up.Y, up.Z);
+			pi.direction = DirectX::XMFLOAT3(dir.X, dir.Y, dir.Z);
+		}
 	}
 
 #endif
