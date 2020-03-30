@@ -161,6 +161,9 @@ protected:
 	UPROPERTY(EditAnywhere, BLueprintReadWrite, Category=SmartLink)
 	FVector LinkRelativeEnd;
 
+	UFUNCTION(BlueprintCallable,Category="SmartLink")
+		int GetSmartLinkID();
+
 	/** direction of link */
 	UPROPERTY(EditAnywhere, Category=SmartLink)
 	TEnumAsByte<ENavLinkDirection::Type> LinkDirection;

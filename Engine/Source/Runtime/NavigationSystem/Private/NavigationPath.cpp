@@ -591,3 +591,13 @@ void UNavigationPath::SetPathPointsFromPath(FNavigationPath& NativePath)
 		PathPoints.Add(PathPoint.Location);
 	}
 }
+
+bool UNavigationPath::DoesContaintNavlinks()
+{
+	return SharedPath->ContainsAnyCustomLink();
+}
+
+bool UNavigationPath::ContainsSpecificNavlink(int NavLinkID)
+{
+	return SharedPath->ContainsCustomLink(NavLinkID);
+}
