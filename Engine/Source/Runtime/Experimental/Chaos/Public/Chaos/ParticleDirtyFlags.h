@@ -17,15 +17,42 @@ class FName;
 namespace Chaos
 {
 
-struct FParticlePositionRotation
+class FParticlePositionRotation
 {
-	FVec3 X;
-	FRotation3 R;
-
+public:
 	void Serialize(FChaosArchive& Ar)
 	{
-		Ar << X << R;
+		Ar << MX << MR;
 	}
+
+	template <typename TOther>
+	void CopyFrom(const TOther& Other)
+	{
+		MX = Other.X();
+		MR = Other.R();
+	}
+
+	template <typename TOther>
+	bool IsEqual(const TOther& Other) const
+	{
+		return MX == Other.X() && MR == Other.R();
+	}
+
+	bool operator==(const FParticlePositionRotation& Other) const
+	{
+		return IsEqual(Other);
+	}
+
+	const FVec3& X() const { return MX; }
+	void SetX(const FVec3& InX){ MX = InX; }
+
+	const FRotation3& R() const { return MR; }
+	void SetR(const FRotation3& InR){ MR = InR; }
+	
+private:
+	FVec3 MX;
+	FRotation3 MR;
+
 };
 
 inline FChaosArchive& operator<<(FChaosArchive& Ar,FParticlePositionRotation& Data)
@@ -34,15 +61,41 @@ inline FChaosArchive& operator<<(FChaosArchive& Ar,FParticlePositionRotation& Da
 	return Ar;
 }
 
-struct FParticleVelocities
+class FParticleVelocities
 {
+public:
 	void Serialize(FChaosArchive& Ar)
 	{
-		Ar << V << W;
+		Ar << MV << MW;
 	}
 
-	FVec3 V;
-	FVec3 W;
+	template <typename TOther>
+	void CopyFrom(const TOther& Other)
+	{
+		MV = Other.V();
+		MW = Other.W();
+	}
+
+	template <typename TOther>
+	bool IsEqual(const TOther& Other) const
+	{
+		return MV == Other.V() && MW == Other.W();
+	}
+
+	bool operator==(const FParticleVelocities& Other) const
+	{
+		return IsEqual(Other);
+	}
+
+	const FVec3& V() const { return MV; }
+	void SetV(const FVec3& V) { MV = V; }
+
+	const FVec3& W() const { return MW; }
+	void SetW(const FVec3& W){ MW = W; }
+
+private:
+	FVec3 MV;
+	FVec3 MW;
 };
 
 inline FChaosArchive& operator<<(FChaosArchive& Ar,FParticleVelocities& Data)
@@ -51,20 +104,58 @@ inline FChaosArchive& operator<<(FChaosArchive& Ar,FParticleVelocities& Data)
 	return Ar;
 }
 
-struct FParticleDynamics
+class FParticleDynamics
 {
-	FVec3 F;
-	FVec3 Torque;
-	FVec3 LinearImpulse;
-	FVec3 AngularImpulse;
-
+public:
 	void Serialize(FChaosArchive& Ar)
 	{
-		Ar << F;
-		Ar << Torque;
-		Ar << LinearImpulse;
-		Ar << AngularImpulse;	
+		Ar << MF;
+		Ar << MTorque;
+		Ar << MLinearImpulse;
+		Ar << MAngularImpulse;	
 	}
+
+	template <typename TOther>
+	void CopyFrom(const TOther& Other)
+	{
+		MF = Other.F();
+		MTorque = Other.Torque();
+		MLinearImpulse = Other.LinearImpulse();
+		MAngularImpulse = Other.AngularImpulse();
+	}
+
+	template <typename TOther>
+	bool IsEqual(const TOther& Other) const
+	{
+		return F() == Other.F()
+			&& Torque() == Other.Torque()
+			&& LinearImpulse() == Other.LinearImpulse()
+			&& AngularImpulse() == Other.AngularImpulse();
+	}
+
+	bool operator==(const FParticleDynamics& Other) const
+	{
+		return IsEqual(Other);
+	}
+
+	const FVec3& F() const { return MF; }
+	void SetF(const FVec3& F){ MF = F; }
+
+	const FVec3& Torque() const { return MTorque; }
+	void SetTorque(const FVec3& Torque){ MTorque = Torque; }
+
+	const FVec3& LinearImpulse() const { return MF; }
+	void SetLinearImpulse(const FVec3& LinearImpulse){ MF = LinearImpulse; }
+
+	const FVec3& AngularImpulse() const { return MF; }
+	void SetAngularImpulse(const FVec3& AngularImpulse){ MF = AngularImpulse; }
+
+private:
+	FVec3 MF;
+	FVec3 MTorque;
+	FVec3 MLinearImpulse;
+	FVec3 MAngularImpulse;
+
 };
 
 inline FChaosArchive& operator<<(FChaosArchive& Ar, FParticleDynamics& Data)
@@ -90,6 +181,16 @@ struct FParticleMassProps
 		Ar << InvI;
 		Ar << M;
 		Ar << InvM;
+	}
+
+	bool operator==(const FParticleMassProps& Other) const
+	{
+		return CenterOfMass == Other.CenterOfMass
+			&& RotationOfMass == Other.RotationOfMass
+			&& I == Other.I
+			&& InvI == Other.InvI
+			&& M == Other.M
+			&& InvM == Other.InvM;
 	}
 };
 
@@ -120,6 +221,15 @@ struct FParticleMisc
 		Ar << GravityEnabled;
 		bGravityEnabled = GravityEnabled;
 	}
+
+	bool operator==(const FParticleMisc& Other) const
+	{
+		return CollisionGroup == Other.CollisionGroup
+			&& ObjectState == Other.ObjectState
+			&& SpatialIdx == Other.SpatialIdx
+			&& bDisabled == Other.bDisabled
+			&& bGravityEnabled == Other.bGravityEnabled;
+	}
 };
 
 inline FChaosArchive& operator<<(FChaosArchive& Ar,FParticleMisc& Data)
@@ -149,6 +259,19 @@ struct FParticleNonFrequentData
 	void Serialize(FChaosArchive& Ar)
 	{
 		Ar << Geometry;
+	}
+
+	bool operator==(const FParticleNonFrequentData& Other) const
+	{
+		return Geometry == Other.Geometry
+			&& UserData == Other.UserData
+			&& UniqueIdx == Other.UniqueIdx
+			&& LinearEtherDrag == Other.LinearEtherDrag
+			&& AngularEtherDrag == Other.AngularEtherDrag
+#if CHAOS_CHECKED
+			&& DebugName == Other.DebugName
+#endif
+			;
 	}
 };
 

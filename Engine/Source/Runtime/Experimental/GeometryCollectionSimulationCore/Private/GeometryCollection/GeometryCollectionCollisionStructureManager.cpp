@@ -173,11 +173,14 @@ void FCollisionStructureManager::UpdateImplicitFlags(
 	FImplicit* Implicit, 
 	const ECollisionTypeEnum CollisionType)
 {
-	Implicit->SetCollsionType(CollisionType==ECollisionTypeEnum::Chaos_Surface_Volumetric?Chaos::ImplicitObjectType::LevelSet:Implicit->GetType());
-	if (Implicit && (CollisionType == ECollisionTypeEnum::Chaos_Surface_Volumetric) && Implicit->GetType() == Chaos::ImplicitObjectType::LevelSet)
+	if (ensure(Implicit))
 	{
-		Implicit->SetDoCollide(false);
-		Implicit->SetConvex(false);
+		Implicit->SetCollsionType(CollisionType == ECollisionTypeEnum::Chaos_Surface_Volumetric ? Chaos::ImplicitObjectType::LevelSet : Implicit->GetType());
+		if (Implicit && (CollisionType == ECollisionTypeEnum::Chaos_Surface_Volumetric) && Implicit->GetType() == Chaos::ImplicitObjectType::LevelSet)
+		{
+			Implicit->SetDoCollide(false);
+			Implicit->SetConvex(false);
+		}
 	}
 }
 
@@ -289,6 +292,12 @@ Chaos::TLevelSet<float, 3>* FCollisionStructureManager::NewLevelset(
 	const int32 MaxRes,
 	const ECollisionTypeEnum CollisionType)
 {
+	if(TriMesh.GetNumElements() == 0)
+	{
+		// Empty tri-mesh, can't create a new level set
+		return nullptr;
+	}
+
 	Chaos::TVector<int32, 3> Counts;
 	const FVector Extents = CollisionBounds.GetExtent();
 	if (Extents.X < Extents.Y && Extents.X < Extents.Z)

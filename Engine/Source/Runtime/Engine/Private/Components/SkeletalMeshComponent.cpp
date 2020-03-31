@@ -254,6 +254,8 @@ USkeletalMeshComponent::USkeletalMeshComponent(const FObjectInitializer& ObjectI
 
 	bSkipKinematicUpdateWhenInterpolating = false;
 	bSkipBoundsUpdateWhenInterpolating = false;
+
+	DeferredKinematicUpdateIndex = INDEX_NONE;
 }
 
 void USkeletalMeshComponent::Serialize(FArchive& Ar)
@@ -578,7 +580,7 @@ void USkeletalMeshComponent::OnUnregister()
 		ClothingSimulationContext = nullptr;
 	}
 
-	if (bDeferredKinematicUpdate != 0)
+	if (DeferredKinematicUpdateIndex != INDEX_NONE)
 	{
 		UWorld* World = GetWorld();
 		FPhysScene* PhysScene = World ? World->GetPhysicsScene() : nullptr;
@@ -2582,7 +2584,7 @@ FBoxSphereBounds USkeletalMeshComponent::CalcBounds(const FTransform& LocalToWor
 void USkeletalMeshComponent::SetSkeletalMesh(USkeletalMesh* InSkelMesh, bool bReinitPose)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_SetSkeletalMesh);
-	SCOPE_CYCLE_UOBJECT(This, this);
+	SCOPE_CYCLE_UOBJECT(NewSkelMesh, InSkelMesh);
 
 	if (InSkelMesh == SkeletalMesh)
 	{

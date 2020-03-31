@@ -494,12 +494,9 @@ bool USkeletalMesh::IsReductionActive(int32 LODIndex) const
 				{
 					const FSkelMeshSection& Section = LODModel.Sections[SectionIndex];
 
-					if (!Section.bDisabled)
-					{
-						//Make sure the count fit in a uint32
-						LODVertexNumber += Section.NumVertices < 0 ? 0 : Section.NumVertices;
-						LODTriNumber += Section.NumTriangles;
-					}
+					//Make sure the count fit in a uint32
+					LODVertexNumber += Section.NumVertices < 0 ? 0 : Section.NumVertices;
+					LODTriNumber += Section.NumTriangles;
 				}
 			}
 			else if (GetImportedModel()->OriginalReductionSourceMeshData.IsValidIndex(LODIndex)
@@ -1361,6 +1358,10 @@ void USkeletalMesh::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 			SamplingInfo.BuildRegions(this);
 		}
 		else if (PropertyChangedEvent.MemberProperty->GetFName() == FName(TEXT("LODInfo")))
+		{
+			SamplingInfo.BuildWholeMesh(this);
+		}
+		else if (PropertyChangedEvent.MemberProperty->GetFName() == FName(TEXT("bSupportUniformlyDistributedSampling")))
 		{
 			SamplingInfo.BuildWholeMesh(this);
 		}
@@ -5617,6 +5618,44 @@ FVector GetSkeletalMeshRefVertLocation(const USkeletalMesh* Mesh, const FSkeleta
 	LODData.GetSectionFromVertexIndex(VertIndex, SectionIndex, VertIndexInChunk);
 	const FSkelMeshRenderSection& Section = LODData.RenderSections[SectionIndex];
 	return GetRefVertexLocationTyped(Mesh, Section, LODData.StaticVertexBuffers.PositionVertexBuffer, SkinWeightVertexBuffer, VertIndexInChunk);
+}
+
+//GetRefTangentBasisTyped
+void GetRefTangentBasisTyped(const USkeletalMesh* Mesh, const FSkelMeshRenderSection& Section, const FStaticMeshVertexBuffer& StaticVertexBuffer, const FSkinWeightVertexBuffer& SkinWeightVertexBuffer, const int32 VertIndex, FVector& OutTangentX, FVector& OutTangentZ)
+{
+	OutTangentX = FVector::ZeroVector;
+	OutTangentZ = FVector::ZeroVector;
+
+	// Do soft skinning for this vertex.
+	const int32 BufferVertIndex = Section.GetVertexBufferIndex() + VertIndex;
+	const int32 MaxBoneInfluences = SkinWeightVertexBuffer.GetMaxBoneInfluences();
+
+	const FVector VertexTangentX = StaticVertexBuffer.VertexTangentX(BufferVertIndex);
+	const FVector VertexTangentZ = StaticVertexBuffer.VertexTangentZ(BufferVertIndex);
+
+#if !PLATFORM_LITTLE_ENDIAN
+	// uint8[] elements in LOD.VertexBufferGPUSkin have been swapped for VET_UBYTE4 vertex stream use
+	for (int32 InfluenceIndex = MAX_INFLUENCES - 1; InfluenceIndex >= MAX_INFLUENCES - MaxBoneInfluences; InfluenceIndex--)
+#else
+	for (int32 InfluenceIndex = 0; InfluenceIndex < MaxBoneInfluences; InfluenceIndex++)
+#endif
+	{
+		const int32 MeshBoneIndex = Section.BoneMap[SkinWeightVertexBuffer.GetBoneIndex(BufferVertIndex, InfluenceIndex)];
+		const float	Weight = (float)SkinWeightVertexBuffer.GetBoneWeight(BufferVertIndex, InfluenceIndex) / 255.0f;
+		const FMatrix BoneTransformMatrix = FMatrix::Identity;//Mesh->GetComposedRefPoseMatrix(MeshBoneIndex);
+		//const FMatrix RefToLocal = Mesh->RefBasesInvMatrix[MeshBoneIndex] * BoneTransformMatrix;
+		OutTangentX += BoneTransformMatrix.TransformVector(VertexTangentX) * Weight;
+		OutTangentZ += BoneTransformMatrix.TransformVector(VertexTangentZ) * Weight;
+	}
+}
+
+void GetSkeletalMeshRefTangentBasis(const USkeletalMesh* Mesh, const FSkeletalMeshLODRenderData& LODData, const FSkinWeightVertexBuffer& SkinWeightVertexBuffer, const int32 VertIndex, FVector& OutTangentX, FVector& OutTangentZ)
+{
+	int32 SectionIndex;
+	int32 VertIndexInChunk;
+	LODData.GetSectionFromVertexIndex(VertIndex, SectionIndex, VertIndexInChunk);
+	const FSkelMeshRenderSection& Section = LODData.RenderSections[SectionIndex];
+	GetRefTangentBasisTyped(Mesh, Section, LODData.StaticVertexBuffers.StaticMeshVertexBuffer, SkinWeightVertexBuffer, VertIndexInChunk, OutTangentX, OutTangentZ);
 }
 
 #undef LOCTEXT_NAMESPACE

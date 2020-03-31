@@ -521,7 +521,7 @@ public:
 					View,
 					DynamicMeshPassContext);
 
-				const uint64 DefaultBatchElementMask = ~0ul;
+				const uint64 DefaultBatchElementMask = 1 << 0; // LOD 0 only
 
 				for (auto& ComponentInfo : ComponentInfos)
 				{
@@ -2644,7 +2644,8 @@ void ALandscapeProxy::UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNu
 										HierarchicalInstancedStaticMeshComponent->bCastStaticShadow = false;
 										HierarchicalInstancedStaticMeshComponent->CastShadow = GrassVariety.bCastDynamicShadow && !bDisableDynamicShadows;
 										HierarchicalInstancedStaticMeshComponent->bCastDynamicShadow = GrassVariety.bCastDynamicShadow && !bDisableDynamicShadows;
-										
+										HierarchicalInstancedStaticMeshComponent->OverrideMaterials = GrassVariety.OverrideMaterials;
+
 										const FMeshMapBuildData* MeshMapBuildData = Component->GetMeshMapBuildData();
 
 										if (GrassVariety.bUseLandscapeLightmap

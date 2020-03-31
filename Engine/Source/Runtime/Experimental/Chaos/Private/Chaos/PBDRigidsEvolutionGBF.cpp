@@ -258,6 +258,11 @@ void FPBDRigidsEvolutionGBF::AdvanceOneTimeStep(const FReal Dt, const FReal Step
 #endif
 
 	{
+		// #TODO re-enable when larger groups of collections can successfully resolve groups
+		//Clustering.UnionClusterGroups();
+	}
+
+	{
 		SCOPE_CYCLE_COUNTER(STAT_Evolution_Integrate);
 		Integrate(Particles.GetActiveParticlesView(), Dt);
 	}
@@ -288,7 +293,7 @@ void FPBDRigidsEvolutionGBF::AdvanceOneTimeStep(const FReal Dt, const FReal Step
 
 		CollisionStats::FStatData StatData(bPendingHierarchyDump);
 
-		CollisionDetector.DetectCollisions(Dt, StatData);
+		CollisionDetector.DetectCollisionsWithStats(Dt, StatData);
 
 		CHAOS_COLLISION_STAT(StatData.Print());
 	}
@@ -432,7 +437,8 @@ FPBDRigidsEvolutionGBF::FPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal, 3>& InParti
 	, CollisionConstraints(InParticles, Collided, PhysicsMaterials, DefaultNumPairIterations, DefaultNumPushOutPairIterations)
 	, CollisionRule(CollisionConstraints)
 	, BroadPhase(InParticles, BoundsThickness, BoundsThicknessVelocityMultiplier)
-	, CollisionDetector(BroadPhase, CollisionConstraints)
+	, NarrowPhase()
+	, CollisionDetector(BroadPhase, NarrowPhase, CollisionConstraints)
 	, PostIntegrateCallback(nullptr)
 	, PreApplyCallback(nullptr)
 	, PostApplyCallback(nullptr)
@@ -462,6 +468,10 @@ FPBDRigidsEvolutionGBF::FPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal, 3>& InParti
 	});
 
 	AddConstraintRule(&CollisionRule);
+
+	NarrowPhase.GetContext().bFilteringEnabled = true;
+	NarrowPhase.GetContext().bDeferUpdate = true;
+	NarrowPhase.GetContext().bAllowManifolds = false;
 }
 
 void FPBDRigidsEvolutionGBF::Serialize(FChaosArchive& Ar)

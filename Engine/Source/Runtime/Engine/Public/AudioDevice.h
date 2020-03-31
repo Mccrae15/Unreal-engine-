@@ -883,11 +883,18 @@ public:
 	float GetSquaredDistanceToListener(const FVector& Location, const FTransform& ListenerTransform) const;
 
 	/**
-	* Returns the distance from location to the appropriate listener representation, depending on calling thread
+	* Sets OutSqDistance to the distance from location to the appropriate listener representation, depending on calling thread.
+	* Returns true if listener position is valid, false if not (in which case, OutSqDistance is undefined).
 	*/
 	bool GetDistanceSquaredToListener(const FVector& Location, int32 ListenerIndex, float& OutSqDistance) const;
 
 	/**
+	* Sets OutSqDistance to the distance from location the closest listener, depending on calling thread.
+	* Returns true if listener position is valid, false if not (in which case, OutSqDistance is undefined).
+	*/
+	bool GetDistanceSquaredToNearestListener(const FVector& Location, float& OutSqDistance) const;
+		
+		/**
 	* Returns a position from the appropriate listener representation, depending on calling thread.
 	*
 	* @param	ListenerIndex	index of the listener or proxy
@@ -1301,6 +1308,8 @@ public:
 	virtual void StopSpectrumAnalysis(USoundSubmix* InSubmix);
 	virtual void GetMagnitudesForFrequencies(USoundSubmix* InSubmix, const TArray<float>& InFrequencies, TArray<float>& OutMagnitudes);
 	virtual void GetPhasesForFrequencies(USoundSubmix* InSubmix, const TArray<float>& InFrequencies, TArray<float>& OutPhases);
+	virtual void AddSpectralAnalysisDelegate(USoundSubmix* InSubmix, const TArray<FSoundSubmixSpectralAnalysisBandSettings>& InBandSettings, const FOnSubmixSpectralAnalysisBP& OnSubmixSpectralAnalysisBP, float UpdateRate);
+
 
 protected:
 	friend class FSoundSource;
@@ -1362,7 +1371,7 @@ private:
 
 	/** Stops quiet/low priority sounds due to being evaluated as not fulfilling concurrency requirements
 	 */
-	void CullSoundsDueToMaxConcurrency(TArray<FWaveInstance*>& WaveInstances, TArray<FActiveSound*>& ActiveSoundsCopy);
+	void UpdateConcurrency(TArray<FWaveInstance*>& WaveInstances, TArray<FActiveSound*>& ActiveSoundsCopy);
 
 	/**
 	 * Checks if the given sound would be audible.

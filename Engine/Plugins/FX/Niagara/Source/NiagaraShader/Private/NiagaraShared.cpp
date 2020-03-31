@@ -79,10 +79,14 @@ NIAGARASHADER_API void FNiagaraShaderScript::CancelCompilation()
 {
 #if WITH_EDITOR
 	check(IsInGameThread());
-	FNiagaraShaderMap::RemovePendingScript(this);
+	bool bWasPending = FNiagaraShaderMap::RemovePendingScript(this);
 	FNiagaraCompilationQueue::Get()->RemovePending(this);
 
-	UE_LOG(LogShaders, Log, TEXT("CancelCompilation %p."), this);
+	// don't spam the log if no cancelling actually happened : 
+	if (bWasPending)
+	{
+		UE_LOG(LogShaders, Log, TEXT("CancelCompilation %p."), this);
+	}
 	OutstandingCompileShaderMapIds.Empty();
 #endif
 }
@@ -348,8 +352,13 @@ bool FNiagaraShaderScript::CacheShaders(const FNiagaraShaderMapId& ShaderMapId, 
 	check(IsInGameThread());
 
 	{
-		// Find the script's cached shader map.
-		GameThreadShaderMap = FNiagaraShaderMap::FindId(ShaderMapId, Platform);
+		GameThreadShaderMap = nullptr;
+		{
+			NIAGARASHADER_API extern FCriticalSection GIdToNiagaraShaderMapCS;
+			FScopeLock ScopeLock(&GIdToNiagaraShaderMapCS);
+			// Find the script's cached shader map.
+			GameThreadShaderMap = FNiagaraShaderMap::FindId(ShaderMapId, Platform);
+		}
 
 		// Attempt to load from the derived data cache if we are uncooked
 		if (!bForceRecompile && !GameThreadShaderMap && !FPlatformProperties::RequiresCookedData())

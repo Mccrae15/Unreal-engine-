@@ -5,11 +5,10 @@
 #include "Physics/ImmediatePhysics/ImmediatePhysicsChaos/ImmediatePhysicsCore_Chaos.h"
 
 #include "Chaos/ChaosDebugDrawDeclares.h"
-#include "Chaos/Evolution/PBDMinEvolution.h"
-#include "Chaos/Collision/CollisionDetector.h"
-#include "Chaos/Collision/CollisionReceiver.h"
 #include "Chaos/Collision/NarrowPhase.h"
 #include "Chaos/Collision/ParticlePairBroadPhase.h"
+#include "Chaos/Collision/ParticlePairCollisionDetector.h"
+#include "Chaos/Evolution/PBDMinEvolution.h"
 #include "Chaos/PBDCollisionConstraints.h"
 #include "Chaos/PBDConstraintRule.h"
 #include "Chaos/PBDJointConstraints.h"
@@ -80,8 +79,8 @@ namespace ImmediatePhysics_Chaos
 		void DebugDrawDynamicParticles(const int32 MinDebugLevel, const int32 MaxDebugLevel, const FColor& Color);
 		void DebugDrawConstraints(const int32 MinDebugLevel, const int32 MaxDebugLevel, const float ColorScale);
 
-		using FCollisionConstraints = Chaos::TPBDCollisionConstraints<FReal, 3>;
-		using FCollisionDetector = Chaos::TCollisionDetector<Chaos::FParticlePairBroadPhase, Chaos::FNarrowPhase, Chaos::FSyncCollisionReceiver, FCollisionConstraints>;
+		using FCollisionConstraints = Chaos::FPBDCollisionConstraints;
+		using FCollisionDetector = Chaos::FParticlePairCollisionDetector;
 		using FRigidParticleSOAs = Chaos::TPBDRigidsSOAs<FReal, 3>;
 		using FParticleHandle = Chaos::TGeometryParticleHandle<FReal, Dimensions>;
 		using FParticlePair = Chaos::TVector<Chaos::TGeometryParticleHandle<Chaos::FReal, 3>*, 2>;
@@ -96,6 +95,7 @@ namespace ImmediatePhysics_Chaos
 		Chaos::FPBDJointConstraints Joints;
 		FCollisionConstraints Collisions;
 		Chaos::FParticlePairBroadPhase BroadPhase;
+		Chaos::FNarrowPhase NarrowPhase;
 		FCollisionDetector CollisionDetector;
 		Chaos::TSimpleConstraintRule<Chaos::FPBDJointConstraints> JointsRule;
 		Chaos::TSimpleConstraintRule<FCollisionConstraints> CollisionsRule;

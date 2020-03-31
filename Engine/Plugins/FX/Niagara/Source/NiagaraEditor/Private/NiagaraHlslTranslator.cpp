@@ -271,7 +271,7 @@ bool FHlslNiagaraTranslator::ValidateTypePins(UNiagaraNode* NodeToValidate)
 
 		if (Pin->bOrphanedPin)
 		{
-			Error(LOCTEXT("OrphanedPinError", "Node pin is no longer valid.  This pin must be disconnected or reset to default so it can be removed."), NodeToValidate, Pin);
+			Warning(LOCTEXT("OrphanedPinError", "Node pin is no longer valid.  This pin must be disconnected or reset to default so it can be removed."), NodeToValidate, Pin);
 		}
 	}
 	return bPinsAreValid;
@@ -1326,12 +1326,16 @@ const FNiagaraTranslateResults &FHlslNiagaraTranslator::Translate(const FNiagara
 			}
 		}
 
+		// NiagaraID is a fundamental type which can be used in custom HLSL without declaring any pins of that type in any nodes.
+		// Make sure it's always defined in the generated HLSL.
+		StructsToDefine.AddUnique(FNiagaraTypeDefinition::GetIDDef());
+
 		// Generate the Parameter Map HLSL definitions. We don't add to the final HLSL output here. We just build up the strings and tables
 		// that are needed later.
 		TArray<FNiagaraVariable> PrimaryDataSetOutputEntries;
 		FString ParameterMapDefinitionStr = BuildParameterMapHlslDefinitions(PrimaryDataSetOutputEntries);
 
-		for (FNiagaraTypeDefinition Type : StructsToDefine)
+		for (const FNiagaraTypeDefinition& Type : StructsToDefine)
 		{
 			FText ErrorMessage;
 			HlslOutput += BuildHLSLStructDecl(Type, ErrorMessage);
@@ -4215,7 +4219,7 @@ bool FHlslNiagaraTranslator::GetLiteralConstantVariable(FNiagaraVariable& OutVar
 		if (OutVar == FNiagaraVariable(FNiagaraTypeDefinition::GetSimulationTargetEnum(), TEXT("Emitter.SimulationTarget")))
 		{
 			FNiagaraInt32 EnumValue;
-			EnumValue.Value = (uint8) CompilationTarget;
+			EnumValue.Value = CompilationTarget == ENiagaraSimTarget::GPUComputeSim || CompileOptions.AdditionalDefines.Contains(TEXT("GPUComputeSim")) ? 1 : 0;
 			OutVar.SetValue(EnumValue);
 			return true;
 		}
@@ -4680,7 +4684,14 @@ void FHlslNiagaraTranslator::HandleParameterRead(int32 ParamMapHistoryIdx, const
 	FString Namespace = FNiagaraParameterMapHistory::GetNamespace(Var);
 	if (!ParamMapHistories[ParamMapHistoryIdx].IsValidNamespaceForReading(CompileOptions.TargetUsage, CompileOptions.TargetUsageBitmask, Namespace))
 	{
-		Error(FText::Format(LOCTEXT("InvalidReadingNamespace", "Variable {0} is in a namespace that isn't valid for reading"), FText::FromName(Var.GetName())), ErrorNode, nullptr);
+		if (UNiagaraScript::IsStandaloneScript(CompileOptions.TargetUsage) && Namespace.StartsWith(PARAM_MAP_ATTRIBUTE_STR))
+		{
+			Error(FText::Format(LOCTEXT("InvalidReadingNamespaceStandalone", "Variable {0} is in a namespace that isn't valid for reading. Enable at least one of the 'particle' options in the target usage bitmask of your script to access the 'Particles.' namespace."), FText::FromName(Var.GetName())), ErrorNode, nullptr);
+		}
+		else
+		{
+			Error(FText::Format(LOCTEXT("InvalidReadingNamespace", "Variable {0} is in a namespace that isn't valid for reading"), FText::FromName(Var.GetName())), ErrorNode, nullptr);
+		}
 		return;
 	}
 
@@ -5731,8 +5742,31 @@ void FHlslNiagaraTranslator::HandleCustomHlslNode(UNiagaraNodeCustomHlsl* Custom
 
 						if (Info.UserPtrIdx != INDEX_NONE && CompilationTarget != ENiagaraSimTarget::GPUComputeSim)
 						{
-							//This interface requires per instance data via a user ptr so place the index to it at the end of the inputs.
-							Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("InstanceData")));
+							//This interface requires per instance data via a user ptr so place the index as the first input.
+							Sig.Inputs.Insert(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("InstanceData")), 0);
+
+							// Look for the opening parenthesis.
+							while (TokenIndex < Tokens.Num() && Tokens[TokenIndex] != TEXT("("))
+							{
+								++TokenIndex;
+							}
+
+							if (TokenIndex < Tokens.Num())
+							{
+								// Skip the parenthesis.
+								++TokenIndex;
+
+								// Insert the instance index as the first argument. We don't need to do range checking because even if
+								// the tokens end after the parenthesis, we'll be inserting at the end of the array.
+								Tokens.Insert(LexToString(Info.UserPtrIdx), TokenIndex++);
+
+								if (Sig.Inputs.Num() > 1 || Sig.Outputs.Num() > 0)
+								{
+									// If there are other arguments, insert a comma and a space. These are separators, so they need to be different tokens.
+									Tokens.Insert(TEXT(","), TokenIndex++);
+									Tokens.Insert(TEXT(" "), TokenIndex++);
+								}
+							}
 						}
 
 						Info.RegisteredFunctions.Add(Sig);
@@ -6257,9 +6291,9 @@ void FHlslNiagaraTranslator::RegisterFunctionCall(ENiagaraScriptUsage ScriptUsag
 
 				if (Info.UserPtrIdx != INDEX_NONE && CompilationTarget != ENiagaraSimTarget::GPUComputeSim)
 				{
-					//This interface requires per instance data via a user ptr so place the index to it at the end of the inputs.
-					Inputs.Add(AddSourceChunk(LexToString(Info.UserPtrIdx), FNiagaraTypeDefinition::GetIntDef(), false));
-					OutSignature.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("InstanceData")));
+					//This interface requires per instance data via a user ptr so place the index as the first input.
+					Inputs.Insert(AddSourceChunk(LexToString(Info.UserPtrIdx), FNiagaraTypeDefinition::GetIntDef(), false), 0);
+					OutSignature.Inputs.Insert(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("InstanceData")), 0);
 				}
 			}
 
@@ -6934,9 +6968,8 @@ int32 FHlslNiagaraTranslator::CompileOutputPin(const UEdGraphPin* InPin)
 	return Ret;
 }
 
-void FHlslNiagaraTranslator::Error(FText ErrorText, const UNiagaraNode* InNode, const UEdGraphPin* Pin)
+void FHlslNiagaraTranslator::Message(FNiagaraCompileEventSeverity Severity, FText MessageText, const UNiagaraNode* InNode, const UEdGraphPin* Pin)
 {
-
 	const UNiagaraNode* CurContextNode = ActiveHistoryForFunctionCalls.GetCallingContext();
 	const UNiagaraNode* TargetNode = InNode ? InNode : CurContextNode;
 
@@ -6967,34 +7000,27 @@ void FHlslNiagaraTranslator::Error(FText ErrorText, const UNiagaraNode* InNode, 
 		NodePinSuffix = TEXT(" - ");
 	}
 
-	FString ErrorString = FString::Printf(TEXT("%s%s%s%s"), *ErrorText.ToString(), *NodePinPrefix, *NodePinStr, *NodePinSuffix);
-	TranslateResults.CompileEvents.Add(FNiagaraCompileEvent(FNiagaraCompileEventSeverity::Error, ErrorString, TargetNode ? TargetNode->NodeGuid : FGuid(), Pin ? Pin->PersistentGuid : FGuid(), GetCallstackGuids()));
-	TranslateResults.NumErrors++;
+	FString MessageString = FString::Printf(TEXT("%s%s%s%s"), *MessageText.ToString(), *NodePinPrefix, *NodePinStr, *NodePinSuffix);
+	TranslateResults.CompileEvents.Add(FNiagaraCompileEvent(Severity, MessageString, TargetNode ? TargetNode->NodeGuid : FGuid(), Pin ? Pin->PersistentGuid : FGuid(), GetCallstackGuids()));
+
+	if (Severity == FNiagaraCompileEventSeverity::Error)
+	{
+		TranslateResults.NumErrors++;
+	}
+	else if (Severity == FNiagaraCompileEventSeverity::Warning)
+	{
+		TranslateResults.NumWarnings++;
+	}
+}
+
+void FHlslNiagaraTranslator::Error(FText ErrorText, const UNiagaraNode* InNode, const UEdGraphPin* Pin)
+{
+	Message(FNiagaraCompileEventSeverity::Error, ErrorText, InNode, Pin);
 }
 
 void FHlslNiagaraTranslator::Warning(FText WarningText, const UNiagaraNode* InNode, const UEdGraphPin* Pin)
 {
-
-	const UNiagaraNode* CurContextNode = ActiveHistoryForFunctionCalls.GetCallingContext();
-	const UNiagaraNode* TargetNode = InNode ? InNode : CurContextNode;
-
-	FString NodePinStr = TEXT("");
-	FString NodePinPrefix = TEXT(" - ");
-	FString NodePinSuffix = TEXT("");
-	if (TargetNode && TargetNode->GetName().Len() > 0)
-	{
-		NodePinStr += TEXT("Node: ") + TargetNode->GetName();
-		NodePinSuffix = TEXT(" - ");
-	}
-	if (Pin && Pin->PinFriendlyName.ToString().Len() > 0)
-	{
-		NodePinStr += TEXT(" Pin: ") + Pin->PinFriendlyName.ToString();
-		NodePinSuffix = TEXT(" - ");
-	}
-
-	FString WarnString = FString::Printf(TEXT("%s%s%s%s"), *WarningText.ToString(), *NodePinPrefix, *NodePinStr, *NodePinSuffix);
-	TranslateResults.CompileEvents.Add(FNiagaraCompileEvent(FNiagaraCompileEventSeverity::Warning, WarnString, TargetNode ? TargetNode->NodeGuid : FGuid(), Pin ? Pin->PersistentGuid : FGuid(), GetCallstackGuids()));
-	TranslateResults.NumWarnings++;
+	Message(FNiagaraCompileEventSeverity::Warning, WarningText, InNode, Pin);
 }
 
 bool FHlslNiagaraTranslator::GetFunctionParameter(const FNiagaraVariable& Parameter, int32& OutParam)const
@@ -7071,7 +7097,7 @@ FGuid FHlslNiagaraTranslator::GetTargetUsageId() const
 }
 //////////////////////////////////////////////////////////////////////////
 
-FString FHlslNiagaraTranslator::GetHlslDefaultForType(FNiagaraTypeDefinition Type)
+FString FHlslNiagaraTranslator::GetHlslDefaultForType(const FNiagaraTypeDefinition& Type)
 {
 	if (Type == FNiagaraTypeDefinition::GetFloatDef())
 	{
@@ -7111,7 +7137,7 @@ FString FHlslNiagaraTranslator::GetHlslDefaultForType(FNiagaraTypeDefinition Typ
 	}
 }
 
-bool FHlslNiagaraTranslator::IsBuiltInHlslType(FNiagaraTypeDefinition Type)
+bool FHlslNiagaraTranslator::IsBuiltInHlslType(const FNiagaraTypeDefinition& Type)
 {
 	return
 		Type == FNiagaraTypeDefinition::GetFloatDef() ||
@@ -7126,7 +7152,7 @@ bool FHlslNiagaraTranslator::IsBuiltInHlslType(FNiagaraTypeDefinition Type)
 		Type == FNiagaraTypeDefinition::GetBoolDef();
 }
 
-FString FHlslNiagaraTranslator::GetStructHlslTypeName(FNiagaraTypeDefinition Type)
+FString FHlslNiagaraTranslator::GetStructHlslTypeName(const FNiagaraTypeDefinition& Type)
 {
 	if (Type.IsValid() == false)
 	{
@@ -7207,7 +7233,7 @@ FString FHlslNiagaraTranslator::GetPropertyHlslTypeName(const FProperty* Propert
 	}
 }
 
-FString FHlslNiagaraTranslator::BuildHLSLStructDecl(FNiagaraTypeDefinition Type, FText& OutErrorMessage)
+FString FHlslNiagaraTranslator::BuildHLSLStructDecl(const FNiagaraTypeDefinition& Type, FText& OutErrorMessage)
 {
 	if (!IsBuiltInHlslType(Type))
 	{
@@ -7233,7 +7259,7 @@ FString FHlslNiagaraTranslator::BuildHLSLStructDecl(FNiagaraTypeDefinition Type,
 	return TEXT("");
 }
 
-bool FHlslNiagaraTranslator::IsHlslBuiltinVector(FNiagaraTypeDefinition Type)
+bool FHlslNiagaraTranslator::IsHlslBuiltinVector(const FNiagaraTypeDefinition& Type)
 {
 	if ((Type == FNiagaraTypeDefinition::GetVec2Def()) ||
 		(Type == FNiagaraTypeDefinition::GetVec3Def()) ||

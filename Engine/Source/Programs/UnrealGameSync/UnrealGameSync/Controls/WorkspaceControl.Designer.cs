@@ -85,6 +85,7 @@ namespace UnrealGameSync
 			this.BuildListContextMenu_CustomTool_Start = new System.Windows.Forms.ToolStripSeparator();
 			this.BuildListContextMenu_CustomTool_End = new System.Windows.Forms.ToolStripSeparator();
 			this.BuildListContextMenu_MoreInfo = new System.Windows.Forms.ToolStripMenuItem();
+			this.BuildListContextMenu_ViewInSwarm = new System.Windows.Forms.ToolStripMenuItem();
 			this.NotifyIcon = new System.Windows.Forms.NotifyIcon(this.components);
 			this.toolStripSeparator7 = new System.Windows.Forms.ToolStripSeparator();
 			this.BuildListToolTip = new System.Windows.Forms.ToolTip(this.components);
@@ -186,7 +187,7 @@ namespace UnrealGameSync
             this.toolStripSeparator6,
             this.OptionsContextMenu_Diagnostics});
 			this.OptionsContextMenu.Name = "ToolsMenuStrip";
-			this.OptionsContextMenu.Size = new System.Drawing.Size(262, 336);
+			this.OptionsContextMenu.Size = new System.Drawing.Size(262, 314);
 			// 
 			// OptionsContextMenu_ApplicationSettings
 			// 
@@ -491,9 +492,10 @@ namespace UnrealGameSync
             this.BuildListContextMenu_ShowLocalTimes,
             this.BuildListContextMenu_CustomTool_Start,
             this.BuildListContextMenu_CustomTool_End,
+            this.BuildListContextMenu_ViewInSwarm,
             this.BuildListContextMenu_MoreInfo});
 			this.BuildListContextMenu.Name = "BuildListContextMenu";
-			this.BuildListContextMenu.Size = new System.Drawing.Size(200, 590);
+			this.BuildListContextMenu.Size = new System.Drawing.Size(200, 634);
 			// 
 			// BuildListContextMenu_LaunchEditor
 			// 
@@ -699,6 +701,13 @@ namespace UnrealGameSync
 			this.BuildListContextMenu_MoreInfo.Size = new System.Drawing.Size(199, 22);
 			this.BuildListContextMenu_MoreInfo.Text = "More Info...";
 			this.BuildListContextMenu_MoreInfo.Click += new System.EventHandler(this.BuildListContextMenu_MoreInfo_Click);
+			// 
+			// BuildListContextMenu_ViewInSwarm
+			// 
+			this.BuildListContextMenu_ViewInSwarm.Name = "BuildListContextMenu_ViewInSwarm";
+			this.BuildListContextMenu_ViewInSwarm.Size = new System.Drawing.Size(199, 22);
+			this.BuildListContextMenu_ViewInSwarm.Text = "View in Swarm...";
+			this.BuildListContextMenu_ViewInSwarm.Click += new System.EventHandler(this.BuildListContextMenu_ViewInSwarm_Click);
 			// 
 			// toolStripSeparator7
 			// 
@@ -1385,5 +1394,6 @@ namespace UnrealGameSync
 		private System.Windows.Forms.ToolStripMenuItem editorPhysXToolStripMenuItem;
 		private System.Windows.Forms.ToolStripMenuItem pS4ToolStripMenuItem;
 		private System.IO.FileSystemWatcher EditorConfigWatcher;
+		private System.Windows.Forms.ToolStripMenuItem BuildListContextMenu_ViewInSwarm;
 	}
 }

@@ -541,6 +541,7 @@ bool UMaterialInstance::UpdateParameters()
 
 UMaterialInstance::UMaterialInstance(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
+	, ReleasedByRT(true)
 {
 	bHasStaticPermutationResource = false;
 #if WITH_EDITOR
@@ -2928,6 +2929,10 @@ void UMaterialInstance::CacheShadersForResources(EShaderPlatform ShaderPlatform,
 	check(!BaseMaterial->HasAnyFlags(RF_NeedPostLoad));
 #endif
 
+#if WITH_EDITOR
+	UpdateCachedLayerParameters();
+#endif
+
 	for (int32 ResourceIndex = 0; ResourceIndex < ResourcesToCache.Num(); ResourceIndex++)
 	{
 		FMaterialResource* CurrentResource = ResourcesToCache[ResourceIndex];
@@ -3598,23 +3603,26 @@ void UMaterialInstance::BeginDestroy()
 
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
+		ReleasedByRT = false;
+
 		FMaterialRenderProxy* LocalResource = Resource;
+		FThreadSafeBool* Released = &ReleasedByRT;
 		ENQUEUE_RENDER_COMMAND(BeginDestroyCommand)(
-		[LocalResource](FRHICommandList& RHICmdList)
+		[LocalResource, Released](FRHICommandListImmediate& RHICmdList)
 		{
 			LocalResource->MarkForGarbageCollection();
 			LocalResource->ReleaseResource();
+
+			*Released = true;
 		});		
 	}
-
-	ReleaseFence.BeginFence();
 }
 
 bool UMaterialInstance::IsReadyForFinishDestroy()
 {
 	bool bIsReady = Super::IsReadyForFinishDestroy();
 
-	return bIsReady && ReleaseFence.IsFenceComplete();;
+	return bIsReady && ReleasedByRT;
 }
 
 void UMaterialInstance::FinishDestroy()

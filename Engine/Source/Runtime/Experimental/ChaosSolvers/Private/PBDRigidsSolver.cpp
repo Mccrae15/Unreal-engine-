@@ -46,6 +46,12 @@ FAutoConsoleVariableRef CVarChaosSolverCollisionDefaultPushoutIterations(TEXT("p
 int32 ChaosSolverCleanupCommandsOnDestruction = 1;
 FAutoConsoleVariableRef CVarChaosSolverCleanupCommandsOnDestruction(TEXT("p.Chaos.Solver.CleanupCommandsOnDestruction"), ChaosSolverCleanupCommandsOnDestruction, TEXT("Whether or not to run internal command queue cleanup on solver destruction (0 = no cleanup, >0 = cleanup all commands)"));
 
+int32 ChaosSolverCollisionDeferNarrowPhase = 0;
+FAutoConsoleVariableRef CVarChaosSolverCollisionDeferNarrowPhase(TEXT("p.Chaos.Solver.Collision.DeferNarrowPhase"), ChaosSolverCollisionDeferNarrowPhase, TEXT("Create contacts for all broadphase pairs, perform NarrowPhase later."));
+
+int32 ChaosSolverCollisionUseManifolds = 0;
+FAutoConsoleVariableRef CVarChaosSolverCollisionUseManifolds(TEXT("p.Chaos.Solver.Collision.UseManifolds"), ChaosSolverCollisionUseManifolds, TEXT("Enable/Disable use of manifoldes in collision."));
+
 
 
 namespace Chaos
@@ -145,10 +151,6 @@ namespace Chaos
 				// If time remains, then log why we have lost energy over the timestep.
 				if (TimeRemaining > 0.f)
 				{
-					auto& GeomCollectionParticles = MSolver->GetEvolution()->GetParticles().GetGeometryCollectionParticles();
-					Obj->FieldForcesUpdateCallback(MSolver, GeomCollectionParticles, Forces, Torques, MSolver->GetSolverTime());
-					auto& ClusteredParticles = MSolver->GetEvolution()->GetParticles().GetClusteredParticles();
-					Obj->FieldForcesUpdateCallback(MSolver, ClusteredParticles, Forces, Torques, MSolver->GetSolverTime());
 					if (StepsRemaining == 0)
 					{
 						UE_LOG(LogPBDRigidsSolver, Warning, TEXT("AdvanceOneTimeStepTask::DoWork() - Energy lost over %fs due to too many substeps over large timestep"), TimeRemaining);
@@ -421,7 +423,7 @@ namespace Chaos
 				// Remove from rewind data
 				if(FRewindData* RewindData = Solver->GetRewindData())
 				{
-					RewindData->RemoveParticle(*Handle);
+					RewindData->RemoveParticle(Handle->UniqueIdx());
 				}
 
 			  // Remove game thread particle from ActiveGameThreadParticles so we won't crash when pulling physics state
@@ -555,13 +557,15 @@ namespace Chaos
 
 	void FPBDRigidsSolver::AdvanceSolverBy(float DeltaTime)
 	{
+		MEvolution->GetCollisionDetector().GetNarrowPhase().GetContext().bDeferUpdate = (ChaosSolverCollisionDeferNarrowPhase != 0);
+		MEvolution->GetCollisionDetector().GetNarrowPhase().GetContext().bAllowManifolds = (ChaosSolverCollisionUseManifolds != 0);
+
 		UE_LOG(LogPBDRigidsSolver, Verbose, TEXT("PBDRigidsSolver::Tick(%3.5f)"), DeltaTime);
 		if (bEnabled)
 		{
 			MLastDt = DeltaTime;
 			AdvanceOneTimeStepTask(this, DeltaTime).DoWork();
 		}
-
 	}
 
 	void FPBDRigidsSolver::SyncEvents_GameThread()
@@ -735,12 +739,6 @@ namespace Chaos
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_PushPhysicsState);
 		FDirtySet* DirtyProxiesData = DirtyProxiesDataBuffer.AccessProducerBuffer();
 
-		if(DirtyProxiesData->NumDirtyProxies() == 0)
-		{
-			//is this early out really necessary?
-			return;
-		}
-
 		FDirtyPropertiesManager* Manager = DirtyPropertiesManager->AccessProducerBuffer();
 		Manager->SetNumParticles(DirtyProxiesData->NumDirtyProxies());
 		Manager->SetNumShapes(DirtyProxiesData->NumDirtyShapes());
@@ -802,7 +800,15 @@ namespace Chaos
 
 				if(RewindData)
 				{
-					RewindData->PushGTDirtyData(*Manager,DataIdx,Dirty);
+					//may want to remove branch by templatizing lambda
+					if(RewindData->IsResim())
+					{
+						RewindData->PushGTDirtyData<true>(*Manager,DataIdx,Dirty);
+					}
+					else
+					{
+						RewindData->PushGTDirtyData<false>(*Manager,DataIdx,Dirty);
+					}
 				}
 
 				Proxy->PushToPhysicsState(*Manager, DataIdx, Dirty, ShapeDirtyData);
@@ -865,8 +871,7 @@ namespace Chaos
 		TParticleView<TPBDRigidParticles<float, 3>>& ActiveParticles = GetParticles().GetActiveParticlesView();
 		for (Chaos::TPBDRigidParticleHandleImp<float, 3, false>& ActiveObject : ActiveParticles)
 		{
-			IPhysicsProxyBase* Proxy = GetProxy(ActiveObject.Handle());
-			if (ensure(Proxy))
+			if (IPhysicsProxyBase* Proxy = GetProxy(ActiveObject.Handle()))
 			{
 				switch (ActiveObject.GetParticleType())
 				{
@@ -906,8 +911,7 @@ namespace Chaos
 		TParticleView<TPBDRigidParticles<float, 3>>& ActiveParticles = GetParticles().GetActiveParticlesView();
 		for (Chaos::TPBDRigidParticleHandleImp<float, 3, false>& ActiveObject : ActiveParticles)
 		{
-			IPhysicsProxyBase* Proxy = GetProxy(ActiveObject.Handle());
-			if (ensure(Proxy))
+			if (IPhysicsProxyBase* Proxy = GetProxy(ActiveObject.Handle()))
 			{
 				switch (ActiveObject.GetParticleType())
 				{
@@ -952,8 +956,7 @@ namespace Chaos
 		TParticleView<TPBDRigidParticles<float, 3>>& ActiveParticles = GetParticles().GetActiveParticlesView();
 		for (Chaos::TPBDRigidParticleHandleImp<float, 3, false>& ActiveObject : ActiveParticles)
 		{
-			IPhysicsProxyBase* Proxy = GetProxy(ActiveObject.Handle());
-			if (ensure(Proxy))
+			if (IPhysicsProxyBase* Proxy = GetProxy(ActiveObject.Handle()))
 			{
 				switch (ActiveObject.GetParticleType())
 				{
@@ -1045,15 +1048,24 @@ namespace Chaos
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(RecordRewindData);
 
-			int32 DataIdx = MRewindData->PrepareFrameForPTDirty(ActiveParticles.Num());
+			MRewindData->PrepareFrameForPTDirty(ActiveParticles.Num());
 			
+			int32 DataIdx = 0;
 			for(TPBDRigidParticleHandleImp<float,3,false>& ActiveObject : ActiveParticles)
 			{
 				const IPhysicsProxyBase* Proxy = GetProxy(ActiveObject.Handle());
 				{
 					if(ActiveObject.GetParticleType() == EParticleType::Rigid)
 					{
-						MRewindData->PushPTDirtyData(*static_cast<const FRigidParticlePhysicsProxy*>(Proxy)->GetHandle(), DataIdx++);
+						//may want to remove branch using templates outside loop
+						if(MRewindData->IsResim())
+						{
+							MRewindData->PushPTDirtyData<true>(*static_cast<const FRigidParticlePhysicsProxy*>(Proxy)->GetHandle(),DataIdx++);
+						}
+						else
+						{
+							MRewindData->PushPTDirtyData<false>(*static_cast<const FRigidParticlePhysicsProxy*>(Proxy)->GetHandle(),DataIdx++);
+						}
 					}
 				}
 			}

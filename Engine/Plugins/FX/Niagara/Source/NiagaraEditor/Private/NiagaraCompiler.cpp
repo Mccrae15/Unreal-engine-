@@ -611,9 +611,9 @@ TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> FNiagaraEditorMo
 
 		// Now deep copy the system graphs, skipping traversal into any emitter references.
 		UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(System->GetSystemSpawnScript()->GetSource());
-		BasePtr->DeepCopyGraphs(Source, ENiagaraScriptUsage::SystemSpawnScript, FCompileConstantResolver());
-		BasePtr->AddRapidIterationParameters(System->GetSystemSpawnScript()->RapidIterationParameters, FCompileConstantResolver());
-		BasePtr->AddRapidIterationParameters(System->GetSystemUpdateScript()->RapidIterationParameters, FCompileConstantResolver());
+		BasePtr->DeepCopyGraphs(Source, ENiagaraScriptUsage::SystemSpawnScript, EmptyResolver);
+		BasePtr->AddRapidIterationParameters(System->GetSystemSpawnScript()->RapidIterationParameters, EmptyResolver);
+		BasePtr->AddRapidIterationParameters(System->GetSystemUpdateScript()->RapidIterationParameters, EmptyResolver);
 		BasePtr->FinishPrecompile(Source, EncounterableVars, ENiagaraScriptUsage::SystemSpawnScript, EmptyResolver, nullptr);
 
 		// Add the User and System variables that we did encounter to the list that emitters might also encounter.
@@ -830,6 +830,11 @@ TSharedPtr<FNiagaraVMExecutableData> FNiagaraEditorModule::GetCompilationResult(
 	
 	Results.Data->ErrorMsg = OutGraphLevelErrorMessages;
 	Results.Data->LastCompileStatus = (FNiagaraCompileResults::CompileResultsToSummary(&Results));
+	if (Results.Data->LastCompileStatus != ENiagaraScriptCompileStatus::NCS_Error)
+	{
+		// When there are no errors the compile events get emptied, so add them back here.
+		Results.Data->LastCompileEvents.Append(Results.CompileEvents);
+	}
 	return CompileResult->Data;
 }
 

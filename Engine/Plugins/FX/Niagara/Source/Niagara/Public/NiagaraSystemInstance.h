@@ -146,8 +146,6 @@ public:
 
 //	float GetSystemTimeSinceRendered() const { return SystemTimeSinceRenderedParam.GetValue(); }
 
-	//float GetOwnerLODDistance() const { return OwnerLODDistanceParam.GetValue(); }
-
 	//int32 GetNumParticles(int32 EmitterIndex) const { return ParameterNumParticleBindings[EmitterIndex].GetValue(); }
 	//float GetSpawnCountScale(int32 EmitterIndex) const { return ParameterSpawnCountScaleBindings[EmitterIndex].GetValue(); }
 
@@ -428,7 +426,13 @@ private:
 	/** Tag we feed into crash reporter for this instance. */
 	mutable FString CrashReporterTag;
 
+	/** The feature level of for this component instance. */
+	ERHIFeatureLevel::Type FeatureLevel = ERHIFeatureLevel::Num;
+
 public:
+
+	ERHIFeatureLevel::Type GetFeatureLevel() const { return FeatureLevel; }
+
 	// Transient data that is accumulated during tick.
 	uint32 TotalGPUParamSize = 0;
 	uint32 ActiveGPUEmitterCount = 0;

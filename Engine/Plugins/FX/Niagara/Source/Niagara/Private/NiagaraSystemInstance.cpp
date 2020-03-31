@@ -88,6 +88,7 @@ FNiagaraSystemInstance::FNiagaraSystemInstance(UNiagaraComponent* InComponent)
 	, CachedDeltaSeconds(0.0f)
 	, RequestedExecutionState(ENiagaraExecutionState::Complete)
 	, ActualExecutionState(ENiagaraExecutionState::Complete)
+	, FeatureLevel(GMaxRHIFeatureLevel)
 {
 	static TAtomic<uint64> IDCounter(1);
 	ID = IDCounter.IncrementExchange();
@@ -107,6 +108,7 @@ FNiagaraSystemInstance::FNiagaraSystemInstance(UNiagaraComponent* InComponent)
 			{
 				Batcher = static_cast<NiagaraEmitterInstanceBatcher*>(FXSystemInterface->GetInterface(NiagaraEmitterInstanceBatcher::Name));
 			}
+			FeatureLevel = World->FeatureLevel;
 		}
 	}
 }
@@ -691,8 +693,16 @@ void FNiagaraSystemInstance::ComputeEmittersExecutionOrder()
 		EmitterPriorities[EmitterIdx] = -1;
 
 		EmitterDependencies.SetNum(0, false);
-		FindDataInterfaceDependencies(Inst.GetSpawnExecutionContext().GetDataInterfaces(), EmitterDependencies);
-		FindDataInterfaceDependencies(Inst.GetUpdateExecutionContext().GetDataInterfaces(), EmitterDependencies);
+
+		if (Inst.GetCachedEmitter() && Inst.GetCachedEmitter()->SimTarget == ENiagaraSimTarget::GPUComputeSim && Inst.GetGPUContext())
+		{
+			FindDataInterfaceDependencies(Inst.GetGPUContext()->GetDataInterfaces(), EmitterDependencies);
+		}
+		else
+		{
+			FindDataInterfaceDependencies(Inst.GetSpawnExecutionContext().GetDataInterfaces(), EmitterDependencies);
+			FindDataInterfaceDependencies(Inst.GetUpdateExecutionContext().GetDataInterfaces(), EmitterDependencies);
+		}
 
 		// Map the pointers returned by the emitter to indices inside the Emitters array. This is O(N^2), but we expect
 		// to have few dependencies, so in practice it should be faster than a TMap. If it gets out of hand, we can also
@@ -2152,6 +2162,19 @@ bool FNiagaraSystemInstance::GetIsolateEnabled() const
 
 void FNiagaraSystemInstance::DestroyDataInterfaceInstanceData()
 {
+	NiagaraEmitterInstanceBatcher* InstanceBatcher = GetBatcher();
+	if (bHasGPUEmitters && FNiagaraUtilities::AllowGPUParticles(InstanceBatcher->GetShaderPlatform()))
+	{
+		ENQUEUE_RENDER_COMMAND(NiagaraRemoveGPUSystem)
+		(
+			[InstanceBatcher, InstanceID=GetId()](FRHICommandListImmediate& RHICmdList) mutable
+			{
+				InstanceBatcher->InstanceDeallocated_RenderThread(InstanceID);
+			}
+		);
+	}
+
+	//
 	for (TPair<TWeakObjectPtr<UNiagaraDataInterface>, int32>& Pair : DataInterfaceInstanceDataOffsets)
 	{
 		if (UNiagaraDataInterface* Interface = Pair.Key.Get())

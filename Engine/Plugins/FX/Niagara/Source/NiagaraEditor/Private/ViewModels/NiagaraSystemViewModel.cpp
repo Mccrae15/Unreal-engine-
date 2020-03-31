@@ -113,7 +113,6 @@ void FNiagaraSystemViewModel::Initialize(UNiagaraSystem& InSystem, FNiagaraSyste
 	SetupSequencer();
 	RefreshAll();
 	AddSystemEventHandlers();
-	SendLastCompileMessageJobs();
 }
 
 void FNiagaraSystemViewModel::DumpToText(FString& ExportText)
@@ -877,6 +876,7 @@ void FNiagaraSystemViewModel::SetupPreviewComponentAndInstance()
 		PreviewComponent = NewObject<UNiagaraComponent>(GetTransientPackage(), NAME_None, RF_Transient);
 		PreviewComponent->CastShadow = 1;
 		PreviewComponent->bCastDynamicShadow = 1;
+		PreviewComponent->SetAllowScalability(false);
 		PreviewComponent->SetAsset(System);
 		PreviewComponent->SetForceSolo(true);
 		PreviewComponent->SetAgeUpdateMode(ENiagaraAgeUpdateMode::DesiredAge);
@@ -897,7 +897,11 @@ void FNiagaraSystemViewModel::RefreshAll()
 	RefreshEmitterHandleViewModels();
 	RefreshSequencerTracks();
 	ResetCurveData();
+	InvalidateCachedCompileStatus();
+	SendLastCompileMessageJobs();
 	ScriptScratchPadViewModel->RefreshScriptViewModels();
+	SystemStackViewModel->GetRootEntry()->RefreshChildren();
+	SelectionViewModel->Refresh();
 }
 
 void FNiagaraSystemViewModel::NotifyDataObjectChanged(UObject* ChangedObject)
@@ -1039,12 +1043,6 @@ void FNiagaraSystemViewModel::RefreshEmitterHandleViewModels()
 		}
 	}
 	GetSystem().SetIsolateEnabled(bAnyEmitterIsolated);
-
-	if (SelectionViewModel != nullptr)
-	{
-		SelectionViewModel->Refresh();
-	}
-
 	OnEmitterHandleViewModelsChangedDelegate.Broadcast();
 }
 
@@ -1956,6 +1954,7 @@ void FNiagaraSystemViewModel::UpdateEmitterFixedBounds()
 		}
 	}
 	PreviewComponent->MarkRenderTransformDirty();
+	ResetSystem(ETimeResetMode::KeepCurrentTime, EMultiResetMode::ResetThisInstance, EReinitMode::ResetSystem);
 }
 
 void FNiagaraSystemViewModel::AddSystemEventHandlers()

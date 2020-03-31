@@ -516,6 +516,7 @@ public:
 	virtual void Convert(class UNiagaraNodeConvert* Convert, TArray <int32>& Inputs, TArray<int32>& Outputs);
 	virtual void If(class UNiagaraNodeIf* IfNode, TArray<FNiagaraVariable>& Vars, int32 Condition, TArray<int32>& PathA, TArray<int32>& PathB, TArray<int32>& Outputs);
 
+	void Message(FNiagaraCompileEventSeverity Severity, FText MessageText, const UNiagaraNode* Node, const UEdGraphPin* Pin);
 	virtual void Error(FText ErrorText, const UNiagaraNode* Node, const UEdGraphPin* Pin);
 	virtual void Warning(FText WarningText, const UNiagaraNode* Node, const UEdGraphPin* Pin);
 
@@ -530,12 +531,12 @@ public:
 		return CompilationTarget;
 	}
 
-	static bool IsBuiltInHlslType(FNiagaraTypeDefinition Type);
-	static FString GetStructHlslTypeName(FNiagaraTypeDefinition Type);
+	static bool IsBuiltInHlslType(const FNiagaraTypeDefinition& Type);
+	static FString GetStructHlslTypeName(const FNiagaraTypeDefinition& Type);
 	static FString GetPropertyHlslTypeName(const FProperty* Property);
-	static FString BuildHLSLStructDecl(FNiagaraTypeDefinition Type, FText& OutErrorMessage);
-	static FString GetHlslDefaultForType(FNiagaraTypeDefinition Type);
-	static bool IsHlslBuiltinVector(FNiagaraTypeDefinition Type);
+	static FString BuildHLSLStructDecl(const FNiagaraTypeDefinition& Type, FText& OutErrorMessage);
+	static FString GetHlslDefaultForType(const FNiagaraTypeDefinition& Type);
+	static bool IsHlslBuiltinVector(const FNiagaraTypeDefinition& Type);
 	static TArray<FName> ConditionPropertyPath(const FNiagaraTypeDefinition& Type, const TArray<FName>& InPath);
 
 

@@ -336,7 +336,7 @@ void UNiagaraSystem::PostLoad()
 			FNiagaraSystemScalabilityOverride& LegacyOverride = ScalabilityOverrides_DEPRECATED[DL];
 			FNiagaraSystemScalabilityOverride& NewOverride = SystemScalabilityOverrides.Overrides.AddDefaulted_GetRef();
 			NewOverride = LegacyOverride;
-			NewOverride.Platforms = FNiagaraPlatformSet(FNiagaraPlatformSet::CreateEQMask(DL));
+			NewOverride.Platforms = FNiagaraPlatformSet(FNiagaraPlatformSet::CreateQualityLevelMask(DL));
 		}
 	}
 
@@ -1413,12 +1413,12 @@ void UNiagaraSystem::AddToInstanceCountStat(int32 NumInstances, bool bSolo)const
 		if (bSolo)
 		{
 			FThreadStats::AddMessage(StatID_InstanceCountSolo.GetName(), EStatOperation::Add, int64(NumInstances));
-			TRACE_STAT_ADD(StatID_InstanceCount.GetName(), int64(Value));
+			TRACE_STAT_ADD(StatID_InstanceCount.GetName(), int64(NumInstances));
 		}
 		else
 		{
 			FThreadStats::AddMessage(StatID_InstanceCount.GetName(), EStatOperation::Add, int64(NumInstances));
-			TRACE_STAT_ADD(StatID_InstanceCount.GetName(), int64(Value));
+			TRACE_STAT_ADD(StatID_InstanceCount.GetName(), int64(NumInstances));
 		}
 	}
 #endif
@@ -1474,12 +1474,6 @@ void UNiagaraSystem::ResolveScalabilitySettings()
 				CurrentScalabilitySettings.MaxInstances = Override.MaxInstances;
 			}
 
-			if (Override.bOverrideOwnerLODSettings)
-			{
-				CurrentScalabilitySettings.bCullByMaxOwnerLOD = Override.bCullByMaxOwnerLOD;
-				CurrentScalabilitySettings.MaxOwnerLOD = Override.MaxOwnerLOD;
-			}
-
 			if (Override.bOverrideTimeSinceRendererSettings)
 			{
 				CurrentScalabilitySettings.bCullByMaxTimeWithoutRender = Override.bCullByMaxTimeWithoutRender;
@@ -1490,7 +1484,7 @@ void UNiagaraSystem::ResolveScalabilitySettings()
 	}
 }
 
-void UNiagaraSystem::OnEffectsQualityChanged()
+void UNiagaraSystem::OnQualityLevelChanged()
 {
 	ResolveScalabilitySettings();
 
@@ -1498,7 +1492,7 @@ void UNiagaraSystem::OnEffectsQualityChanged()
 	{
 		if (Handle.GetInstance())
 		{
-			Handle.GetInstance()->OnEffectsQualityChanged();
+			Handle.GetInstance()->OnQualityLevelChanged();
 		}
 	}
 

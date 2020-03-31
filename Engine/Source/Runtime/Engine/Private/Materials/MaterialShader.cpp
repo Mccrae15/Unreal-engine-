@@ -1733,7 +1733,9 @@ bool FMaterialShaderMap::ProcessCompilationResults(const TArray<TSharedRef<FShad
 								{
 									FMeshMaterialShaderType* ShaderType = ((FMeshMaterialShaderType*)(StageTypes[Index]))->GetMeshMaterialShaderType();
 									FShader* Shader = MeshShaderMap->GetShader(ShaderType, kUniqueShaderPermutationId);
-									check(Shader);
+#if DO_CHECK
+									UE_CLOG(Shader == nullptr, LogShaders, Fatal, TEXT("Failed to get ShaderType %s Permutation %d from MeshMaterial ShaderPipeline %s"), ShaderType->GetName(), kUniqueShaderPermutationId, ShaderPipelineType->GetName());
+#endif	// DO_CHECK
 									ShaderStages.Add(Shader);
 								}
 

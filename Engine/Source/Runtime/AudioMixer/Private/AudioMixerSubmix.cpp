@@ -49,6 +49,7 @@ namespace Audio
 		, NumSubmixEffects(0)
 		, bIsRecording(false)
 		, bIsBackgroundMuted(false)
+		, bIsSpectrumAnalyzing(false)
 		, OwningSubmixObject(nullptr)
 	{
 		EnvelopeFollowers.Reset();
@@ -940,30 +941,7 @@ namespace Audio
 		{
 			FMemory::Memzero((void*)BufferPtr, sizeof(float) * NumSamples);
 		}
-
-
-		// Don't necessarily need to do this if the user isn't using this feature
-		if (!FMath::IsNearlyEqual(TargetWetLevel, CurrentWetLevel) || !FMath::IsNearlyEqual(CurrentWetLevel, 1.0f))
-		{
-			// If we've already set the volume, only need to multiply by constant
-			if (FMath::IsNearlyEqual(TargetWetLevel, CurrentWetLevel))
-			{
-				Audio::MultiplyBufferByConstantInPlace(InputBuffer, TargetWetLevel);
-			}
-			else
-			{
-				// To avoid popping, we do a fade on the buffer to the target volume
-				Audio::FadeBufferFast(InputBuffer, CurrentWetLevel, TargetWetLevel);
-				CurrentWetLevel = TargetWetLevel;
-			}
-		}
-
-		// Check to see if need to mix together the dry and wet buffers
-		if (DryChannelBuffer.Num())
-		{
-			Audio::MixInBufferFast(DryChannelBuffer, InputBuffer);
-		}
-		
+	
 		// If we are recording, Add out buffer to the RecordingData buffer:
 		{
 			FScopeLock ScopedLock(&RecordingCriticalSection);
@@ -986,9 +964,8 @@ namespace Audio
 		// Perform any envelope following if we're told to do so
 		if (bIsEnvelopeFollowing)
 		{
-			const int32 OutBufferSamples = OutAudioBuffer.Num();
-			const float* OutAudioBufferPtr = OutAudioBuffer.GetData();
-
+			const int32 BufferSamples = InputBuffer.Num();
+			const float* AudioBufferPtr = InputBuffer.GetData();
 
 			// Perform envelope following per channel
 			FScopeLock EnvelopeScopeLock(&EnvelopeCriticalSection);
@@ -1000,9 +977,9 @@ namespace Audio
 				FEnvelopeFollower& EnvFollower = EnvelopeFollowers[ChannelIndex];
 
 				// Track the last sample
-				for (int32 SampleIndex = ChannelIndex; SampleIndex < OutBufferSamples; SampleIndex += NumChannels)
+				for (int32 SampleIndex = ChannelIndex; SampleIndex < BufferSamples; SampleIndex += NumChannels)
 				{
-					const float SampleValue = OutAudioBufferPtr[SampleIndex];
+					const float SampleValue = AudioBufferPtr[SampleIndex];
 					EnvFollower.ProcessAudio(SampleValue);
 				}
 
@@ -1501,13 +1478,88 @@ namespace Audio
 		OnSubmixEnvelope.AddUnique(OnSubmixEnvelopeBP);
 	}
 
+	void FMixerSubmix::AddSpectralAnalysisDelegate(const FOnSubmixSpectralAnalysisBP& OnSubmixSpectralAnalysisBP, const TArray<FSoundSubmixSpectralAnalysisBandSettings>& InBandSettings, float UpdateRate)
+	{
+		FSpectrumAnalysisDelegateInfo& NewDelegateInfo = SpectralAnalysisDelegates.AddDefaulted_GetRef();
+		
+		NewDelegateInfo.LastUpdateTime = -1.0f;
+		UpdateRate = FMath::Clamp(UpdateRate, 1.0f, 30.0f);
+		NewDelegateInfo.UpdateDelta = 1.0f / UpdateRate;
+
+		for (const FSoundSubmixSpectralAnalysisBandSettings& BandSettings : InBandSettings)
+		{
+			FSpectralAnalysisBandInfo NewBand;
+			NewBand.BandFrequency = BandSettings.BandFrequency;
+			NewBand.EnvelopeFollower.Init(UpdateRate, BandSettings.AttackTimeMsec, BandSettings.ReleaseTimeMsec);
+		
+			NewDelegateInfo.SpectralBands.Add(NewBand);
+		}
+
+		NewDelegateInfo.OnSubmixSpectralAnalysis.AddUnique(OnSubmixSpectralAnalysisBP);
+
+	}
+
 	void FMixerSubmix::StartSpectrumAnalysis(const FSpectrumAnalyzerSettings& InSettings)
 	{
+		bIsSpectrumAnalyzing = true;
+
+		// Construct a band extractor for each delegate listening to FFT results
+		for (FSpectrumAnalysisDelegateInfo& DelegateInfo : SpectralAnalysisDelegates)
+		{
+			// Build the band extractor here since we are given the FFT settings to use at this point
+			FSpectrumBandExtractorSettings BandExtractorSettings;
+
+			BandExtractorSettings.FFTSize = (int32)InSettings.FFTSize;
+			BandExtractorSettings.SampleRate = MixerDevice->GetSampleRate();
+
+			DelegateInfo.SpectrumBandExtractor = ISpectrumBandExtractor::CreateSpectrumBandExtractor(BandExtractorSettings);
+
+			// Determine the band extractor metric (i.e. spectrum type). This is the same for all bands in a given extractor.
+			ISpectrumBandExtractor::EMetric Metric = ISpectrumBandExtractor::EMetric::Magnitude;
+			switch (InSettings.SpectrumType)
+			{
+			case FSpectrumAnalyzerSettings::ESpectrumAnalyzerType::Power:
+				Metric = ISpectrumBandExtractor::EMetric::Power;
+				break;
+
+			case FSpectrumAnalyzerSettings::ESpectrumAnalyzerType::Decibel:
+				Metric = ISpectrumBandExtractor::EMetric::Decibel;
+				break;
+
+			default:
+				break;
+			}
+			
+			// TODO: @phil -- feels like maybe we can pass in the enum to AddBand vs 4 different Add Band functions?  Maybe not because of the Q-factor?
+
+			// Loop through each band and add them to the extractor
+			for (FSpectralAnalysisBandInfo& BandInfo : DelegateInfo.SpectralBands)
+			{
+				switch (InSettings.InterpolationMethod)
+				{
+					case FSpectrumAnalyzerSettings::EPeakInterpolationMethod::NearestNeighbor:
+						DelegateInfo.SpectrumBandExtractor->AddNearestNeighborBand(BandInfo.BandFrequency, Metric);
+						break;
+					case FSpectrumAnalyzerSettings::EPeakInterpolationMethod::Linear:
+						DelegateInfo.SpectrumBandExtractor->AddLerpBand(BandInfo.BandFrequency, Metric);
+						break;
+					case FSpectrumAnalyzerSettings::EPeakInterpolationMethod::Quadratic:
+						DelegateInfo.SpectrumBandExtractor->AddQuadraticBand(BandInfo.BandFrequency, Metric);
+						break;
+					case FSpectrumAnalyzerSettings::EPeakInterpolationMethod::ConstantQ:
+						// TODO: @phil -- how to compute q-factor?? I assume some math around bands?
+						DelegateInfo.SpectrumBandExtractor->AddConstantQBand(BandInfo.BandFrequency, 20.0f, Metric);
+						break;
+				}
+			}
+		}
+
 		SpectrumAnalyzer.Reset(new FSpectrumAnalyzer(InSettings, MixerDevice->GetSampleRate()));
 	}
 
 	void FMixerSubmix::StopSpectrumAnalysis()
 	{
+		bIsSpectrumAnalyzing = false;
 		SpectrumAnalyzer.Reset();
 	}
 
@@ -1566,18 +1618,18 @@ namespace Audio
 		TargetWetLevel = FMath::Clamp(InWetLevel, 0.0f, 1.0f);
 	}
 
-	void FMixerSubmix::BroadcastEnvelope()
+	void FMixerSubmix::BroadcastDelegates()
 	{
 		if (bIsEnvelopeFollowing)
 		{
 			// Get the envelope data
 			TArray<float> EnvelopeData;
+			EnvelopeData.AddUninitialized(EnvelopeNumChannels);
 
 			{
 				// Make the copy of the envelope values using a critical section
 				FScopeLock EnvelopeScopeLock(&EnvelopeCriticalSection);
 
-				EnvelopeData.AddUninitialized(EnvelopeNumChannels);
 				FMemory::Memcpy(EnvelopeData.GetData(), EnvelopeValues, sizeof(float)*EnvelopeNumChannels);
 			}
 
@@ -1587,6 +1639,58 @@ namespace Audio
 				OnSubmixEnvelope.Broadcast(EnvelopeData);
 			}
 
+		}
+		
+		// If we're analyzing spectra and if we've got delegates setup
+		if (bIsSpectrumAnalyzing && SpectralAnalysisDelegates.Num() > 0)
+		{
+			if (ensureMsgf(SpectrumAnalyzer.IsValid(), TEXT("Analyzing spectrum with invalid spectrum analyzer")))
+			{
+				// New results array
+				TArray<float> SpectralResults;
+
+				//const TArray<float>& InFrequencies, TArray<float>& OutMagnitudes
+				for (FSpectrumAnalysisDelegateInfo& DelegateInfo : SpectralAnalysisDelegates)
+				{
+					const float CurrentTime = FPlatformTime::ToSeconds64(FPlatformTime::Cycles64());
+
+					// Don't update the spectral band until it's time since the last tick.
+					if (DelegateInfo.LastUpdateTime > 0.0f && ((CurrentTime - DelegateInfo.LastUpdateTime) < DelegateInfo.UpdateDelta))
+					{
+						continue;
+					}
+
+					DelegateInfo.LastUpdateTime = CurrentTime;
+
+					SpectralResults.Reset();
+
+					{
+						Audio::FSpectrumAnalyzerScopeLock AnalyzerLock(SpectrumAnalyzer.Get());
+
+						if (ensure(DelegateInfo.SpectrumBandExtractor.IsValid()))
+						{
+							ISpectrumBandExtractor* Extractor = DelegateInfo.SpectrumBandExtractor.Get();
+
+							SpectrumAnalyzer->GetBands(*Extractor, SpectralResults);
+						}
+					}
+
+					// Feed the results through the band envelope followers
+					for (int32 ResultIndex = 0; ResultIndex < SpectralResults.Num(); ++ResultIndex)
+					{
+						if (ensure(ResultIndex < DelegateInfo.SpectralBands.Num()))
+						{
+							FSpectralAnalysisBandInfo& BandInfo = DelegateInfo.SpectralBands[ResultIndex];
+							SpectralResults[ResultIndex] = BandInfo.EnvelopeFollower.ProcessAudioNonClamped(SpectralResults[ResultIndex]);
+						}
+					}
+
+					if (DelegateInfo.OnSubmixSpectralAnalysis.IsBound())
+					{
+						DelegateInfo.OnSubmixSpectralAnalysis.Broadcast(SpectralResults);
+					}
+				}
+			}
 		}
 	}
 

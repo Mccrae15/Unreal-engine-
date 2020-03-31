@@ -9,8 +9,16 @@
 
 //PRAGMA_DISABLE_OPTIMIZATION
 
+#if INTEL_ISPC
+#include "PBDCollisionConstraints.ispc.generated.h"
+#endif
+
 namespace Chaos
 {
+#if INTEL_ISPC
+	extern bool bChaos_Collision_ISPC_Enabled;
+#endif
+
 	namespace Collisions
 	{
 		int32 Chaos_Collision_EnergyClampEnabled = 1;
@@ -54,8 +62,8 @@ namespace Chaos
 		FVec3 ApplyContact(FCollisionContact& Contact,
 			TGenericParticleHandle<FReal, 3> Particle0, 
 			TGenericParticleHandle<FReal, 3> Particle1,
-			const TContactIterationParameters<FReal> & IterationParameters,
-			const TContactParticleParameters<FReal> & ParticleParameters)
+			const FContactIterationParameters & IterationParameters,
+			const FContactParticleParameters & ParticleParameters)
 		{
 			FVec3 AccumulatedImpulse(0);
 
@@ -224,16 +232,60 @@ namespace Chaos
 		FVec3 ApplyContact2(FCollisionContact& Contact,
 			TGenericParticleHandle<FReal, 3> Particle0,
 			TGenericParticleHandle<FReal, 3> Particle1,
-			const TContactIterationParameters<FReal>& IterationParameters,
-			const TContactParticleParameters<FReal>& ParticleParameters)
+			const FContactIterationParameters& IterationParameters,
+			const FContactParticleParameters& ParticleParameters)
 		{
 			FVec3 AccumulatedImpulse(0);
-
 			TPBDRigidParticleHandle<FReal, 3>* PBDRigid0 = Particle0->CastToRigidParticle();
 			TPBDRigidParticleHandle<FReal, 3>* PBDRigid1 = Particle1->CastToRigidParticle();
-
 			bool bIsRigidDynamic0 = PBDRigid0 && PBDRigid0->ObjectState() == EObjectStateType::Dynamic;
 			bool bIsRigidDynamic1 = PBDRigid1 && PBDRigid1->ObjectState() == EObjectStateType::Dynamic;
+
+#if INTEL_ISPC
+			if (bChaos_Collision_ISPC_Enabled)
+			{
+				FVec3 PActor0 = Particle0->P();
+				FRotation3 QActor0 = Particle0->Q();
+				FVec3 PActor1 = Particle1->P();
+				FRotation3 QActor1 = Particle1->Q();
+				const FReal InvM0 = Particle0->InvM();
+				const FVec3 InvI0 = Particle0->InvI().GetDiagonal();
+				const FVec3 PCoM0 = Particle0->CenterOfMass();
+				const FRotation3 QCoM0 = Particle0->RotationOfMass();
+				const FReal InvM1 = Particle1->InvM();
+				const FVec3 InvI1 = Particle1->InvI().GetDiagonal();
+				const FVec3 PCoM1 = Particle1->CenterOfMass();
+				const FRotation3 QCoM1 = Particle1->RotationOfMass();
+				ispc::ApplyContact2(
+					(ispc::FCollisionContact*)&Contact,
+					(ispc::FVector&)PActor0,
+					(ispc::FVector4&)QActor0,
+					(ispc::FVector&)PActor1,
+					(ispc::FVector4&)QActor1,
+					InvM0,
+					(const ispc::FVector&)InvI0,
+					(const ispc::FVector&)PCoM0,
+					(const ispc::FVector4&)QCoM0,
+					InvM1,
+					(const ispc::FVector&)InvI1,
+					(const ispc::FVector&)PCoM1,
+					(const ispc::FVector4&)QCoM1);
+
+				if (bIsRigidDynamic0)
+				{
+					PBDRigid0->SetP(PActor0);
+					PBDRigid0->SetQ(QActor0);
+				}
+				if (bIsRigidDynamic1)
+				{
+					PBDRigid1->SetP(PActor1);
+					PBDRigid1->SetQ(QActor1);
+				}
+
+				*IterationParameters.NeedsAnotherIteration = true;
+				return AccumulatedImpulse;
+			}
+#endif
 
 			FVec3 P0 = FParticleUtilities::GetCoMWorldPosition(Particle0);
 			FVec3 P1 = FParticleUtilities::GetCoMWorldPosition(Particle1);
@@ -338,6 +390,13 @@ namespace Chaos
 				// Update the contact information based on current particles' positions
 				Collisions::Update(Constraint, ParticleParameters.CullDistance);
 
+				// Permanently disable a constraint that is beyond the cull distance
+				if (Constraint.GetPhi() >= ParticleParameters.CullDistance)
+				{
+					Constraint.SetDisabled(true);
+					return;
+				}
+
 				if (Constraint.GetPhi() >= ParticleParameters.ShapePadding)
 				{
 					return;
@@ -390,8 +449,8 @@ namespace Chaos
 			const FReal PartialDT = Constraint.TimeOfImpact * IterationParameters.Dt;
 			const FReal RemainingDT = (1 - Constraint.TimeOfImpact) * IterationParameters.Dt;
 			const int32 FakeIteration = FMath::Max(IterationParameters.Iteration, 1); // Force Apply to update constraint, as other constraints could've changed P
-			const FContactIterationParameters IterationParametersPartialDT{ PartialDT, FakeIteration, IterationParameters.NumIterations, IterationParameters.NumPairIterations, IterationParameters.ApplyType, IterationParameters.NeedsAnotherIteration, IterationParameters.AlwaysUpdateManifold };
-			const FContactIterationParameters IterationParametersRemainingDT{ RemainingDT, FakeIteration, IterationParameters.NumIterations, IterationParameters.NumPairIterations, IterationParameters.ApplyType, IterationParameters.NeedsAnotherIteration, IterationParameters.AlwaysUpdateManifold };
+			const FContactIterationParameters IterationParametersPartialDT{ PartialDT, FakeIteration, IterationParameters.NumIterations, IterationParameters.NumPairIterations, IterationParameters.ApplyType, IterationParameters.NeedsAnotherIteration };
+			const FContactIterationParameters IterationParametersRemainingDT{ RemainingDT, FakeIteration, IterationParameters.NumIterations, IterationParameters.NumPairIterations, IterationParameters.ApplyType, IterationParameters.NeedsAnotherIteration };
 
 			// Rewind P to TOI and Apply
 			Particle0->P() = FMath::Lerp(Particle0->X(), Particle0->P(), Constraint.TimeOfImpact);
@@ -550,6 +609,18 @@ namespace Chaos
 			for (int32 PairIt = 0; PairIt < IterationParameters.NumPairIterations; ++PairIt)
 			{
 				Update(Constraint, ParticleParameters.CullDistance);
+
+				// Permanently disable a constraint that is beyond the cull distance
+				if (Constraint.GetPhi() >= ParticleParameters.CullDistance)
+				{
+					Constraint.SetDisabled(true);
+					return;
+				}
+
+				if (Constraint.GetPhi() >= ParticleParameters.ShapePadding)
+				{
+					return;
+				}
 
 				Constraint.AccumulatedImpulse += 
 					ApplyPushOutContact(Constraint.Manifold, Particle0, Particle1, IsTemporarilyStatic, IterationParameters, ParticleParameters);

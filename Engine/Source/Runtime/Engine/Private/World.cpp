@@ -1419,6 +1419,10 @@ void UWorld::InitWorld(const InitializationValues IVS)
 
 	Levels.Empty(1);
 	Levels.Add( PersistentLevel );
+	if (FLevelCollection* Collection = PersistentLevel->GetCachedLevelCollection())
+	{
+		Collection->RemoveLevel(PersistentLevel);
+	}
 	PersistentLevel->OwningWorld = this;
 	PersistentLevel->bIsVisible = true;
 
@@ -4372,6 +4376,11 @@ UGameViewportClient* UWorld::GetGameViewport() const
 FConstControllerIterator UWorld::GetControllerIterator() const
 {
 	return ControllerList.CreateConstIterator();
+}
+
+int32 UWorld::GetNumControllers() const
+{
+	return ControllerList.Num();
 }
 
 FConstPlayerControllerIterator UWorld::GetPlayerControllerIterator() const

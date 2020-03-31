@@ -922,7 +922,12 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(Chaos::FPBDRigidsSolver
 				{
 					if (SolverClusterHandles[TransformGroupIndex])
 					{
-						GetSolver()->GetEvolution()->GetRigidClustering().GenerateConnectionGraph(SolverClusterHandles[TransformGroupIndex]);
+						Chaos::FClusterCreationParameters<Chaos::FReal> ClusterParams;
+						// #todo: should other parameters be set here?  Previously, there was no parameters being sent, and it is unclear
+						// where some of these parameters are defined (ie: CoillisionThicknessPercent)
+						ClusterParams.ConnectionMethod = Parameters.ClusterConnectionMethod;
+						
+						GetSolver()->GetEvolution()->GetRigidClustering().GenerateConnectionGraph(SolverClusterHandles[TransformGroupIndex], ClusterParams);
 					}
 				}
 			}
@@ -1111,6 +1116,18 @@ FGeometryCollectionPhysicsProxy::BuildClusters(
 		MinCollisionGroup = FMath::Min(Child->CollisionGroup(), MinCollisionGroup);
 	}
 	Parent->SetCollisionGroup(MinCollisionGroup);
+
+	// Populate bounds as we didn't pass a shared implicit to PopulateSimulatedParticle this will have been skipped, now that we have the full cluster we can build it
+	if(Parent->Geometry() && Parent->Geometry()->HasBoundingBox())
+	{
+		Parent->SetHasBounds(true);
+		Parent->SetLocalBounds(Parent->Geometry()->BoundingBox());
+		const Chaos::TAABB<float, 3>& LocalBounds = Parent->LocalBounds();
+		const Chaos::TRigidTransform<float, 3> Xf(Parent->X(), Parent->R());
+		const Chaos::TAABB<float, 3> TransformedBBox = LocalBounds.TransformedAABB(Xf);
+		Parent->SetWorldSpaceInflatedBounds(TransformedBBox);
+	}
+
 	return Parent;
 }
 
@@ -1123,8 +1140,11 @@ void FGeometryCollectionPhysicsProxy::GetRelevantHandles(
 	EFieldResolutionType ResolutionType, 
 	bool bForce = true)
 {
-	if (bForce)
+	if(bForce)
 	{
+		Samples.Reset();
+		SampleIndices.Reset();
+
 		// only the local handles
 		TArray<FClusterHandle*>& ParticleHandles = GetSolverParticleHandles();
 		Handles.SetNumUninitialized(ParticleHandles.Num());
@@ -1506,8 +1526,7 @@ void FGeometryCollectionPhysicsProxy::BufferPhysicsResults()
 				FTransform& ParticleToWorld = TargetResults.ParticleToWorldTransforms[TransformIndex];
 				ParticleToWorld = FTransform(Handle->R(), Handle->X());
 
-				TargetResults.Transforms[TransformIndex] = 
-					PTDynamicCollection.MassToLocal[TransformIndex].GetRelativeTransformReverse(ParticleToWorld).GetRelativeTransform(ActorToWorld);
+				TargetResults.Transforms[TransformIndex] = PTDynamicCollection.MassToLocal[TransformIndex].GetRelativeTransformReverse(ParticleToWorld).GetRelativeTransform(ActorToWorld);
 				TargetResults.Transforms[TransformIndex].NormalizeRotation();
 
 				// If the parent of this NON DISABLED body is set to anything other than INDEX_NONE,
@@ -1519,6 +1538,11 @@ void FGeometryCollectionPhysicsProxy::BufferPhysicsResults()
 					// Children in the hierarchy are stored in a TSet, which is not thread safe.  
 					// So we retain indices to remove afterwards.
 					EndFrameUnparentingBuffer[TransformIndex] = ParentIndex;
+					
+					// Once a child is released there is no longer a useful parent relationship as the child is
+					// now entirely responsible for its own simulation. Sever the link here so we don't attempt
+					// to pull in a parent transform later in the pipeline.
+					PhysicsThreadCollection.Parent[TransformIndex] = INDEX_NONE;
 				}
 
 				// When a leaf node rigid body is removed from a cluster, the rigid
@@ -1546,33 +1570,6 @@ void FGeometryCollectionPhysicsProxy::BufferPhysicsResults()
 					}
 					SolverClusterID[TransformIndex] = Handle->ClusterIds().Id;
 				}
-
-				// Disabled rigid bodies that have valid cluster parents, and have been re-indexed by the
-				// solver (as in, They were re-clustered outside of the geometry collection), These clusters 
-				// will need to be rendered based on the clusters position. 
-
-				if (TPBDRigidParticleHandle<float, 3>* ParentHandle = Handle->ClusterIds().Id)
-				{
-					if (TPBDRigidClusteredParticleHandle<float, 3>* ClusteredParentHandle = ParentHandle->CastToClustered())
-					{
-						if (ClusteredParentHandle->InternalCluster())
-						{
-
-							//const FTransform ClusterChildToWorld = ClusterChildToParentMap[RigidBodyIndex] * FTransform(Particles.R(ClusterParentIndex), Particles.X(ClusterParentIndex));
-							const TRigidTransform<float, 3>& ChildToParent = Handle->ChildToParent();
-							const FTransform ClusterChildToWorld = ChildToParent * FTransform(ParentHandle->R(), ParentHandle->X());
-							if (Parameters.IsCacheRecording())
-							{
-								Handle->SetX(ClusterChildToWorld.GetTranslation());
-								Handle->SetR(ClusterChildToWorld.GetRotation());
-							}
-							TargetResults.Transforms[TransformIndex] = 
-								PTDynamicCollection.MassToLocal[TransformIndex].GetRelativeTransformReverse(ClusterChildToWorld).GetRelativeTransform(ActorToWorld);
-							TargetResults.Transforms[TransformIndex].NormalizeRotation();
-						}
-					}
-				}
-
 			}// end if
 		} // end for
 	} // tmp scope
@@ -1643,8 +1640,11 @@ void FGeometryCollectionPhysicsProxy::PullFromPhysicsState()
 	 */
 
 	const FGeometryCollectionResults* TargetResultPtr = PhysToGameInterchange.GetConsumerBuffer();
-	if (!TargetResultPtr)
+	if(!TargetResultPtr)
+	{
 		return;
+	}
+
 	// Remove const-ness as we're going to do the ExchangeArrays() thing.
 	FGeometryCollectionResults& TR = *const_cast<FGeometryCollectionResults*>(TargetResultPtr);
 

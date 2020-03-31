@@ -38,6 +38,7 @@
 #include "Chaos/TriangleMeshImplicitObject.h"
 #include "Chaos/MassProperties.h"
 #include "Chaos/Utilities.h"
+#include "Physics/Experimental/ChaosInterfaceUtils.h"
 
 #if WITH_CHAOS
 #include "Chaos/ParticleHandle.h"
@@ -80,6 +81,8 @@ DECLARE_CYCLE_STAT(TEXT("CreatePhysicsActor"), STAT_CreatePhysicsActor, STATGROU
 DECLARE_CYCLE_STAT(TEXT("BodyInstance SetCollisionProfileName"), STAT_BodyInst_SetCollisionProfileName, STATGROUP_Physics);
 DECLARE_CYCLE_STAT(TEXT("Phys SetBodyTransform"), STAT_SetBodyTransform, STATGROUP_Physics);
 
+static int32 GUseDeferredPhysicsBodyCreation = 0;
+
 // @HACK Guard to better encapsulate game related hacks introduced into UpdatePhysicsFilterData()
 TAutoConsoleVariable<int32> CVarEnableDynamicPerBodyFilterHacks(
 	TEXT("p.EnableDynamicPerBodyFilterHacks"), 
@@ -88,12 +91,20 @@ TAutoConsoleVariable<int32> CVarEnableDynamicPerBodyFilterHacks(
 	ECVF_ReadOnly
 );
 
-TAutoConsoleVariable<int32> CVarEnableDeferredPhysicsCreation(
+FAutoConsoleVariableRef CVarEnableDeferredPhysicsCreation(
 	TEXT("p.EnableDeferredPhysicsCreation"), 
-	0, 
+	GUseDeferredPhysicsBodyCreation,
 	TEXT("Enables/Disables deferred physics creation."),
 	ECVF_Default
 );
+
+bool FBodyInstance::UseDeferredPhysicsBodyCreation()
+{
+	// @todo: this could be improved by tracking all oustanding delayed creations, and return true if there are any at all. 
+	// or maybe keep a list of instances that have them, so we don't loop over all actors, etc
+	return GUseDeferredPhysicsBodyCreation != 0;
+}
+
 
 using namespace PhysicsInterfaceTypes;
 
@@ -1178,25 +1189,6 @@ bool FInitBodiesHelperBase::CreateShapesAndActors()
 	return true;
 }
 
-#if WITH_CHAOS
-	Chaos::EChaosCollisionTraceFlag ConvertCollisionTraceFlag(ECollisionTraceFlag Flag)
-	{
-		if (Flag == ECollisionTraceFlag::CTF_UseDefault)
-			return Chaos::EChaosCollisionTraceFlag::Chaos_CTF_UseDefault;
-		if (Flag == ECollisionTraceFlag::CTF_UseSimpleAndComplex)
-			return Chaos::EChaosCollisionTraceFlag::Chaos_CTF_UseSimpleAndComplex;
-		if (Flag == ECollisionTraceFlag::CTF_UseSimpleAsComplex)
-			return Chaos::EChaosCollisionTraceFlag::Chaos_CTF_UseSimpleAsComplex;
-		if (Flag == ECollisionTraceFlag::CTF_UseComplexAsSimple)
-			return Chaos::EChaosCollisionTraceFlag::Chaos_CTF_UseComplexAsSimple;
-		if (Flag == ECollisionTraceFlag::CTF_MAX)
-			return Chaos::EChaosCollisionTraceFlag::Chaos_CTF_MAX;
-		ensure(false);
-		return Chaos::EChaosCollisionTraceFlag::Chaos_CTF_UseDefault;
-	}
-#endif
-
-
 void FInitBodiesHelperBase::InitBodies()
 {
 #if WITH_CHAOS
@@ -1253,7 +1245,7 @@ void FInitBodiesHelperBase::InitBodies()
 							{
 								for (int32 ShapeIndex = 0; ShapeIndex < NumShapes; ++ShapeIndex)
 								{
-									ActorHandle->SetShapeCollisionTraceType(ShapeIndex, ConvertCollisionTraceFlag(BI->BodySetup->CollisionTraceFlag)) ;
+									ActorHandle->SetShapeCollisionTraceType(ShapeIndex, ChaosInterface::ConvertCollisionTraceFlag(BI->BodySetup->CollisionTraceFlag)) ;
 								}
 							}
 
@@ -1353,7 +1345,7 @@ void FBodyInstance::InitBody(class UBodySetup* Setup, const FTransform& Transfor
 	bool bIsStatic = SpawnParams.bStaticPhysics;
 	if(bIsStatic)
 	{
-		if (CVarEnableDeferredPhysicsCreation.GetValueOnGameThread())
+		if (GUseDeferredPhysicsBodyCreation)
 		{
 			InitBodiesDeferredListStatic.Add(FInitBodiesHelperWithData<true>(MoveTemp(Bodies), MoveTemp(Transforms), Setup, PrimComp, InRBScene, SpawnParams, SpawnParams.Aggregate));
 		}
@@ -1365,7 +1357,7 @@ void FBodyInstance::InitBody(class UBodySetup* Setup, const FTransform& Transfor
 	}
 	else
 	{
-		if (CVarEnableDeferredPhysicsCreation.GetValueOnGameThread())
+		if (GUseDeferredPhysicsBodyCreation)
 		{
 			InitBodiesDeferredListDynamic.Add(FInitBodiesHelperWithData<false>(MoveTemp(Bodies), MoveTemp(Transforms), Setup, PrimComp, InRBScene, SpawnParams, SpawnParams.Aggregate));
 		}

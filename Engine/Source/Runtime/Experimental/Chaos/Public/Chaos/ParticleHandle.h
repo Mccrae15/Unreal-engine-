@@ -422,6 +422,13 @@ public:
 	TRotation<T, d>& R() { return GeometryParticles->R(ParticleIdx); }
 	void SetR(const TRotation<T, d>& InR) { GeometryParticles->R(ParticleIdx) = InR; }
 
+	void SetXR(const FParticlePositionRotation& XR)
+	{
+		SetX(XR.X());
+		SetR(XR.R());
+	}
+
+
 	TSerializablePtr<FImplicitObject> Geometry() const { return GeometryParticles->Geometry(ParticleIdx); }
 	void SetGeometry(TSerializablePtr<FImplicitObject> InGeometry) { GeometryParticles->SetGeometry(ParticleIdx, InGeometry); }
 
@@ -563,6 +570,7 @@ public:
 	using TGeometryParticleHandleImp<T, d, bPersistent>::CastToRigidParticle;
 	using TTransientHandle = TTransientKinematicGeometryParticleHandle<T, d>;
 	using TSOAType = TKinematicGeometryParticles<T, d>;
+	using TGeometryParticleHandleImp<T, d, bPersistent>::SetXR;
 	
 protected:
 	friend class TGeometryParticleHandleImp<T, d, bPersistent>;
@@ -598,6 +606,12 @@ public:
 	const TVector<T, d>& W() const { return KinematicGeometryParticles->W(ParticleIdx); }
 	TVector<T, d>& W() { return KinematicGeometryParticles->W(ParticleIdx); }
 	void SetW(const TVector<T, d>& InW) { KinematicGeometryParticles->W(ParticleIdx) = InW; }
+
+	void SetVelocities(const FParticleVelocities& Velocities)
+	{
+		SetV(Velocities.V());
+		SetW(Velocities.W());
+	}
 
 	const TKinematicTarget<T, d>& KinematicTarget() const { return KinematicGeometryParticles->KinematicTarget(ParticleIdx); }
 	TKinematicTarget<T, d>& KinematicTarget() { return KinematicGeometryParticles->KinematicTarget(ParticleIdx); }
@@ -656,6 +670,13 @@ public:
 		return Serializable;
 	}
 
+	void SetXR(const FParticlePositionRotation& InXR)
+	{
+		TKinematicGeometryParticleHandleImp<T, d, bPersistent>::SetXR(InXR);
+		SetP(InXR.X());
+		SetQ(InXR.R());
+	}
+
 	operator TPBDRigidParticleHandleImp<T, d, false>& () { return reinterpret_cast<TPBDRigidParticleHandleImp<T, d, false>&>(*this); }
 
 	const TUniquePtr<TBVHParticles<T, d>>& CollisionParticles() const { return PBDRigidParticles->CollisionParticles(ParticleIdx); }
@@ -707,6 +728,14 @@ public:
 	const TVector<T, d>& AngularImpulse() const { return PBDRigidParticles->AngularImpulse(ParticleIdx); }
 	TVector<T, d>& AngularImpulse() { return PBDRigidParticles->AngularImpulse(ParticleIdx); }
 	void SetAngularImpulse(const TVector<T, d>& InAngularImpulse) { PBDRigidParticles->AngularImpulse(ParticleIdx) = InAngularImpulse; }
+
+	void SetDynamics(const FParticleDynamics& Dynamics)
+	{
+		SetF(Dynamics.F());
+		SetTorque(Dynamics.Torque());
+		SetLinearImpulse(Dynamics.LinearImpulse());
+		SetAngularImpulse(Dynamics.AngularImpulse());
+	}
 
 	const PMatrix<T, d, d>& I() const { return PBDRigidParticles->I(ParticleIdx); }
 	PMatrix<T, d, d>& I() { return PBDRigidParticles->I(ParticleIdx); }
@@ -1399,7 +1428,7 @@ public:
 
 	static TGeometryParticle<T, d>* SerializationFactory(FChaosArchive& Ar, TGeometryParticle<T, d>* Serializable);
 
-	const TVector<T, d>& X() const { return MXR.Read().X; }
+	const TVector<T, d>& X() const { return MXR.Read().X(); }
 	void SetX(const TVector<T, d>& InX, bool bInvalidate = true);
 
 	FUniqueIdx UniqueIdx() const { return MNonFrequentData.Read().UniqueIdx; }
@@ -1408,9 +1437,14 @@ public:
 		MNonFrequentData.Modify(bInvalidate,MDirtyFlags,Proxy,[UniqueIdx](auto& Data){ Data.UniqueIdx = UniqueIdx;});
 	}
 
-	const TRotation<T, d>& R() const { return MXR.Read().R; }
+	const TRotation<T, d>& R() const { return MXR.Read().R(); }
 	void SetR(const TRotation<T, d>& InR, bool bInvalidate = true);
 
+	void SetXR(const FParticlePositionRotation& InXR, bool bInvalidate = true)
+	{
+		MXR.Write(InXR,bInvalidate,MDirtyFlags,Proxy);
+	}
+	
 	//todo: geometry should not be owned by particle
 	void SetGeometry(TUniquePtr<FImplicitObject>&& UniqueGeometry)
 	{
@@ -1437,6 +1471,8 @@ public:
 		check(false);
 	}
 
+	const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& SharedGeometryLowLevel() const { return MNonFrequentData.Read().Geometry; }
+
 	void* UserData() const { return MNonFrequentData.Read().UserData; }
 	void SetUserData(void* InUserData)
 	{
@@ -1445,11 +1481,16 @@ public:
 
 	void UpdateShapeBounds()
 	{
+		UpdateShapeBounds(FRigidTransform3(X(), R()));
+	}
+
+	void UpdateShapeBounds(const FTransform& Transform)
+	{
 		if (MNonFrequentData.Read().Geometry->HasBoundingBox())
 		{
 			for (auto& Shape : MShapesArray)
 			{
-				Shape->UpdateShapeBounds(FRigidTransform3(X(), R()));
+				Shape->UpdateShapeBounds(Transform);
 			}
 		}
 	}
@@ -1824,11 +1865,16 @@ public:
 		Ar << MVelocities;
 	}
 
-	const TVector<T, d>& V() const { return MVelocities.Read().V; }
+	const TVector<T, d>& V() const { return MVelocities.Read().V(); }
 	void SetV(const TVector<T, d>& InV, bool bInvalidate = true);
 
-	const TVector<T, d>& W() const { return MVelocities.Read().W; }
+	const TVector<T, d>& W() const { return MVelocities.Read().W(); }
 	void SetW(const TVector<T, d>& InW, bool bInvalidate = true);
+
+	void SetVelocities(const FParticleVelocities& InVelocities,bool bInvalidate = true)
+	{
+		MVelocities.Write(InVelocities,bInvalidate,MDirtyFlags,Proxy);
+	}
 
 	const TVector<T, d>& CenterOfMass() const { return MMassProps.Read().CenterOfMass; }
 	void SetCenterOfMass(const TVector<T, d>& InCenterOfMass, bool bInvalidate = true)
@@ -1979,44 +2025,49 @@ public:
 		this->MInitialized = InInitialized;
 	}
 
-	const TVector<T, d>& F() const { return MDynamics.Read().F; }
+	const TVector<T, d>& F() const { return MDynamics.Read().F(); }
 	void SetF(const TVector<T, d>& InF, bool bInvalidate = true)
 	{
 		if (bInvalidate)
 		{
 			SetObjectState(EObjectStateType::Dynamic, true);
 		}
-		MDynamics.Modify(bInvalidate,MDirtyFlags,Proxy,[&InF](auto& Data){ Data.F = InF;});
+		MDynamics.Modify(bInvalidate,MDirtyFlags,Proxy,[&InF](auto& Data){ Data.SetF(InF);});
 	}
 
-	const TVector<T, d>& Torque() const { return MDynamics.Read().Torque; }
+	const TVector<T, d>& Torque() const { return MDynamics.Read().Torque(); }
 	void SetTorque(const TVector<T, d>& InTorque, bool bInvalidate=true)
 	{
 		if (bInvalidate)
 		{
 			SetObjectState(EObjectStateType::Dynamic, true);
 		}
-		MDynamics.Modify(bInvalidate,MDirtyFlags,Proxy,[&InTorque](auto& Data){ Data.Torque = InTorque;});
+		MDynamics.Modify(bInvalidate,MDirtyFlags,Proxy,[&InTorque](auto& Data){ Data.SetTorque(InTorque);});
 	}
 
-	const TVector<T, d>& LinearImpulse() const { return MDynamics.Read().LinearImpulse; }
+	const TVector<T, d>& LinearImpulse() const { return MDynamics.Read().LinearImpulse(); }
 	void SetLinearImpulse(const TVector<T, d>& InLinearImpulse, bool bInvalidate = true)
 	{
 		if (bInvalidate)
 		{
 			SetObjectState(EObjectStateType::Dynamic, true);
 		}
-		MDynamics.Modify(bInvalidate,MDirtyFlags,Proxy,[&InLinearImpulse](auto& Data){ Data.LinearImpulse = InLinearImpulse;});
+		MDynamics.Modify(bInvalidate,MDirtyFlags,Proxy,[&InLinearImpulse](auto& Data){ Data.SetLinearImpulse(InLinearImpulse);});
 	}
 
-	const TVector<T, d>& AngularImpulse() const { return MDynamics.Read().AngularImpulse; }
+	const TVector<T, d>& AngularImpulse() const { return MDynamics.Read().AngularImpulse(); }
 	void SetAngularImpulse(const TVector<T, d>& InAngularImpulse, bool bInvalidate = true)
 	{
 		if (bInvalidate)
 		{
 			SetObjectState(EObjectStateType::Dynamic, true);
 		}
-		MDynamics.Modify(bInvalidate,MDirtyFlags,Proxy,[&InAngularImpulse](auto& Data){ Data.AngularImpulse = InAngularImpulse;});
+		MDynamics.Modify(bInvalidate,MDirtyFlags,Proxy,[&InAngularImpulse](auto& Data){ Data.SetAngularImpulse(InAngularImpulse);});
+	}
+
+	void SetDynamics(const FParticleDynamics& InDynamics,bool bInvalidate = true)
+	{
+		MDynamics.Write(InDynamics,bInvalidate,MDirtyFlags,Proxy);
 	}
 
 	const PMatrix<T, d, d>& I() const { return MMassProps.Read().I; }
@@ -2322,7 +2373,7 @@ void TGeometryParticle<T, d>::SetX(const TVector<T, d>& InX, bool bInvalidate)
 			Dyn->SetObjectState(EObjectStateType::Dynamic, true);
 		}
 	}
-	MXR.Modify(bInvalidate, MDirtyFlags, Proxy, [&InX](auto& Data) { Data.X = InX; });
+	MXR.Modify(bInvalidate, MDirtyFlags, Proxy, [&InX](auto& Data) { Data.SetX(InX); });
 }
 
 template <typename T, int d>
@@ -2336,7 +2387,7 @@ void TGeometryParticle<T, d>::SetR(const TRotation<T, d>& InR, bool bInvalidate)
 			Dyn->SetObjectState(EObjectStateType::Dynamic, true);
 		}
 	}
-	MXR.Modify(bInvalidate, MDirtyFlags, Proxy, [&InR](auto& Data) { Data.R = InR; });
+	MXR.Modify(bInvalidate, MDirtyFlags, Proxy, [&InR](auto& Data) { Data.SetR(InR); });
 }
 
 template <typename T, int d>
@@ -2364,7 +2415,7 @@ void TKinematicGeometryParticle<T, d>::SetV(const TVector<T, d>& InV, bool bInva
 			Dyn->SetObjectState(EObjectStateType::Dynamic, true);
 		}
 	}
-	MVelocities.Modify(bInvalidate, MDirtyFlags, Proxy, [&InV](auto& Data) { Data.V = InV; });
+	MVelocities.Modify(bInvalidate, MDirtyFlags, Proxy, [&InV](auto& Data) { Data.SetV(InV); });
 }
 
 template <typename T, int d>
@@ -2378,7 +2429,7 @@ void TKinematicGeometryParticle<T, d>::SetW(const TVector<T, d>& InW, bool bInva
 			Dyn->SetObjectState(EObjectStateType::Dynamic, true);
 		}
 	}
-	MVelocities.Modify(bInvalidate, MDirtyFlags, Proxy, [&InW](auto& Data) { Data.W = InW; });
+	MVelocities.Modify(bInvalidate, MDirtyFlags, Proxy, [&InW](auto& Data) { Data.SetW(InW); });
 }
 
 template <typename T, int d>
