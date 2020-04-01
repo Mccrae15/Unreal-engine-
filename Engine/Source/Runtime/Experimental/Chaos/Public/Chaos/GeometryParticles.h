@@ -21,7 +21,7 @@
 namespace Chaos
 {
 
-	enum EChaosCollisionTraceFlag
+	enum EChaosCollisionTraceFlag : int
 	{
 		/** Use project physics settings (DefaultShapeComplexity) */
 		Chaos_CTF_UseDefault,
