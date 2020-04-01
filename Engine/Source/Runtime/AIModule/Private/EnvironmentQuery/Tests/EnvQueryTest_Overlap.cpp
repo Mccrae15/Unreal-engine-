@@ -56,6 +56,14 @@ void UEnvQueryTest_Overlap::RunTest(FEnvQueryInstance& QueryInstance) const
 	{
 		QueryInstance.PrepareContext(UEnvQueryContext_Querier::StaticClass(), IgnoredActors);
 	}
+	TArray<AActor*> UserDefinedActorsToignore;
+	
+		QueryInstance.PrepareContext(ActorToIgnore, UserDefinedActorsToignore);
+		if (UserDefinedActorsToignore.Num() > 0)
+		{
+			IgnoredActors.Append(UserDefinedActorsToignore);
+		}
+		
 
 	for (FEnvQueryInstance::ItemIterator It(this, QueryInstance); It; ++It)
 	{
