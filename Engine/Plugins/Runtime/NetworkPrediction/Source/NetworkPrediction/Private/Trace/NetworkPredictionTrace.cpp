@@ -30,7 +30,6 @@ UE_TRACE_EVENT_END()
 
 // Trace a simulation's local netrole, which can change during the sim's liftetime.
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, SimulationNetRole)
-	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
 	UE_TRACE_EVENT_FIELD(uint32, SimulationId)
 	UE_TRACE_EVENT_FIELD(uint8, NetRole)
 UE_TRACE_EVENT_END()
@@ -44,7 +43,6 @@ UE_TRACE_EVENT_END()
 // Traces a simulation tick in any context
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, SimulationTick)
 	UE_TRACE_EVENT_FIELD(uint32, SimulationId)
-	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
 	UE_TRACE_EVENT_FIELD(int32, StartMS)
 	UE_TRACE_EVENT_FIELD(int32, EndMS)
 	UE_TRACE_EVENT_FIELD(int32, OutputFrame)	
@@ -53,18 +51,17 @@ UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, SimulationEOF)
 	UE_TRACE_EVENT_FIELD(uint32, SimulationId)
-	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
-	UE_TRACE_EVENT_FIELD(double, EngineFrameDeltaTime)	// FIXME: Need better tracking of engine frame vs simulation EOF updates
-	UE_TRACE_EVENT_FIELD(double, EngineCurrentTime)		// FIXME: ^^
-	UE_TRACE_EVENT_FIELD(int32, TotalProcessedMS)
-	UE_TRACE_EVENT_FIELD(int32, TotalAllowedMS)
-	UE_TRACE_EVENT_FIELD(int32, LastSentKeyframe)
-	UE_TRACE_EVENT_FIELD(int32, LastReceivedKeyframe)
+	UE_TRACE_EVENT_FIELD(float, EngineFrameDeltaTime)
+	UE_TRACE_EVENT_FIELD(int32, BufferSize)
+	UE_TRACE_EVENT_FIELD(int32, PendingTickFrame)
+	UE_TRACE_EVENT_FIELD(int32, LatestInputFrame)
+	UE_TRACE_EVENT_FIELD(int32, MaxTickFrame)
+	UE_TRACE_EVENT_FIELD(int32, TotalSimTime)
+	UE_TRACE_EVENT_FIELD(int32, AllowedSimTime)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, NetSerializeRecv)
 	UE_TRACE_EVENT_FIELD(uint32, SimulationId)
-	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
 	UE_TRACE_EVENT_FIELD(int32, ReceivedSimTimeMS)
 	UE_TRACE_EVENT_FIELD(int32, ReceivedFrame)
 UE_TRACE_EVENT_END()
@@ -72,27 +69,25 @@ UE_TRACE_EVENT_END()
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, InputCmd)
 	UE_TRACE_EVENT_FIELD(uint32, SimulationId)
 	UE_TRACE_EVENT_FIELD(int32, SimulationFrame)
-	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, SyncState)
 	UE_TRACE_EVENT_FIELD(uint32, SimulationId)
 	UE_TRACE_EVENT_FIELD(int32, SimulationFrame)
-	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, AuxState)
 	UE_TRACE_EVENT_FIELD(uint32, SimulationId)
 	UE_TRACE_EVENT_FIELD(int32, SimulationFrame)
-	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, NetSerializeCommit)
 	UE_TRACE_EVENT_FIELD(uint32, SimulationId)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(NetworkPrediction,NetSerializeFault)
-	UE_TRACE_EVENT_FIELD(uint32,SimulationId)
+// General system fault. Log message is in attachment
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, SystemFault)
+	UE_TRACE_EVENT_FIELD(uint32, SimulationId)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, OOBStateMod)
@@ -109,6 +104,11 @@ UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(NetworkPrediction, PieBegin)
 	UE_TRACE_EVENT_FIELD(uint32, DummyData)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(NetworkPrediction, WorldFrameStart)
+	UE_TRACE_EVENT_FIELD(uint64, EngineFrameNumber)
+	UE_TRACE_EVENT_FIELD(float, DeltaSeconds)
 UE_TRACE_EVENT_END()
 
 
@@ -194,38 +194,35 @@ void FNetworkPredictionTrace::TraceSimulationCreated(const AActor* OwningActor, 
 void FNetworkPredictionTrace::TraceSimulationNetRole(uint32 SimulationId, ENetRole NetRole)
 {
 	UE_TRACE_LOG(NetworkPrediction, SimulationNetRole, NetworkPredictionChannel)
-		<< SimulationNetRole.EngineFrameNumber(GFrameNumber)
 		<< SimulationNetRole.SimulationId(SimulationId)
 		<< SimulationNetRole.NetRole((uint8)NetRole);
 }
 
-void FNetworkPredictionTrace::TraceSimulationTick(int32 OutputFrame, const FNetworkSimTime& FrameDeltaTime, const FSimulationTickState& TickState)
+void FNetworkPredictionTrace::TraceSimulationTick(int32 OutputFrame, const FNetworkSimTime& FrameDeltaTime, const FNetSimTimeStep& TimeStep)
 {
 	UE_TRACE_LOG(NetworkPrediction, SimulationTick, NetworkPredictionChannel)
 		<< SimulationTick.SimulationId(PeakSimulationIdChecked())
-		<< SimulationTick.EngineFrameNumber(GFrameNumber)
-		<< SimulationTick.StartMS(TickState.GetTotalProcessedSimulationTime())
-		<< SimulationTick.EndMS(TickState.GetTotalProcessedSimulationTime() + FrameDeltaTime)
+		<< SimulationTick.StartMS(TimeStep.TotalSimulationTime)
+		<< SimulationTick.EndMS(TimeStep.TotalSimulationTime + TimeStep.StepMS)
 		<< SimulationTick.OutputFrame(OutputFrame);
 }
 
-void FNetworkPredictionTrace::TraceSimulationEOF(const FSimulationTickState& TickState, int32 LastSentKeyframe, int32 LastReceivedKeyframe)
+void FNetworkPredictionTrace::TraceEOF_Internal(int32 BufferSize, int32 PendingTickFrame, int32 LatestInputFrame, int32 MaxTickFrame, FNetworkSimTime TotalSimTime, FNetworkSimTime AllowedSimTime)
 {
 	const uint32 SimulationId = PeakSimulationIdChecked();
 
 	UE_TRACE_LOG(NetworkPrediction, SimulationEOF, NetworkPredictionChannel)
 		<< SimulationEOF.SimulationId(SimulationId)
-		<< SimulationEOF.EngineFrameNumber(GFrameNumber)
-		<< SimulationEOF.EngineFrameDeltaTime(FApp::GetDeltaTime())	// FIXME
-		<< SimulationEOF.EngineCurrentTime(FApp::GetCurrentTime())	// FIXME
-		<< SimulationEOF.TotalProcessedMS(TickState.GetTotalProcessedSimulationTime())
-		<< SimulationEOF.TotalAllowedMS(TickState.GetTotalAllowedSimulationTime())
-		<< SimulationEOF.LastSentKeyframe(LastSentKeyframe)
-		<< SimulationEOF.LastReceivedKeyframe(LastReceivedKeyframe);
-	
+		<< SimulationEOF.EngineFrameDeltaTime(FApp::GetDeltaTime())
+		<< SimulationEOF.BufferSize(BufferSize)
+		<< SimulationEOF.PendingTickFrame(PendingTickFrame)
+		<< SimulationEOF.LatestInputFrame(LatestInputFrame)
+		<< SimulationEOF.MaxTickFrame(MaxTickFrame)
+		<< SimulationEOF.TotalSimTime(TotalSimTime)
+		<< SimulationEOF.AllowedSimTime(AllowedSimTime);
 
-
-	// Do we need to trace the NetGUID? This stinks having to be here
+	// Trace this simulation's NetGUID if we haven't already
+	// (This stinks having to be here: but we can't get an event for NetGUID assignment and it wont always be assigned when sim is created)
 	if (TracedSimulationNetGUIDs.Contains(SimulationId) == false)
 	{
 		uint32 NetGUID = 0;
@@ -258,7 +255,6 @@ void FNetworkPredictionTrace::TraceNetSerializeRecv(const FNetworkSimTime& Recei
 
 	UE_TRACE_LOG(NetworkPrediction, NetSerializeRecv, NetworkPredictionChannel)
 		<< NetSerializeRecv.SimulationId(SimulationId)
-		<< NetSerializeRecv.EngineFrameNumber(GFrameNumber)
 		<< NetSerializeRecv.ReceivedSimTimeMS(ReceivedTime)
 		<< NetSerializeRecv.ReceivedFrame(ReceivedFrame);
 }
@@ -269,14 +265,6 @@ void FNetworkPredictionTrace::TraceNetSerializeCommit()
 
 	UE_TRACE_LOG(NetworkPrediction, NetSerializeCommit, NetworkPredictionChannel)
 		<< NetSerializeCommit.SimulationId(SimulationId);
-}
-
-void FNetworkPredictionTrace::TraceNetSerializeFault()
-{
-	const uint32 SimulationId = PeakSimulationIdChecked();
-
-	UE_TRACE_LOG(NetworkPrediction, NetSerializeFault, NetworkPredictionChannel)
-		<< NetSerializeFault.SimulationId(SimulationId);
 }
 
 void FNetworkPredictionTrace::TraceProduceInput()
@@ -315,7 +303,6 @@ void FNetworkPredictionTrace::TraceUserState_Internal(int32 Frame, ETraceUserSta
 			UE_TRACE_LOG(NetworkPrediction, InputCmd, NetworkPredictionChannel, AttachmentSize)
 				<< InputCmd.SimulationId(SimulationId)
 				<< InputCmd.SimulationFrame(Frame)
-				<< InputCmd.EngineFrameNumber(GFrameNumber)
 				<< InputCmd.Attachment(*StrOut, AttachmentSize);
 			break;
 		}
@@ -324,7 +311,6 @@ void FNetworkPredictionTrace::TraceUserState_Internal(int32 Frame, ETraceUserSta
 			UE_TRACE_LOG(NetworkPrediction, SyncState, NetworkPredictionChannel, AttachmentSize)
 				<< SyncState.SimulationId(SimulationId)
 				<< SyncState.SimulationFrame(Frame)
-				<< SyncState.EngineFrameNumber(GFrameNumber)
 				<< SyncState.Attachment(*StrOut, AttachmentSize);
 			break;
 		}
@@ -333,7 +319,6 @@ void FNetworkPredictionTrace::TraceUserState_Internal(int32 Frame, ETraceUserSta
 			UE_TRACE_LOG(NetworkPrediction, AuxState, NetworkPredictionChannel, AttachmentSize)
 				<< AuxState.SimulationId(SimulationId)
 				<< AuxState.SimulationFrame(Frame)
-				<< AuxState.EngineFrameNumber(GFrameNumber)
 				<< AuxState.Attachment(*StrOut, AttachmentSize);
 			break;
 		}
@@ -344,4 +329,66 @@ void FNetworkPredictionTrace::TracePIEStart()
 {
 	UE_TRACE_LOG(NetworkPrediction, PieBegin, NetworkPredictionChannel)
 		<< PieBegin.DummyData(0); // temp to quiet clang
+}
+
+void FNetworkPredictionTrace::TraceWorldFrameStart(float DeltaSeconds)
+{
+	UE_TRACE_LOG(NetworkPrediction, WorldFrameStart, NetworkPredictionChannel)
+		<< WorldFrameStart.EngineFrameNumber(GFrameNumber)
+		<< WorldFrameStart.DeltaSeconds(DeltaSeconds);
+}
+
+#include "CoreTypes.h"
+#include "Misc/VarArgs.h"
+#include "HAL/UnrealMemory.h"
+#include "Templates/UnrealTemplate.h"
+
+// Copied from VarargsHelper.h
+#define GROWABLE_LOGF(SerializeFunc) \
+	int32	BufferSize	= 1024; \
+	TCHAR*	Buffer		= NULL; \
+	int32	Result		= -1; \
+	/* allocate some stack space to use on the first pass, which matches most strings */ \
+	TCHAR	StackBuffer[512]; \
+	TCHAR*	AllocatedBuffer = NULL; \
+\
+	/* first, try using the stack buffer */ \
+	Buffer = StackBuffer; \
+	GET_VARARGS_RESULT( Buffer, UE_ARRAY_COUNT(StackBuffer), UE_ARRAY_COUNT(StackBuffer) - 1, Fmt, Fmt, Result ); \
+\
+	/* if that fails, then use heap allocation to make enough space */ \
+	while(Result == -1) \
+	{ \
+		FMemory::SystemFree(AllocatedBuffer); \
+		/* We need to use malloc here directly as GMalloc might not be safe. */ \
+		Buffer = AllocatedBuffer = (TCHAR*) FMemory::SystemMalloc( BufferSize * sizeof(TCHAR) ); \
+		if (Buffer == NULL) \
+		{ \
+			return; \
+		} \
+		GET_VARARGS_RESULT( Buffer, BufferSize, BufferSize-1, Fmt, Fmt, Result ); \
+		BufferSize *= 2; \
+	}; \
+	Buffer[Result] = 0; \
+	; \
+\
+	SerializeFunc; \
+	FMemory::SystemFree(AllocatedBuffer);
+
+
+void FNetworkPredictionTrace::TraceSystemFault(const TCHAR* Fmt, ...)
+{
+	const uint32 SimulationId = PeakSimulationIdChecked();
+
+	GROWABLE_LOGF( 
+		
+		check(Result >= 0 );
+		const uint16 AttachmentSize = (Result+1) * sizeof(TCHAR);
+
+		UE_TRACE_LOG(NetworkPrediction, SystemFault, NetworkPredictionChannel, AttachmentSize)
+			<< SystemFault.SimulationId(SimulationId)
+			<< SystemFault.Attachment(Buffer, AttachmentSize);
+
+		UE_LOG(LogNetworkSim, Warning, TEXT("SystemFault: %s"), Buffer);
+	);
 }
