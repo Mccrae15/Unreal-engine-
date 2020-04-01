@@ -273,12 +273,6 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 	UE_LOG(LogD3D12RHI, Log, TEXT("Emitting draw events for PIX profiling."));
 	SetEmitDrawEvents(true);
 #endif
-	const bool bIsPerfHUD = !FCString::Stricmp(GetD3DAdapterDesc().Description, TEXT("NVIDIA PerfHUD"));
-
-	if (bIsPerfHUD)
-	{
-		DriverType = D3D_DRIVER_TYPE_REFERENCE;
-	}
 
 	bool bDeviceCreated = false;
 #if !PLATFORM_CPU_ARM_FAMILY && (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
