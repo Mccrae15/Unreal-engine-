@@ -1612,6 +1612,10 @@ void UStruct::DestroyChildPropertiesAndResetPropertyLinks()
 	RefLink = nullptr;
 	DestructorLink = nullptr;
 	PostConstructLink = nullptr;
+#if WITH_EDITORONLY_DATA
+	// Make sure all FFieldPaths re-resolve themselves after this operation
+	FFieldPath::OnFieldDeleted();
+#endif // WITH_EDITORONLY_DATA
 }
 
 UStruct::~UStruct()
@@ -1620,7 +1624,7 @@ UStruct::~UStruct()
 	// This needs to happen after FinishDestroy which calls DestroyNonNativeProperties
 	// Also, Blueprint generated classes can have DestroyNonNativeProperties called on them after their FinishDestroy has been called
 	// so properties can only be deleted in the destructor
-	DestroyChildPropertiesAndResetPropertyLinks();
+	DestroyPropertyLinkedList(ChildProperties);
 	DeleteUnresolvedScriptProperties();
 }
 
