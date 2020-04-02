@@ -726,10 +726,8 @@ void FMaterialEditor::InitMaterialEditor( const EToolkitMode::Type Mode, const T
 	ForceRefreshExpressionPreviews();
 	if (Generator.IsValid() && MaterialEditorInstance)
 	{
-		MaterialEditorInstance->RegenerateArrays();
-		TArray<UObject*> Objects;
-		Objects.Add(MaterialEditorInstance);
-		Generator->SetObjects(Objects);
+		UpdateGenerator();
+
 	}
 
 	if (OriginalMaterial->bUsedAsSpecialEngineMaterial)
@@ -746,6 +744,17 @@ void FMaterialEditor::InitMaterialEditor( const EToolkitMode::Type Mode, const T
 	if (GetDefault<UEditorExperimentalSettings>()->bExampleLayersAndBlends && bMaterialDirty)
 	{
 		SaveAsset_Execute();
+	}
+}
+
+void FMaterialEditor::UpdateGenerator()
+{
+	if (MaterialEditorInstance && Generator.IsValid())
+	{
+		MaterialEditorInstance->RegenerateArrays();
+		TArray<UObject*> Objects;
+		Objects.Add(MaterialEditorInstance);
+		Generator->SetObjects(Objects);
 	}
 }
 
@@ -3032,10 +3041,8 @@ void FMaterialEditor::OnConvertObjects()
 							// Refresh the expression preview if we changed its properties after it was created
 							NewExpression->bNeedToUpdatePreview = true;
 							RefreshExpressionPreview( NewExpression, true );
-							if (MaterialEditorInstance)
-							{
-								MaterialEditorInstance->RegenerateArrays();
-							}
+							
+							UpdateGenerator();
 						}
 
 						NodesToDelete.AddUnique(GraphNode);
@@ -4444,10 +4451,7 @@ void FMaterialEditor::RedoGraphAction()
 		Material->BuildEditorParameterList();
 	}
 
-	if (MaterialEditorInstance)
-	{
-		MaterialEditorInstance->RegenerateArrays();
-	}
+	UpdateGenerator();
 }
 
 void FMaterialEditor::OnAlignTop()
@@ -4540,10 +4544,7 @@ void FMaterialEditor::PostUndo(bool bSuccess)
 		GraphEditor->NotifyGraphChanged();
 		SetMaterialDirty();
 
-		if (MaterialEditorInstance)
-		{
-			MaterialEditorInstance->RegenerateArrays();
-		}
+		UpdateGenerator();
 
 		FSlateApplication::Get().DismissAllMenus();
 	}
@@ -4654,10 +4655,7 @@ void FMaterialEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyCha
 	Material->MarkPackageDirty();
 	SetMaterialDirty();
 
-	if (MaterialEditorInstance)
-	{
-		MaterialEditorInstance->RegenerateArrays();
-	}
+	UpdateGenerator();
 }
 
 void FMaterialEditor::ToggleCollapsed(UMaterialExpression* MaterialExpression)
@@ -5320,10 +5318,7 @@ void FMaterialEditor::OnNodeTitleCommitted(const FText& NewText, ETextCommit::Ty
 		const FScopedTransaction Transaction( LOCTEXT( "RenameNode", "Rename Node" ) );
 		NodeBeingChanged->Modify();
 		NodeBeingChanged->OnRenameNode(NewText.ToString());
-		if (MaterialEditorInstance)
-		{
-			MaterialEditorInstance->RegenerateArrays();
-		}
+		UpdateGenerator();
 		MaterialCustomPrimitiveDataWidget->UpdateEditorInstance(MaterialEditorInstance);
 	}
 }
