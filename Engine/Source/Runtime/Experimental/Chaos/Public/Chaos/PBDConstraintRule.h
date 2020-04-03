@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/IncludeLvl1.inl"
 #include "Chaos/Declares.h"
 #include "Chaos/ConstraintHandle.h"
 #include "Chaos/CollisionResolutionTypes.h"
@@ -35,11 +36,18 @@ namespace Chaos
 			return L.GetPriority() < R.GetPriority();
 		}
 
-		/** Called once per frame before Apply. Can be used to prepare caches etc. */
-		virtual void PrepareConstraints(FReal Dt) {}
+		/** Called once per frame. Can be used to prepare caches etc. */
+		virtual void PrepareTick() {}
 
-		/** Called once per frame after Apply. Should be used to release any transient stores created in PrepareConstraints. */
-		virtual void UnprepareConstraints(FReal Dt) {}
+		/** Called once per frame. Should undo whatever is done in PrepareTick (can also free any other transient buffers created after) */
+		virtual void UnprepareTick() {}
+
+		/** Called once per iteration before Apply. Can be used to prepare caches etc. */
+		virtual void PrepareIteration(FReal Dt) {}
+
+		/** Called once per iteration after Apply. Should be used to release any transient stores created in PrepareConstraints. */
+		virtual void UnprepareIteration(FReal Dt) {}
+
 
 	protected:
 		int32 Priority;
@@ -70,14 +78,24 @@ namespace Chaos
 		{
 		}
 
-		virtual void PrepareConstraints(FReal Dt) override
+		virtual void PrepareTick() override
 		{
-			Constraints.PrepareConstraints(Dt);
+			Constraints.PrepareTick();
 		}
 
-		virtual void UnprepareConstraints(FReal Dt) override
+		virtual void UnprepareTick() override
 		{
-			Constraints.UnprepareConstraints(Dt);
+			Constraints.UnprepareTick();
+		}
+
+		virtual void PrepareIteration(FReal Dt) override
+		{
+			Constraints.PrepareIteration(Dt);
+		}
+
+		virtual void UnprepareIteration(FReal Dt) override
+		{
+			Constraints.UnprepareIteration(Dt);
 		}
 
 		virtual void UpdatePositionBasedState(const FReal Dt) override
@@ -153,14 +171,24 @@ namespace Chaos
 
 		TPBDConstraintGraphRuleImpl(FConstraints& InConstraints, int32 InPriority);
 
-		virtual void PrepareConstraints(FReal Dt) override
+		virtual void PrepareTick() override
 		{
-			Constraints.PrepareConstraints(Dt);
+			Constraints.PrepareTick();
 		}
 
-		virtual void UnprepareConstraints(FReal Dt) override
+		virtual void UnprepareTick() override
 		{
-			Constraints.UnprepareConstraints(Dt);
+			Constraints.UnprepareTick();
+		}
+
+		virtual void PrepareIteration(FReal Dt) override
+		{
+			Constraints.PrepareIteration(Dt);
+		}
+
+		virtual void UnprepareIteration(FReal Dt) override
+		{
+			Constraints.UnprepareIteration(Dt);
 		}
 
 		virtual void BindToGraph(FPBDConstraintGraph& InContactGraph, uint32 InContainerId) override;

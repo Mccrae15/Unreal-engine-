@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/IncludeLvl1.inl"
 #include "Chaos/Array.h"
 #include "Chaos/ConstraintHandle.h"
 #include "Chaos/ParticleHandle.h"
@@ -173,9 +174,13 @@ namespace Chaos
 		// Island Rule API
 		//
 
-		void PrepareConstraints(FReal Dt) {}
+		void PrepareTick() {}
 
-		void UnprepareConstraints(FReal Dt) {}
+		void UnprepareTick() {}
+
+		void PrepareIteration(FReal Dt) {}
+
+		void UnprepareIteration(FReal Dt) {}
 
 		void UpdatePositionBasedState(const T Dt);
 

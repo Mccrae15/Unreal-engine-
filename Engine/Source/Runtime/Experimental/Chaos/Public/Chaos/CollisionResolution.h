@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/IncludeLvl1.inl"
 #include "Chaos/Core.h"
 #include "Chaos/CollisionResolutionTypes.h"
 #include "Chaos/CollisionResolutionUtil.h"
@@ -20,11 +21,9 @@ namespace Chaos
 	template <typename T, int d>
 	class TPlane;
 
-	template <typename T>
-	class THeightField;
-
 	class FCollisionContext;
 	class FCollisionConstraintBase;
+	class FHeightField;
 	class FImplicitObject;
 	class FRigidBodyPointContactConstraint;
 	class FRigidBodyMultiPointContactConstraint;

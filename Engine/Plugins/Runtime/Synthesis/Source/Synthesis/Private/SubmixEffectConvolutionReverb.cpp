@@ -54,7 +54,31 @@ namespace AudioConvReverbIntrinsics
 			return ConvolutionAlgorithm;
 		}
 
-		int32 NumFrames = InInitData.Samples.Num() / AlgoSettings.NumImpulseResponses;
+
+		const TArray<float>* TargetImpulseSamples = &InInitData.Samples;
+
+		TArray<float> ResampledImpulseSamples;
+		// Prepare impulse samples by converting samplerate and deinterleaving.
+		if (InInitData.ImpulseSampleRate != InInitData.TargetSampleRate)
+		{
+			// convert sample rate of impulse 
+			float SampleRateRatio = InInitData.ImpulseSampleRate / InInitData.TargetSampleRate;
+
+			TUniquePtr<Audio::ISampleRateConverter> Converter(Audio::ISampleRateConverter::CreateSampleRateConverter());
+
+			if (!Converter.IsValid())
+			{
+				UE_LOG(LogSynthesis, Error, TEXT("Audio::ISampleRateConverter failed to create a sample rate converter"));
+				return FConvAlgoUniquePtr();
+			}
+
+			Converter->Init(SampleRateRatio, AlgoSettings.NumImpulseResponses);
+			Converter->ProcessFullbuffer(InInitData.Samples.GetData(), InInitData.Samples.Num(), ResampledImpulseSamples);
+
+			TargetImpulseSamples = &ResampledImpulseSamples;
+		}
+
+		const int32 NumFrames = TargetImpulseSamples->Num() / AlgoSettings.NumImpulseResponses;
 
 		// Prepare deinterleave pointers
 		TArray<Audio::AlignedFloatBuffer> DeinterleaveSamples;
@@ -67,32 +91,8 @@ namespace AudioConvReverbIntrinsics
 			}
 		}
 
-		// Prepare impulse samples by converting samplerate and deinterleaving.
-		if (InInitData.ImpulseSampleRate == InInitData.TargetSampleRate)
-		{
-			// Deinterleave impulse samples
-			Audio::FConvolutionReverb::DeinterleaveBuffer(DeinterleaveSamples, InInitData.Samples, AlgoSettings.NumImpulseResponses);
-		}
-		else	
-		{
-			// convert sample rate of impulse 
-			TArray<float> TargetImpulseSamples;
-			float SampleRateRatio = InInitData.TargetSampleRate / InInitData.ImpulseSampleRate;
-
-			TUniquePtr<Audio::ISampleRateConverter> Converter(Audio::ISampleRateConverter::CreateSampleRateConverter());
-
-			if (!Converter.IsValid())
-			{
-				UE_LOG(LogSynthesis, Error, TEXT("Audio::ISampleRateConverter failed to create a sample rate converter"));
-				return FConvAlgoUniquePtr();
-			}
-
-			Converter->Init(SampleRateRatio, AlgoSettings.NumImpulseResponses);
-			Converter->ProcessFullbuffer(InInitData.Samples.GetData(), InInitData.Samples.Num(), TargetImpulseSamples);
-
-			// Deinterleave impulse samples
-			Audio::FConvolutionReverb::DeinterleaveBuffer(DeinterleaveSamples, TargetImpulseSamples, AlgoSettings.NumImpulseResponses);
-		}
+		// Deinterleave impulse samples
+		Audio::FConvolutionReverb::DeinterleaveBuffer(DeinterleaveSamples, *TargetImpulseSamples, AlgoSettings.NumImpulseResponses);
 
 		// Set impulse responses in algorithm
 		for (int32 i = 0; i < DeinterleaveSamples.Num(); i++)
@@ -188,25 +188,6 @@ void UAudioImpulseResponse::PostEditChangeProperty(FPropertyChangedEvent& Proper
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	OnObjectPropertyChanged.Broadcast(PropertyChangedEvent);
-	/*
-	UObject* Outer = GetOuter();
-	if (nullptr == Outer)
-	{
-		return;
-	}
-
-	if (Outer->GetClass()->IsChildOf(USubmixEffectConvolutionReverbPreset::StaticClass()))
-	{
-		USubmixEffectConvolutionReverbPreset* Preset = CastChecked<USubmixEffectConvolutionReverbPreset>(Outer);
-
-		if (nullptr == Preset)
-		{
-			return;
-		}
-
-		Preset->PostEditChangeImpulseProperty(PropertyChangedEvent);
-	}
-	*/
 }
 #endif
 
@@ -307,7 +288,7 @@ FSubmixEffectConvolutionReverb::FConvolutionAlgorithmInitData FSubmixEffectConvo
 
 	// IConvolutionAlgorithm settings
 	CreateConvolutionSettings.AlgorithmSettings.bEnableHardwareAcceleration = IRAssetData.bEnableHardwareAcceleration;
-	CreateConvolutionSettings.AlgorithmSettings.BlockNumSamples = 256;
+	CreateConvolutionSettings.AlgorithmSettings.BlockNumSamples = IRAssetData.BlockSize;
 	CreateConvolutionSettings.AlgorithmSettings.NumInputChannels = ConvNumInputChannels;
 	CreateConvolutionSettings.AlgorithmSettings.NumOutputChannels = ConvNumOutputChannels;
 	CreateConvolutionSettings.AlgorithmSettings.NumImpulseResponses = IRAssetData.NumChannels;
@@ -315,7 +296,12 @@ FSubmixEffectConvolutionReverb::FConvolutionAlgorithmInitData FSubmixEffectConvo
 
 	if (IRAssetData.NumChannels > 0)
 	{
-		CreateConvolutionSettings.AlgorithmSettings.MaxNumImpulseResponseSamples = (IRAssetData.Samples.Num() / IRAssetData.NumChannels) + 1;
+		float SampleRateRatio = 1.f;
+		if (IRAssetData.SampleRate > 0.f)
+		{
+			SampleRateRatio = SampleRate / IRAssetData.SampleRate;
+		}
+		CreateConvolutionSettings.AlgorithmSettings.MaxNumImpulseResponseSamples = FMath::CeilToInt(SampleRateRatio * IRAssetData.Samples.Num() / IRAssetData.NumChannels) + 256;
 	}
 
 	// Sample rate conversion settings
@@ -452,7 +438,7 @@ FSubmixEffectConvolutionReverb::FVersionData FSubmixEffectConvolutionReverb::Upd
 {
 	// Copy data from preset into internal IRAssetData.
 	
-	check(IsInGameThread());
+	check(IsInGameThread() || IsInAudioThread());
 
 	FScopeLock IRAssetLock(&IRAssetCriticalSection);
 
@@ -661,38 +647,7 @@ void USubmixEffectConvolutionReverbPreset::PreEditChange(FProperty* PropertyAbou
 	}
 }
 
-void USubmixEffectConvolutionReverbPreset::PostLoad()
-{
-	Super::PostLoad();
 
-	// This handles previous version 
-	if (Settings.SurroundRearChannelBleedAmount_DEPRECATED != 0.f)
-	{
-		Settings.SurroundRearChannelBleedDb = Audio::ConvertToDecibels(FMath::Abs(Settings.SurroundRearChannelBleedAmount_DEPRECATED));
-		Settings.bInvertRearChannelBleedPhase = Settings.SurroundRearChannelBleedAmount_DEPRECATED < 0.f;
-
-		Settings.SurroundRearChannelBleedAmount_DEPRECATED = 0.f;
-		Modify();
-	}
-
-	if (nullptr != Settings.ImpulseResponse_DEPRECATED)
-	{
-		ImpulseResponse = Settings.ImpulseResponse_DEPRECATED;
-		
-		Settings.ImpulseResponse_DEPRECATED = nullptr;
-		Modify();
-	}
-
-	if (!Settings.AllowHardwareAcceleration_DEPRECATED)
-	{
-		bEnableHardwareAcceleration = false;
-
-		Settings.AllowHardwareAcceleration_DEPRECATED = true;
-		Modify();
-	}
-
-	BindToImpulseResponseObjectChange();
-}
 
 void USubmixEffectConvolutionReverbPreset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -755,3 +710,86 @@ void USubmixEffectConvolutionReverbPreset::PostEditChangeImpulseProperty(FProper
 }
 
 #endif
+
+void USubmixEffectConvolutionReverbPreset::UpdateDeprecatedProperties()
+{
+	if (Settings.SurroundRearChannelBleedAmount_DEPRECATED != 0.f)
+	{
+		Settings.SurroundRearChannelBleedDb = Audio::ConvertToDecibels(FMath::Abs(Settings.SurroundRearChannelBleedAmount_DEPRECATED));
+		Settings.bInvertRearChannelBleedPhase = Settings.SurroundRearChannelBleedAmount_DEPRECATED < 0.f;
+
+		Settings.SurroundRearChannelBleedAmount_DEPRECATED = 0.f;
+		Modify();
+	}
+
+	if (nullptr != Settings.ImpulseResponse_DEPRECATED)
+	{
+		ImpulseResponse = Settings.ImpulseResponse_DEPRECATED;
+
+		// Need to make a copy of existing samples and reinterleave 
+		// The previous version had these sampels chunked by channel
+		// like [[all channel 0 samples][all channel 1 samples][...][allchannel N samples]]
+		//
+		// They need to be in interleave format to work in this class.
+
+		int32 NumChannels = Settings.ImpulseResponse_DEPRECATED->NumChannels;
+
+		if (NumChannels > 1)
+		{
+			const TArray<float>& IRData = Settings.ImpulseResponse_DEPRECATED->IRData_DEPRECATED;
+			int32 NumSamples = IRData.Num();
+
+			if (NumSamples > 0)
+			{
+				ImpulseResponse->ImpulseResponse.Reset();
+				ImpulseResponse->ImpulseResponse.AddUninitialized(NumSamples);
+
+				int32 NumFrames = NumSamples / NumChannels;
+
+				const float* InputSamples = IRData.GetData();
+				float* OutputSamples = ImpulseResponse->ImpulseResponse.GetData();
+
+				for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ChannelIndex++)
+				{
+					for (int32 FrameIndex = 0; FrameIndex < NumFrames; FrameIndex++)
+					{
+						OutputSamples[FrameIndex * NumChannels + ChannelIndex] = InputSamples[ChannelIndex * NumFrames + FrameIndex];
+					}
+				}
+			}
+		}
+		else
+		{
+			// Do not need to do anything for zero or one channels.
+			ImpulseResponse->ImpulseResponse = ImpulseResponse->IRData_DEPRECATED;
+		}
+
+		// Discard samples after they have been copied.
+		Settings.ImpulseResponse_DEPRECATED->IRData_DEPRECATED = TArray<float>();
+
+		Settings.ImpulseResponse_DEPRECATED = nullptr;
+
+		Modify();
+	}
+
+	if (!Settings.AllowHardwareAcceleration_DEPRECATED)
+	{
+		bEnableHardwareAcceleration = false;
+
+		Settings.AllowHardwareAcceleration_DEPRECATED = true;
+		Modify();
+	}
+}
+
+void USubmixEffectConvolutionReverbPreset::PostLoad()
+{
+	Super::PostLoad();
+
+	// This handles previous version 
+	UpdateDeprecatedProperties();
+
+#if WITH_EDITORONLY_DATA
+	// Bind to trigger new convolution algorithms when UAudioImpulseResponse object changes.
+	BindToImpulseResponseObjectChange();
+#endif
+}

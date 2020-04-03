@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/IncludeLvl1.inl"
 #include "Chaos/ChaosPerfTest.h"
 #include "Chaos/Collision/NarrowPhase.h"
 #include "Chaos/Collision/SpatialAccelerationBroadPhase.h"
@@ -31,6 +32,10 @@ namespace Chaos
 
 	using FPBDRigidsEvolutionIslandCallback = TFunction<void(int32 Island)>;
 
+	using FPBDRigidsEvolutionInternalHandleCallback = TFunction<void(
+		const TGeometryParticleHandle<float, 3> * OldParticle,
+		const TGeometryParticleHandle<float, 3> * NewParticle)>;
+	
 	class FPBDRigidsEvolutionGBF : public FPBDRigidsEvolutionBase
 	{
 	public:
@@ -46,6 +51,9 @@ namespace Chaos
 		static constexpr int32 DefaultNumPairIterations = 1;
 		static constexpr int32 DefaultNumPushOutIterations = 5;
 		static constexpr int32 DefaultNumPushOutPairIterations = 2;
+
+		// @todo(chaos): Required by clustering - clean up
+		using Base::ApplyPushOut;
 
 		CHAOS_API FPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal, 3>& InParticles, THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials, int32 InNumIterations = DefaultNumIterations, int32 InNumPushoutIterations = DefaultNumPushOutIterations, bool InIsSingleThreaded = false);
 		CHAOS_API ~FPBDRigidsEvolutionGBF() {}
@@ -80,13 +88,19 @@ namespace Chaos
 			PostApplyPushOutCallback = Cb;
 		}
 
+		void SetInternalParticleInitilizationFunction(const FPBDRigidsEvolutionInternalHandleCallback& Cb)
+		{ 
+			InternalParticleInitilization = Cb;
+		}
+
+		void DoInternalParticleInitilization(const TGeometryParticleHandle<float, 3>* OldParticle, const TGeometryParticleHandle<float, 3>* NewParticle) 
+		{ 
+			if (InternalParticleInitilization) InternalParticleInitilization(OldParticle, NewParticle); 
+		}
+
+
 		CHAOS_API void Advance(const FReal Dt, const FReal MaxStepDt, const int32 MaxSteps);
 		CHAOS_API void AdvanceOneTimeStep(const FReal dt, const FReal StepFraction = (FReal)1.0);
-
-		using Base::PrepareConstraints;
-		using Base::UnprepareConstraints;
-		using Base::ApplyConstraints;
-		using Base::ApplyPushOut;
 
 		FCollisionConstraints& GetCollisionConstraints() { return CollisionConstraints; }
 		const FCollisionConstraints& GetCollisionConstraints() const { return CollisionConstraints; }
@@ -181,6 +195,9 @@ namespace Chaos
 		CHAOS_API void Serialize(FChaosArchive& Ar);
 
 	protected:
+
+		CHAOS_API void AdvanceOneTimeStepImpl(const FReal dt, const FReal StepFraction);
+
 		TPBDRigidClustering<FPBDRigidsEvolutionGBF, FPBDCollisionConstraints, FReal, 3> Clustering;
 
 		FGravityForces GravityForces;
@@ -196,5 +213,6 @@ namespace Chaos
 		FPBDRigidsEvolutionCallback PreApplyCallback;
 		FPBDRigidsEvolutionIslandCallback PostApplyCallback;
 		FPBDRigidsEvolutionIslandCallback PostApplyPushOutCallback;
+		FPBDRigidsEvolutionInternalHandleCallback InternalParticleInitilization;
 	};
 }

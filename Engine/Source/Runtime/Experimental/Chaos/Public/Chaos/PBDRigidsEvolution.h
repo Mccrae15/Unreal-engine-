@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/IncludeLvl1.inl"
 #include "Chaos/PBDCollisionConstraints.h"
 #include "Chaos/PBDCollisionConstraintsPGS.h"
 #include "Chaos/PBDConstraintGraph.h"
@@ -311,9 +312,9 @@ class FPBDRigidsEvolutionBase
 
 	CHAOS_API void EnableParticle(TGeometryParticleHandle<FReal, 3>* Particle, const TGeometryParticleHandle<FReal, 3>* ParentParticle)
 	{
-		DirtyParticle(*Particle);
 		Particles.EnableParticle(Particle);
 		ConstraintGraph.EnableParticle(Particle, ParentParticle);
+		DirtyParticle(*Particle);
 	}
 
 	CHAOS_API void DisableParticle(TGeometryParticleHandle<FReal, 3>* Particle)
@@ -467,19 +468,35 @@ class FPBDRigidsEvolutionBase
 		}
 	}
 
-	void PrepareConstraints(const FReal Dt)
+	void PrepareTick()
 	{
 		for (FPBDConstraintGraphRule* ConstraintRule : ConstraintRules)
 		{
-			ConstraintRule->PrepareConstraints(Dt);
+			ConstraintRule->PrepareTick();
 		}
 	}
 
-	void UnprepareConstraints(const FReal Dt)
+	void UnprepareTick()
 	{
 		for (FPBDConstraintGraphRule* ConstraintRule : ConstraintRules)
 		{
-			ConstraintRule->UnprepareConstraints(Dt);
+			ConstraintRule->UnprepareTick();
+		}
+	}
+
+	void PrepareIteration(const FReal Dt)
+	{
+		for (FPBDConstraintGraphRule* ConstraintRule : ConstraintRules)
+		{
+			ConstraintRule->PrepareIteration(Dt);
+		}
+	}
+
+	void UnprepareIteration(const FReal Dt)
+	{
+		for (FPBDConstraintGraphRule* ConstraintRule : ConstraintRules)
+		{
+			ConstraintRule->UnprepareIteration(Dt);
 		}
 	}
 

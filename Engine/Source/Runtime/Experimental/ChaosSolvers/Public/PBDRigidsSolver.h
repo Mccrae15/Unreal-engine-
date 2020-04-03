@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/IncludeLvl1.inl"
 #include "Chaos/Defines.h"
 #include "Chaos/Framework/MultiBufferResource.h"
 #include "Chaos/Framework/PhysicsProxy.h"
@@ -266,9 +267,7 @@ namespace Chaos
 		void SetGenerateBreakingData(bool bDoGenerate)
 		{
 			GetEventFilters()->SetGenerateBreakingEvents(bDoGenerate);
-#if TODO_REIMPLEMENT_RIGID_CLUSTERING
-			GetRigidClustering().SetGenerateClusterBreaking(GenerateBreakingEventsEnabled);
-#endif
+			GetEvolution()->GetRigidClustering().SetGenerateClusterBreaking(bDoGenerate);
 		}
 		void SetGenerateTrailingData(bool bDoGenerate) { GetEventFilters()->SetGenerateTrailingEvents(bDoGenerate); }
 		void SetCollisionFilterSettings(const FSolverCollisionFilterSettings& InCollisionFilterSettings) { GetEventFilters()->GetCollisionFilter()->UpdateFilterSettings(InCollisionFilterSettings); }
@@ -284,7 +283,9 @@ namespace Chaos
 
 		void AddParticleToProxy(const Chaos::TGeometryParticleHandle<float, 3>* Particle, IPhysicsProxyBase* Proxy)
 		{
-			MParticleToProxy.Add(Particle, Proxy); 
+			if (!MParticleToProxy.Find(Particle))
+				MParticleToProxy.Add(Particle, TSet<IPhysicsProxyBase*>());
+			MParticleToProxy[Particle].Add(Proxy); 
 		}
 		
 		void RemoveParticleToProxy(const Chaos::TGeometryParticleHandle<float, 3>* Particle)
@@ -292,10 +293,10 @@ namespace Chaos
 			MParticleToProxy.Remove(Particle);
 		}
 		
-		IPhysicsProxyBase* GetProxy(const Chaos::TGeometryParticleHandle<float, 3>* Handle) const
+		const TSet<IPhysicsProxyBase*> * GetProxies(const Chaos::TGeometryParticleHandle<float, 3>* Handle) const
 		{
-			IPhysicsProxyBase* const* PhysicsProxyPtr = MParticleToProxy.Find(Handle);
-			return PhysicsProxyPtr ? *PhysicsProxyPtr : nullptr;
+			const TSet<IPhysicsProxyBase*>* PhysicsProxyPtr = MParticleToProxy.Find(Handle);
+			return PhysicsProxyPtr ? PhysicsProxyPtr : nullptr;
 		}
 
 		/**/
@@ -345,19 +346,37 @@ namespace Chaos
 		template<typename ParticleType>
 		void FlipBuffer(Chaos::TGeometryParticleHandle<float, 3>* Handle)
 		{
-			((ParticleType*)(GetProxy(Handle)))->FlipBuffer();
+			if (const TSet<IPhysicsProxyBase*>* Proxies = GetProxies(Handle))
+			{
+				for (IPhysicsProxyBase* Proxy : *Proxies)
+				{
+					((ParticleType*)(Proxy))->FlipBuffer();
+				}
+			}
 		}
 
 		template<typename ParticleType>
 		void PullFromPhysicsState(Chaos::TGeometryParticleHandle<float, 3>* Handle)
 		{
-			((ParticleType*)(GetProxy(Handle)))->PullFromPhysicsState();
+			if (const TSet<IPhysicsProxyBase*>* Proxies = GetProxies(Handle))
+			{
+				for (IPhysicsProxyBase* Proxy : *Proxies)
+				{
+					((ParticleType*)(Proxy))->PullFromPhysicsState();
+				}
+			}
 		}
 
 		template<typename ParticleType>
 		void BufferPhysicsResults(Chaos::TGeometryParticleHandle<float, 3>* Handle)
 		{
-			((ParticleType*)(GetProxy(Handle)))->BufferPhysicsResults();
+			if (const TSet<IPhysicsProxyBase*>* Proxies = GetProxies(Handle))
+			{
+				for (IPhysicsProxyBase* Proxy : *Proxies)
+				{
+					((ParticleType*)(Proxy))->BufferPhysicsResults();
+				}
+			}
 		}
 
 		//
@@ -379,7 +398,7 @@ namespace Chaos
 		TUniquePtr<FEventManager> MEventManager;
 		TUniquePtr<FSolverEventFilters> MSolverEventFilters;
 		TUniquePtr<FActiveParticlesBuffer> MActiveParticlesBuffer;
-		TMap<const Chaos::TGeometryParticleHandle<float, 3>*, IPhysicsProxyBase*> MParticleToProxy;
+		TMap<const Chaos::TGeometryParticleHandle<float, 3>*, TSet<IPhysicsProxyBase*> > MParticleToProxy;
 		TUniquePtr<FRewindData> MRewindData;
 
 		//

@@ -177,7 +177,7 @@ namespace UnrealBuildTool
 		public List<FileItem> Build(ReadOnlyTargetRules Target, UEToolChain ToolChain, CppCompileEnvironment CompileEnvironment, LinkEnvironment LinkEnvironment, FileReference SingleFileToCompile, ISourceFileWorkingSet WorkingSet, DirectoryReference ExeDir, IActionGraphBuilder Graph)
 		{
 			// Return nothing if we're using precompiled binaries. If we're not linking, we might want just one module to be compiled (eg. a foreign plugin), so allow any actions to run.
-			if (bUsePrecompiled && !Target.bDisableLinking)
+			if (bUsePrecompiled && !(Target.LinkType == TargetLinkType.Monolithic && Target.bDisableLinking))
 			{
 				return new List<FileItem>();
 			}
@@ -606,6 +606,23 @@ namespace UnrealBuildTool
 
 				// Find the permitted restricted folder references under the base directory
 				List<RestrictedFolder> BinaryFolders = RestrictedFolders.FindPermittedRestrictedFolderReferences(BaseDir, OutputFilePath.Directory);
+
+				List<RestrictedFolder> AliasedBinaryFolders = new List<RestrictedFolder>();
+				foreach (RestrictedFolder BinaryFolder in BinaryFolders)
+				{
+					string Alias;
+					if (PrimaryModule.AliasRestrictedFolders.TryGetValue(BinaryFolder.ToString(), out Alias))
+					{
+						foreach(RestrictedFolder Folder in RestrictedFolder.GetValues())
+						{
+							if (Folder.ToString().Equals(Alias))
+							{
+								AliasedBinaryFolders.Add(Folder);
+							}
+						}
+					}
+				}
+				BinaryFolders.AddRange(AliasedBinaryFolders);
 
 				// Check all the dependent modules
 				foreach(UEBuildModule Module in ModuleReferencedBy.Keys)

@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
+#include "Chaos/IncludeLvl1.inl"
 #include "Chaos/Core.h"
 #include "Chaos/ParticleHandle.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
@@ -157,7 +158,7 @@ public:
 	template <typename TParticle>
 	TSerializablePtr<FImplicitObject> Geometry(const TParticle& Particle) const
 	{
-		return NonFrequentData.IsSet() ? MakeSerializable(NonFrequentData.Read().Geometry) : Particle.Geometry();
+		return NonFrequentData.IsSet() ? MakeSerializable(NonFrequentData.Read().Geometry()) : Particle.Geometry();
 	}
 
 	template <typename TParticle>
@@ -217,18 +218,7 @@ public:
 
 		NonFrequentData.SyncToParticle([&Particle](const auto& Data)
 		{
-			Particle.SetGeometry(Data.Geometry);
-			Particle.SetUserData(Data.UserData);
-			ensure(Data.UniqueIdx == Particle.UniqueIdx());	//this should never change
-
-#if CHAOS_CHECKED
-			Particle.SetDebugName(Data.DebugName);
-#endif
-			if(auto Rigid = Particle.CastToRigidParticle())
-			{
-				Rigid->SetLinearEtherDrag(Data.LinearEtherDrag);
-				Rigid->SetAngularEtherDrag(Data.AngularEtherDrag);
-			}
+			Particle.SetNonFrequentData(Data);
 		});
 
 		if(auto Rigid = Particle.CastToRigidParticle())
@@ -270,21 +260,7 @@ public:
 
 		NonFrequentData.SyncRemoteData(Manager,Idx,Dirty.ParticleData,[Handle](FParticleNonFrequentData& Data)
 		{
-			Data.Geometry = Handle->SharedGeometryLowLevel();
-			Data.UserData = Handle->UserData();
-
-			//note: this data is keyed based on unique idx so it's not really possible to change this
-			//but we save it anyway since it's part of a big struct
-			Data.UniqueIdx = Handle->UniqueIdx();
-#if CHAOS_CHECKED
-			Data.DebugName = Handle->DebugName();
-#endif
-
-			if(auto Rigid = Handle->CastToRigidParticle())
-			{
-				Data.LinearEtherDrag = Rigid->LinearEtherDrag();
-				Data.AngularEtherDrag = Rigid->AngularEtherDrag();
-			}
+			Data.CopyFrom(*Handle);
 		});
 	}
 
@@ -316,21 +292,7 @@ public:
 		{
 			NonFrequentData.SyncRemoteDataForced(Manager,Idx,[Particle](FParticleNonFrequentData& Data)
 			{
-				Data.Geometry = Particle->SharedGeometryLowLevel();
-				Data.UserData = Particle->UserData();
-
-				//note: this data is keyed based on unique idx so it's not really possible to change this
-				//but we save it anyway since it's part of a big struct
-				Data.UniqueIdx = Particle->UniqueIdx();
-	#if CHAOS_CHECKED
-				Data.DebugName = Particle->DebugName();
-	#endif
-
-				if(auto Rigid = Particle->CastToRigidParticle())
-				{
-					Data.LinearEtherDrag = Rigid->LinearEtherDrag();
-					Data.AngularEtherDrag = Rigid->AngularEtherDrag();
-				}
+				Data.CopyFrom(*Particle);
 			});
 		}
 	}

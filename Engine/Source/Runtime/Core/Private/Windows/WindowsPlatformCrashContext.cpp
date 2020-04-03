@@ -137,6 +137,22 @@ struct FAssertInfo
 	}
 };
 
+const TCHAR* const FWindowsPlatformCrashContext::UE4GPUAftermathMinidumpName = TEXT("UE4AftermathD3D12.nv-gpudmp");
+
+/**
+* Implement platform specific static cleanup function
+*/
+void FGenericCrashContext::CleanupPlatformSpecificFiles()
+{
+	// Manually delete any potential leftover gpu dumps because the crash reporter will upload any leftover crash data from last session
+	const FString CrashVideoPath = FPaths::ProjectLogDir() + TEXT("CrashVideo.avi");
+	IFileManager::Get().Delete(*CrashVideoPath);
+
+	const FString GPUMiniDumpPath = FPaths::Combine(FPaths::ProjectLogDir(), FWindowsPlatformCrashContext::UE4GPUAftermathMinidumpName);
+	IFileManager::Get().Delete(*GPUMiniDumpPath);
+}
+
+
 void FWindowsPlatformCrashContext::GetProcModuleHandles(const FProcHandle& ProcessHandle, FModuleHandleArray& OutHandles)
 {
 	// Get all the module handles for the current process. Each module handle is its base address.
@@ -305,6 +321,15 @@ void FWindowsPlatformCrashContext::CopyPlatformSpecificFiles(const TCHAR* Output
 		FString CrashVideoFilename = FPaths::GetCleanFilename(CrashVideoPath);
 		const FString CrashVideoDstAbsolute = FPaths::Combine(OutputDirectory, *CrashVideoFilename);
 		static_cast<void>(IFileManager::Get().Copy(*CrashVideoDstAbsolute, *CrashVideoPath));	// best effort, so don't care about result: couldn't copy -> tough, no video
+	}
+
+	// If present, include the gpu crash minidump
+	const FString GPUMiniDumpPath = FPaths::Combine(FPaths::ProjectLogDir(), FWindowsPlatformCrashContext::UE4GPUAftermathMinidumpName);
+	if (IFileManager::Get().FileExists(*GPUMiniDumpPath))
+	{
+		FString GPUMiniDumpFilename = FPaths::GetCleanFilename(GPUMiniDumpPath);
+		const FString GPUMiniDumpDstAbsolute = FPaths::Combine(OutputDirectory, *GPUMiniDumpFilename);
+		static_cast<void>(IFileManager::Get().Copy(*GPUMiniDumpDstAbsolute, *GPUMiniDumpPath));	// best effort, so don't care about result: couldn't copy -> tough, no video
 	}
 }
 
@@ -1397,11 +1422,22 @@ FORCENOINLINE void ReportGPUCrash(const TCHAR* ErrorMessage, int NumStackFramesT
 {
 	/** This is the last place to gather memory stats before exception. */
 	FGenericCrashContext::SetMemoryStats(FPlatformMemory::GetStats());
+	
+	// GPUCrash can be called when the guarded entry is not set
+#if !PLATFORM_SEH_EXCEPTIONS_DISABLED
+	__try
+	{
+		FAssertInfo Info(ErrorMessage, NumStackFramesToIgnore + 2); // +2 for this function and RaiseException()
 
-	FAssertInfo Info(ErrorMessage, NumStackFramesToIgnore + 2); // +2 for this function and RaiseException()
+		ULONG_PTR Arguments[] = { (ULONG_PTR)&Info };
+		::RaiseException(GPUCrashExceptionCode, 0, UE_ARRAY_COUNT(Arguments), Arguments);
+	}
+	__except (ReportCrash(GetExceptionInformation()))
+	{
+		FPlatformMisc::RequestExit(false);
+	}
+#endif
 
-	ULONG_PTR Arguments[] = { (ULONG_PTR)&Info };
-	::RaiseException(GPUCrashExceptionCode, 0, UE_ARRAY_COUNT(Arguments), Arguments);
 }
 
 void ReportHang(const TCHAR* ErrorMessage, const uint64* StackFrames, int32 NumStackFrames, uint32 HungThreadId)

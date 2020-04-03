@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/IncludeLvl1.inl"
 #include "Chaos/CollisionResolutionTypes.h"
 #include "Chaos/Collision/CollisionApplyType.h"
 #include "Chaos/Collision/PBDCollisionConstraintHandle.h"
@@ -137,9 +138,13 @@ public:
 	// General Rule API
 	//
 
-	void PrepareConstraints(FReal Dt) {}
+	void PrepareTick() {}
 
-	void UnprepareConstraints(FReal Dt) {}
+	void UnprepareTick() {}
+
+	void PrepareIteration(FReal Dt) {}
+
+	void UnprepareIteration(FReal Dt) {}
 
 	/**
 	 * Generate all contact constraints.

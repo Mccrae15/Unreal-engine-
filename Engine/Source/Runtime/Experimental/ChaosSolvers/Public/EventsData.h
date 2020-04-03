@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Chaos/IncludeLvl1.inl"
 #include "Chaos/ExternalCollisionData.h"
 #include "Chaos/CollisionResolutionTypes.h"
 #include "Chaos/Framework/PhysicsProxy.h"
@@ -86,7 +87,6 @@ namespace Chaos
 		FBreakingEventData() {}
 
 		FAllBreakingData BreakingData;
-		FIndicesByPhysicsProxy PhysicsProxyToBreakingIndices;
 	};
 
 	/* Trailing */
@@ -112,7 +112,6 @@ namespace Chaos
 		FTrailingEventData() {}
 
 		FAllTrailingData TrailingData;
-		FIndicesByPhysicsProxy PhysicsProxyToTrailingIndices;
 	};
 
 	struct FSleepingEventData
@@ -120,7 +119,6 @@ namespace Chaos
 		FSleepingEventData() {}
 
 		FSleepingDataArray SleepingData;
-		FIndicesByPhysicsProxy PhysicsProxyToSleepingIndices;
 	};
 
 }

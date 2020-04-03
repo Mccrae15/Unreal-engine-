@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/IncludeLvl1.inl"
 #include "CoreMinimal.h"
 
 #include "Chaos/Array.h"
@@ -147,8 +148,13 @@ namespace Chaos
 		// General Rule API
 		//
 
-		void PrepareConstraints(FReal Dt);
-		void UnprepareConstraints(FReal Dt);
+		void PrepareTick();
+
+		void UnprepareTick();
+
+		void PrepareIteration(FReal Dt);
+
+		void UnprepareIteration(FReal Dt);
 
 		void UpdatePositionBasedState(const FReal Dt);
 
@@ -181,8 +187,6 @@ namespace Chaos
 		
 		void InitSolverJointData();
 		void DeinitSolverJointData();
-		void InitSolverJointState();
-		void DeinitSolverJointState();
 		void GatherSolverJointState(int32 ConstraintIndex);
 		void ScatterSolverJointState(const FReal Dt, int32 ConstraintIndex);
 

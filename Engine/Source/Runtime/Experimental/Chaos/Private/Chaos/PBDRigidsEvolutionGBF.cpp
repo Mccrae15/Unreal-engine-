@@ -115,6 +115,8 @@ void FPBDRigidsEvolutionGBF::Advance(const FReal Dt, const FReal MaxStepDt, cons
 	int32 NumSteps = FMath::CeilToInt(Dt / MaxStepDt);
 	if (NumSteps > 0)
 	{
+		PrepareTick();
+
 		// Determine the step time
 		const FReal StepDt = Dt / (FReal)NumSteps;
 
@@ -131,8 +133,10 @@ void FPBDRigidsEvolutionGBF::Advance(const FReal Dt, const FReal MaxStepDt, cons
 		
 			UE_LOG(LogChaos, Verbose, TEXT("Advance dt = %f [%d/%d]"), StepDt, Step + 1, NumSteps);
 
-			AdvanceOneTimeStep(StepDt, StepFraction);
+			AdvanceOneTimeStepImpl(StepDt, StepFraction);
 		}
+
+		UnprepareTick();
 	}
 }
 
@@ -245,8 +249,16 @@ void CCDHack(const FReal Dt, TParticleView<TPBDRigidParticles<FReal, 3>>& Partic
 //
 //
 
-
 void FPBDRigidsEvolutionGBF::AdvanceOneTimeStep(const FReal Dt, const FReal StepFraction)
+{
+	PrepareTick();
+
+	AdvanceOneTimeStepImpl(Dt, StepFraction);
+
+	UnprepareTick();
+}
+
+void FPBDRigidsEvolutionGBF::AdvanceOneTimeStepImpl(const FReal Dt, const FReal StepFraction)
 {
 	SCOPE_CYCLE_COUNTER(STAT_Evolution_AdvanceOneTimeStep);
 
@@ -258,8 +270,7 @@ void FPBDRigidsEvolutionGBF::AdvanceOneTimeStep(const FReal Dt, const FReal Step
 #endif
 
 	{
-		// #TODO re-enable when larger groups of collections can successfully resolve groups
-		//Clustering.UnionClusterGroups();
+		Clustering.UnionClusterGroups();
 	}
 
 	{
@@ -310,7 +321,7 @@ void FPBDRigidsEvolutionGBF::AdvanceOneTimeStep(const FReal Dt, const FReal Step
 
 	{
 		SCOPE_CYCLE_COUNTER(STAT_Evolution_PrepareConstraints);
-		PrepareConstraints(Dt);
+		PrepareIteration(Dt);
 	}
 
 	{
@@ -403,7 +414,7 @@ void FPBDRigidsEvolutionGBF::AdvanceOneTimeStep(const FReal Dt, const FReal Step
 
 	{
 		SCOPE_CYCLE_COUNTER(STAT_Evolution_UnprepareConstraints);
-		UnprepareConstraints(Dt);
+		UnprepareIteration(Dt);
 	}
 
 	{
@@ -469,6 +480,7 @@ FPBDRigidsEvolutionGBF::FPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal, 3>& InParti
 
 	AddConstraintRule(&CollisionRule);
 
+	SetInternalParticleInitilizationFunction([](const TGeometryParticleHandle<float, 3>*, const TGeometryParticleHandle<float, 3>*) {});
 	NarrowPhase.GetContext().bFilteringEnabled = true;
 	NarrowPhase.GetContext().bDeferUpdate = true;
 	NarrowPhase.GetContext().bAllowManifolds = false;
