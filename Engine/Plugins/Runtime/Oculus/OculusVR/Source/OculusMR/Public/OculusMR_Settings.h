@@ -11,7 +11,6 @@ enum class EOculusMR_CameraDeviceEnum : uint8
 	CD_None         UMETA(DisplayName = "None"),
 	CD_WebCamera0   UMETA(DisplayName = "Web Camera 0"),
 	CD_WebCamera1   UMETA(DisplayName = "Web Camera 1"),
-	CD_ZEDCamera    UMETA(DisplayName = "ZED Camera"),
 };
 
 UENUM(BlueprintType)

@@ -203,4 +203,12 @@ void FVulkanAndroidPlatform::OverridePlatformHandlers(bool bInit)
 	}
 }
 
+#if WITH_LATE_LATCHING_CODE
+bool FVulkanAndroidPlatform::SupportsUniformBufferPatching()
+{
+	// Only Allow it on ( Oculus + Vulkan + Android ) devices for now to reduce the impact on general system
+	return !UseRealUBsOptimization(true) && FPlatformMisc::IsStandaloneStereoOnlyDevice();
+}
+#endif
+
 #endif

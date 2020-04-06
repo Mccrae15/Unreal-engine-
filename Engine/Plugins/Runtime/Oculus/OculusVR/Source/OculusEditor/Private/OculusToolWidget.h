@@ -102,6 +102,11 @@ protected:
 	FReply AndroidPackagingFix(bool text);
 	EVisibility AndroidPackagingVisibility(FName tag) const;
 
+	FReply AndroidQuestArchFix(bool text);
+	EVisibility AndroidQuestArchVisibility(FName tag) const;
+
+	EVisibility GearVrDeprecatedVisibility(FName tag) const;
+
 	FReply AntiAliasingEnable(bool text);
 	EVisibility AntiAliasingVisibility(FName tag) const;
 

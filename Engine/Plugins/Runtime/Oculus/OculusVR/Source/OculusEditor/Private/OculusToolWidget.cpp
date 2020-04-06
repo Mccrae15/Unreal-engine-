@@ -2,6 +2,7 @@
 
 #include "OculusToolWidget.h"
 #include "OculusEditorSettings.h"
+#include "OculusHMDRuntimeSettings.h"
 #include "OculusHMD.h"
 #include "DetailLayoutBuilder.h"
 #include "Engine/RendererSettings.h"
@@ -224,6 +225,8 @@ void SOculusToolWidget::RebuildLayout()
 	AddSimpleSetting(box, SimpleSettings.Find(FName("MobileHDR")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("AndroidManifest")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("AndroidPackaging")));
+	AddSimpleSetting(box, SimpleSettings.Find(FName("AndroidQuestArch")));
+	AddSimpleSetting(box, SimpleSettings.Find(FName("GearVrDeprecated")));
 
 	box = NewCategory(scroller, LOCTEXT("PostProcessHeader", "<RichTextBlock.Bold>Post-Processing Settings:</>\nThe below settings all refer to your project's post-processing settings. Post-processing can be very expensive in VR, so we recommend disabling many expensive post-processing effects. You can fine-tune your post-processing settings with a Post Process Volume. <a href=\"https://docs.unrealengine.com/en-us/Platforms/VR/VRPerformance\" id=\"HyperlinkDecorator\">Read more.</>."));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("LensFlare")));
@@ -426,6 +429,27 @@ void SOculusToolWidget::Construct(const FArguments& InArgs)
 		{ LOCTEXT("AndroidPackagingButton", "Configure Android Packaging"),
 		&SOculusToolWidget::AndroidPackagingFix }
 	);
+
+	SimpleSettings.Add(FName("AndroidQuestArch"), {
+		FName("AndroidQuestArch"),
+		LOCTEXT("AndroidQuestArchDescription", "Oculus Quest store requires 64-bit applications. <a href=\"https://developer.oculus.com/blog/quest-submission-policy-update-64-bit-by-default/\" id=\"HyperlinkDecorator\">Read more.</>"),
+		&SOculusToolWidget::AndroidQuestArchVisibility,
+		TArray<SimpleSettingAction>(),
+		(int)SupportFlags::SupportMobile
+	});
+	SimpleSettings.Find(FName("AndroidQuestArch"))->actions.Add(
+		{ LOCTEXT("AndroidQuestArchButton", "Enable Android Arm64 CPU architecture support"),
+		&SOculusToolWidget::AndroidQuestArchFix }
+	);
+
+
+	SimpleSettings.Add(FName("GearVrDeprecated"), {
+		FName("GearVrDeprecated"),
+		LOCTEXT("GearVrDeprecatedDescription", "Gear VR is no longer supported since Oculus Integration 1.41. This app will only target Oculus Go. <a href=\"https://developer.oculus.com/blog/gear-vr-app-development-no-longer-supported-from-sdk-suite-142-and-future-versions/\" id=\"HyperlinkDecorator\">Read more.</>"),
+		&SOculusToolWidget::GearVrDeprecatedVisibility,
+		TArray<SimpleSettingAction>(),
+		(int)SupportFlags::SupportMobile
+	});
 
 	// Post-Processing Settings
 	SimpleSettings.Add(FName("LensFlare"), {
@@ -637,7 +661,7 @@ FReply SOculusToolWidget::AndroidManifestGearGo(bool text)
 {
 	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
 	Settings->PackageForOculusMobile.Add(EOculusMobileDevice::GearGo);
-	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, PackageForOculusMobile)), Settings->GetDefaultConfigFilename());
+	Settings->SaveConfig(CPF_Config, *Settings->GetDefaultConfigFilename()); // UpdateSinglePropertyInConfigFile does not support arrays
 	return FReply::Handled();
 }
 
@@ -645,7 +669,7 @@ FReply SOculusToolWidget::AndroidManifestQuest(bool text)
 {
 	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
 	Settings->PackageForOculusMobile.Add(EOculusMobileDevice::Quest);
-	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, PackageForOculusMobile)), Settings->GetDefaultConfigFilename());
+	Settings->SaveConfig(CPF_Config, *Settings->GetDefaultConfigFilename()); // UpdateSinglePropertyInConfigFile does not support arrays
 	return FReply::Handled();
 }
 
@@ -659,27 +683,50 @@ EVisibility SOculusToolWidget::AndroidManifestVisibility(FName tag) const
 
 FReply SOculusToolWidget::AndroidPackagingFix(bool text)
 {
-	const TCHAR* AndroidSettings = TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings");
-	GConfig->SetInt(AndroidSettings, TEXT("MinSDKVersion"), MIN_SDK_VERSION, GetConfigPath());
-	GConfig->SetInt(AndroidSettings, TEXT("TargetSDKVersion"), MIN_SDK_VERSION, GetConfigPath());
-	GConfig->SetBool(AndroidSettings, TEXT("bFullScreen"), true, GetConfigPath());
-	GConfig->Flush(0);
+	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
+	Settings->bFullScreen = true;
+	Settings->MinSDKVersion = MIN_SDK_VERSION;
+	Settings->TargetSDKVersion = MIN_SDK_VERSION;
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bFullScreen)), Settings->GetDefaultConfigFilename());
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, MinSDKVersion)), Settings->GetDefaultConfigFilename());
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, TargetSDKVersion)), Settings->GetDefaultConfigFilename());
 	return FReply::Handled();
 }
 
 EVisibility SOculusToolWidget::AndroidPackagingVisibility(FName tag) const
 {
-	const TCHAR* AndroidSettings = TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings");
-	bool fullscreen = false;
-	int minSDK = 0;
-	int targetSDK = 0;
-	if (!GConfig->GetBool(AndroidSettings, TEXT("bFullScreen"), fullscreen, GetConfigPath()) ||
-		!GConfig->GetInt(AndroidSettings, TEXT("MinSDKVersion"), minSDK, GetConfigPath()) ||
-		!GConfig->GetInt(AndroidSettings, TEXT("TargetSDKVersion"), targetSDK, GetConfigPath()))
-	{
-		return EVisibility::Visible;
-	}
-	return (minSDK < MIN_SDK_VERSION || targetSDK < MIN_SDK_VERSION || !fullscreen) ? EVisibility::Visible : EVisibility::Collapsed;
+	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
+	return (
+		Settings->MinSDKVersion < MIN_SDK_VERSION || 
+		Settings->TargetSDKVersion < MIN_SDK_VERSION ||
+		!Settings->bFullScreen
+	) ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+FReply SOculusToolWidget::AndroidQuestArchFix(bool text)
+{
+	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
+	Settings->bBuildForArmV7 = false;
+	Settings->bBuildForArm64 = true;
+	Settings->bBuildForX8664 = false;
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForArmV7)), Settings->GetDefaultConfigFilename());
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForArm64)), Settings->GetDefaultConfigFilename());
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForX8664)), Settings->GetDefaultConfigFilename());
+	return FReply::Handled();
+}
+
+EVisibility SOculusToolWidget::AndroidQuestArchVisibility(FName tag) const
+{
+	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
+	return Settings->PackageForOculusMobile.Contains(EOculusMobileDevice::Quest) && !Settings->bBuildForArm64 ?
+		EVisibility::Visible : EVisibility::Collapsed;
+}
+
+EVisibility SOculusToolWidget::GearVrDeprecatedVisibility(FName tag) const
+{
+	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
+	return Settings->PackageForOculusMobile.Contains(EOculusMobileDevice::GearGo) ?
+		EVisibility::Visible : EVisibility::Collapsed;
 }
 
 
@@ -806,16 +853,16 @@ EVisibility SOculusToolWidget::StartInVRVisibility(FName tag) const
 
 FReply SOculusToolWidget::SupportDashEnable(bool text)
 {
-	const TCHAR* OculusSettings = TEXT("Oculus.Settings");
-	GConfig->SetBool(OculusSettings, TEXT("bSupportsDash"), true, GEngineIni);
+	UOculusHMDRuntimeSettings* Settings = GetMutableDefault<UOculusHMDRuntimeSettings>();
+	Settings->bSupportsDash = true;
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UOculusHMDRuntimeSettings, bSupportsDash)), Settings->GetDefaultConfigFilename());
 	return FReply::Handled();
 }
 
 EVisibility SOculusToolWidget::SupportDashVisibility(FName tag) const
 {
-	bool v = false;
-	const TCHAR* OculusSettings = TEXT("Oculus.Settings");
-	return (GConfig->GetBool(OculusSettings, TEXT("bSupportsDash"), v, GEngineIni) && v) ? EVisibility::Collapsed : EVisibility::Visible;
+	const UOculusHMDRuntimeSettings* Settings = GetDefault<UOculusHMDRuntimeSettings>();
+	return Settings->bSupportsDash ? EVisibility::Collapsed : EVisibility::Visible;
 }
 
 #undef LOCTEXT_NAMESPACE

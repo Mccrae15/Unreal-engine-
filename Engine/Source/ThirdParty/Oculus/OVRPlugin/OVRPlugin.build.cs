@@ -15,7 +15,9 @@ public class OVRPlugin : ModuleRules
 		if (Target.Platform == UnrealTargetPlatform.Android)
 		{
 			PublicAdditionalLibraries.Add(SourceDirectory + "Lib/armeabi-v7a/" + "libOVRPlugin.so");
+			PublicAdditionalLibraries.Add(SourceDirectory + "Lib/armeabi-v7a/" + "libOVRMrcLib.so");
 			PublicAdditionalLibraries.Add(SourceDirectory + "Lib/arm64-v8a/" + "libOVRPlugin.so");
+			PublicAdditionalLibraries.Add(SourceDirectory + "Lib/arm64-v8a/" + "libOVRMrcLib.so");
 
 			PublicAdditionalLibraries.Add(SourceDirectory + "ExtLibs/armeabi-v7a/" + "libvrapi.so");
 			PublicAdditionalLibraries.Add(SourceDirectory + "ExtLibs/arm64-v8a/" + "libvrapi.so");

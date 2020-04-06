@@ -89,11 +89,13 @@ void UStereoLayerComponent::TickComponent(float DeltaTime, enum ELevelTick TickT
 
 		if (Texture)
 		{
+			Texture->SetForceMipLevelsToBeResident(30.0f);
 			LayerDsec.Texture = Texture->Resource->TextureRHI;
 			LayerDsec.Flags |= (Texture->GetMaterialType() == MCT_TextureExternal) ? IStereoLayers::LAYER_FLAG_TEX_EXTERNAL : 0;
 		}
 		if (LeftTexture)
 		{
+			Texture->SetForceMipLevelsToBeResident(30.0f);
 			LayerDsec.LeftTexture = LeftTexture->Resource->TextureRHI;
 		}
 				

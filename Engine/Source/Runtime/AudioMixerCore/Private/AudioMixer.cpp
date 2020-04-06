@@ -331,7 +331,7 @@ namespace Audio
 		bPerformingFade = true;
 		if (AudioFadeEvent != nullptr)
 		{
-			AudioFadeEvent->Wait();
+			AudioFadeEvent->Wait(1000);
 		}
 
 		FadeVolume = 0.0f;

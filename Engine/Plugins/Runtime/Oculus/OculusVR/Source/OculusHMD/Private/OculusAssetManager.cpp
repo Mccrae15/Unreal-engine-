@@ -19,8 +19,6 @@ FSoftObjectPath FOculusAssetDirectory::AssetListing[] =
 	FString(TEXT("/OculusVR/Meshes/GearVRController.GearVRController")),
 	FString(TEXT("/OculusVR/Meshes/LeftTouchController.LeftTouchController")),
 	FString(TEXT("/OculusVR/Meshes/RightTouchController.RightTouchController")),
-
-	FString(TEXT("/OculusVR/Materials/PokeAHoleMaterial.PokeAHoleMaterial"))
 };
 
 #if WITH_EDITORONLY_DATA
@@ -127,10 +125,19 @@ static UObject* OculusAssetManager_Impl::FindDeviceMesh(const int32 DeviceID)
 FOculusAssetManager::FOculusAssetManager()
 {
 	IModularFeatures::Get().RegisterModularFeature(IXRSystemAssets::GetModularFeatureName(), this);
+
+	ResourceHolder = NewObject<UOculusResourceHolder>();
+	ResourceHolder->AddToRoot();
 }
 
 FOculusAssetManager::~FOculusAssetManager()
 {
+	if (ResourceHolder)
+	{
+		ResourceHolder->ConditionalBeginDestroy();
+		ResourceHolder = NULL;
+	}
+
 	IModularFeatures::Get().UnregisterModularFeature(IXRSystemAssets::GetModularFeatureName(), this);
 }
 

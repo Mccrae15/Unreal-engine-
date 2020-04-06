@@ -376,10 +376,10 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	static EFixedFoveatedRenderingLevel GetFixedFoveatedRenderingLevel();
 
 	/**
-	* Set the requested multiresolution level for the next frame
+	* Set the requested multiresolution level for the next frame, and whether FFR's level is now dynamic or not.
 	*/
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
-	static void SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel level);
+	static void SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel level, bool isDynamic);
 
 	/**
 	* Returns the current device's name
@@ -422,6 +422,12 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	*/
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
 	static void SetColorScaleAndOffset(FLinearColor ColorScale, FLinearColor ColorOffset, bool bApplyToAllLayers = false);
+
+	/**
+	* Returns true if system headset is in 3dof mode 
+	*/
+	UFUNCTION(BlueprintPure, Category = "OculusLibrary")
+	static bool GetSystemHmd3DofModeEnabled();
 
 	/**
 	 * Returns IStereoLayers interface to work with overlays.

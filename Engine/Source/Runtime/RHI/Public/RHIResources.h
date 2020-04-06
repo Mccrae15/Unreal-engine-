@@ -417,6 +417,11 @@ public:
 	mutable int32 NumMeshCommandReferencesForDebugging = 0;
 #endif
 
+#if WITH_LATE_LATCHING_CODE
+	virtual int32 GetPatchingFrameNumber() const { return -1; }
+	virtual void FlagPatchingFrameNumber(int32 FrameNumber) { }
+#endif
+
 private:
 	/** Layout of the uniform buffer. */
 	const FRHIUniformBufferLayout* Layout;
@@ -1847,6 +1852,7 @@ public:
 		, ImmutableSamplerState(InMinimalState.ImmutableSamplerState)
 		, bDepthBounds(InMinimalState.bDepthBounds)
 		, bMultiView(InMinimalState.bMultiView)
+		, bHasFragmentDensityAttachment(InMinimalState.bMultiView)
 		, PrimitiveType(InMinimalState.PrimitiveType)
 	{
 	}
@@ -1920,6 +1926,7 @@ public:
 		COMPARE_FIELD(DepthStencilState)
 		COMPARE_FIELD(bDepthBounds)
 		COMPARE_FIELD(bMultiView)
+		COMPARE_FIELD(bHasFragmentDensityAttachment)
 		COMPARE_FIELD(PrimitiveType)
 		COMPARE_FIELD_END;
 
@@ -1945,6 +1952,7 @@ public:
 		COMPARE_FIELD(DepthStencilState)
 		COMPARE_FIELD(bDepthBounds)
 		COMPARE_FIELD(bMultiView)
+		COMPARE_FIELD(bHasFragmentDensityAttachment)
 		COMPARE_FIELD(PrimitiveType)
 		COMPARE_FIELD_END;
 
@@ -1968,7 +1976,8 @@ public:
 	// all data members and at the end of the structure.
 	bool							bDepthBounds = false;
 	bool							bMultiView = false;
-	uint8							Padding[2] = {};
+	bool							bHasFragmentDensityAttachment = false;
+	uint8							Padding[1] = {};
 
 	EPrimitiveType			PrimitiveType;
 };

@@ -586,13 +586,14 @@ protected:
 		
 		ESubpassHint SubpassHint = ESubpassHint::None;
 		uint8 SubpassIndex = 0;
-
+		bool HasFragmentDensityAttachment = false;
 	} PSOContext;
 
 	void CacheActiveRenderTargets(
 		uint32 NewNumSimultaneousRenderTargets,
 		const FRHIRenderTargetView* NewRenderTargetsRHI,
-		const FRHIDepthRenderTargetView* NewDepthStencilTargetRHI
+		const FRHIDepthRenderTargetView* NewDepthStencilTargetRHI,
+		const bool HasFragmentDensityAttachment
 		)
 	{
 		PSOContext.CachedNumSimultanousRenderTargets = NewNumSimultaneousRenderTargets;
@@ -603,13 +604,14 @@ protected:
 		}
 
 		PSOContext.CachedDepthStencilTarget = (NewDepthStencilTargetRHI) ? *NewDepthStencilTargetRHI : FRHIDepthRenderTargetView();
+		PSOContext.HasFragmentDensityAttachment = HasFragmentDensityAttachment;
 	}
 
 	void CacheActiveRenderTargets(const FRHIRenderPassInfo& Info)
 	{
 		FRHISetRenderTargetsInfo RTInfo;
 		Info.ConvertToRenderTargetsInfo(RTInfo);
-		CacheActiveRenderTargets(RTInfo.NumColorRenderTargets, RTInfo.ColorRenderTarget, &RTInfo.DepthStencilRenderTarget);
+		CacheActiveRenderTargets(RTInfo.NumColorRenderTargets, RTInfo.ColorRenderTarget, &RTInfo.DepthStencilRenderTarget, RTInfo.FoveationTexture != nullptr);
 	}
 
 	void IncrementSubpass()
@@ -1146,6 +1148,17 @@ FRHICOMMAND_MACRO(FRHICommandEndRenderPass)
 
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
+
+#if WITH_LATE_LATCHING_CODE
+FRHICOMMAND_MACRO(FRHICommandEndLateLatching)
+{
+	FRHICommandEndLateLatching()
+	{
+	}
+
+	RHI_API void Execute(FRHICommandListBase& CmdList);
+};
+#endif
 
 FRHICOMMAND_MACRO(FRHICommandNextSubpass)
 {
@@ -2630,6 +2643,7 @@ public:
 
 		GraphicsPSOInit.SubpassHint = PSOContext.SubpassHint;
 		GraphicsPSOInit.SubpassIndex = PSOContext.SubpassIndex;
+		GraphicsPSOInit.bHasFragmentDensityAttachment = PSOContext.HasFragmentDensityAttachment;
 	}
 
 	UE_DEPRECATED(4.22, "SetRenderTargets API is deprecated; please use RHIBegin/EndRenderPass instead.")
@@ -2645,7 +2659,8 @@ public:
 		CacheActiveRenderTargets(
 			NewNumSimultaneousRenderTargets, 
 			NewRenderTargetsRHI, 
-			NewDepthStencilTargetRHI
+			NewDepthStencilTargetRHI,
+			false
 			);
 
 		if (Bypass())
@@ -4651,6 +4666,27 @@ public:
 	 * @param bNeedReleaseRefs - whether Release need to be called on RHI resources referenced by update infos
 	 */
 	void UpdateRHIResources(FRHIResourceUpdateInfo* UpdateInfos, int32 Num, bool bNeedReleaseRefs);
+
+#if WITH_LATE_LATCHING_CODE
+	FORCEINLINE void BeginLateLatching(int32 FrameNumber)
+	{
+		// Todo: add bypass support
+		GetContext().RHIBeginLateLatching(this, FrameNumber);
+	}
+
+	FORCEINLINE void EndLateLatching()
+	{
+		if (Bypass())
+		{
+			GetContext().RHIEndLateLatching();
+		}
+		else
+		{
+			ALLOC_COMMAND(FRHICommandEndLateLatching)();
+		}
+	}
+#endif
+
 };
 
 class FRHICommandListScopedFlushAndExecute

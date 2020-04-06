@@ -1556,12 +1556,17 @@ namespace OculusHMD
 				FIntPoint TexSize = Texture->GetSizeXY();
 
 				// Only set texture and return true if we have a valid texture of compatible size
-				if (Texture->IsValid() && TexSize.X > 0 && TexSize.Y > 0 && RenderSizeX % TexSize.X == 0 && RenderSizeY % TexSize.Y == 0)
+				if (Texture->IsValid() && TexSize.X > 0 && TexSize.Y > 0 )
 				{
 					if (bNeedReAllocateFoveationTexture_RenderThread)
 					{
 						UE_LOG(LogHMD, Log, TEXT("Allocating Oculus %d x %d variable resolution swapchain"), TexSize.X, TexSize.Y, Index);
 						bNeedReAllocateFoveationTexture_RenderThread = false;
+					}
+
+					if (RenderSizeX % TexSize.X != 0 || RenderSizeY % TexSize.Y != 0)
+					{
+						UE_LOG(LogHMD, Warning, TEXT("%d x %d variable resolution swapchain is not a divider of %d x %d color swapchain, potential edge problems"), TexSize.X, TexSize.Y, RenderSizeX, RenderSizeY);
 					}
 
 					OutTexture = Texture;
@@ -1938,6 +1943,27 @@ namespace OculusHMD
 		return GEngine && GEngine->IsStereoscopic3D(InViewport);
 	}
 
+#if WITH_LATE_LATCHING_CODE
+	bool FOculusHMD::LateLatchingEnabled() const
+	{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS_VULKAN && PLATFORM_ANDROID
+		// No LateLatching supported for non Multi view ATM due to viewUniformBuffer reusing.
+		return Settings->bLateLatching && Settings->Flags.bIsUsingDirectMultiview;
+#else
+		return false;
+#endif
+	}
+
+	void FOculusHMD::PreLateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
+	{
+		CheckInRenderThread();
+		FGameFrame* CurrentFrame = GetFrame_RenderThread();
+		if (CurrentFrame)
+		{
+			CurrentFrame->Flags.bRTLateUpdateDone = false; // Allow LateLatching to update poses again
+		}
+	}
+#endif
 
 	FOculusHMD::FOculusHMD(const FAutoRegister& AutoRegister)
 		: FHeadMountedDisplayBase(nullptr)
@@ -2179,6 +2205,7 @@ namespace OculusHMD
 		ovrp_SetSystemCpuLevel2(Settings->CPULevel);
 		ovrp_SetSystemGpuLevel2(Settings->GPULevel);
 		ovrp_SetTiledMultiResLevel((ovrpTiledMultiResLevel)Settings->FFRLevel);
+		ovrp_SetTiledMultiResDynamic(Settings->FFRDynamic);
 		ovrp_SetAppCPUPriority2(ovrpBool_True);
 		ovrp_SetReorientHMDOnControllerRecenter(Settings->Flags.bRecenterHMDWithController ? ovrpBool_True : ovrpBool_False);
 
@@ -2484,7 +2511,7 @@ namespace OculusHMD
 			Settings->Flags.bPixelDensityAdaptive ? Settings->PixelDensityMax : Settings->PixelDensity,
 			Settings->Flags.bHQDistortion ? 0 : 1,
 			1, // UNDONE
-			CustomPresent->GetDefaultOvrpTextureFormat(),
+			CustomPresent->GetOvrpTextureFormat(CustomPresent->GetDefaultPixelFormat(), Settings->Flags.bsRGBEyeBuffer),
 			(Settings->Flags.bCompositeDepth && bSupportsDepth) ? CustomPresent->GetDefaultDepthOvrpTextureFormat() : ovrpTextureFormat_None,
 			CustomPresent->GetLayerFlags() | (Settings->Flags.bChromaAbCorrectionEnabled ? ovrpLayerFlag_ChromaticAberrationCorrection : 0),
 			&EyeLayerDesc)))
@@ -2534,8 +2561,11 @@ namespace OculusHMD
 			Settings->EyeProjectionMatrices[0] = ovrpMatrix4f_Projection(frustumLeft, true);
 			Settings->EyeProjectionMatrices[1] = ovrpMatrix4f_Projection(frustumRight, true);
 
-			Settings->PerspectiveProjection[0] = ovrpMatrix4f_Projection(frustumLeft, false);
-			Settings->PerspectiveProjection[1] = ovrpMatrix4f_Projection(frustumRight, false);
+			if (Frame.IsValid())
+			{
+				Frame->Fov[0] = EyeLayerDesc.Fov[0];
+				Frame->Fov[1] = EyeLayerDesc.Fov[1];
+			}
 
 			// Flag if need to recreate render targets
 			if (!EyeLayer->CanReuseResources(EyeLayer_RenderThread.Get()))
@@ -2999,10 +3029,11 @@ namespace OculusHMD
 	}
 
 
-	void FOculusHMD::SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel InFFRLevel)
+	void FOculusHMD::SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel InFFRLevel, bool isDynamic)
 	{
 		CheckInGameThread();
 		Settings->FFRLevel = InFFRLevel;
+		Settings->FFRDynamic = isDynamic;
 	}
 
 	void FOculusHMD::SetColorScaleAndOffset(FLinearColor ColorScale, FLinearColor ColorOffset, bool bApplyToAllLayers)
@@ -3151,6 +3182,7 @@ namespace OculusHMD
 		Result->WorldToMetersScale = CachedWorldToMetersScale;
 		Result->NearClippingPlane = GNearClippingPlane;
 		Result->FFRLevel = Settings->FFRLevel;
+		Result->FFRDynamic = Settings->FFRDynamic;
 		Result->Flags.bSplashIsShown = Splash->IsShown();
 		return Result;
 	}
@@ -3341,6 +3373,7 @@ namespace OculusHMD
 						{
 #if PLATFORM_ANDROID
 							ovrp_SetTiledMultiResLevel((ovrpTiledMultiResLevel)Frame_RHIThread->FFRLevel);
+							ovrp_SetTiledMultiResDynamic((ovrpTiledMultiResLevel)Frame_RHIThread->FFRDynamic);
 #endif
 						}
 					}
@@ -3519,10 +3552,14 @@ namespace OculusHMD
 		Settings->Flags.bChromaAbCorrectionEnabled = HMDSettings->bChromaCorrection;
 		Settings->Flags.bRecenterHMDWithController = HMDSettings->bRecenterHMDWithController;
 		Settings->FFRLevel = HMDSettings->FFRLevel;
+		Settings->FFRDynamic = HMDSettings->FFRDynamic;
 		Settings->CPULevel = HMDSettings->CPULevel;
 		Settings->GPULevel = HMDSettings->GPULevel;
 		Settings->PixelDensityMin = HMDSettings->PixelDensityMin;
 		Settings->PixelDensityMax = HMDSettings->PixelDensityMax;
+#if WITH_LATE_LATCHING_CODE
+		Settings->bLateLatching = HMDSettings->bLateLatching;
+#endif
 	}
 
 	/// @endcond
