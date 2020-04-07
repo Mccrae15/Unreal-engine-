@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "Chaos/IncludeLvl1.inl"
 #include "CoreMinimal.h"
 #include "GeometryCollection/ManagedArrayCollection.h"
 #include "Misc/Crc.h"
@@ -75,6 +74,7 @@ public:
 	*/
 	void ParentTransforms(const int32 TransformIndex, const int32 ChildIndex);
 	void ParentTransforms(const int32 TransformIndex, const TArray<int32>& SelectedBones);
+	void UnparentTransform(const int32 ChildIndex);
 
 	/*
 	* RelativeTransformation

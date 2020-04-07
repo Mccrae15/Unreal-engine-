@@ -111,11 +111,6 @@ void UNiagaraGraph::RemoveOnGraphNeedsRecompileHandler(FDelegateHandle Handle)
 	OnGraphNeedsRecompile.Remove(Handle);
 }
 
-void UNiagaraGraph::MutableAddParameter(FNiagaraVariable& Parameter, const FAddParameterOptions Options) const
-{
-	const_cast<UNiagaraGraph*>(this)->AddParameter(Parameter, Options);
-}
-
 void UNiagaraGraph::NotifyGraphChanged(const FEdGraphEditAction& InAction)
 {
 	InvalidateCachedParameterData();
@@ -550,9 +545,18 @@ FName StandardizeName(FName Name, ENiagaraScriptUsage Usage, bool bIsGet, bool b
 			}
 			else
 			{
-				// When reading they can be from the module namespace, or a more specific namespace from a different module.
-				Namespace = *(NameParts[0].ToString() + TEXT(".") + NameParts[1].ToString());
-				NameParts.RemoveAt(0, 2);
+				// When reading they can be from the module namespace, or a more specific namespace from a different module, we also need
+				// to handle the case where they are reading from the output of a nested module, so allow an additional namespace too.
+				if (NameParts.Num() > 3)
+				{
+					Namespace = *(NameParts[0].ToString() + TEXT(".") + NameParts[1].ToString() + TEXT(".") + NameParts[2].ToString());
+					NameParts.RemoveAt(0, 3);
+				}
+				else
+				{
+					Namespace = *(NameParts[0].ToString() + TEXT(".") + NameParts[1].ToString());
+					NameParts.RemoveAt(0, 2);
+				}
 			}
 		}
 		else
@@ -2656,31 +2660,6 @@ void UNiagaraGraph::RefreshParameterReferences() const
 	for (auto Variable : UnreferencedScriptVariables)
 	{
 		VariableToScriptVariable.Remove(Variable);
-	}
-	
-	{
-		// Add the array indices to the parameters
-		// When a particle attribute is created we need access the corresponding RegisterIdx if we want to 
-		// query this attribute at a different location inside the InputData buffer. This index must be 
-		// available as well inside the UI if we want to pass it to nodes. It is why we are adding them automatically 
-		// to the ParameterToReferencesMap.
-		TArray<FString> RegisterNames;
-		for (auto& ParameterEntry : ParameterToReferencesMap)
-		{
-			const FNiagaraVariable& NiagaraVariable = ParameterEntry.Key;
-			if (FNiagaraParameterMapHistory::IsAttribute(NiagaraVariable))
-			{
-				const FString VariableName = FHlslNiagaraTranslator::GetSanitizedSymbolName(NiagaraVariable.GetName().ToString());
-				RegisterNames.Add(VariableName.Replace(PARAM_MAP_ATTRIBUTE_STR, PARAM_MAP_INDICES_STR));
-			}
-		}
-		for (const FString& RegisterName : RegisterNames)
-		{
-			FAddParameterOptions AddParameterOptions = FAddParameterOptions();
-			AddParameterOptions.bRefreshMetaDataScopeAndUsage = true;
-			FNiagaraVariable Parameter = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), *RegisterName);
-			MutableAddParameter(Parameter, AddParameterOptions);
-		}
 	}
 
 	bParameterReferenceRefreshPending = false;

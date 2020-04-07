@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "Chaos/IncludeLvl1.inl"
 #include "CoreMinimal.h"
 #include "ManagedArray.h"
 #include "GeometryCollection/TransformCollection.h"
@@ -113,6 +112,14 @@ namespace GeometryCollectionAlgo
 	void 
 	GEOMETRYCOLLECTIONCORE_API 
 	ParentTransforms(FTransformCollection* GeometryCollection, const int32 TransformIndex, const TArray<int32>& SelectedBones);
+
+
+	/*
+	*  Unparent the child index from its parent
+	*/
+	void
+	GEOMETRYCOLLECTIONCORE_API
+	UnparentTransform(FManagedArrayCollection* Collection, const int32 ChildIndex);
 
 	/*
 	*  Find the average position of the transforms.
