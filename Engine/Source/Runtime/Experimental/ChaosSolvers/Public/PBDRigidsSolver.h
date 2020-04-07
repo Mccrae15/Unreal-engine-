@@ -15,6 +15,7 @@
 #include "Chaos/PerParticleGravity.h"
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/Transform.h"
+#include "Chaos/Framework/PhysicsProxy.h"
 #include "CoreMinimal.h"
 #include "Containers/Queue.h"
 #include "EventManager.h"
