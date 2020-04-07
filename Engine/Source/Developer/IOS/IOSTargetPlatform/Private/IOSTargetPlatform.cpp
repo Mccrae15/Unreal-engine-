@@ -531,6 +531,15 @@ bool FIOSTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) cons
 
 #if WITH_ENGINE
 
+void FIOSTargetPlatform::GetReflectionCaptureFormats(TArray<FName>& OutFormats) const
+{
+	if (SupportsMetalMRT())
+	{
+		OutFormats.Add(FName(TEXT("FullHDR")));
+	}
+
+	OutFormats.Add(FName(TEXT("EncodedHDR")));
+}
 
 void FIOSTargetPlatform::GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const
 {
