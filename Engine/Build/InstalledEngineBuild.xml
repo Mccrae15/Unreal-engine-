@@ -10,6 +10,8 @@
 	<!-- Option to enable all target platforms by default, as we ship in the launcher. Note that this will require cross-compiling IOS on Windows. -->
 	<Option Name="AllPlatforms" Restrict="true|false" DefaultValue="false" Description="Include all target platforms by default"/>
 
+	<Option Name="CompileDatasmithPlugins" Restrict="true|false" DefaultValue="false" Description="If Datasmith plugins should be compiled."/>
+
 	<!-- Get default values for each platform being enabled -->
 	<Property Name="DefaultWithWin64" Value="true"/>
 	<Property Name="DefaultWithWin64" Value="false" If="$(HostPlatformEditorOnly) Or ($(HostPlatformOnly) And '$(HostPlatform)' != 'Win64')"/>
@@ -120,6 +122,8 @@
 	<!-- Include the script that lists files and patterns used when creating an installed build -->
 	<Include Script="InstalledEngineFilters.xml"/>
 
+	<Option Name="CrashReporterAPIURL" DefaultValue="" Description="The URL to use to talk to the CrashReporterClient API."/>
+	<Option Name="CrashReporterAPIKey" DefaultValue="" Description="The API key to use to talk to the CrashReporterClient API."/>
 	<Property Name="CrashReporterCompileArgs" Value="-CompilerArguments=&quot;/DCRC_TELEMETRY_URL=$(CrashReporterAPIURL) /DCRC_TELEMETRY_KEY=$(CrashReporterAPIKey)&quot;" If="'$(CrashReporterAPIURL)' != '' And '$(CrashReporterAPIKey)' != ''" />
 
 	<!-- Base editor and tools for compile on Windows -->
@@ -736,11 +740,13 @@
 	<!-- These are plugins that need to be compiled with a full workspace rather than Win64_Licensee. -->
 	<Agent Name="Extra Plugins Agent" Type="Win64">
 		<Node Name="Compile Datasmith Plugins" Requires="Compile UnrealHeaderTool Win64" Produces="#DatasmithPluginBinaries">
-			<Property Name="DatasmithPlugins" Value="DatasmithCADImporter;DatasmithIFCImporter;DatasmithC4DImporter;AxFImporter;StaticMeshEditorExtension;MDLImporter"/>
-			<ForEach Name="Plugin" Values="$(DatasmithPlugins)">
-				<Compile Target="UE4Editor" Configuration="Development" Platform="Win64" Arguments="-Plugin=&quot;$(RootDir)/Engine/Plugins/Enterprise/$(Plugin)/$(Plugin).uplugin&quot;"/>
-				<Tag Files="$(RootDir)/Engine/Plugins/Enterprise/$(Plugin)/Binaries/..." With="#DatasmithPluginBinaries"/>
-			</ForEach>
+			<Do If="$(CompileDatasmithPlugins) == 'True'">
+				<Property Name="DatasmithPlugins" Value="DatasmithCADImporter;DatasmithIFCImporter;DatasmithC4DImporter;AxFImporter;StaticMeshEditorExtension;MDLImporter"/>
+				<ForEach Name="Plugin" Values="$(DatasmithPlugins)">
+					<Compile Target="UE4Editor" Configuration="Development" Platform="Win64" Arguments="-Plugin=&quot;$(RootDir)/Engine/Plugins/Enterprise/$(Plugin)/$(Plugin).uplugin&quot;"/>
+					<Tag Files="$(RootDir)/Engine/Plugins/Enterprise/$(Plugin)/Binaries/..." With="#DatasmithPluginBinaries"/>
+				</ForEach>
+			</Do>
 		</Node>
 	</Agent>
 
@@ -761,8 +767,9 @@
 		<Property Name="InstalledRequirements" Value="$(InstalledRequirements);#UE4Game Lumin" If="'$(WithLumin)' == true"/>
 		<Property Name="InstalledRequirements" Value="$(InstalledRequirements);#UE4Game HoloLens" If="'$(WithHoloLens)' == true"/>
 		<Property Name="InstalledRequirements" Value="$(InstalledRequirements);#CompressedDDCWin64" If="'$(WithDDC)' == true"/>
+		<Property Name="InstalledRequirements" Value="$(InstalledRequirements);#Compile Datasmith Plugins;#DatasmithPluginBinaries" If="$(CompileDatasmithPlugins)"/>
 		<!-- Feature packs -->
-		<Property Name="InstalledRequirements" Value="$(InstalledRequirements);#Compile Datasmith Plugins;#DatasmithPluginBinaries;Make Feature Packs"/>
+		<Property Name="InstalledRequirements" Value="$(InstalledRequirements);Make Feature Packs"/>
 
 		<!-- Filters the build products required for an installed build into groups depending on whether they need to be stripped, signed or just copied -->
 		<Node Name="Make Installed Build Win64" Requires="$(InstalledRequirements)" Produces="#Installed Build Win64 Files">
@@ -779,7 +786,7 @@
 			<Tag Files="#UE4Editor Win64 WithExceptions" Except="#UE4Editor Win64 Unstripped;#UE4Editor Win64 Unsigned" With="#Installed Win64"/>
 			<Tag Files="#UE4Editor Win64 Stripped;#UE4Editor Win64 Signed" With="#Saved Output"/>
 			<Tag Files="#Build Tools Win64;#Make Feature Packs" With="#Installed Win64"/>
-			<Tag Files="#DatasmithPluginBinaries" With="#Installed Win64"/>
+			<Tag Files="#DatasmithPluginBinaries" With="#Installed Win64" If="$(CompileDatasmithPlugins)"/>
 
 			<!-- Tag enabled target platforms -->
 			<Do If="'$(WithWin64)' == true">

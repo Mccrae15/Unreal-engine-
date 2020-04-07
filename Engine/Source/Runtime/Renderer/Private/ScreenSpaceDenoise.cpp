@@ -40,6 +40,15 @@ static TAutoConsoleVariable<int32> CVarShadowHistoryConvolutionSampleCount(
 	TEXT("Number of samples to use to convolve the history over time."),
 	ECVF_RenderThreadSafe);
 
+static TAutoConsoleVariable<int32> CVarUseReflectionDenoiser(
+	TEXT("r.Reflections.Denoiser"),
+	2,
+	TEXT("Choose the denoising algorithm.\n")
+	TEXT(" 0: Disabled;\n")
+	TEXT(" 1: Forces the default denoiser of the renderer;\n")
+	TEXT(" 2: GScreenSpaceDenoiser which may be overriden by a third party plugin (default)."),
+	ECVF_RenderThreadSafe);
+
 static TAutoConsoleVariable<int32> CVarReflectionReconstructionSampleCount(
 	TEXT("r.Reflections.Denoiser.ReconstructionSamples"), 16,
 	TEXT("Maximum number of samples for the reconstruction pass (default = 16)."),
@@ -319,8 +328,8 @@ const TCHAR* const kInjestResourceNames[] = {
 	// ShadowVisibilityMask
 	TEXT("ShadowDenoiserInjest0"),
 	TEXT("ShadowDenoiserInjest1"),
-	TEXT("ShadowDenoiserInjest2"),
-	TEXT("ShadowDenoiserInjest3"),
+	nullptr,
+	nullptr,
 
 	// PolychromaticPenumbraHarmonic
 	nullptr,
@@ -1345,12 +1354,11 @@ static void DenoiseSignalAtConstantPixelDensity(
 			check(Settings.SignalBatchSize >= 1 && Settings.SignalBatchSize <= IScreenSpaceDenoiser::kMaxBatchSize);
 			for (int32 BatchedSignalId = 0; BatchedSignalId < Settings.SignalBatchSize; BatchedSignalId++)
 			{
-				InjestDescs[BatchedSignalId].Format = PF_FloatRGBA;
-				InjestTextureCount = BatchedSignalId;
-				ReconstructionDescs[BatchedSignalId].Format = PF_FloatRGBA;
-				HistoryDescs[BatchedSignalId].Format = PF_FloatRGBA;
+				InjestDescs[BatchedSignalId / 2].Format = (BatchedSignalId % 2) ? PF_R32G32_UINT : PF_R32_UINT;
+				InjestTextureCount = BatchedSignalId / 2 + 1;
+				ReconstructionDescs[BatchedSignalId].Format = PF_R32G32_UINT;
+				HistoryDescs[BatchedSignalId].Format = PF_R32G32_UINT;
 			}
-			InjestTextureCount = Settings.SignalBatchSize;
 
 			HistoryTextureCountPerSignal = 1;
 			ReconstructionTextureCount = Settings.SignalBatchSize;
@@ -1781,7 +1789,7 @@ static void DenoiseSignalAtConstantPixelDensity(
 				{
 					for (int32 BatchedSignalId = 0; BatchedSignalId < Settings.SignalBatchSize; BatchedSignalId++)
 					{
-						RejectionSignalProcessingDescs[BatchedSignalId].Format = PF_FloatRGBA;
+						RejectionSignalProcessingDescs[BatchedSignalId].Format = PF_R32G32_UINT;
 					}
 					RejectionTextureCount = Settings.SignalBatchSize;
 				}
@@ -2788,4 +2796,9 @@ const IScreenSpaceDenoiser* IScreenSpaceDenoiser::GetDefaultDenoiser()
 {
 	static IScreenSpaceDenoiser* GDefaultDenoiser = new FDefaultScreenSpaceDenoiser;
 	return GDefaultDenoiser;
+}
+
+int GetReflectionsDenoiserMode()
+{
+	return CVarUseReflectionDenoiser.GetValueOnRenderThread();
 }

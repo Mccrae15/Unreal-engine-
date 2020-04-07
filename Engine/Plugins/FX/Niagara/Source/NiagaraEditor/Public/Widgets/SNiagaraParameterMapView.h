@@ -11,6 +11,7 @@
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
 #include "Framework/Commands/Commands.h"
 #include "Framework/Commands/UICommandList.h"
+#include "NiagaraGraph.h"
 #include "NiagaraActions.h"
 #include "EditorStyleSet.h"
 
@@ -22,26 +23,39 @@ class SComboButton;
 class FNiagaraObjectSelection;
 class UNiagaraGraph;
 struct FEdGraphSchemaAction;
+struct FSlateBrush;
+class UNiagaraSystem;
 
 /* Enums to use when grouping the blueprint members in the list panel. The order here will determine the order in the list */
 namespace NiagaraParameterMapSectionID
 {
 	enum Type
 	{
-		NONE = 0,
-		MODULE,
-		STATIC_SWITCH,
-		ENGINE,
-		PARAMETERCOLLECTION,
+		NONE,
+
 		USER,
+
 		SYSTEM,
 		EMITTER,
 		PARTICLE,
-		OTHER,
+
+		MODULE_INPUT,
+		STATIC_SWITCH,
+		MODULE_LOCAL,
+		MODULE_OUTPUT,
+
+		ENGINE,
+		TRANSIENT,
+		PARAMETERCOLLECTION,
+		DATA_INSTANCE,
+
+		Num
 	};
 
 	static FText OnGetSectionTitle(const NiagaraParameterMapSectionID::Type InSection);
+	static void OnGetSectionNamespaces(const NiagaraParameterMapSectionID::Type InSection, TArray<FName>& OutSectionNamespaces);
 	static NiagaraParameterMapSectionID::Type OnGetSectionFromVariable(const FNiagaraVariable& InVar, bool IsStaticSwitchVariable, FNiagaraParameterHandle& OutParameterHandle, const NiagaraParameterMapSectionID::Type DefaultType = NiagaraParameterMapSectionID::Type::NONE);
+	static bool GetSectionIsAdvanced(const NiagaraParameterMapSectionID::Type InSection);
 };
 
 class FNiagaraParameterMapViewCommands : public TCommands<FNiagaraParameterMapViewCommands>
@@ -94,6 +108,10 @@ public:
 	static bool IsStaticSwitchParameter(const FNiagaraVariable& Variable, const TArray<TWeakObjectPtr<UNiagaraGraph>>& Graphs);
 
 private:
+	
+	TSharedRef<SWidget> GetViewOptionsMenu();
+	static const FSlateBrush* GetViewOptionsBorderBrush();
+
 	/** Function to bind to SNiagaraAddParameterMenus to filter types we allow creating in generic parameters*/
 	bool AllowMakeTypeGeneric(const FNiagaraTypeDefinition& InType) const;
 
@@ -116,6 +134,9 @@ private:
 	TSharedRef<SWidget> OnGetSectionWidget(TSharedRef<SWidget> RowWidget, int32 InSectionID);
 	TSharedRef<SWidget> CreateAddToSectionButton(const NiagaraParameterMapSectionID::Type InSection, TWeakPtr<SWidget> WeakRowWidget, FText AddNewText, FName MetaDataTag);
 	
+	void CollectAllActionsForScriptToolkit(TMap<FNiagaraVariable, TArray<FNiagaraGraphParameterReferenceCollection>>& ParameterEntries);
+	void CollectAllActionsForSystemToolkit(TMap<FNiagaraVariable, TArray<FNiagaraGraphParameterReferenceCollection>>& ParameterEntries);
+
 	/** Checks if the selected action has context menu */
 	bool SelectionHasContextMenu() const;
 	
@@ -127,6 +148,7 @@ private:
 	void AddGraph(UNiagaraGraph* Graph);
 	void AddGraph(class UNiagaraScriptSourceBase* SourceBase);
 	void OnGraphChanged(const struct FEdGraphEditAction& InAction);
+	void OnUserParameterStoreChanged();
 
 	//Callbacks
 	void OnDeleteEntry();
@@ -135,6 +157,9 @@ private:
 	bool CanRequestRenameOnActionNode(TWeakPtr<struct FGraphActionNode> InSelectedNode) const;
 	bool CanRequestRenameOnActionNode() const;
 	void OnPostRenameActionNode(const FText& InText, FNiagaraParameterAction& InAction);
+	void OnAddNamespaceModifier();
+	void OnRemoveNamespaceModifier();
+	void OnEditNamespaceModifier();
 
 	bool IsSystemToolkit();
 	bool IsScriptToolkit();
@@ -161,6 +186,8 @@ private:
 	TSharedPtr<FNiagaraObjectSelection> SelectedVariableObjects;
 
 	TArray<TWeakObjectPtr<UNiagaraGraph>> Graphs;
+	TWeakObjectPtr<UNiagaraSystem> CachedSystem;
+	FDelegateHandle UserParameterStoreChangedHandle;
 
 	/** The handle to the graph changed delegate. */
 	TArray<FDelegateHandle> OnGraphChangedHandles;
@@ -202,7 +229,16 @@ public:
 
 	TSharedRef<SEditableTextBox> GetSearchBox();
 
-	void AddParameterGroup(FGraphActionListBuilderBase& OutActions, TArray<FNiagaraVariable>& Variables, const NiagaraParameterMapSectionID::Type InSection = NiagaraParameterMapSectionID::NONE, const FText& Category = FText::GetEmpty(), const FString& RootCategory = FString(), const bool bSort = true, const bool bCustomName = true);
+	void AddParameterGroup(
+		FGraphActionListBuilderBase& OutActions,
+		TArray<FNiagaraVariable>& Variables,
+		const NiagaraParameterMapSectionID::Type InSection = NiagaraParameterMapSectionID::NONE,
+		const FText& Category = FText::GetEmpty(),
+		const FString& RootCategory = FString(),
+		const bool bSort = true,
+		const bool bCustomName = true,
+		bool bForMakeNew = false);
+	
 	void CollectParameterCollectionsActions(FGraphActionListBuilderBase& OutActions);
 	void CollectMakeNew(FGraphActionListBuilderBase& OutActions, const NiagaraParameterMapSectionID::Type InSection = NiagaraParameterMapSectionID::NONE);
 

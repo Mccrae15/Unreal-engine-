@@ -7,20 +7,22 @@
 class FViewInfo;
 class FScene;
 
-#if RHI_RAYTRACING
-
-int32 GetRayTracingReflectionsSamplesPerPixel(const FViewInfo& View);
-
-bool ShouldRenderRayTracingReflections(const FViewInfo& View);
-bool ShouldRayTracedReflectionsUseHybridReflections();
-bool ShouldRayTracedReflectionsSortMaterials(const FViewInfo& View);
-bool ShouldRayTracedReflectionsRayTraceSkyLightContribution(const FScene& Scene);
-
-#else
-
-FORCEINLINE int32 GetRayTracingReflectionsSamplesPerPixel(const FViewInfo& View)
+struct FRayTracingReflectionOptions
 {
-	return 0;
-}
+	enum EAlgorithm
+	{
+		BruteForce,
+		Sorted,
+		SortedDeferred
+	};
 
-#endif // RHI_RAYTRACING
+	bool bEnabled = true;
+	EAlgorithm Algorithm = EAlgorithm::Sorted;
+	int32 SamplesPerPixel = 1;
+	float ResolutionFraction = 1.0f;
+	float MaxRoughness = 1.0f;
+	bool bReflectOnlyWater = false;
+	bool bSkyLight = true;
+};
+
+FRayTracingReflectionOptions GetRayTracingReflectionOptions(const FViewInfo& View, const FScene& Scene);

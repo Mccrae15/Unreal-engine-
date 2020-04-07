@@ -276,7 +276,7 @@ public:
 	void RemoveSystemParametersForEmitter(const FNiagaraEmitterHandle& EmitterHandle);
 
 	/** Request that any dirty scripts referenced by this system be compiled.*/
-	bool RequestCompile(bool bForce);
+	bool RequestCompile(bool bForce, FNiagaraSystemUpdateContext* OptionalUpdateContext = nullptr);
 
 	/** If we have a pending compile request, is it done with yet? */
 	bool PollForCompilationComplete();
@@ -319,6 +319,9 @@ public:
 
 	UPROPERTY()
 	TArray<UNiagaraScript*> ScratchPadScripts;
+
+	UPROPERTY(transient)
+	FNiagaraParameterStore EditorOnlyAddedParameters;
 
 	bool GetIsolateEnabled() const;
 	void SetIsolateEnabled(bool bIsolate);

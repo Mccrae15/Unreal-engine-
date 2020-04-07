@@ -326,7 +326,7 @@ void PopulateSimulatedParticle(
 		FilterData.Word3 = 0xFFFF; // collision candidate channels
 		for (const TUniquePtr<Chaos::FPerShapeData>& Shape : Handle->ShapesArray())
 		{
-			Shape->SetDisable(false);
+			Shape->SetSimEnabled(true);
 			Shape->SetCollisionTraceType(Chaos::EChaosCollisionTraceFlag::Chaos_CTF_UseDefault);
 			//Shape->CollisionTraceType = Chaos::EChaosCollisionTraceFlag::Chaos_CTF_UseSimpleAndComplex;
 			Shape->SetSimData(FilterData);
@@ -1611,6 +1611,29 @@ void FGeometryCollectionPhysicsProxy::BufferPhysicsResults()
 		check(TargetResults.Transforms.Num() == TargetResults.Parent.Num());
 		GeometryCollectionAlgo::GlobalMatrices(
 			TargetResults.Transforms, TargetResults.Parent, TargetResults.GlobalTransforms);
+
+		// update transforms of things parented to internal clusters who would be missed in the above call to GlobalMatrices
+		// #todo: this can be much faster by caching the parent transforms somehow
+		// #todo: it only supports a single level of internal cluster parenting.
+		for (int32 TransformIndex = 0; TransformIndex < TransfromGroupSize; ++TransformIndex)
+		{
+			Chaos::TPBDRigidClusteredParticleHandle<float, 3>* Handle = SolverParticleHandles[TransformIndex];
+
+			// If the particle is disabled and has a parent that is an internal cluster, update transform
+			if (Handle && Handle->Disabled() && SolverClusterID[TransformIndex] && SolverClusterID[TransformIndex]->CastToClustered()->InternalCluster())
+			{
+				FClusterHandle* ParentClusterHandle = SolverClusterID[TransformIndex]->CastToClustered();
+
+				FTransform ParticleToWorld = FTransform(ParentClusterHandle->R(), ParentClusterHandle->X());
+				
+				// #todo: what should the mass to local for the internal cluster be?
+				FTransform MassToLocal = FTransform::Identity;
+				
+				// compute global transform for particle
+				TargetResults.GlobalTransforms[TransformIndex] = Handle->ChildToParent().ToMatrixWithScale();
+				TargetResults.GlobalTransforms[TransformIndex] *= (MassToLocal.GetRelativeTransformReverse(ParticleToWorld).GetRelativeTransform(ActorToWorld)).ToMatrixWithScale();
+			}
+		}
 
 		// Compute world bounds.  This is a loose bounds based on the circumscribed box 
 		// of a bounding sphere for the geometry.		

@@ -964,7 +964,8 @@ SNiagaraStack::FRowWidgets SNiagaraStack::ConstructNameAndValueWidgetsForItem(UN
 	{
 		UNiagaraStackParameterStoreEntry* StackEntry = CastChecked<UNiagaraStackParameterStoreEntry>(Item);
 		return FRowWidgets(
-			SNew(SNiagaraStackParameterStoreEntryName, StackEntry, StackViewModel),
+			SNew(SNiagaraStackParameterStoreEntryName, StackEntry, StackViewModel)
+			.IsSelected(Container, &SNiagaraStackTableRow::IsSelected),
 			SNew(SNiagaraStackParameterStoreEntryValue, StackEntry));
 	}
 	else if (Item->IsA<UNiagaraStackInputCategory>())
@@ -1038,6 +1039,16 @@ SNiagaraStack::FRowWidgets SNiagaraStack::ConstructNameAndValueWidgetsForItem(UN
 	{
 		UNiagaraStackItem* StackItem = CastChecked<UNiagaraStackItem>(Item);
 		return FRowWidgets(SNew(SNiagaraStackItem, *StackItem, StackViewModel));
+	}
+	else if (Item->IsA<UNiagaraStackItemTextContent>())
+	{
+		Container->SetContentPadding(FMargin(5));
+		UNiagaraStackItemTextContent* ItemTextContent = CastChecked<UNiagaraStackItemTextContent>(Item);
+		return FRowWidgets(SNew(STextBlock)
+			.TextStyle(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.TextContentText")
+			.Text(ItemTextContent->GetDisplayName())
+			.AutoWrapText(true)
+			.Justification(ETextJustify::Center));
 	}
 	else
 	{
