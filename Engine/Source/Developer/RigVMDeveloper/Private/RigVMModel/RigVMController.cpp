@@ -3896,7 +3896,7 @@ void URigVMController::RewireLinks(URigVMPin* InOldPin, URigVMPin* InNewPin, boo
 			check(NewPin);
 
 			BreakLink(Link->GetSourcePin(), Link->GetTargetPin(), false);
-			ensure(AddLink(Link->GetSourcePin(), NewPin, false));
+			AddLink(Link->GetSourcePin(), NewPin, false);
 		}
 	}
 	else
@@ -3914,7 +3914,7 @@ void URigVMController::RewireLinks(URigVMPin* InOldPin, URigVMPin* InNewPin, boo
 			check(NewPin);
 
 			BreakLink(Link->GetSourcePin(), Link->GetTargetPin(), false);
-			ensure(AddLink(NewPin, Link->GetTargetPin(), false));
+			AddLink(NewPin, Link->GetTargetPin(), false);
 		}
 	}
 }
