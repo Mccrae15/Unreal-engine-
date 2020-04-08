@@ -26,6 +26,14 @@
 	Globals.
 -----------------------------------------------------------------------------*/
 
+static TAutoConsoleVariable<int32> CVarMeshStreaming(
+	TEXT("r.MeshStreaming"),
+	0,
+	TEXT("Experimental - ")
+	TEXT("When non zero, enables mesh stremaing.\n"),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+
+
 /** Collection of views that need to be taken into account for streaming. */
 TArray<FStreamingViewInfo> IStreamingManager::CurrentViewInfos;
 
@@ -971,6 +979,11 @@ bool FStreamingManagerCollection::IsStreamingEnabled() const
 bool FStreamingManagerCollection::IsTextureStreamingEnabled() const
 {
 	return IsRenderAssetStreamingEnabled();
+}
+
+bool FStreamingManagerCollection::IsMeshStreamingEnabled() const
+{
+	return CVarMeshStreaming.GetValueOnAnyThread() != 0 && IsRenderAssetStreamingEnabled();
 }
 
 bool FStreamingManagerCollection::IsRenderAssetStreamingEnabled() const
