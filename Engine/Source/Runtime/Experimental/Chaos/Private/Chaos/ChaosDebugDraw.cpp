@@ -215,6 +215,12 @@ namespace Chaos
 				FDebugDrawQueue::GetInstance().DrawDebugLine(Location, P0, C3, false, KINDA_SMALL_NUMBER, DrawPriority, LineThickness * 0.5f);
 				FDebugDrawQueue::GetInstance().DrawDebugLine(Location, P1, C3, false, KINDA_SMALL_NUMBER, DrawPriority, LineThickness * 0.5f);
 			}
+
+			// Draw the particle (mass frame) coordinates
+			{
+				DrawParticleTransformImpl(FRigidTransform3::Identity, Contact.Particle[0], 0, 1.0f);
+				DrawParticleTransformImpl(FRigidTransform3::Identity, Contact.Particle[1], 0, 1.0f);				
+			}
 		}
 		
 		void DrawCollisionImpl(const FRigidTransform3& SpaceTransform, const TPBDCollisionConstraintHandle<float, 3>* ConstraintHandle, float ColorScale)
