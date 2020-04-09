@@ -1833,7 +1833,7 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 
 	TMap<int32, FSkelMeshSourceSectionUserData> BackupUserSectionsData;
 	FString BackupLodModelBuildStringID = TEXT("");
-
+	FString BackupRawSkeletalMeshBulkDataID = TEXT("");
 
 	
 
@@ -1865,6 +1865,7 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 	{
 		FSkeletalMeshLODModel& DstBackupSectionLODModel = SkeletalMeshResource.LODModels[LODIndex];
 		BackupLodModelBuildStringID = DstBackupSectionLODModel.BuildStringID;
+		BackupRawSkeletalMeshBulkDataID = DstBackupSectionLODModel.RawSkeletalMeshBulkDataID;
 		BackupUserSectionsData = DstBackupSectionLODModel.UserSectionsData;
 	}
 
@@ -2101,6 +2102,7 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 			{
 				//If its an existing LOD put back the buildStringID
 				ImportedModelLOD.BuildStringID = BackupLodModelBuildStringID;
+				ImportedModelLOD.RawSkeletalMeshBulkDataID = BackupRawSkeletalMeshBulkDataID;
 			}
 		}
 	}
