@@ -714,6 +714,8 @@ public:
 	static const FString FilteredSocketBoneOffsetName;
 	static const FString InstanceTransformName;
 	static const FString InstancePrevTransformName;
+	static const FString InstanceRotationName;
+	static const FString InstancePrevRotationName;
 	static const FString InstanceInvDeltaTimeName;
 	static const FString EnabledFeaturesName;
 
