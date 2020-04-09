@@ -211,4 +211,6 @@ private:
 	TArray<TUniquePtr<FNiagaraBoundsCalculator>, TInlineAllocator<1>> BoundsCalculators;
 
 	TSharedPtr<const FNiagaraEmitterCompiledData> CachedEmitterCompiledData;
+
+	uint32 MaxInstanceCount = 0;
 };
