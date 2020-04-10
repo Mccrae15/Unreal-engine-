@@ -577,6 +577,7 @@ uint32 FAudioDeviceManager::CreateUniqueStackWalkID()
 
 FAudioDeviceHandle FAudioDeviceManager::GetAudioDevice(Audio::FDeviceId Handle)
 {
+	FScopeLock ScopeLock(&DeviceMapCriticalSection);
 	FAudioDeviceContainer* Container = Devices.Find(Handle);
 	if (Container)
 	{
@@ -591,6 +592,7 @@ FAudioDeviceHandle FAudioDeviceManager::GetAudioDevice(Audio::FDeviceId Handle)
 
 FAudioDevice* FAudioDeviceManager::GetAudioDeviceRaw(Audio::FDeviceId Handle)
 {
+	FScopeLock ScopeLock(&DeviceMapCriticalSection);
 	if (!IsValidAudioDevice(Handle))
 	{
 		return nullptr;
@@ -862,6 +864,7 @@ TArray<FAudioDevice*> FAudioDeviceManager::GetAudioDevices()
 
 TArray<UWorld*> FAudioDeviceManager::GetWorldsUsingAudioDevice(const Audio::FDeviceId& InID)
 {
+	FScopeLock ScopeLock(&DeviceMapCriticalSection);
 	if (Devices.Contains(InID))
 	{
 		return Devices[InID].WorldsUsingThisDevice;
