@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Chaos/IncludeLvl1.inl"
 #include "Chaos/ParticleRule.h"
+#include "Chaos/Framework/Parallel.h"
 
 namespace Chaos
 {

@@ -776,7 +776,7 @@ void USkeletalMesh::InitResources()
 
 					if (!bImportDataInSync || !bRenderDataInSync)
 					{
-						UE_ASSET_LOG(LogSkeletalMesh, Fatal, this, TEXT("Data out of sync in lod %d. bImportDataInSync=%d, bRenderDataInSync=%d"), LODIndex, bImportDataInSync, bRenderDataInSync);
+						UE_ASSET_LOG(LogSkeletalMesh, Error, this, TEXT("Data out of sync in lod %d. bImportDataInSync=%d, bRenderDataInSync=%d. This happen when DDC cache has corrupted data (Key has change during the skeletalmesh build)"), LODIndex, bImportDataInSync, bRenderDataInSync);
 					}
 				}
 			}
@@ -1165,7 +1165,7 @@ bool USkeletalMesh::UpdateStreamingStatus(bool bWaitForMipFading)
 
 void USkeletalMesh::LinkStreaming()
 {
-	if (!IsTemplate() && IStreamingManager::Get().IsTextureStreamingEnabled() && IsStreamingRenderAsset(this))
+	if (!IsTemplate() && IStreamingManager::Get().IsMeshStreamingEnabled() && IsStreamingRenderAsset(this))
 	{
 		IStreamingManager::Get().GetTextureStreamingManager().AddStreamingRenderAsset(this);
 	}
@@ -1177,7 +1177,7 @@ void USkeletalMesh::LinkStreaming()
 
 void USkeletalMesh::UnlinkStreaming()
 {
-	if (!IsTemplate() && IStreamingManager::Get().IsTextureStreamingEnabled())
+	if (!IsTemplate() && StreamingIndex != INDEX_NONE)
 	{
 		IStreamingManager::Get().GetTextureStreamingManager().RemoveStreamingRenderAsset(this);
 	}
@@ -2318,6 +2318,36 @@ void USkeletalMesh::CreateUserSectionsDataForLegacyAssets()
 	}
 }
 
+void USkeletalMesh::PostLoadValidateClothingData()
+{
+	//Make sure PostEditChange is not call when we validate the clothing data during the PostLoad
+	FScopedSkeletalMeshPostEditChange ScopedPostEditChange(this, false, false);
+	for (int32 LodIndex = 0; LodIndex < GetLODNum(); LodIndex++)
+	{
+		FSkeletalMeshLODModel& ThisLODModel = ImportedModel->LODModels[LodIndex];
+		if (IsLODImportedDataEmpty(LodIndex) || !IsLODImportedDataBuildAvailable(LodIndex))
+		{
+			//Invalid clothing asset will not be unbind in case we do not build the asset
+			continue;
+		}
+
+		int32 SectionNum = ThisLODModel.Sections.Num();
+		for (int32 SectionIndex = 0; SectionIndex < SectionNum; ++SectionIndex)
+		{
+			FSkelMeshSection& Section = ThisLODModel.Sections[SectionIndex];
+			if (Section.HasClothingData())
+			{
+				UClothingAssetBase* ClothingAsset = GetClothingAsset(Section.ClothingData.AssetGuid);
+				if(!ClothingAsset->IsValidLod(LodIndex))
+				{
+					//Unbind invalid cloth asset
+					ClothingAsset->UnbindFromSkeletalMesh(this, LodIndex);
+				}
+			}
+		}
+	}
+}
+
 #endif // WITH_EDITOR
 
 void USkeletalMesh::PostLoad()
@@ -2472,6 +2502,10 @@ void USkeletalMesh::PostLoad()
 		{
 			CreateUserSectionsDataForLegacyAssets();
 		}
+
+		//We must unbind incorrect cloth data before computing the ddc key (CacheDerivedData)
+		//Incorrect cloth data will not be rebind after the build, which will change the DDC key, this situation lead to a corrupted DDC cache
+		PostLoadValidateClothingData();
 
 		if (GetResourceForRendering() == nullptr)
 		{

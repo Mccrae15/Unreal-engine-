@@ -54,6 +54,7 @@
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/Vector.h"
 #include "Chaos/Core.h"
+#include "Chaos/HeightField.h"
 #endif
 
 using namespace PhysicsInterfaceTypes;
@@ -2610,6 +2611,14 @@ ULandscapeHeightfieldCollisionComponent::ULandscapeHeightfieldCollisionComponent
 	// landscape collision components should be deterministically created and therefor are addressable over the network
 	SetNetAddressable();
 }
+
+ULandscapeHeightfieldCollisionComponent::ULandscapeHeightfieldCollisionComponent(FVTableHelper& Helper)
+	: Super(Helper)
+{
+
+}
+
+ULandscapeHeightfieldCollisionComponent::~ULandscapeHeightfieldCollisionComponent() = default;
 
 ULandscapeComponent* ULandscapeHeightfieldCollisionComponent::GetRenderComponent() const
 {

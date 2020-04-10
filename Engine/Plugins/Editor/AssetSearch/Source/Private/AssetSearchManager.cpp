@@ -49,11 +49,11 @@ FAutoConsoleVariableRef CVarDisableUniversalSearch(
 	TEXT("Enable universal search")
 );
 
-static bool bIndexUnindexAssetsOnLoad = false;
-FAutoConsoleVariableRef CVarIndexUnindexAssetsOnLoad(
-	TEXT("Search.IndexUnindexAssetsOnLoad"),
-	bIndexUnindexAssetsOnLoad,
-	TEXT("Index Unindex Assets On Load")
+static bool bTryIndexAssetsOnLoad = false;
+FAutoConsoleVariableRef CVarTryIndexAssetsOnLoad(
+	TEXT("Search.TryIndexAssetsOnLoad"),
+	bTryIndexAssetsOnLoad,
+	TEXT("Tries to index assets on load.")
 );
 
 class FUnloadPackageScope
@@ -284,7 +284,7 @@ FSearchStats FAssetSearchManager::GetStats() const
 {
 	FSearchStats Stats;
 	Stats.Scanning = ProcessAssetQueue.Num();
-	Stats.Processing = IsAssetUpToDateCount + DownloadQueueCount;
+	Stats.Processing = IsAssetUpToDateCount + DownloadQueueCount + ActiveDownloads;
 	Stats.Updating = PendingDatabaseUpdates;
 	Stats.TotalRecords = TotalSearchRecords;
 	Stats.AssetsMissingIndex = FailedDDCRequests.Num();
@@ -400,7 +400,7 @@ void FAssetSearchManager::OnAssetLoaded(UObject* InObject)
 {
 	check(IsInGameThread());
 
-	if (bIndexUnindexAssetsOnLoad)
+	if (bTryIndexAssetsOnLoad)
 	{
 		RequestIndexAsset(InObject);
 	}
@@ -410,7 +410,7 @@ bool FAssetSearchManager::RequestIndexAsset(UObject* InAsset)
 {
 	check(IsInGameThread());
 
-	if (GEditor->IsAutosaving())
+	if (GEditor == nullptr || GEditor->IsAutosaving())
 	{
 		return false;
 	}
@@ -680,13 +680,15 @@ bool FAssetSearchManager::Tick_GameThread(float DeltaTime)
 		check(bSuccess);
 
 		DownloadQueueCount--;
+		ActiveDownloads++;
 
 		DDCRequest.DDCHandle = GetDerivedDataCacheRef().GetAsynchronous(*DDCRequest.DDCKey, DDCRequest.AssetData.ObjectPath.ToString());
 		ProcessDDCQueue.Enqueue(DDCRequest);
 	}
 
+	int32 MaxQueueProcesses = 1000;
 	int32 DownloadProcessLimit = PerformanceLimits.DownloadProcessRate;
-	while (!ProcessDDCQueue.IsEmpty() && DownloadProcessLimit > 0)
+	while (!ProcessDDCQueue.IsEmpty() && DownloadProcessLimit > 0 && MaxQueueProcesses > 0)
 	{
 		const FAssetDDCRequest* PendingRequest = ProcessDDCQueue.Peek();
 		if (GetDerivedDataCacheRef().PollAsynchronousCompletion(PendingRequest->DDCHandle))
@@ -698,6 +700,7 @@ bool FAssetSearchManager::Tick_GameThread(float DeltaTime)
 			if (bGetSuccessful)
 			{
 				LoadDDCContentIntoDatabase(PendingRequest->AssetData, OutContent, PendingRequest->DDCKey);
+				DownloadProcessLimit--;
 			}
 			else if (UserSettings->bShowMissingAssets)
 			{
@@ -706,7 +709,7 @@ bool FAssetSearchManager::Tick_GameThread(float DeltaTime)
 
 			ProcessDDCQueue.Pop();
 			ActiveDownloads--;
-			DownloadProcessLimit--;
+			MaxQueueProcesses--;
 			continue;
 		}
 		break;
@@ -757,6 +760,8 @@ void FAssetSearchManager::ForceIndexOnAssetsMissingIndex()
 {
 	check(IsInGameThread());
 
+	EAppReturnType::Type IncludeMaps = FMessageDialog::Open(EAppMsgType::YesNo, LOCTEXT("IncludeMaps", "Do you want to open and index map files, this can take a long time?"));
+
 	FScopedSlowTask IndexingTask(FailedDDCRequests.Num(), LOCTEXT("ForceIndexOnAssetsMissingIndex", "Indexing Assets"));
 	IndexingTask.MakeDialog(true);
 
@@ -770,6 +775,15 @@ void FAssetSearchManager::ForceIndexOnAssetsMissingIndex()
 		if (IndexingTask.ShouldCancel())
 		{
 			break;
+		}
+
+		if (IncludeMaps != EAppReturnType::Yes)
+		{
+			if (Request.AssetData.GetClass() == UWorld::StaticClass())
+			{
+				RemovedCount++;
+				continue;
+			}
 		}
 
 		ProcessGameThreadTasks();
@@ -786,7 +800,10 @@ void FAssetSearchManager::ForceIndexOnAssetsMissingIndex()
 				continue;
 			}
 
-			StoreIndexForAsset(AssetToIndex);
+			if (!bTryIndexAssetsOnLoad)
+			{
+				StoreIndexForAsset(AssetToIndex);
+			}
 		}
 
 		if (UnloadScope.GetObjectsLoaded() > 2000)
@@ -799,10 +816,10 @@ void FAssetSearchManager::ForceIndexOnAssetsMissingIndex()
 
 	if (RedirectorsWithBrokenMetadata.Num() > 0)
 	{
-		EAppReturnType::Type ReturnValue = FMessageDialog::Open(EAppMsgType::YesNo,
+		EAppReturnType::Type ResaveRedirectors = FMessageDialog::Open(EAppMsgType::YesNo,
 			LOCTEXT("ResaveRedirectors", "We found some redirectors that didn't have the correct asset metadata identifying them as redirectors.  Would you like to resave them, so that they stop appearing as missing asset indexes?"));
 
-		if (ReturnValue == EAppReturnType::Yes)
+		if (ResaveRedirectors == EAppReturnType::Yes)
 		{
 			TArray<UPackage*> PackagesToSave;
 			for (const FAssetData& BrokenAsset : RedirectorsWithBrokenMetadata)

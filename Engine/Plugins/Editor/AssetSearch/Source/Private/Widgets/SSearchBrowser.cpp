@@ -287,7 +287,7 @@ FText SSearchBrowser::GetSearchBackgroundText() const
 {
 	if (FilterString.Len() > 0 && !IsSearching() && SearchResults.Num() == 0)
 	{
-		return LOCTEXT("SearchAllTheThings", "¯\\_(ツ)_/¯");
+		return LOCTEXT("FoundNoResults", "¯\\_(ツ)_/¯");
 	}
 	else if (FilterString.Len() == 0)
 	{
@@ -301,9 +301,9 @@ FText SSearchBrowser::GetSearchBackgroundText() const
 
 FText SSearchBrowser::GetStatusText() const
 {
-	IAssetSearchModule& SearchModule = IAssetSearchModule::Get();
-	FSearchStats SearchStats = SearchModule.GetStats();
-	int32 UpdatingCount = SearchStats.Scanning + SearchStats.Processing + SearchStats.Updating;
+	const IAssetSearchModule& SearchModule = IAssetSearchModule::Get();
+	const FSearchStats SearchStats = SearchModule.GetStats();
+	const int32 UpdatingCount = SearchStats.Scanning + SearchStats.Processing + SearchStats.Updating;
 
 	if (UpdatingCount > 0)
 	{

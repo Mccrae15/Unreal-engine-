@@ -19,7 +19,7 @@
 int32 OutputFailedLevelSetDebugData = 0;
 FAutoConsoleVariableRef CVarOutputFailedLevelSetDebugData(TEXT("p.LevelSetOutputFailedDebugData"), OutputFailedLevelSetDebugData, TEXT("Output debug obj files for level set and mesh when error tolerances are too high"));
 
-int32 FailureOnHighError = 0;
+int32 FailureOnHighError = 1;
 FAutoConsoleVariableRef CVarFailureOnHighError(TEXT("p.LevelSetFailureOnHighError"), FailureOnHighError, TEXT("Set level sets with high error to null in the solver"));
 
 float AvgDistErrorTolerance = .05;
@@ -283,9 +283,7 @@ T TLevelSet<T, d>::ComputeLevelSetError(const TParticles<T, d>& InParticles, con
 
 			for (int j = 0; j < d; ++j)
 			{
-				TVector<T, 3> UnusedGridNormal;
-
-				DistErrorValues[i] += FMath::Abs(PhiWithNormal(InParticles.X(CurrMeshFace[j]), UnusedGridNormal));
+				DistErrorValues[i] += FMath::Abs(SignedDistance(InParticles.X(CurrMeshFace[j])));
 			}
 
 			// per triangle error average of 3 corners and center distance to surface according to MPhi

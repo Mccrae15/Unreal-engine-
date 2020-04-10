@@ -492,7 +492,7 @@ void UNiagaraGraph::ValidateDefaultPins()
 	}
 }
 
-FName StandardizeName(FName Name, ENiagaraScriptUsage Usage, bool bIsGet, bool bIsSet)
+FName UNiagaraGraph::StandardizeName(FName Name, ENiagaraScriptUsage Usage, bool bIsGet, bool bIsSet)
 {
 	bool bIsScriptUsage = 
 		Usage == ENiagaraScriptUsage::Module || 
@@ -605,33 +605,66 @@ FName StandardizeName(FName Name, ENiagaraScriptUsage Usage, bool bIsGet, bool b
 	else
 	{
 		// Namespace was unknown.
-		if (bIsScriptUsage || bIsGet)
+		if (bIsScriptUsage && NameParts.Contains(FNiagaraConstants::ModuleNamespace))
+		{
+			// If we're in a script check for a misplaced module namespace and if it has one, force it to be a 
+			// module output to help with fixing up usages.
+			static const FName OutputScriptNamespace = *(FNiagaraConstants::OutputNamespace.ToString() + TEXT(".") + FNiagaraConstants::ModuleNamespace.ToString());
+			Namespace = OutputScriptNamespace;
+		}
+		else if(bIsScriptUsage || bIsGet)
 		{
 			// If it's in a get node or it's in a script, force it into the transient namespace.
 			Namespace = FNiagaraConstants::TransientNamespace;
 		}
 		else
 		{
-			// Otherwise it's a set node in a system or emitter script so it must be used to configure a module input
-			// so allow 1 arbitrary namespace, unless it's for a set variables node, then allow for 2 arbitrary namespaces.
+			// Otherwise it's a set node in a system or emitter script so it must be used to configure a module input.  For this situation
+			// we have 2 cases, regular modules and set variables nodes.
 			if (NameParts[0].ToString().StartsWith(TRANSLATOR_SET_VARIABLES_STR))
 			{
-				Namespace = *(NameParts[0].ToString() + TEXT(".") + NameParts[1].ToString());
-				NameParts.RemoveAt(0, 2);
+				// For a set variables node we need to strip the module name and then fully standardize the remainder of the
+				// name using the settings for a map set in a module.  We do this because the format of the input parameter will be
+				// Module.NamespaceName.ValueName and the NamespaceName.ValueName portion will have been standardized as part of the
+				// UNiagaraNodeAssignment post load.
+				Namespace = NameParts[0];
+				NameParts.RemoveAt(0);
+
+				FString AssignmentTargetString = NameParts[0].ToString();
+				for (int32 i = 1; i < NameParts.Num(); i++)
+				{
+					AssignmentTargetString += TEXT(".") + NameParts[i].ToString();
+				}
+				FName StandardizedAssignmentTargetName = StandardizeName(*AssignmentTargetString, ENiagaraScriptUsage::Module, false, true);
+
+				NameParts.Empty();
+				NameParts.Add(StandardizedAssignmentTargetName);
 			}
 			else
 			{
+				// For standard inputs we need to replace the module name with the module namespace and then standardize it, and then
+				// remove the module namespace and use that as the name, and the module name as the namespace.
 				Namespace = NameParts[0];
 				NameParts.RemoveAt(0);
+
+				FString ModuleInputString = FNiagaraConstants::ModuleNamespace.ToString();
+				for (int32 i = 0; i < NameParts.Num(); i++)
+				{
+					ModuleInputString += TEXT(".") + NameParts[i].ToString();
+				}
+				FName StandardizedModuleInput = StandardizeName(*ModuleInputString, ENiagaraScriptUsage::Module, true, false);
+				FString StandardizedModuleInputString = StandardizedModuleInput.ToString();
+				StandardizedModuleInputString.RemoveFromStart(FNiagaraConstants::ModuleNamespace.ToString() + TEXT("."));
+
+				NameParts.Empty();
+				NameParts.Add(*StandardizedModuleInputString);
 			}
 		}
 	}
 
 	checkf(Namespace != NAME_None, TEXT("No namespace picked."));
 
-	// Remove any module or emitter namespaces which weren't handled above since they'll no longer be aliased anyway.
 	NameParts.Remove(FNiagaraConstants::ModuleNamespace);
-	NameParts.Remove(FNiagaraConstants::EmitterNamespace);
 	if (NameParts.Num() == 0)
 	{
 		NameParts.Add(NAME_None);
@@ -650,7 +683,7 @@ FName StandardizeName(FName Name, ENiagaraScriptUsage Usage, bool bIsGet, bool b
 		{
 			RemainingNamePartStrings.Add(NamePart.ToString());
 		}
-		ParameterName = FString::Join(RemainingNamePartStrings, TEXT("_"));
+		ParameterName = FString::Join(RemainingNamePartStrings, TEXT(""));
 	}
 
 	// Last, combine it with the namespace(s) chosen above.

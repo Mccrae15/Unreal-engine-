@@ -3,18 +3,21 @@
 
 #include "ClothingSimulation.h"
 #include "ClothingAsset.h"
-#define TEMP_HEADER_CHAOS_LEVEL_1
 #include "Chaos/ArrayCollectionArray.h"
-#include "Chaos/PBDEvolution.h"
 #include "Chaos/Transform.h"
-#include "Chaos/TriangleMesh.h"
 #include "Chaos/ChaosDebugDrawDeclares.h"
-#undef TEMP_HEADER_CHAOS_LEVEL_1
 #include "ChaosCloth/ChaosClothConfig.h"
 #include "Components/SkeletalMeshComponent.h"
 
 namespace Chaos
 {
+
+	template <typename T>
+	class TTriangleMesh;
+
+	template <typename T, int d>
+	class TPBDEvolution;
+
 	typedef FClothingSimulationContextCommon ClothingSimulationContext;
 	template<class T, int d> class TPBDLongRangeConstraintsBase;
 

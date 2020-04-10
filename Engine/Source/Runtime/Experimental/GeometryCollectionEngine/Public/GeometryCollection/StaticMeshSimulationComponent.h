@@ -2,19 +2,21 @@
 
 #pragma once
 
-#include "Components/MeshComponent.h"
-#define TEMP_HEADER_CHAOS_LEVEL_1
-#include "Chaos/ChaosSolverActor.h"
-#undef TEMP_HEADER_CHAOS_LEVEL_1
 #include "GameFramework/Actor.h"
-#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "GeometryCollection/GeometryCollectionSimulationTypes.h"
-#include "PhysicalMaterials/Experimental/ChaosPhysicalMaterial.h"
 #include "Chaos/ChaosNotifyHandlerInterface.h"
 
 #include "StaticMeshSimulationComponent.generated.h"
 
 class FStaticMeshPhysicsProxy;
+class AChaosSolverActor;
+class UChaosPhysicalMaterial;
+class FPhysScene_Chaos;
+
+namespace Chaos
+{
+class FChaosPhysicsMaterial;
+}
 
 /**
 *	UStaticMeshSimulationComponent
@@ -23,7 +25,8 @@ UCLASS(ClassGroup = Physics, Experimental, meta = (BlueprintSpawnableComponent))
 class GEOMETRYCOLLECTIONENGINE_API UStaticMeshSimulationComponent : public UActorComponent, public IChaosNotifyHandlerInterface
 {
 	GENERATED_UCLASS_BODY()
-
+	UStaticMeshSimulationComponent(FVTableHelper& Helper);
+	virtual ~UStaticMeshSimulationComponent();
 public:
 
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction);

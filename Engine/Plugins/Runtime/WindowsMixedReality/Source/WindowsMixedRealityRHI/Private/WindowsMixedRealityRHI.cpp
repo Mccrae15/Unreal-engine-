@@ -212,7 +212,7 @@ FWindowsMixedRealityViewport::FWindowsMixedRealityViewport(FD3D11DynamicRHI* InD
 	SizeY = InSizeY;
 	bIsFullscreen = bInIsFullscreen;
 	PixelFormat  = InPreferredPixelFormat;
-	bIsValid = true;
+	ValidState = 0;
 
 	D3DRHI->Viewports.Add(this);
 
@@ -267,10 +267,11 @@ void FWindowsMixedRealityViewport::UpdateBackBuffer()
 	BackBuffer = nullptr;
 	if (GEngine && GEngine->StereoRenderingDevice && GEngine->StereoRenderingDevice->GetRenderTargetManager())
 	{
+        // HACK: Allocate with index 16 to avoid layered RTs from being allocated for viewports that don't need it
 		if (GEngine
 			->StereoRenderingDevice
 			->GetRenderTargetManager()
-			->AllocateRenderTargetTexture(0, SizeX, SizeY, PixelFormat, 1, TexCreate_None, TexCreate_RenderTargetable, OutTargetableTexture, OutShaderResourceTexture))
+			->AllocateRenderTargetTexture(16, SizeX, SizeY, PixelFormat, 1, TexCreate_None, TexCreate_RenderTargetable, OutTargetableTexture, OutShaderResourceTexture))
 		{
 			BackBuffer = (FD3D11Texture2D*)(OutTargetableTexture.GetReference());
 		}
@@ -320,7 +321,7 @@ void FWindowsMixedRealityViewport::Resize(uint32 InSizeX, uint32 InSizeY, bool b
 	if (bIsFullscreen != bInIsFullscreen)
 	{
 		bIsFullscreen = bInIsFullscreen;
-		bIsValid = false;
+		ValidState = VIEWPORT_INVALID;
 	}
 
 	// Float RGBA backbuffers are requested whenever HDR mode is desired

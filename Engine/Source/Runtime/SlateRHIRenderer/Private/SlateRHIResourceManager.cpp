@@ -6,6 +6,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
+#include "Async/ParallelFor.h"
 #include "Modules/ModuleManager.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/ISlateStyle.h"

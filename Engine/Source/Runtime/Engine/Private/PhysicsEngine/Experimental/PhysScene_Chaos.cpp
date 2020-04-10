@@ -20,7 +20,6 @@
 #include "Physics/Experimental/PhysicsUserData_Chaos.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 
-#define CHAOS_INCLUDE_LEVEL_1
 #include "PhysicsSolver.h"
 #include "ChaosSolversModule.h"
 #include "ChaosLog.h"
@@ -46,7 +45,6 @@
 #include "Chaos/Box.h"
 #include "ChaosSolvers/Public/EventsData.h"
 #include "ChaosSolvers/Public/EventManager.h"
-#undef CHAOS_INCLUDE_LEVEL_1
 
 
 #if !UE_BUILD_SHIPPING
@@ -1177,7 +1175,8 @@ FPhysScene_ChaosInterface::FPhysScene_ChaosInterface(const AWorldSettings* InSet
 {
 	//Initialize unique ptrs that are just here to allow forward declare. This should be reworked todo(ocohen)
 #if TODO_FIX_REFERENCES_TO_ADDARRAY
-	Scene.GetSolver()->GetEvolution()->GetParticles().AddArray(&BodyInstances);
+	BodyInstances = MakeUnique<Chaos::TArrayCollectionArray<FBodyInstance*>>();
+	Scene.GetSolver()->GetEvolution()->GetParticles().AddArray(BodyInstances.Get());
 #endif
 
 	// Create replication manager

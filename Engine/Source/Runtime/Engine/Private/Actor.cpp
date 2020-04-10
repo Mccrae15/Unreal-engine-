@@ -1642,14 +1642,16 @@ void AActor::SetAutoDestroyWhenFinished(bool bVal)
 	bAutoDestroyWhenFinished = bVal;
 	if (UWorld* MyWorld = GetWorld())
 	{
-		UAutoDestroySubsystem* AutoDestroySub = MyWorld->GetSubsystem<UAutoDestroySubsystem>();
-		if (bAutoDestroyWhenFinished && (HasActorBegunPlay() || IsActorBeginningPlay()))
+		if(UAutoDestroySubsystem* AutoDestroySub = MyWorld->GetSubsystem<UAutoDestroySubsystem>())
 		{
-			AutoDestroySub->RegisterActor(this);
-		}
-		else
-		{
-			AutoDestroySub->UnregisterActor(this);
+			if (bAutoDestroyWhenFinished && (HasActorBegunPlay() || IsActorBeginningPlay()))
+			{
+				AutoDestroySub->RegisterActor(this);
+			}
+			else
+			{
+				AutoDestroySub->UnregisterActor(this);
+			}
 		}
 	}
 }
@@ -3262,14 +3264,18 @@ void AActor::SetReplicates(bool bInReplicates)
 		RemoteRole = bInReplicates ? ROLE_SimulatedProxy : ROLE_None;
 		bReplicates = bInReplicates;
 
-		// Only call into net driver if we just started replicating changed
-		// This actor should already be in the Network Actors List if it was already replicating.
-		if (bNewlyReplicates)
+		if (bReplicates)
 		{
 			// GetWorld will return nullptr on CDO, FYI
-			if (UWorld* MyWorld = GetWorld())		
+			if (UWorld* MyWorld = GetWorld())
 			{
-				MyWorld->AddNetworkActor(this);
+				// Only call into net driver if we just started replicating changed
+				// This actor should already be in the Network Actors List if it was already replicating.
+				if (bNewlyReplicates)
+				{
+					MyWorld->AddNetworkActor(this);
+				}
+
 				ForcePropertyCompare();
 			}
 		}

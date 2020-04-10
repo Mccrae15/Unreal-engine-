@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Chaos/IncludeLvl1.inl"
 #include "Chaos/Core.h"
 #include "Chaos/ParticleHandleFwd.h"
 #include "Chaos/Vector.h"
@@ -68,4 +67,8 @@ namespace Chaos
 		FVec3 AccumulatedImpulse;
 	};
 
+
+	//TODO: move into a better forward declare location
+	class FPBDCollisionConstraintHandle;
+	using FCollisionModifierCallback = TFunction<ECollisionModifierResult(FPBDCollisionConstraintHandle*)>;
 }
