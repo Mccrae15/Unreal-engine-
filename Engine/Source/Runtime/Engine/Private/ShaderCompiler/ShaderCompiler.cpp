@@ -278,7 +278,6 @@ static FAutoConsoleVariableRef CVarCreateShadersOnLoad(
 	TEXT("Whether to create shaders on load, which can reduce hitching, but use more memory.  Otherwise they will be created as needed.")
 );
 
-
 static TAutoConsoleVariable<FString> CVarShaderOverrideDebugDir(
 	TEXT("r.OverrideShaderDebugDir"),
 	"",
@@ -286,6 +285,11 @@ static TAutoConsoleVariable<FString> CVarShaderOverrideDebugDir(
 	TEXT("Empty: use default location Saved\\ShaderDebugInfo.\n"),
 	ECVF_ReadOnly);
 
+static TAutoConsoleVariable<int32> CVarShadersValidation(
+	TEXT("r.Shaders.Validation"),
+	1,
+	TEXT("Enabled shader compiler validation warnings and errors."),
+	ECVF_ReadOnly);
 
 extern bool CompileShaderPipeline(const IShaderFormat* Compiler, FName Format, FShaderPipelineCompileJob* PipelineJob, const FString& Dir);
 
@@ -3476,6 +3480,14 @@ void GlobalBeginCompileShader(
 				default:
 					break;
 			}
+		}
+	}
+
+	{
+		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shaders.Validation"));
+		if (CVar && CVar->GetInt() == 0)
+		{
+			Input.Environment.CompilerFlags.Add(CFLAG_SkipValidation);
 		}
 	}
 
