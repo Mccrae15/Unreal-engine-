@@ -181,6 +181,9 @@ struct FNiagaraID
 	UPROPERTY(EditAnywhere, Category = ID)
 	int32 AcquireTag;
 
+	FNiagaraID() : Index(INDEX_NONE), AcquireTag(INDEX_NONE) {}
+	FNiagaraID(int32 InIndex, int32 InAcquireTag): Index(InIndex), AcquireTag(InAcquireTag){}
+
 	bool operator==(const FNiagaraID& Other)const { return Index == Other.Index && AcquireTag == Other.AcquireTag; }
 	bool operator!=(const FNiagaraID& Other)const { return !(*this == Other); }
 	bool operator<(const FNiagaraID& Other)const { return Index < Other.Index && AcquireTag < Other.AcquireTag; }
@@ -950,6 +953,9 @@ public:
 	static const FNiagaraTypeDefinition& GetUObjectDef() { return UObjectDef; }
 	static const FNiagaraTypeDefinition& GetUMaterialDef() { return UMaterialDef; }
 
+	template<typename T>
+	static const FNiagaraTypeDefinition& Get();
+
 	static UScriptStruct* GetFloatStruct() { return FloatStruct; }
 	static UScriptStruct* GetBoolStruct() { return BoolStruct; }
 	static UScriptStruct* GetIntStruct() { return IntStruct; }
@@ -1054,6 +1060,26 @@ struct TStructOpsTypeTraits<FNiagaraTypeDefinition> : public TStructOpsTypeTrait
 		WithPostSerialize = true,
 	};
 };
+
+
+//Helper to get the correct typedef for templated code.
+template<typename T>
+const FNiagaraTypeDefinition& FNiagaraTypeDefinition::Get()
+{
+	if (TIsSame<T, float>::Value) { return FNiagaraTypeDefinition::GetFloatDef(); }
+	if (TIsSame<T, int32>::Value) { return FNiagaraTypeDefinition::GetIntDef(); }
+	if (TIsSame<T, FNiagaraBool>::Value) { return FNiagaraTypeDefinition::GetBoolDef(); }
+	if (TIsSame<T, FVector2D>::Value) { return FNiagaraTypeDefinition::GetVec2Def(); }
+	if (TIsSame<T, FVector>::Value) { return FNiagaraTypeDefinition::GetVec3Def(); }
+	if (TIsSame<T, FVector4>::Value) { return FNiagaraTypeDefinition::GetVec4Def(); }
+	if (TIsSame<T, FQuat>::Value) { return FNiagaraTypeDefinition::GetQuatDef(); }
+	if (TIsSame<T, FMatrix>::Value) { return FNiagaraTypeDefinition::GetMatrix4Def(); }
+	if (TIsSame<T, FLinearColor>::Value) { return FNiagaraTypeDefinition::GetColorDef(); }
+	if (TIsSame<T, FNiagaraID>::Value) { return FNiagaraTypeDefinition::GetIDDef(); }
+}
+
+//////////////////////////////////////////////////////////////////////////
+
 
 /* Contains all types currently available for use in Niagara
 * Used by UI to provide selection; new uniforms and variables
