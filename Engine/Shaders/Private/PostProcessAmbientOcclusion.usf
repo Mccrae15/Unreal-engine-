@@ -1670,7 +1670,7 @@ void GTAOTemporalFilterPSAndCS(float2 UV, inout float OutAO, inout float OutDept
 	{
 		float DestDeviceZ		= Texture2DSample(ZCurrTexture, ZCurrTextureSampler, PrevUVDepth.xy).r;
 		float3 Reproj			= ReprojectPos( PrevUVDepth.xy,  DestDeviceZ); 
-		DestVeloc				= PrevUVDepth - Reproj.xy;
+		DestVeloc				= PrevUVDepth.xy - Reproj.xy;
 	}
 
 	float VelocCompare			= CompareVeloc(PixVelocity, DestVeloc);
@@ -1713,7 +1713,7 @@ void GTAOTemporalFilterPSAndCS2(float2 UV, inout float OutAO, inout float OutDep
 	{
 		float DestDeviceZ		= Texture2DSample(ZCurrTexture, ZCurrTextureSampler, PrevUVDepth.xy).r;
 		float3 Blah				= ReprojectPos( PrevUVDepth.xy,  DestDeviceZ); 
-		DestVeloc				= PrevUVDepth-Blah.xy;
+		DestVeloc				= PrevUVDepth.xy-Blah.xy;
 	}
 
 	// Compare velocities 
