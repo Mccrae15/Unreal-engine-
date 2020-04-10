@@ -875,6 +875,10 @@ void FPhysScene_Chaos::Shutdown()
 		ChaosModule->DestroySolver(GetSolver());
 	}
 
+#if WITH_EDITOR
+	PhysScene_ChaosPauseHandler.Reset();
+#endif
+
 	ChaosModule = nullptr;
 	SceneSolver = nullptr;
 
