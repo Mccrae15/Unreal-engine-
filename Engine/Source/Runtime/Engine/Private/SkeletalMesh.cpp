@@ -69,6 +69,7 @@
 
 #include "IMeshReductionManagerModule.h"
 #include "SkeletalMeshReductionSettings.h"
+#include "SkeletalMeshDefaultLODStreamingSettings.h"
 
 #endif // #if WITH_EDITOR
 
@@ -2318,33 +2319,76 @@ void USkeletalMesh::CreateUserSectionsDataForLegacyAssets()
 	}
 }
 
-void USkeletalMesh::PostLoadValidateClothingData()
+void USkeletalMesh::PostLoadValidateUserSectionData()
 {
-	//Make sure PostEditChange is not call when we validate the clothing data during the PostLoad
-	FScopedSkeletalMeshPostEditChange ScopedPostEditChange(this, false, false);
 	for (int32 LodIndex = 0; LodIndex < GetLODNum(); LodIndex++)
 	{
-		FSkeletalMeshLODModel& ThisLODModel = ImportedModel->LODModels[LodIndex];
-		if (IsLODImportedDataEmpty(LodIndex) || !IsLODImportedDataBuildAvailable(LodIndex))
+		const FSkeletalMeshLODInfo* LODInfoPtr = GetLODInfo(LodIndex);
+		if (!LODInfoPtr || !LODInfoPtr->bHasBeenSimplified)
 		{
-			//Invalid clothing asset will not be unbind in case we do not build the asset
+			//We validate only generated LOD from a base LOD
 			continue;
 		}
 
-		int32 SectionNum = ThisLODModel.Sections.Num();
+		FSkeletalMeshLODModel& ThisLODModel = ImportedModel->LODModels[LodIndex];
+		const int32 SectionNum = ThisLODModel.Sections.Num();
+		//See if more then one section use the same UserSectionData
+		bool bLODHaveSectionIssue = false;
+		TBitArray<> AvailableUserSectionData;
+		AvailableUserSectionData.Init(true, ThisLODModel.UserSectionsData.Num());
 		for (int32 SectionIndex = 0; SectionIndex < SectionNum; ++SectionIndex)
 		{
 			FSkelMeshSection& Section = ThisLODModel.Sections[SectionIndex];
-			if (Section.HasClothingData())
+			if (Section.ChunkedParentSectionIndex != INDEX_NONE)
 			{
-				UClothingAssetBase* ClothingAsset = GetClothingAsset(Section.ClothingData.AssetGuid);
-				if(!ClothingAsset->IsValidLod(LodIndex))
-				{
-					//Unbind invalid cloth asset
-					ClothingAsset->UnbindFromSkeletalMesh(this, LodIndex);
-				}
+				continue;
 			}
+			if(!AvailableUserSectionData.IsValidIndex(Section.OriginalDataSectionIndex) || !AvailableUserSectionData[Section.OriginalDataSectionIndex])
+			{
+				bLODHaveSectionIssue = true;
+				break;
+			}
+			AvailableUserSectionData[Section.OriginalDataSectionIndex] = false;
 		}
+		if(!bLODHaveSectionIssue)
+		{
+			//Everything is good nothing to fix
+			continue;
+		}
+
+		//Force the source UserSectionData, then restore the UserSectionData value each section was using
+		//We use the source section user data entry in case we do not have any override
+		const FSkeletalMeshLODModel& BaseLODModel = ImportedModel->LODModels[LODInfoPtr->ReductionSettings.BaseLOD];
+		TMap<int32, FSkelMeshSourceSectionUserData> NewUserSectionsData;
+
+		int32 CurrentOriginalSectionIndex = 0;
+		for (int32 SectionIndex = 0; SectionIndex < SectionNum; ++SectionIndex)
+		{
+			FSkelMeshSection& Section = ThisLODModel.Sections[SectionIndex];
+			if (Section.ChunkedParentSectionIndex != INDEX_NONE)
+			{
+				//We do not restore user section data for chunked section, the parent has already fix it
+				Section.OriginalDataSectionIndex = CurrentOriginalSectionIndex;
+				continue;
+			}
+
+			FSkelMeshSourceSectionUserData& SectionUserData = NewUserSectionsData.FindOrAdd(CurrentOriginalSectionIndex);
+			if(const FSkelMeshSourceSectionUserData* BackupSectionUserData = ThisLODModel.UserSectionsData.Find(Section.OriginalDataSectionIndex))
+			{
+				SectionUserData = *BackupSectionUserData;
+			}
+			else if(const FSkelMeshSourceSectionUserData* BaseSectionUserData = BaseLODModel.UserSectionsData.Find(CurrentOriginalSectionIndex))
+			{
+				SectionUserData = *BaseSectionUserData;
+			}
+
+			Section.OriginalDataSectionIndex = CurrentOriginalSectionIndex;
+			//Parent (non chunked) section must increment the index
+			CurrentOriginalSectionIndex++;
+		}
+		ThisLODModel.UserSectionsData = NewUserSectionsData;
+
+		UE_ASSET_LOG(LogSkeletalMesh, Display, this, TEXT("Fix some section data of this asset for lod %d. Verify all sections of this mesh are ok and save the asset to fix this issue."), LodIndex);
 	}
 }
 
@@ -2503,9 +2547,7 @@ void USkeletalMesh::PostLoad()
 			CreateUserSectionsDataForLegacyAssets();
 		}
 
-		//We must unbind incorrect cloth data before computing the ddc key (CacheDerivedData)
-		//Incorrect cloth data will not be rebind after the build, which will change the DDC key, this situation lead to a corrupted DDC cache
-		PostLoadValidateClothingData();
+		PostLoadValidateUserSectionData();
 
 		if (GetResourceForRendering() == nullptr)
 		{
@@ -4054,6 +4096,53 @@ void USkeletalMesh::ResetLODInfo()
 {
 	LODInfo.Reset();
 }
+
+#if WITH_EDITOR
+bool USkeletalMesh::GetSupportsLODStreaming(const ITargetPlatform* TargetPlatform) const
+{
+	check(TargetPlatform);
+	if (bOverrideLODStreamingSettings)
+	{
+		return bSupportLODStreaming.GetValueForPlatformIdentifiers(
+			TargetPlatform->GetPlatformInfo().PlatformGroupName,
+			TargetPlatform->GetPlatformInfo().VanillaPlatformName);
+	}
+	else
+	{
+		return TargetPlatform->GetSkeletalMeshDefaultLODStreamingSettings().IsLODStreamingEnabled();
+	}
+}
+
+int32 USkeletalMesh::GetMaxNumStreamedLODs(const ITargetPlatform* TargetPlatform) const
+{
+	check(TargetPlatform);
+	if (bOverrideLODStreamingSettings)
+	{
+		return MaxNumStreamedLODs.GetValueForPlatformIdentifiers(
+			TargetPlatform->GetPlatformInfo().PlatformGroupName,
+			TargetPlatform->GetPlatformInfo().VanillaPlatformName);
+	}
+	else
+	{
+		return TargetPlatform->GetSkeletalMeshDefaultLODStreamingSettings().GetMaxNumStreamedLODs();
+	}
+}
+
+int32 USkeletalMesh::GetMaxNumOptionalLODs(const ITargetPlatform* TargetPlatform) const
+{
+	check(TargetPlatform);
+	if (bOverrideLODStreamingSettings)
+	{
+		return MaxNumOptionalLODs.GetValueForPlatformIdentifiers(
+			TargetPlatform->GetPlatformInfo().PlatformGroupName,
+			TargetPlatform->GetPlatformInfo().VanillaPlatformName);
+	}
+	else
+	{
+		return TargetPlatform->GetSkeletalMeshDefaultLODStreamingSettings().GetMaxNumOptionalLODs();
+	}
+}
+#endif
 
 void USkeletalMesh::SetLODSettings(USkeletalMeshLODSettings* InLODSettings)
 {
