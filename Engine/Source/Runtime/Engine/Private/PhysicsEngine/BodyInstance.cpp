@@ -96,6 +96,13 @@ TAutoConsoleVariable<int32> CVarEnableDeferredPhysicsCreation(
 	ECVF_Default
 );
 
+TAutoConsoleVariable<int32> CVarIgnoreAnalyticCollisionsOverride(
+	TEXT("p.IgnoreAnalyticCollisionsOverride"), 
+	0, 
+	TEXT("Overrides the default for ignroing analytic collsions."),
+	ECVF_ReadOnly
+);
+
 using namespace PhysicsInterfaceTypes;
 
 bool IsRigidBodyKinematic_AssumesLocked(const FPhysicsActorHandle& InActorRef)
@@ -331,6 +338,7 @@ FBodyInstance::FBodyInstance()
 	, SleepFamily(ESleepFamily::Normal)
 	, DOFMode(0)
 	, bUseCCD(false)
+	, bIgnoreAnalyticCollisions(false)
 	, bNotifyRigidBodyCollision(false)
 	, bSimulatePhysics(false)
 	, bOverrideMass(false)
@@ -1041,7 +1049,6 @@ void FInitBodiesHelperBase::CreateActor_AssumesLocked(FBodyInstance* Instance, c
 	else
 	{
 		FPhysicsInterface::CreateActor(ActorParams, Instance->ActorHandle);
-
 		FPhysicsInterface::SetCcdEnabled_AssumesLocked(Instance->ActorHandle, Instance->bUseCCD);
 		FPhysicsInterface::SetIsKinematic_AssumesLocked(Instance->ActorHandle, !Instance->ShouldInstanceSimulatingPhysics());
 
@@ -1072,9 +1079,12 @@ bool FInitBodiesHelperBase::CreateShapes_AssumesLocked(FBodyInstance* Instance) 
 	// #PHYS2 Call interface AddGeometry
 	BodySetup->AddShapesToRigidActor_AssumesLocked(Instance, Instance->Scale3D, SimplePhysMat, ComplexPhysMats, ComplexPhysMatMasks, BodyCollisionData, FTransform::Identity);
 
+#if WITH_CHAOS
+	FPhysicsInterface::SetIgnoreAnalyticCollisions_AssumesLocked(Instance->ActorHandle, CVarIgnoreAnalyticCollisionsOverride.GetValueOnGameThread() ? true : Instance->bIgnoreAnalyticCollisions);
+#endif
+
 	const int32 NumShapes = FPhysicsInterface::GetNumShapes(Instance->ActorHandle);
 	bInitFail |= NumShapes == 0;
-
 
 	return bInitFail;
 }
