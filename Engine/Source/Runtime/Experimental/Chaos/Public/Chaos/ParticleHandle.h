@@ -7,6 +7,8 @@
 #include "Chaos/ParticleHandleFwd.h"
 #include "Chaos/ParticleIterator.h"
 #include "Chaos/ParticleDirtyFlags.h"
+#include "Chaos/ImplicitObjectTransformed.h"
+#include "Chaos/Convex.h"
 #include "Chaos/Framework/PhysicsProxyBase.h"
 #include "ChaosCheck.h"
 
