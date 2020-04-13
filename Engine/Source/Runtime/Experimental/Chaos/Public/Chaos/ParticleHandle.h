@@ -8,11 +8,10 @@
 #include "Chaos/ParticleIterator.h"
 #include "Chaos/ParticleDirtyFlags.h"
 #include "Chaos/ImplicitObjectTransformed.h"
+#include "Chaos/ImplicitObjectScaled.h"
 #include "Chaos/Convex.h"
 #include "Chaos/Framework/PhysicsProxyBase.h"
 #include "ChaosCheck.h"
-
-
 
 class IPhysicsProxyBase;
 
