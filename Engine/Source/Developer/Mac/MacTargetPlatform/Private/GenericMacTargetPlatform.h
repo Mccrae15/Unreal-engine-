@@ -18,7 +18,6 @@
 #include "Sound/SoundWave.h"
 #include "TextureResource.h"
 #include "StaticMeshResources.h"
-#include "SkeletalMeshDefaultLODStreamingSettings.h"
 #endif // WITH_ENGINE
 
 #define LOCTEXT_NAMESPACE "TGenericMacTargetPlatform"
@@ -49,7 +48,6 @@ public:
 			FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *this->PlatformName());
 			TextureLODSettings = nullptr;
 			StaticMeshLODSettings.Initialize(EngineSettings);
-			SkeletalMeshDefaultLODStreamingSettings.Initialize(EngineSettings);
 		#endif
 	}
 
@@ -156,11 +154,6 @@ return TSuper::SupportsFeature(Feature);
 		return StaticMeshLODSettings;
 	}
 
-	virtual const FSkeletalMeshDefaultLODStreamingSettings& GetSkeletalMeshDefaultLODStreamingSettings() const override
-	{
-		return SkeletalMeshDefaultLODStreamingSettings;
-	}
-
 	virtual void GetTextureFormats( const UTexture* Texture, TArray< TArray<FName> >& OutFormats) const override
 	{
 		if (!IS_DEDICATED_SERVER)
@@ -197,6 +190,7 @@ return TSuper::SupportsFeature(Feature);
 		static FName NameG16(TEXT("G16"));
 		static FName NameVU8(TEXT("VU8"));
 		static FName NameRGBA16F(TEXT("RGBA16F"));
+		static FName NameR16F(TEXT("R16F"));
 		static FName NameBC6H(TEXT("BC6H"));
 		static FName NameBC7(TEXT("BC7"));
 
@@ -270,6 +264,10 @@ return TSuper::SupportsFeature(Feature);
 		else if (Settings == TC_BC7)
 		{
 			TextureFormatName = NameBC7;
+		}
+		else if (Settings == TC_HalfFloat)
+		{
+			TextureFormatName = NameR16F;
 		}
 		else if (bNoAlpha)
 		{
@@ -417,7 +415,6 @@ private:
 	// Holds the static mesh LOD settings.
 	FStaticMeshLODSettings StaticMeshLODSettings;
 
-	FSkeletalMeshDefaultLODStreamingSettings SkeletalMeshDefaultLODStreamingSettings;
 #endif // WITH_ENGINE
 
 private:

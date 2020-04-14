@@ -24,7 +24,6 @@
 #if WITH_ENGINE
 #include "Internationalization/Text.h"
 #include "StaticMeshResources.h"
-#include "SkeletalMeshDefaultLODStreamingSettings.h"
 #endif // WITH_ENGINE
 
 #define LOCTEXT_NAMESPACE "FAndroidTargetPlatform" 
@@ -65,6 +64,7 @@ namespace AndroidTexFormat
 	static FName NameG8(TEXT("G8"));
 	static FName NameVU8(TEXT("VU8"));
 	static FName NameRGBA16F(TEXT("RGBA16F"));
+	static FName NameR16F(TEXT("R16F"));
 
 	// Error "formats" (uncompressed)
 	static FName NamePOTERROR(TEXT("POTERROR"));
@@ -197,8 +197,6 @@ public:
 	
 	virtual const class FStaticMeshLODSettings& GetStaticMeshLODSettings() const override;
 
-	virtual const FSkeletalMeshDefaultLODStreamingSettings& GetSkeletalMeshDefaultLODStreamingSettings() const override;
-
 	virtual void GetTextureFormats( const UTexture* InTexture, TArray< TArray<FName> >& OutFormats) const override;
 
 	virtual void GetAllTextureFormats(TArray<FName>& OutFormats) const override;
@@ -310,8 +308,6 @@ protected:
 
 	// Holds the static mesh LOD settings.
 	FStaticMeshLODSettings StaticMeshLODSettings;
-
-	FSkeletalMeshDefaultLODStreamingSettings SkeletalMeshDefaultLODStreamingSettings;
 
 	ITargetDevicePtr DefaultDevice;
 #endif //WITH_ENGINE

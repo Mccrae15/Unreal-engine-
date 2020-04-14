@@ -199,7 +199,6 @@ FAndroidTargetPlatform::FAndroidTargetPlatform(bool bInIsClient )
 		FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *IniPlatformName());
 			TextureLODSettings = nullptr; // These are registered by the device profile system.
 		StaticMeshLODSettings.Initialize(EngineSettings);
-		SkeletalMeshDefaultLODStreamingSettings.Initialize(EngineSettings);
 	#endif
 
 	TickDelegate = FTickerDelegate::CreateRaw(this, &FAndroidTargetPlatform::HandleTicker);
@@ -427,12 +426,6 @@ const FStaticMeshLODSettings& FAndroidTargetPlatform::GetStaticMeshLODSettings( 
 }
 
 
-const FSkeletalMeshDefaultLODStreamingSettings& FAndroidTargetPlatform::GetSkeletalMeshDefaultLODStreamingSettings() const
-{
-	return SkeletalMeshDefaultLODStreamingSettings;
-}
-
-
 void FAndroidTargetPlatform::GetTextureFormats( const UTexture* InTexture, TArray< TArray<FName> >& OutFormats) const
 {
 #if WITH_EDITOR
@@ -513,6 +506,10 @@ void FAndroidTargetPlatform::GetTextureFormats( const UTexture* InTexture, TArra
 			{
 				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameG8;
 			}
+			else if (LayerFormatSettings.CompressionSettings == TC_HalfFloat)
+			{
+				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameR16F;
+			}
 			else if (LayerFormatSettings.CompressionSettings == TC_BC7)
 			{
 				if (!bIsCompressionValid) FormatPerLayer[LayerIndex] = AndroidTexFormat::NamePOTERROR;
@@ -564,6 +561,7 @@ void FAndroidTargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) con
 	OutFormats.Add(AndroidTexFormat::NameG8);
 	OutFormats.Add(AndroidTexFormat::NameG8);
 	OutFormats.Add(AndroidTexFormat::NameG8);
+	OutFormats.Add(AndroidTexFormat::NameR16F);
 
 	auto AddAllTextureFormatIfSupports = [=, &OutFormats](bool bIsNonPOT)
 	{
