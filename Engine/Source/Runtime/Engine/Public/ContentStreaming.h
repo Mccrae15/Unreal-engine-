@@ -696,6 +696,11 @@ struct FStreamingManagerCollection : public IStreamingManager
 	ENGINE_API IAnimationStreamingManager& GetAnimationStreamingManager() const;
 
 	/**
+	 * Gets a reference to the Virtual Texture Streaming Manager
+	*/
+	ENGINE_API struct FVirtualTextureChunkStreamingManager& GetVirtualTextureStreamingManager() const;
+
+	/**
 	 * Adds a streaming manager to the array of managers to route function calls to.
 	 *
 	 * @param StreamingManager	Streaming manager to add
@@ -792,6 +797,9 @@ protected:
 
 	/** The animation streaming manager, should always exist */
 	IAnimationStreamingManager* AnimationStreamingManager;
+
+	/** The virtual texture streaming manager, should always exist */
+	FVirtualTextureChunkStreamingManager* VirtualTextureStreamingManager;
 
 #if WITH_EDITOR
 	// Locks out any audio streaming manager call when we are re-initializing the audio streaming manager.
