@@ -537,6 +537,13 @@ void Main(
 		Color += ShadingModelContext.DiffuseColor * DiffuseGI * View.IndirectLightingColorScale;
 	#endif
 #endif
+
+#if ENABLE_SKY_LIGHT
+		half3 SkyDiffuseLighting = GetSkySHDiffuseSimple(MaterialParameters.WorldNormal);
+		half3 DiffuseLookup = SkyDiffuseLighting * ResolvedView.SkyLightColor.rgb;
+		IndirectIrradiance += Luminance(DiffuseLookup);
+#endif
+
 	half MaterialAO = GetMaterialAmbientOcclusion(PixelMaterialInputs);
 	Color *= MaterialAO;
 	IndirectIrradiance *= MaterialAO;
@@ -720,7 +727,6 @@ void Main(
 	if (NoL == 0)
 	{
 	#endif
-		half3 SkyDiffuseLighting = GetSkySHDiffuseSimple(MaterialParameters.WorldNormal);
 
 	#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
 		ShadingModelContext.WaterDiffuseIndirectLuminance += SkyDiffuseLighting;
