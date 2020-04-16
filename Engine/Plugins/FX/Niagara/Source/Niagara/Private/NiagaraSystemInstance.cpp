@@ -923,6 +923,7 @@ void FNiagaraSystemInstance::ResetInternal(bool bResetSimulations)
 	bLODDistanceIsValid = false;
 	TotalGPUParamSize = 0;
 	ActiveGPUEmitterCount = 0;
+	GPUParamIncludeInterpolation = false;
 	// Note: We do not need to update our bounds here as they are still valid
 
 	UNiagaraSystem* System = GetSystem();
@@ -2023,6 +2024,7 @@ void FNiagaraSystemInstance::Tick_Concurrent()
 	// Reset values that will be accumulated during emitter tick.
 	TotalGPUParamSize = 0;
 	ActiveGPUEmitterCount = 0;
+	GPUParamIncludeInterpolation = false;
 	UNiagaraSystem* System = GetSystem();
 
 	const int32 NumEmitters = Emitters.Num();
@@ -2060,7 +2062,7 @@ void FNiagaraSystemInstance::Tick_Concurrent()
 		}
 	}
 
-	bool FirstGpuEmitter = true;
+	int32 TotalCombinedParamStoreSize = 0;
 
 	// now tick all emitters
 	for (int32 EmitterIdx : EmitterExecutionOrder)
@@ -2071,20 +2073,24 @@ void FNiagaraSystemInstance::Tick_Concurrent()
 			Inst.Tick(CachedDeltaSeconds);
 		}
 
-		if (Inst.GetCachedEmitter() && Inst.GetCachedEmitter()->SimTarget == ENiagaraSimTarget::GPUComputeSim && Inst.GetGPUContext() != nullptr && !Inst.IsComplete())
+		if (Inst.GetCachedEmitter() && Inst.GetCachedEmitter()->SimTarget == ENiagaraSimTarget::GPUComputeSim && !Inst.IsComplete())
 		{
-			if (FirstGpuEmitter)
+			if (const FNiagaraComputeExecutionContext* GPUContext = Inst.GetGPUContext())
 			{
-				TotalGPUParamSize += 2 * sizeof(FNiagaraGlobalParameters);
-				TotalGPUParamSize += 2 * sizeof(FNiagaraSystemParameters);
-				TotalGPUParamSize += 2 * sizeof(FNiagaraOwnerParameters);
-				FirstGpuEmitter = false;
+				TotalCombinedParamStoreSize += GPUContext->CombinedParamStore.GetPaddedParameterSizeInBytes();
+				GPUParamIncludeInterpolation = GPUContext->HasInterpolationParameters || GPUParamIncludeInterpolation;
+				ActiveGPUEmitterCount++;
 			}
-
-			TotalGPUParamSize += 2 * sizeof(FNiagaraEmitterParameters);
-			TotalGPUParamSize += Inst.GetGPUContext()->CombinedParamStore.GetPaddedParameterSizeInBytes();
-			ActiveGPUEmitterCount++;
 		}
+	}
+
+	if (ActiveGPUEmitterCount)
+	{
+		const int32 InterpFactor = GPUParamIncludeInterpolation ? 2 : 1;
+
+		TotalGPUParamSize = InterpFactor * (sizeof(FNiagaraGlobalParameters) + sizeof(FNiagaraSystemParameters) + sizeof(FNiagaraOwnerParameters));
+		TotalGPUParamSize += InterpFactor * ActiveGPUEmitterCount * sizeof(FNiagaraEmitterParameters);
+		TotalGPUParamSize += TotalCombinedParamStoreSize;
 	}
 
 	// Update local bounds
