@@ -2411,6 +2411,9 @@ bool CreatePakFile(const TCHAR* Filename, TArray<FPakInputPair>& FilesToAdd, con
 	// check to make sure freezing of the index is okay (target specified, it's 64-bit, and we don't want to modify it at runtime)
 	bool bAllowFreezing = PlatformInfo != nullptr && PlatformInfo->Freezing_b32Bit == false && CmdLineParameters.bAllowForIndexUnload == false;
 
+	// disable freezing on Windows because the 32/64 bit issue causes an error too early (and it's being replaced in a future engine version)
+	bAllowFreezing = bAllowFreezing && CmdLineParameters.DataDrivenPlatformName != TEXT("Windows");
+
 	// Disable encrypted freezing until frozen decryption is implemented in FPakFile::LoadIndex()
 	bAllowFreezing = bAllowFreezing && !Info.bEncryptedIndex;
 
@@ -2448,11 +2451,12 @@ bool CreatePakFile(const TCHAR* Filename, TArray<FPakInputPair>& FilesToAdd, con
 	}
 	else
 	{
-		UE_LOG(LogPakFile, Display, TEXT("DISABLING pak file index freezing (all must be true: HasPlatformInfo? %s - TargetIs64Bit? %s - NoRuntimeUnloading? %s - Unencrypted? %s)"),
+		UE_LOG(LogPakFile, Display, TEXT("DISABLING pak file index freezing (all must be true: HasPlatformInfo? %s - TargetIs64Bit? %s - NoRuntimeUnloading? %s - Unencrypted? %s, '%s' != 'Windows')"),
 			PlatformInfo == nullptr ? TEXT("false") : TEXT("true"),
 			PlatformInfo == nullptr ? TEXT("unknown") : PlatformInfo->Freezing_b32Bit ? TEXT("false") : TEXT("true"),
 			CmdLineParameters.bAllowForIndexUnload ? TEXT("false") : TEXT("true"),
-			Info.bEncryptedIndex ? TEXT("false") : TEXT("true"));
+			Info.bEncryptedIndex ? TEXT("false") : TEXT("true"),
+			* CmdLineParameters.DataDrivenPlatformName);
 
 		// Serialize Pak Index at the end of Pak File
 		TArray<uint8> IndexData;
