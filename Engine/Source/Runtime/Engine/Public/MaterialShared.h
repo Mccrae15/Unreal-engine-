@@ -2964,6 +2964,7 @@ struct FMaterialShaderParameters
 			uint64 bMaterialIsPrimitiveDistanceAccuracy : 1;
 			uint64 bMaterialIsRequiredTextureResolution : 1;
 			uint64 bMaterialIsComplexityAccumulate : 1;
+			uint64 bMaterialIsLODColoration : 1;
 			uint64 bIsUsedWithLidarPointCloud : 1;
 			uint64 bIsStencilTestEnabled : 1;
 		};
@@ -3032,6 +3033,7 @@ struct FMaterialShaderParameters
 		bMaterialIsPrimitiveDistanceAccuracy = FriendlyName.Contains(TEXT("PrimitiveDistanceAccuracy"));
 		bMaterialIsRequiredTextureResolution = FriendlyName.Contains(TEXT("RequiredTextureResolution"));
 		bMaterialIsComplexityAccumulate = FriendlyName.Contains(TEXT("ComplexityAccumulate"));
+		bMaterialIsLODColoration = FriendlyName.Contains(TEXT("LODColoration"));
 	}
 };
 
