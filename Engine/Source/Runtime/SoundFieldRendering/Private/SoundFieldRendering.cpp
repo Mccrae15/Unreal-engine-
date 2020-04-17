@@ -146,8 +146,8 @@ void FSoundFieldDecoder::DecodeAudioDirectlyToDeviceOutputPositions(const FAmbis
 
 	// Don't interpolate if the number of speakers has changed, or if listener rotation has not changed
 	bool bShouldInterpolate = TargetSpeakerGains.Num() == CurrentSpeakerGains.Num();
-	bShouldInterpolate &= !FMath::IsNearlyEqual(ListenerRotationSphericalCoord.X, LastListenerRotationSphericalCoord.X);
-	bShouldInterpolate &= !FMath::IsNearlyEqual(ListenerRotationSphericalCoord.Y, LastListenerRotationSphericalCoord.Y);
+	bShouldInterpolate |= !FMath::IsNearlyEqual(ListenerRotationSphericalCoord.X, LastListenerRotationSphericalCoord.X);
+	bShouldInterpolate |= !FMath::IsNearlyEqual(ListenerRotationSphericalCoord.Y, LastListenerRotationSphericalCoord.Y);
 
 	// fill out the ambisonic speaker gain maps
 	for (int32 OutChan = 0; OutChan < NumOutputChannels; ++OutChan)
@@ -329,7 +329,7 @@ void FSoundFieldDecoder::DecodeAudioToSevenOneAndDownmixToDevice(const FAmbisoni
 	check(NumVirtualChannels == 9); // if this has changed, it breaks our assumptions for fast gain indexing
 
 	// get listener orientation in spherical coordinates
-	FQuat RelativeRotation = OutputPositions.Rotation * InputData.Rotation.Inverse();
+	FQuat RelativeRotation = OutputPositions.Rotation *InputData.Rotation.Inverse();
 	FVector2D ListenerRotationSphericalCoord = RelativeRotation.Vector().UnitCartesianToSpherical();
 	FSphericalHarmonicCalculator::AdjustUESphericalCoordinatesForAmbisonics(ListenerRotationSphericalCoord);
 
@@ -339,7 +339,7 @@ void FSoundFieldDecoder::DecodeAudioToSevenOneAndDownmixToDevice(const FAmbisoni
 
 	// Don't interpolate if the listener rotation has not changed
 	bool bShouldInterpolate = !FMath::IsNearlyEqual(ListenerRotationSphericalCoord.X, LastListenerRotationSphericalCoord.X);
-	bShouldInterpolate &= !FMath::IsNearlyEqual(ListenerRotationSphericalCoord.Y, LastListenerRotationSphericalCoord.Y);
+	bShouldInterpolate |= !FMath::IsNearlyEqual(ListenerRotationSphericalCoord.Y, LastListenerRotationSphericalCoord.Y);
 
 	if (bShouldInterpolate)
 	{
