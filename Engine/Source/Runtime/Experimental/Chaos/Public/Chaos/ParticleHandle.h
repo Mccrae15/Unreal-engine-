@@ -13,14 +13,10 @@
 #include "Chaos/ChaosDebugDraw.h"
 #endif
 
-
-
 class IPhysicsProxyBase;
 
 namespace Chaos
 {
-
-
 template <typename T, int d>
 struct TGeometryParticleParameters
 {
@@ -42,7 +38,7 @@ struct TPBDRigidParticleParameters : public TKinematicGeometryParticleParameters
 	TPBDRigidParticleParameters()
 		: TKinematicGeometryParticleParameters<T, d>()
 		, bStartSleeping(false)
-		, bGravityEnabled(false)
+		, bGravityEnabled(true)
 	{}
 	bool bStartSleeping;
 	bool bGravityEnabled;
@@ -88,6 +84,7 @@ void PBDRigidParticleHandleImpDefaultConstruct(TPBDRigidParticleHandleImp<T, d, 
 	Concrete.SetLinearEtherDrag(0.f);
 	Concrete.SetAngularEtherDrag(0.f);
 	Concrete.SetObjectStateLowLevel(Params.bStartSleeping ? EObjectStateType::Sleeping : EObjectStateType::Dynamic);
+	Concrete.SetGravityEnabled(Params.bGravityEnabled);
 }
 
 template <typename T, int d>
@@ -759,6 +756,7 @@ public:
 		SetLinearEtherDrag(DynamicMisc.LinearEtherDrag());
 		SetAngularEtherDrag(DynamicMisc.AngularEtherDrag());
 		SetCollisionGroup(DynamicMisc.CollisionGroup());
+		SetGravityEnabled(DynamicMisc.GravityEnabled());
 	}
 
 	const PMatrix<T, d, d>& I() const { return PBDRigidParticles->I(ParticleIdx); }
@@ -810,6 +808,10 @@ public:
 	//Really only useful when using a transient handle
 	const TPBDRigidParticleHandleImp<T, d, true>* Handle() const { return PBDRigidParticles->Handle(ParticleIdx); }
 	TPBDRigidParticleHandleImp<T, d, true>* Handle() { return PBDRigidParticles->Handle(ParticleIdx); }
+
+	bool GravityEnabled() const { return PBDRigidParticles->GravityEnabled(ParticleIdx); }
+
+	void SetGravityEnabled(bool bEnabled){ PBDRigidParticles->GravityEnabled(ParticleIdx) = bEnabled; }
 
 	static constexpr EParticleType StaticType() { return EParticleType::Rigid; }
 };
@@ -1578,6 +1580,15 @@ public:
 		MapImplicitShapes();
 	}
 
+	void SetIgnoreAnalyticCollisionsImp(FImplicitObject* Implicit, bool bIgnoreAnalyticCollisions);
+	void SetIgnoreAnalyticCollisions(bool bIgnoreAnalyticCollisions)
+	{
+		if (MNonFrequentData.Read().Geometry())
+		{
+			SetIgnoreAnalyticCollisionsImp(MNonFrequentData.Read().Geometry().Get(), bIgnoreAnalyticCollisions);
+		}
+	}
+
 	TSerializablePtr<FImplicitObject> Geometry() const { return MakeSerializable(MNonFrequentData.Read().Geometry()); }
 
 	const FShapesArray& ShapesArray() const { return MShapesArray; }
@@ -2022,7 +2033,7 @@ public:
 		MMiscData.Modify(true,MDirtyFlags,Proxy,[InDisabled](auto& Data){ Data.bDisabled = InDisabled;});
 	}*/
 
-	bool IsGravityEnabled() const { return MMiscData.Read().GravityEnabled(); }
+	bool GravityEnabled() const { return MMiscData.Read().GravityEnabled(); }
 	void SetGravityEnabled(const bool InGravityEnabled)
 	{
 		MMiscData.Modify(true,MDirtyFlags,Proxy,[InGravityEnabled](auto& Data){ Data.SetGravityEnabled (InGravityEnabled);});
@@ -2275,7 +2286,7 @@ public:
 		, MObjectState(InParticle.ObjectState())
 		//, MDisabled(InParticle.Disabled())
 		, MToBeRemovedOnFracture(InParticle.ToBeRemovedOnFracture())
-		, MGravityEnabled(InParticle.IsGravityEnabled())
+		, MGravityEnabled(InParticle.GravityEnabled())
 		, MInitialized(InParticle.IsInitialized())
 	{
 		Type = EParticleType::Rigid;
@@ -2345,7 +2356,7 @@ public:
 			MObjectState = InParticle.ObjectState();
 			//MDisabled = InParticle.Disabled();
 			MToBeRemovedOnFracture = InParticle.ToBeRemovedOnFracture();
-			MGravityEnabled = InParticle.IsGravityEnabled();
+			MGravityEnabled = InParticle.GravityEnabled();
 			MInitialized = InParticle.IsInitialized();
 			Type = EParticleType::Rigid;
 		}

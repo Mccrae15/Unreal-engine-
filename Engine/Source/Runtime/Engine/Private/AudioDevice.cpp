@@ -47,7 +47,6 @@
 #include "Editor/EditorEngine.h"
 #endif // WITH_EDITOR
 
-
 static int32 AudioChannelCountCVar = 0;
 FAutoConsoleVariableRef CVarSetAudioChannelCount(
 	TEXT("au.SetAudioChannelCount"),
@@ -2080,7 +2079,13 @@ void FAudioDevice::InitSoundClasses()
 	for (TObjectIterator<USoundClass> It; It; ++It)
 	{
 		USoundClass* SoundClass = *It;
-		FSoundClassProperties& Properties = SoundClasses.Add(SoundClass, SoundClass->Properties);
+		SoundClasses.Add(SoundClass, SoundClass->Properties);
+
+		// Set the dynamic properties
+		FSoundClassDynamicProperties DynamicProperty;
+		DynamicProperty.AttenuationScaleParam.Set(SoundClass->Properties.AttenuationDistanceScale, 0.0f);
+
+		DynamicSoundClassProperties.Add(SoundClass, DynamicProperty);
 	}
 
 	// Propagate the properties down the hierarchy
@@ -2172,7 +2177,6 @@ void FAudioDevice::RecurseIntoSoundClasses(USoundClass* CurrentClass, FSoundClas
 				Properties->Pitch *= ParentProperties.Pitch;
 				Properties->bIsUISound |= ParentProperties.bIsUISound;
 				Properties->bIsMusic |= ParentProperties.bIsMusic;
-				Properties->SetParentAttenuationDistanceScale(ParentProperties.GetAttenuationDistanceScale());
 
 				// Not all values propagate equally...
 				// VoiceCenterChannelVolume, RadioFilterVolume, RadioFilterVolumeThreshold, bApplyEffects, BleedStereo, bReverb, and bCenterChannelOnly do not propagate (sub-classes can be non-zero even if parent class is zero)
@@ -2226,9 +2230,12 @@ void FAudioDevice::ParseSoundClasses(float InDeltaTime)
 		USoundClass* SoundClass = It.Key();
 		if (SoundClass)
 		{
-			// Update any dynamic sound class properties
-			SoundClass->Properties.UpdateSoundClassProperties(InDeltaTime);
+			if (FSoundClassDynamicProperties* DynamicProperties = DynamicSoundClassProperties.Find(SoundClass))
+			{
+				DynamicProperties->AttenuationScaleParam.Update(InDeltaTime);
+			}
 
+			// Reset the property values
 			It.Value() = SoundClass->Properties;
 			if (SoundClass->ParentClass == NULL)
 			{
@@ -4194,12 +4201,6 @@ void FAudioDevice::Update(bool bGameTicking)
 	}
 
 	{
-		SCOPED_NAMED_EVENT(FAudioDevice_UpdateAudioClock, FColor::Blue);
-		// Update the audio clock, this can be overridden per platform to get a sample-accurate clock
-		UpdateAudioClock();
-	}
-
-	{
 		SCOPED_NAMED_EVENT(FAudioDevice_UpdateVirtualLoops, FColor::Blue);
 		// Update which loops should re-trigger due to coming back into proximity
 		// or allowed by concurrency re-evaluating in context of other sounds stopping
@@ -6022,6 +6023,10 @@ void FAudioDevice::RegisterSoundClass(USoundClass* InSoundClass)
 		if (!SoundClasses.Contains(InSoundClass))
 		{
 			SoundClasses.Add(InSoundClass, FSoundClassProperties());
+
+			FSoundClassDynamicProperties NewDynamicProperties;
+			NewDynamicProperties.AttenuationScaleParam.Set(InSoundClass->Properties.AttenuationDistanceScale, 0.0f);
+			DynamicSoundClassProperties.Add(InSoundClass, NewDynamicProperties);
 		}
 	}
 }
@@ -6044,6 +6049,7 @@ void FAudioDevice::UnregisterSoundClass(USoundClass* InSoundClass)
 		}
 
 		SoundClasses.Remove(InSoundClass);
+		DynamicSoundClassProperties.Remove(InSoundClass);
 	}
 }
 
@@ -6059,6 +6065,17 @@ FSoundClassProperties* FAudioDevice::GetSoundClassCurrentProperties(USoundClass*
 	return nullptr;
 }
 
+FSoundClassDynamicProperties* FAudioDevice::GetSoundClassDynamicProperties(USoundClass* InSoundClass)
+{
+	if (InSoundClass)
+	{
+		check(IsInAudioThread());
+
+		FSoundClassDynamicProperties* Properties = DynamicSoundClassProperties.Find(InSoundClass);
+		return Properties;
+	}
+	return nullptr;
+}
 
 #if !UE_BUILD_SHIPPING
 /**
@@ -6459,13 +6476,9 @@ void FAudioDevice::SetSoundClassDistanceScale(USoundClass* InSoundClass, float D
 		return;
 	}
 
-	if (FSoundClassProperties* Properties = SoundClasses.Find(InSoundClass))
+	if (FSoundClassDynamicProperties* DynamicProperties = DynamicSoundClassProperties.Find(InSoundClass))
 	{
-		Properties->SetAttenuationDistanceScale(DistanceScale, TimeSec);
-	}
-	else
-	{
-		UE_LOG(LogAudio, Warning, TEXT("Failed to find sound class %s to set attenuation scale."), *InSoundClass->GetName());
+		DynamicProperties->AttenuationScaleParam.Set(DistanceScale, TimeSec);
 	}
 }
 

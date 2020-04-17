@@ -510,7 +510,7 @@ namespace Chaos
 		return NewParticle;
 	}
 
-	int32 UnionsHaveCollisionParticles = 0;
+	int32 UnionsHaveCollisionParticles = 1;
 	FAutoConsoleVariableRef CVarUnionsHaveCollisionParticles(TEXT("p.UnionsHaveCollisionParticles"), UnionsHaveCollisionParticles, TEXT(""));
 
 	DECLARE_CYCLE_STAT(TEXT("TPBDRigidClustering<>::CreateClusterParticleFromClusterChildren"), STAT_CreateClusterParticleFromClusterChildren, STATGROUP_Chaos);
@@ -618,9 +618,12 @@ namespace Chaos
 					TArray<TPBDRigidParticleHandle<T, 3>*> ClusterBodies;
 					for (TPBDRigidClusteredParticleHandle<T, 3>* ActiveCluster : Handles)
 					{
-						TSet<TPBDRigidParticleHandle<T, 3>*> Children = ReleaseClusterParticles(ActiveCluster, nullptr, true);
-						NewClusterGroups[ClusterGroupID].Append(Children.Array());
-						for (auto& Child : Children) ClusterParents.Add(Child, ActiveCluster);
+						if (!ActiveCluster->Disabled())
+						{
+							TSet<TPBDRigidParticleHandle<T, 3>*> Children = ReleaseClusterParticles(ActiveCluster, nullptr, true);
+							NewClusterGroups[ClusterGroupID].Append(Children.Array());
+							for (auto& Child : Children) ClusterParents.Add(Child, ActiveCluster);
+						}
 					}
 				}
 			}

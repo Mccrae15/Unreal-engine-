@@ -881,6 +881,10 @@ void FPhysScene_Chaos::Shutdown()
 		ChaosModule->DestroySolver(GetSolver());
 	}
 
+#if WITH_EDITOR
+	PhysScene_ChaosPauseHandler.Reset();
+#endif
+
 	ChaosModule = nullptr;
 	SceneSolver = nullptr;
 
@@ -1340,6 +1344,9 @@ void FPhysScene_ChaosInterface::Flush_AssumesLocked()
 
 	if(Solver)
 	{
+		//Make sure any dirty proxy data is pushed
+		Solver->PushPhysicsState(Dispatcher);
+
 		TQueue<TFunction<void(Chaos::FPhysicsSolver*)>, EQueueMode::Mpsc>& Queue = Solver->GetCommandQueue();
 		TFunction<void(Chaos::FPhysicsSolver*)> Command;
 		while(Queue.Dequeue(Command))

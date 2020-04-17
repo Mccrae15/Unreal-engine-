@@ -11,6 +11,7 @@
 
 class SInlineEditableTextBlock;
 class SBorder;
+class UEdGraphPin;
 
 class NIAGARAEDITOR_API SNiagaraParameterName : public SCompoundWidget
 {
@@ -18,21 +19,33 @@ public:
 	DECLARE_DELEGATE_OneParam(FOnNameChanged, FName /* InNewName */);
 	DECLARE_DELEGATE_RetVal_TwoParams(bool, FOnVerifyNameChange, FName /* InNewName */, FText& /* OutErrorMessage */)
 
+public: 
+	enum class ESingleNameDisplayMode
+	{
+		Namespace,
+		Name
+	};
 public:
 	SLATE_BEGIN_ARGS(SNiagaraParameterName) 
 		: _EditableTextStyle(&FEditorStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("InlineEditableTextBlockStyle"))
 		, _ReadOnlyTextStyle(&FEditorStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText"))
 		, _IsReadOnly(false)
-	{}
+		, _SingleNameDisplayMode(ESingleNameDisplayMode::Name)
+		, _DecoratorHAlign(HAlign_Left)
+	{
+		_Clipping = EWidgetClipping::OnDemand;
+	}
 		SLATE_STYLE_ARGUMENT(FInlineEditableTextBlockStyle, EditableTextStyle)
 		SLATE_STYLE_ARGUMENT(FTextBlockStyle, ReadOnlyTextStyle)
 		SLATE_ATTRIBUTE(FName, ParameterName)
 		SLATE_ARGUMENT(bool, IsReadOnly)
+		SLATE_ARGUMENT(ESingleNameDisplayMode, SingleNameDisplayMode)
 		SLATE_ATTRIBUTE(FText, HighlightText)
 		SLATE_EVENT(FOnVerifyNameChange, OnVerifyNameChange)
 		SLATE_EVENT(FOnNameChanged, OnNameChanged)
 		SLATE_EVENT(FIsSelected, IsSelected)
 		SLATE_EVENT(FPointerEventHandler, OnDoubleClicked)
+		SLATE_ARGUMENT(EHorizontalAlignment, DecoratorHAlign)
 		SLATE_NAMED_SLOT(FArguments, Decorator)
 	SLATE_END_ARGS()
 
@@ -70,6 +83,7 @@ private:
 	const FTextBlockStyle* ReadOnlyTextStyle;
 	TAttribute<FName> ParameterName;
 	bool bIsReadOnly;
+	ESingleNameDisplayMode SingleNameDisplayMode;
 	TAttribute<FText> HighlightText;
 	FOnVerifyNameChange OnVerifyNameChangeDelegate;
 	FOnNameChanged OnNameChangedDelegate;
@@ -79,6 +93,7 @@ private:
 	FName DisplayedNamespaceModifier;
 	TSharedPtr<SInlineEditableTextBlock> EditableTextBlock;
 	TSharedPtr<SBorder> NamespaceModifierBorder;
+	EHorizontalAlignment DecoratorHAlign;
 	TSharedPtr<SWidget> Decorator;
 };
 
@@ -87,11 +102,12 @@ class NIAGARAEDITOR_API SNiagaraParameterNameTextBlock : public SCompoundWidget
 public:
 	SLATE_BEGIN_ARGS(SNiagaraParameterNameTextBlock)
 		: _EditableTextStyle(&FEditorStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("InlineEditableTextBlockStyle"))
+		, _IsReadOnly(false)
 	{
 		_Clipping = EWidgetClipping::OnDemand;
 	}
-		SLATE_ATTRIBUTE(FText, ParameterText)
 		SLATE_STYLE_ARGUMENT(FInlineEditableTextBlockStyle, EditableTextStyle)
+		SLATE_ATTRIBUTE(FText, ParameterText)
 		SLATE_ARGUMENT(bool, IsReadOnly)
 		SLATE_ATTRIBUTE(FText, HighlightText)
 		SLATE_EVENT(FOnVerifyTextChanged, OnVerifyTextChanged)
@@ -122,4 +138,31 @@ private:
 	mutable FText DisplayedParameterTextCache;
 	mutable FName ParameterNameCache;
 	TSharedPtr<SNiagaraParameterName> ParameterName;
+};
+
+class NIAGARAEDITOR_API SNiagaraParameterNamePinLabel : public SNiagaraParameterNameTextBlock
+{
+public:
+	SLATE_BEGIN_ARGS(SNiagaraParameterNamePinLabel)
+		: _EditableTextStyle(&FEditorStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("InlineEditableTextBlockStyle"))
+		, _IsReadOnly(false)
+	{
+		_Clipping = EWidgetClipping::OnDemand;
+	}
+		SLATE_STYLE_ARGUMENT(FInlineEditableTextBlockStyle, EditableTextStyle)
+		SLATE_ATTRIBUTE(FText, ParameterText)
+		SLATE_ARGUMENT(bool, IsReadOnly)
+		SLATE_ATTRIBUTE(FText, HighlightText)
+		SLATE_EVENT(FOnVerifyTextChanged, OnVerifyTextChanged)
+		SLATE_EVENT(FOnTextCommitted, OnTextCommitted)
+		SLATE_EVENT(FIsSelected, IsSelected)
+		SLATE_NAMED_SLOT(FArguments, Decorator)
+		SLATE_END_ARGS()
+
+		void Construct(const FArguments& InArgs, UEdGraphPin* InTargetPin);
+
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+
+private:
+	UEdGraphPin* TargetPin;
 };

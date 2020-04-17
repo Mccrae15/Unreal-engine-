@@ -19,6 +19,7 @@
 #include "Misc/UObjectToken.h"
 #include "Misc/MapErrors.h"
 #include "NiagaraComponent.h"
+#include "UObject/ConstructorHelpers.h"
 
 static float GHairClipLength = -1;
 static FAutoConsoleVariableRef CVarHairClipLength(TEXT("r.HairStrands.DebugClipLength"), GHairClipLength, TEXT("Clip hair strands which have a lenth larger than this value. (default is -1, no effect)"));
@@ -144,33 +145,6 @@ static EHairMaterialCompatibility IsHairMaterialCompatible(UMaterialInterface* M
 	return EHairMaterialCompatibility::Valid;
 }
 
-static UMaterialInterface* GetHairDefaultMaterial()
-{
-#if WITH_EDITOR
-	static UMaterialInterface* HairDefaultMaterial = nullptr;
-	if (!HairDefaultMaterial)
-	{
-		HairDefaultMaterial = LoadObject<UMaterialInterface>(NULL, TEXT("/HairStrands/Materials/HairDefaultMaterial.HairDefaultMaterial"));
-	}
-	return HairDefaultMaterial;
-#else
-	return nullptr;
-#endif
-}
-
-static UMaterialInterface* GetHairDebugMaterial()
-{
-#if WITH_EDITOR
-	static UMaterialInterface* HairDebugMaterial = nullptr;
-	if (!HairDebugMaterial)
-	{
-		HairDebugMaterial = LoadObject<UMaterialInterface>(NULL, TEXT("/HairStrands/Materials/HairDebugMaterial.HairDebugMaterial"));
-	}
-	return HairDebugMaterial;
-#else
-	return nullptr;
-#endif
-}
 /////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////
 //  FStrandHairSceneProxy
@@ -196,6 +170,7 @@ public:
 		check(Component->GroomAsset->GetNumHairGroups() > 0);
 		check(Component->InterpolationOutput);
 		ComponentId = Component->ComponentId.PrimIDValue;
+		HairDebugMaterial = Component->HairDebugMaterial;
 
 		FHairStrandsVertexFactory::FDataType VFData;
 		VFData.InterpolationOutput = Component->InterpolationOutput;
@@ -328,7 +303,6 @@ public:
 				HairMaxRadius = FMath::Max(HairMaxRadius, HairGroup.VFInput.HairRadius);
 			}
 
-			UMaterialInterface* HairDebugMaterial = GetHairDebugMaterial();
 			const float HairClipLength = GetHairClipLength();
 			auto DebugMaterial = new FHairDebugModeMaterialRenderProxy(HairDebugMaterial ? HairDebugMaterial->GetRenderProxy() : nullptr, DebugModeScalar, 0, HairMaxRadius, HairClipLength);
 			Collector.RegisterOneFrameMaterialProxy(DebugMaterial);
@@ -343,7 +317,7 @@ public:
 				continue;
 			}
 
-			if (VisibilityMap & (1 << ViewIndex))
+			if (IsShown(View) && (VisibilityMap & (1 << ViewIndex)))
 			{
 				for (uint32 GroupIt = 0; GroupIt < GroupCount; ++GroupIt)
 				{
@@ -416,7 +390,7 @@ public:
 		}
 
 		FPrimitiveViewRelevance Result;
-		Result.bHairStrands = bIsViewModeValid;
+		Result.bHairStrands = bIsViewModeValid && IsShown(View);
 
 		// Special pass for hair strands geometry (not part of the base pass, and shadowing is handlded in a custom fashion)
 		Result.bDrawRelevance = false;		
@@ -444,6 +418,7 @@ private:
 	uint32 ComponentId = 0;
 	FHairStrandsVertexFactory VertexFactory;
 	FMaterialRelevance MaterialRelevance;
+	UMaterialInterface* HairDebugMaterial = nullptr;
 	struct HairGroup
 	{
 		UMaterialInterface* Material = nullptr;
@@ -479,6 +454,12 @@ UGroomComponent::UGroomComponent(const FObjectInitializer& ObjectInitializer)
 	NiagaraComponents.Empty();
 
 	SetCollisionProfileName(UCollisionProfile::PhysicsActor_ProfileName);
+
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> HairDebugMaterialRef(TEXT("/HairStrands/Materials/HairDebugMaterial.HairDebugMaterial"));
+	static ConstructorHelpers::FObjectFinder<UMaterialInterface> HairDefaultMaterialRef(TEXT("/HairStrands/Materials/HairDefaultMaterial.HairDefaultMaterial"));
+
+	HairDebugMaterial = HairDebugMaterialRef.Object;
+	HairDefaultMaterial = HairDefaultMaterialRef.Object;
 }
 
 void UGroomComponent::UpdateHairGroupsDesc()
@@ -545,6 +526,7 @@ void UGroomComponent::UpdateHairSimulation()
 {
 	static UNiagaraSystem* CosseratRodsSystem = LoadObject<UNiagaraSystem>(nullptr, TEXT("/HairStrands/Emitters/GroomRodsSystem.GroomRodsSystem"));
 	static UNiagaraSystem* AngularSpringsSystem = LoadObject<UNiagaraSystem>(nullptr, TEXT("/HairStrands/Emitters/GroomSpringsSystem.GroomSpringsSystem"));
+
 	const int32 NumGroups = GroomAsset ? GroomAsset->HairGroupsPhysics.Num() : 0;
 	const int32 NumComponents = FMath::Max(NumGroups, NiagaraComponents.Num());
 
@@ -819,7 +801,7 @@ UMaterialInterface* UGroomComponent::GetMaterial(int32 ElementIndex) const
 
 	if (bUseHairDefaultMaterial)
 	{
-		OverrideMaterial = GetHairDefaultMaterial();
+		OverrideMaterial = HairDefaultMaterial;
 	}
 
 	return OverrideMaterial;
@@ -1380,6 +1362,8 @@ void UGroomComponent::InvalidateAndRecreate()
 
 void UGroomComponent::OnRegister()
 {
+	
+
 	UpdateHairSimulation();
 	Super::OnRegister();
 
@@ -1551,7 +1535,6 @@ void UGroomComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials
 	UMeshComponent::GetUsedMaterials(OutMaterials, bGetDebugMaterials);
 	if (bGetDebugMaterials)
 	{
-		UMaterialInterface* HairDebugMaterial = GetHairDebugMaterial();
 		OutMaterials.Add(HairDebugMaterial);
 	}
 
@@ -1568,7 +1551,6 @@ void UGroomComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials
 
 	if (bRegisterDefaultMaterial)
 	{
-		UMaterialInterface* HairDefaultMaterial = GetHairDefaultMaterial();
 		OutMaterials.Add(HairDefaultMaterial);		
 	}
 #endif

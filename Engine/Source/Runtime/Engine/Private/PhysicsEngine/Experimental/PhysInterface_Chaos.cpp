@@ -583,6 +583,11 @@ void FPhysInterface_Chaos::SetCcdEnabled_AssumesLocked(const FPhysicsActorHandle
     //check(bIsCcdEnabled == false);
 }
 
+void FPhysInterface_Chaos::SetIgnoreAnalyticCollisions_AssumesLocked(const FPhysicsActorHandle& InActorReference, bool bIgnoreAnalyticCollisions)
+{
+	InActorReference->SetIgnoreAnalyticCollisions(bIgnoreAnalyticCollisions);
+}
+
 FTransform FPhysInterface_Chaos::GetGlobalPose_AssumesLocked(const FPhysicsActorHandle& InActorReference)
 {
 	return Chaos::TRigidTransform<float, 3>(InActorReference->X(), InActorReference->R());
@@ -872,7 +877,7 @@ bool FPhysInterface_Chaos::IsGravityEnabled_AssumesLocked(const FPhysicsActorHan
 {
 	if (Chaos::TPBDRigidParticle<float, 3 >* RigidParticle = InActorReference->CastToRigidParticle())
 	{
-		return RigidParticle->IsGravityEnabled();
+		return RigidParticle->GravityEnabled();
 	}
 	return false;
 }

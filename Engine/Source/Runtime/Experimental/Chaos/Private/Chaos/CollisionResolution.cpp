@@ -2187,8 +2187,8 @@ namespace Chaos
 			// @todo(chaos): We use GetInnerType here because TriMeshes are left with their "Instanced" wrapper, unlike all other instanced implicits. Should we strip the instance on Tri Mesh too?
 			EImplicitObjectType Implicit0Type = Implicit0 ? GetInnerType(Implicit0->GetCollisionType()) : ImplicitObjectType::Unknown;
 			EImplicitObjectType Implicit1Type = Implicit1 ? GetInnerType(Implicit1->GetCollisionType()) : ImplicitObjectType::Unknown;
-			bool bIsConvex0 = Implicit0 && Implicit0->IsConvex();
-			bool bIsConvex1 = Implicit1 && Implicit1->IsConvex();
+			bool bIsConvex0 = Implicit0 && Implicit0->IsConvex() && Implicit0Type != ImplicitObjectType::LevelSet;
+			bool bIsConvex1 = Implicit1 && Implicit1->IsConvex() && Implicit1Type != ImplicitObjectType::LevelSet;
 
 			FReal LengthCCD = 0.0f;
 			FVec3 DirCCD(0.0f);
@@ -2604,12 +2604,34 @@ namespace Chaos
 				}
 				return;
 			}
+
+			if (Implicit0OuterType == FImplicitObjectUnionClustered::StaticType())
+			{
+				const FImplicitObjectUnionClustered* Union0 = Implicit0->template GetObject<FImplicitObjectUnionClustered>();
+				for (const auto& Child0 : Union0->GetObjects())
+				{
+					ConstructConstraints(Particle0, Particle1, Child0.Get(), Implicit1, LocalTransform0, LocalTransform1, CullDistance, Context, NewConstraints);
+				}
+				return;
+			}
+
 			if (Implicit1OuterType == FImplicitObjectUnion::StaticType())
 			{
 				const FImplicitObjectUnion* Union1 = Implicit1->template GetObject<FImplicitObjectUnion>();
 				for (const auto& Child1 : Union1->GetObjects())
 				{
 					ConstructConstraints<T_TRAITS>(Particle0, Particle1, Implicit0, Child1.Get(), LocalTransform0, LocalTransform1, CullDistance, Context, NewConstraints);
+				}
+				return;
+			}
+
+
+			if (Implicit1OuterType == FImplicitObjectUnionClustered::StaticType())
+			{
+				const FImplicitObjectUnionClustered* Union1 = Implicit1->template GetObject<FImplicitObjectUnionClustered>();
+				for (const auto& Child1 : Union1->GetObjects())
+				{
+					ConstructConstraints(Particle0, Particle1, Implicit0, Child1.Get(), LocalTransform0, LocalTransform1, CullDistance, Context, NewConstraints);
 				}
 				return;
 			}

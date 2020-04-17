@@ -454,7 +454,7 @@ namespace UnrealBuildTool
 			}
 		}
 
-        protected void AddResourceEntry(string ResourceEntryName, string ConfigKey, string GenericINISection, string GenericINIKey, string DefaultValue, string ValueSuffix = "")
+        protected string AddResourceEntry(string ResourceEntryName, string ConfigKey, string GenericINISection, string GenericINIKey, string DefaultValue, string ValueSuffix = "")
 		{
 			string ConfigScratchValue = null;
 
@@ -466,7 +466,7 @@ namespace UnrealBuildTool
 				if (!ConfigHierarchy.TryParse(DefaultCultureScratchValue, out Values))
 				{
 					Log.TraceError("Invalid default culture string resources: \"{0}\". Unable to add resource entry.", DefaultCultureScratchValue);
-					return;
+					return "";
 				}
 
 				ConfigScratchValue = Values[ConfigKey];
@@ -515,9 +515,24 @@ namespace UnrealBuildTool
 					}
 				}
 			}
+
+			return "ms-resource:" + ResourceEntryName;
 		}
 
-        protected virtual XName GetName( string BaseName, string SchemaName )
+		protected string AddDebugResourceString(string ResourceEntryName, string Value)
+		{
+			DefaultResourceWriter.AddResource(ResourceEntryName, Value);
+
+			foreach (var CultureId in CulturesToStage)
+			{
+				var Writer = PerCultureResourceWriters[CultureId];
+				Writer.AddResource(ResourceEntryName, Value);
+			}
+
+			return "ms-resource:" + ResourceEntryName;
+		}
+
+		protected virtual XName GetName( string BaseName, string SchemaName )
 		{
 			return XName.Get(BaseName);
 		}

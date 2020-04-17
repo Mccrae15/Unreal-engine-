@@ -61,6 +61,7 @@ static uint32 TranslateCompilerFlagD3D11(ECompilerFlags CompilerFlag)
 	{
 	case CFLAG_PreferFlowControl: return D3D10_SHADER_PREFER_FLOW_CONTROL;
 	case CFLAG_AvoidFlowControl: return D3D10_SHADER_AVOID_FLOW_CONTROL;
+	case CFLAG_SkipValidation: return D3D10_SHADER_SKIP_VALIDATION;
 	default: return 0;
 	};
 }
@@ -1057,11 +1058,6 @@ static bool CompileAndProcessD3DShader(FString& PreprocessedShaderSource, const 
 		FString Filename = Input.GetSourceFilename();
 		if (bUseDXC)
 		{
-			if (Input.Environment.CompilerFlags.Contains(CFLAG_SkipOptimizationsDXC))
-			{
-				CompileFlags |= D3D10_SHADER_SKIP_OPTIMIZATION;
-			}
-
 			BatchFileContents = D3DCreateDXCCompileBatchFile(Filename, *EntryPointName, *RayTracingExports, ShaderProfile, CompileFlags, Output, AutoBindingSpace);
 		}
 		else
@@ -1102,11 +1098,6 @@ static bool CompileAndProcessD3DShader(FString& PreprocessedShaderSource, const 
 		// Ignore backwards compatibility flag (/Gec) as it is deprecated.
 		// #dxr_todo: this flag should not be even passed into this function from the higher level.
 		uint32 DXCFlags = CompileFlags & (~D3D10_SHADER_ENABLE_BACKWARDS_COMPATIBILITY);
-
-		if (Input.Environment.CompilerFlags.Contains(CFLAG_SkipOptimizationsDXC))
-		{
-			DXCFlags |= D3D10_SHADER_SKIP_OPTIMIZATION;
-		}
 
 		D3DCreateDXCArguments(Args, *RayTracingExports, DXCFlags, Output, AutoBindingSpace);
 

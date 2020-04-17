@@ -859,6 +859,11 @@ public:
 	*/
 	FSoundClassProperties* GetSoundClassCurrentProperties(USoundClass* InSoundClass);
 
+	/** 
+	* Returns the parameters which are dynamic from the given sound class. 
+	*/
+	FSoundClassDynamicProperties* GetSoundClassDynamicProperties(USoundClass* InSoundClass);
+
 	/**
 	* Checks to see if a coordinate is within a distance of any listener
 	*/
@@ -1636,12 +1641,6 @@ public:
 		LastUpdateTime = CurrTime;
 	}
 
-	/** Update the audio clock to be based off the update delta time */
-	virtual void UpdateAudioClock()
-	{
-		AudioClock += GetDeviceDeltaTime();
-	}
-
 private:
 	/** Processes the set of pending sounds that need to be stopped */
 	void ProcessingPendingActiveSoundStops(bool bForceDelete = false);
@@ -1807,6 +1806,7 @@ private:
 
 	/** Current properties of all sound classes */
 	TMap<USoundClass*, FSoundClassProperties> SoundClasses;
+	TMap<USoundClass*, FSoundClassDynamicProperties> DynamicSoundClassProperties;
 
 	/** The Base SoundMix that's currently active */
 	USoundMix* BaseSoundMix;
