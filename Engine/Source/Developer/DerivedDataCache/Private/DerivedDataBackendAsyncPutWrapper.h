@@ -63,6 +63,12 @@ public:
 	 */
 	FDerivedDataBackendAsyncPutWrapper(FDerivedDataBackendInterface* InInnerBackend, bool bCacheInFlightPuts);
 
+	/** Return a name for this interface */
+	virtual FString GetName() const override
+	{
+		return FString::Printf(TEXT("AsyncPutWrapper (%s)"), *InnerBackend->GetName());
+	}
+
 	/** return true if this cache is writable **/
 	virtual bool IsWritable() override;
 

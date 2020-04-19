@@ -27,6 +27,12 @@ public:
 		check(InnerBackend);
 	}
 
+	/** Return a name for this interface */
+	virtual FString GetName() const override 
+	{ 
+		return FString::Printf(TEXT("LimitKeyLengthWrapper (%s)"), *InnerBackend->GetName());
+	}
+
 	/** return true if this cache is writable **/
 	virtual bool IsWritable() override
 	{
@@ -101,7 +107,7 @@ public:
 					OutData.RemoveAt(OutData.Num() - KeyLen, KeyLen);
 					if (Compare == 0)
 					{
-						UE_LOG(LogDerivedDataCache, Verbose, TEXT("FDerivedDataLimitKeyLengthWrapper: cache hit, key match is ok %s"), CacheKey);
+						UE_LOG(LogDerivedDataCache, VeryVerbose, TEXT("FDerivedDataLimitKeyLengthWrapper: cache hit, key match is ok %s"), CacheKey);
 					}
 					else
 					{

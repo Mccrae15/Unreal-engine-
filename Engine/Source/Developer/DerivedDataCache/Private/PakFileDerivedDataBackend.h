@@ -27,6 +27,9 @@ public:
 
 	void Close();
 
+	/** Return a name for this interface */
+	virtual FString GetName() const override { return Filename; }
+
 	/** return true if this cache is writable **/
 	virtual bool IsWritable() override;
 

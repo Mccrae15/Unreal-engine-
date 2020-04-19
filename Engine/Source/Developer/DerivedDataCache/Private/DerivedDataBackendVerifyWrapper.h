@@ -32,6 +32,12 @@ public:
 		check(InnerBackend);
 	}
 
+	/** Return a name for this interface */
+	virtual FString GetName() const override
+	{
+		return FString::Printf(TEXT("VerifyWrapper (%s)"), *InnerBackend->GetName());
+	}
+
 	virtual bool IsWritable() override
 	{
 		return true;
