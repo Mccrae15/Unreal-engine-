@@ -29,6 +29,8 @@ DECLARE_CYCLE_STAT(TEXT("Collisions::GJK"), STAT_Collisions_GJK, STATGROUP_Chaos
 #define SCOPE_CYCLE_COUNTER_GJK()
 #endif
 
+#define CHAOS_COLLIDE_CLUSTERED_UNIONS 0
+
 //PRAGMA_DISABLE_OPTIMIZATION
 
 float CCDEnableThresholdBoundsScale = 0.4f;
@@ -2446,6 +2448,7 @@ namespace Chaos
 				return;
 			}
 
+#if CHAOS_COLLIDE_CLUSTERED_UNIONS
 			if (Implicit0OuterType == FImplicitObjectUnionClustered::StaticType())
 			{
 				const FImplicitObjectUnionClustered* Union0 = Implicit0->template GetObject<FImplicitObjectUnionClustered>();
@@ -2455,6 +2458,7 @@ namespace Chaos
 				}
 				return;
 			}
+#endif
 
 			if (Implicit1OuterType == FImplicitObjectUnion::StaticType())
 			{
@@ -2466,7 +2470,7 @@ namespace Chaos
 				return;
 			}
 
-
+#if CHAOS_COLLIDE_CLUSTERED_UNIONS
 			if (Implicit1OuterType == FImplicitObjectUnionClustered::StaticType())
 			{
 				const FImplicitObjectUnionClustered* Union1 = Implicit1->template GetObject<FImplicitObjectUnionClustered>();
@@ -2476,6 +2480,7 @@ namespace Chaos
 				}
 				return;
 			}
+#endif
 
 			// Check shape pair filtering if enable
 			if (Context.bFilteringEnabled && !DoCollide(Implicit0Type, Particle0->GetImplicitShape(Implicit0), Implicit1Type, Particle1->GetImplicitShape(Implicit1)))
