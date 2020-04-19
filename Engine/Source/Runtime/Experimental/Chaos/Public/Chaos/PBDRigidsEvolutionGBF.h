@@ -48,7 +48,7 @@ namespace Chaos
 
 		static constexpr int32 DefaultNumIterations = 1;
 		static constexpr int32 DefaultNumPairIterations = 1;
-		static constexpr int32 DefaultNumPushOutIterations = 5;
+		static constexpr int32 DefaultNumPushOutIterations = 3;
 		static constexpr int32 DefaultNumPushOutPairIterations = 2;
 
 		// @todo(chaos): Required by clustering - clean up
@@ -179,7 +179,7 @@ namespace Chaos
 					{
 						const FAABB3& LocalBounds = Particle.LocalBounds();
 						FAABB3 WorldSpaceBounds = LocalBounds.TransformedAABB(FRigidTransform3(Particle.P(), Particle.Q()));
-						WorldSpaceBounds.ThickenSymmetrically(Particle.V());
+						WorldSpaceBounds.ThickenSymmetrically(Particle.V() * Dt);
 						Particle.SetWorldSpaceInflatedBounds(WorldSpaceBounds);
 					}
 				}
