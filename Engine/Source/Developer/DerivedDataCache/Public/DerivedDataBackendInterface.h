@@ -31,6 +31,9 @@ public:
 	{
 	}
 
+	/** Return a name for this interface */
+	virtual FString GetName() const = 0;
+
 	/** return true if this cache is writable **/
 	virtual bool IsWritable()=0;
 
