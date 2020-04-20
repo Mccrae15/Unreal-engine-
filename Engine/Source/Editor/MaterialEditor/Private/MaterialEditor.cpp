@@ -4388,6 +4388,7 @@ void FMaterialEditor::UpdateMaterialAfterGraphChange()
 	RegenerateCodeView();
 	RefreshExpressionPreviews();
 	SetMaterialDirty();
+	UpdateGenerator();
 	if (bHideUnrelatedNodes && !bLockNodeFadeState && bSelectRegularNode)
 	{
 		GraphEditor->ResetAllNodesUnrelatedStates();
