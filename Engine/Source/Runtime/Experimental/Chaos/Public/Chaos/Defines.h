@@ -26,7 +26,10 @@ namespace Chaos
 	public:
 
 		Chaos::FReal Friction;
+		Chaos::FReal StaticFriction;
 		Chaos::FReal Restitution;
+		Chaos::FReal LinearEtherDrag;
+		Chaos::FReal AngularEtherDrag;
 		Chaos::FReal SleepingLinearThreshold;
 		Chaos::FReal SleepingAngularThreshold;
 		Chaos::FReal DisabledLinearThreshold;
@@ -34,9 +37,13 @@ namespace Chaos
 		int32 SleepCounterThreshold;
 		void* UserData;
 
+		/** Variable defaults are used for \c UChaosPhysicalMaterial \c UPROPERTY defaults. */
 		FChaosPhysicsMaterial()
 			: Friction(0.5)
+			, StaticFriction(0.0)
 			, Restitution(0.1)
+			, LinearEtherDrag(0.0)
+			, AngularEtherDrag(0.0)
 			, SleepingLinearThreshold(1)
 			, SleepingAngularThreshold(1)
 			, DisabledLinearThreshold(0)
@@ -65,7 +72,7 @@ namespace Chaos
 		{
 			Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
 
-			Ar << Friction << Restitution << SleepingLinearThreshold << SleepingAngularThreshold << DisabledLinearThreshold << DisabledAngularThreshold;
+			Ar << Friction << StaticFriction << Restitution << LinearEtherDrag << AngularEtherDrag << SleepingLinearThreshold << SleepingAngularThreshold << DisabledLinearThreshold << DisabledAngularThreshold;
 
 			if (Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) >= FExternalPhysicsCustomObjectVersion::PhysicsMaterialSleepCounterThreshold)
 			{
