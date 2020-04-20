@@ -598,7 +598,7 @@ namespace Chaos
 				Collisions::TContactIterationParameters<T> IterationParameters = { Dt, Iteration, NumIterations, MApplyPushOutPairIterations, ECollisionApplyType::None, &bNeedsAnotherIteration };
 				Collisions::ApplyPushOut(ConstraintHandle->GetContact(), IsTemporarilyStatic, IterationParameters, ParticleParameters);
 
-			}, /*bDisableCollisionParallelFor*/true);
+			}, bDisableCollisionParallelFor);
 		}
 
 		if (PostApplyPushOutCallback != nullptr)
