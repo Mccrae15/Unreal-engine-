@@ -1019,28 +1019,24 @@ void TDynamicMeshOverlay<RealType, ElementSize>::OnMergeEdges(const FDynamicMesh
 	// MergeEdges just merges vertices. For now we will not also merge UVs. So all we need to
 	// do is rewrite the UV parent vertices
 
-	FIndex3i ModifiedEdges(MergeInfo.KeptEdge, MergeInfo.ExtraKeptEdges.A, MergeInfo.ExtraKeptEdges.B);
-	for (int EdgeIdx = 0; EdgeIdx < 3; ++EdgeIdx)
+	for (int i = 0; i < 2; i++)
 	{
-		if (ParentMesh->IsEdge(ModifiedEdges[EdgeIdx]) == false)
+		int KeptVID = MergeInfo.KeptVerts[i];
+		int RemovedVID = MergeInfo.RemovedVerts[i];
+		// this for loop is very similar to GetVertexElements() but accounts for the base mesh already being updated
+		for (int TID : ParentMesh->VtxTrianglesItr(KeptVID)) // only care about triangles connected to the *new* vertex; these are updated
 		{
-			continue;
-		}
-
-		FIndex2i EdgeTris = ParentMesh->GetEdgeT(ModifiedEdges[EdgeIdx]);
-		for (int j = 0; j < 2; ++j)
-		{
-			FIndex3i ElemTriangle = GetTriangle(EdgeTris[j]);
-			for (int k = 0; k < 3; ++k)
+			if (!IsSetTriangle(TID))
 			{
-				int ParentVID = ParentVertices[ElemTriangle[k]];
-				if (ParentVID == MergeInfo.RemovedVerts.A)
+				continue;
+			}
+			FIndex3i Triangle = GetTriangle(TID);
+			for (int j = 0; j < 3; ++j)
+			{
+				// though the ParentMesh vertex is NewVertex in the source mesh, it is still OriginalVertex in the ParentVertices array (since that hasn't been updated yet)
+				if (Triangle[j] != FDynamicMesh3::InvalidID && ParentVertices[Triangle[j]] == RemovedVID)
 				{
-					ParentVertices[ElemTriangle[k]] = MergeInfo.KeptVerts.A;
-				}
-				else if (ParentVID == MergeInfo.RemovedVerts.B)
-				{
-					ParentVertices[ElemTriangle[k]] = MergeInfo.KeptVerts.B;
+					ParentVertices[Triangle[j]] = KeptVID;
 				}
 			}
 		}
