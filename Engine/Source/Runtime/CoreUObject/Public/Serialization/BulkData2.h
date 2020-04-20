@@ -164,9 +164,9 @@ public:
 	bool IsDuplicateNonOptional() const;
 	bool IsOptional() const;
 	bool IsInlined() const;
-	UE_DEPRECATED(4.25, "Use ::IsInSeperateFile() instead")
-		FORCEINLINE bool InSeperateFile() const { return IsInSeperateFile(); }
-	bool IsInSeperateFile() const;
+	UE_DEPRECATED(4.25, "Use ::IsInSeparateFile() instead")
+	FORCEINLINE bool InSeperateFile() const { return IsInSeparateFile(); }
+	bool IsInSeparateFile() const;
 	bool IsSingleUse() const;
 	bool IsMemoryMapped() const;
 	bool IsDataMemoryMapped() const;
