@@ -88,7 +88,6 @@ namespace Chaos
 		, MApplyPushOutPairIterations(InApplyPushOutPairIterations)
 		, MCullDistance(CullDistance)
 		, MShapePadding(ShapePadding)
-		, MAngularFriction(0)
 		, bUseCCD(false)
 		, bEnableCollisions(true)
 		, bHandlesEnabled(true)
@@ -142,23 +141,26 @@ namespace Chaos
 			// @todo(ccaulfield): support different friction/restitution combining algorithms
 			Contact.Restitution = FMath::Min(PhysicsMaterial0->Restitution, PhysicsMaterial1->Restitution);
 			Contact.Friction = FMath::Max(PhysicsMaterial0->Friction, PhysicsMaterial1->Friction);
+			Contact.AngularFriction = FMath::Max(PhysicsMaterial0->StaticFriction, PhysicsMaterial1->StaticFriction);
 		}
 		else if (PhysicsMaterial0)
 		{
 			Contact.Restitution = PhysicsMaterial0->Restitution;
 			Contact.Friction = PhysicsMaterial0->Friction;
+			Contact.AngularFriction = PhysicsMaterial0->StaticFriction;
 		}
 		else if (PhysicsMaterial1)
 		{
 			Contact.Restitution = PhysicsMaterial1->Restitution;
 			Contact.Friction = PhysicsMaterial1->Friction;
+			Contact.AngularFriction = PhysicsMaterial1->StaticFriction;
 		}
 		else
 		{
-			Contact.Friction = DefaultCollisionFriction;
 			Contact.Restitution = 0;
+			Contact.Friction = DefaultCollisionFriction;
+			Contact.AngularFriction = 0;
 		}
-		Contact.AngularFriction = MAngularFriction;
 
 		// Overrides for testing
 		if (CollisionFrictionOverride >= 0)
@@ -285,7 +287,6 @@ namespace Chaos
 		Handles.Reset();
 #endif
 
-		MAngularFriction = 0;
 		bUseCCD = false;
 	}
 
@@ -597,7 +598,7 @@ namespace Chaos
 				Collisions::TContactIterationParameters<T> IterationParameters = { Dt, Iteration, NumIterations, MApplyPushOutPairIterations, ECollisionApplyType::None, &bNeedsAnotherIteration };
 				Collisions::ApplyPushOut(ConstraintHandle->GetContact(), IsTemporarilyStatic, IterationParameters, ParticleParameters);
 
-			}, bDisableCollisionParallelFor);
+			}, /*bDisableCollisionParallelFor*/true);
 		}
 
 		if (PostApplyPushOutCallback != nullptr)

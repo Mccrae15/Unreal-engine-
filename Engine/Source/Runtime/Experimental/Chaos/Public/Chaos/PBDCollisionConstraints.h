@@ -323,7 +323,6 @@ private:
 	int32 MApplyPushOutPairIterations;
 	T MCullDistance;
 	T MShapePadding;
-	T MAngularFriction;
 	bool bUseCCD;
 	bool bEnableCollisions;
 	bool bHandlesEnabled;
