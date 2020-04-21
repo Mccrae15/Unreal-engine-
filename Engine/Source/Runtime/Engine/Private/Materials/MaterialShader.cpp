@@ -932,15 +932,10 @@ FShader* FMaterialShaderType::FinishCompileShader(
 	const FSHAHash& MaterialShaderMapHash,
 	const FShaderCompileJob& CurrentJob,
 	const FShaderPipelineType* ShaderPipelineType,
-	const FString& InDebugDescription,
-	FShaderMapResourceBuilder& ResourceBuilder
+	const FString& InDebugDescription
 	)
 {
 	check(CurrentJob.bSucceeded);
-
-	// Reuse an existing resource with the same key or create a new one based on the compile output
-	// This allows FShaders to share compiled bytecode and RHI shader references
-	const int32 ResourceIndex = ResourceBuilder.FindOrAddCode(CurrentJob.Output);
 
 	if (ShaderPipelineType && !ShaderPipelineType->ShouldOptimizeUnusedOutputs(CurrentJob.Input.Target.GetPlatform()))
 	{
@@ -948,7 +943,7 @@ FShader* FMaterialShaderType::FinishCompileShader(
 		ShaderPipelineType = nullptr;
 	}
 
-	FShader* Shader = ConstructCompiled(CompiledShaderInitializerType(this, CurrentJob.PermutationId, CurrentJob.Output, ResourceIndex, UniformExpressionSet, MaterialShaderMapHash, ShaderPipelineType, nullptr, InDebugDescription));
+	FShader* Shader = ConstructCompiled(CompiledShaderInitializerType(this, CurrentJob.PermutationId, CurrentJob.Output, UniformExpressionSet, MaterialShaderMapHash, ShaderPipelineType, nullptr, InDebugDescription));
 	CurrentJob.Output.ParameterMap.VerifyBindingsAreComplete(GetName(), CurrentJob.Output.Target, CurrentJob.VFType);
 
 	return Shader;
@@ -1076,7 +1071,7 @@ void FMaterialShaderMap::LoadFromDerivedDataCache(const FMaterial* Material, con
 				// Deserialize from the cached data
 				InOutShaderMap->Serialize(Ar);
 				//InOutShaderMap->RegisterSerializedShaders(false);
-
+		
 				const FString InDataKey = GetMaterialShaderMapKeyString(InOutShaderMap->GetShaderMapId(), InPlatform, TargetPlatform);
 				checkSlow(InOutShaderMap->GetShaderMapId() == ShaderMapId);
 
@@ -1275,16 +1270,20 @@ void FMaterialShaderMap::FinalizeContent()
 
 	for (FMeshMaterialShaderMap* MeshShaderMap : LocalContent->OrderedMeshShaderMaps)
 	{
-		for (const FShader* Shader : MeshShaderMap->GetShaders())
+		for (FShader* Shader : MeshShaderMap->GetShaders())
 		{
+			Shader->Finalize(GetResourceCode());
+
 			const FHashedName& TypeName = Shader->GetTypeName();
 			const int32 PermutationId = Shader->GetPermutationId();
 			Hasher.Update((uint8*)&TypeName, sizeof(TypeName));
 			Hasher.Update((uint8*)&PermutationId, sizeof(PermutationId));
 		}
 
-		for (const FShaderPipeline* Pipeline : MeshShaderMap->GetShaderPipelines())
+		for (FShaderPipeline* Pipeline : MeshShaderMap->GetShaderPipelines())
 		{
+			Pipeline->Finalize(GetResourceCode());
+
 			const FHashedName& TypeName = Pipeline->TypeName;
 			Hasher.Update((uint8*)&TypeName, sizeof(TypeName));
 		}
@@ -1584,11 +1583,13 @@ void FMaterialShaderMap::Compile(
 	}
 }
 
-FShader* FMaterialShaderMap::ProcessCompilationResultsForSingleJob(FShaderCompileJob* SingleJob, const FShaderPipelineType* ShaderPipeline, const FSHAHash& MaterialShaderMapHash, FShaderMapResourceBuilder& ResourceBuilder)
+FShader* FMaterialShaderMap::ProcessCompilationResultsForSingleJob(FShaderCompileJob* SingleJob, const FShaderPipelineType* ShaderPipeline, const FSHAHash& MaterialShaderMapHash)
 {
 	check(SingleJob);
 	const FShaderCompileJob& CurrentJob = *SingleJob;
 	check(CurrentJob.Id == CompilingId);
+
+	GetResourceCode()->AddShaderCompilerOutput(CurrentJob.Output);
 
 #if ALLOW_SHADERMAP_DEBUG_DATA
 	CompileTime += SingleJob->Output.CompileTime;
@@ -1603,7 +1604,7 @@ FShader* FMaterialShaderMap::ProcessCompilationResultsForSingleJob(FShaderCompil
 		check(MeshShaderMap);
 		FMeshMaterialShaderType* MeshMaterialShaderType = CurrentJob.ShaderType->GetMeshMaterialShaderType();
 		check(MeshMaterialShaderType);
-		Shader = MeshMaterialShaderType->FinishCompileShader(GetContent()->MaterialCompilationOutput.UniformExpressionSet, MaterialShaderMapHash, CurrentJob, ShaderPipeline, GetFriendlyName(), ResourceBuilder);
+		Shader = MeshMaterialShaderType->FinishCompileShader(GetContent()->MaterialCompilationOutput.UniformExpressionSet, MaterialShaderMapHash, CurrentJob, ShaderPipeline, GetFriendlyName());
 		check(Shader);
 		if (!ShaderPipeline)
 		{
@@ -1615,7 +1616,7 @@ FShader* FMaterialShaderMap::ProcessCompilationResultsForSingleJob(FShaderCompil
 	{
 		FMaterialShaderType* MaterialShaderType = CurrentJob.ShaderType->GetMaterialShaderType();
 		check(MaterialShaderType);
-		Shader = MaterialShaderType->FinishCompileShader(GetContent()->MaterialCompilationOutput.UniformExpressionSet, MaterialShaderMapHash, CurrentJob, ShaderPipeline, GetFriendlyName(), ResourceBuilder);
+		Shader = MaterialShaderType->FinishCompileShader(GetContent()->MaterialCompilationOutput.UniformExpressionSet, MaterialShaderMapHash, CurrentJob, ShaderPipeline, GetFriendlyName());
 
 		check(Shader);
 		if (!ShaderPipeline)
@@ -1626,8 +1627,12 @@ FShader* FMaterialShaderMap::ProcessCompilationResultsForSingleJob(FShaderCompil
 	}
 
 #if WITH_EDITOR
-	// add shader source to 
-	new(GetMutableContent()->ShaderProcessedSource) FMaterialProcessedSource(CurrentJob.ShaderType->GetFName(), *CurrentJob.Output.OptionalFinalShaderSource);
+	// add shader source
+	{
+		// Keep the preprocessed source list sorted by type name
+		const int32 Index = Algo::LowerBoundBy(GetMutableContent()->ShaderProcessedSource, CurrentJob.ShaderType->GetHashedName(), [](const FMaterialProcessedSource& Value) { return Value.Name; });
+		GetMutableContent()->ShaderProcessedSource.EmplaceAt(Index, CurrentJob.ShaderType->GetHashedName(), *CurrentJob.Output.OptionalFinalShaderSource);
+	}
 #endif
 
 	return Shader;
@@ -1644,13 +1649,12 @@ bool FMaterialShaderMap::ProcessCompilationResults(const TArray<TSharedRef<FShad
 	FSHAHash MaterialShaderMapHash;
 	ShaderMapId.GetMaterialHash(MaterialShaderMapHash);
 
-	FShaderMapResourceBuilder ResourceBuilder(GetResourceCode());
 	do
 	{
 		FShaderCompileJob* SingleJob = InCompilationResults[InOutJobIndex]->GetSingleShaderJob();
 		if (SingleJob)
 		{
-			ProcessCompilationResultsForSingleJob(SingleJob, nullptr, MaterialShaderMapHash, ResourceBuilder);
+			ProcessCompilationResultsForSingleJob(SingleJob, nullptr, MaterialShaderMapHash);
 			for (auto Pair : SingleJob->SharingPipelines)
 			{
 				auto& SharedPipelinesPerVF = SharedPipelines.FindOrAdd(SingleJob->VFType);
@@ -1673,7 +1677,7 @@ bool FMaterialShaderMap::ProcessCompilationResults(const TArray<TSharedRef<FShad
 			for (int32 Index = 0; Index < CurrentJob.StageJobs.Num(); ++Index)
 			{
 				SingleJob = CurrentJob.StageJobs[Index]->GetSingleShaderJob();
-				FShader* Shader = ProcessCompilationResultsForSingleJob(SingleJob, PipelineJob->ShaderPipeline, MaterialShaderMapHash, ResourceBuilder);
+				FShader* Shader = ProcessCompilationResultsForSingleJob(SingleJob, PipelineJob->ShaderPipeline, MaterialShaderMapHash);
 				ShaderStages.Add(Shader);
 				check(VertexFactoryType == CurrentJob.StageJobs[Index]->GetSingleShaderJob()->VFType);
 			}
