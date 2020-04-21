@@ -13,6 +13,11 @@
 
 namespace Chaos
 {
+	extern float ChaosClusteringChildrenInheritVelocity;
+}
+
+namespace Chaos
+{
 
 template <typename T, int d>
 class CHAOS_API TClusterBuffer
