@@ -397,6 +397,7 @@ const TCHAR* FIOSPlatformMisc::GetDefaultDeviceProfileName()
 		TEXT("IPadMini5"),
 		TEXT("IPodTouch7"),
 		TEXT("IPad7"),
+		TEXT("IPhoneSE2"),
 		TEXT("NewIDevice1"),
 		TEXT("NewIDevice2"),
 		TEXT("NewIDevice3"),
@@ -694,6 +695,10 @@ FIOSPlatformMisc::EIOSDevice FIOSPlatformMisc::GetIOSDeviceType()
 			else if (Minor < 7)
 			{
 				DeviceType = IOS_IPhone11ProMax;
+			}
+			else if (Minor == 8)
+			{
+				DeviceType = IOS_IPhoneSE2;
 			}
 		}
 		else if (Major >= 13)
