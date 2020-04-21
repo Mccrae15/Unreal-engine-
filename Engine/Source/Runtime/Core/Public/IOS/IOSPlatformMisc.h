@@ -152,6 +152,7 @@ struct CORE_API FIOSPlatformMisc : public FApplePlatformMisc
         IOS_IPadMini5,
 		IOS_IPodTouch7,
 		IOS_IPad7,
+		IOS_IPhoneSE2,
 
 		// We can use the entries below for any iOS devices released during the hotfix cycle
 		// They should be moved to real device enum above these values in the next full release.
