@@ -1816,7 +1816,7 @@ namespace Chaos
 			}
 
 			TGenericParticleHandle<T, d> Particle1 = Constraint.Particle[1];
-			TRigidTransform<T, d> LevelsetTM = TRigidTransform<T, d>(Particle1->P(), Particle1->Q());
+			TRigidTransform<T, d> LevelsetTM = Constraint.ImplicitTransform[1] * TRigidTransform<T, d>(Particle1->P(), Particle1->Q());
 			if (!(ensure(!FMath::IsNaN(LevelsetTM.GetTranslation().X)) && ensure(!FMath::IsNaN(LevelsetTM.GetTranslation().Y)) && ensure(!FMath::IsNaN(LevelsetTM.GetTranslation().Z))))
 			{
 				return;
@@ -1852,6 +1852,8 @@ namespace Chaos
 			{
 				Constraint.Particle[0] = Particle1;
 				Constraint.Particle[1] = Particle0;
+				Constraint.ImplicitTransform[0] = ParticleImplicit1TM;
+				Constraint.ImplicitTransform[1] = ParticleImplicit0TM;
 				Constraint.SetManifold(Implicit1, Implicit0);
 			}
 			else
@@ -2455,7 +2457,7 @@ namespace Chaos
 				if (Implicit1->HasBoundingBox())
 				{
 					TArray<Pair<const FImplicitObject*, FRigidTransform3>> Children;
-					Union0->FindAllIntersectingObjects(Children, Implicit1->BoundingBox());
+					Union0->FindAllIntersectingObjects(Children, Implicit1->BoundingBox().TransformedAABB(Transform1.GetRelativeTransform(Transform0)));
 					for (const auto& Child0 : Children)
 					{
 						TRigidTransform<T, d> TransformedChild0 = Child0.Second * Transform0;
@@ -2490,7 +2492,7 @@ namespace Chaos
 				if (Implicit0->HasBoundingBox())
 				{
 					TArray<Pair<const FImplicitObject*, FRigidTransform3>> Children;
-					Union1->FindAllIntersectingObjects(Children, Implicit0->BoundingBox());
+					Union1->FindAllIntersectingObjects(Children, Implicit0->BoundingBox().TransformedAABB(Transform0.GetRelativeTransform(Transform1)));
 					for (const auto& Child1 : Children)
 					{
 						TRigidTransform<T, d> TransformedChild1 = Child1.Second * Transform1;
