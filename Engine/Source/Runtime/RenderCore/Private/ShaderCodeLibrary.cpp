@@ -866,13 +866,14 @@ struct FEditorShaderCodeArchive
 					const FShaderMapResourceCode::FShaderEntry& SourceShaderEntry = Code->ShaderEntries[i];
 					FShaderCodeEntry& SerializedShaderEntry = SerializedShaders.ShaderEntries[ShaderIndex];
 					SerializedShaderEntry.Frequency = SourceShaderEntry.Frequency;
-					SerializedShaderEntry.Size = SourceShaderEntry.CompressedSize;
+					SerializedShaderEntry.Size = SourceShaderEntry.Code.Num();
 					SerializedShaderEntry.UncompressedSize = SourceShaderEntry.UncompressedSize;
-					ShaderCode.Emplace(Code->ShaderCode.GetData() + SourceShaderEntry.Offset, SourceShaderEntry.CompressedSize);
+					ShaderCode.Add(SourceShaderEntry.Code);
 					check(ShaderCode.Num() == SerializedShaders.ShaderEntries.Num());
 
 					CodeStats.NumUniqueShaders++;
-					CodeStats.ShadersUniqueSize += SourceShaderEntry.CompressedSize;
+					CodeStats.ShadersUniqueSize += SourceShaderEntry.Code.Num();
+					CodeStats.ShadersSize += SourceShaderEntry.Code.Num();
 				}
 				SerializedShaders.ShaderIndices[ShaderMapEntry.ShaderIndicesOffset + i] = ShaderIndex;
 			}
@@ -1777,7 +1778,6 @@ public:
 		FScopeLock ScopeLock(&ShaderCodeCS);
 		FShaderCodeStats& CodeStats = EditorShaderCodeStats[Platform];
 		CodeStats.NumShaders += Code->ShaderEntries.Num();
-		CodeStats.ShadersSize += Code->ShaderCode.Num();
 
 		FEditorShaderCodeArchive* CodeArchive = EditorShaderCodeArchive[Platform];
 		check(CodeArchive);
