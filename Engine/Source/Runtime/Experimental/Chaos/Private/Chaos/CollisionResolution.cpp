@@ -30,6 +30,8 @@ DECLARE_CYCLE_STAT(TEXT("Collisions::GJK"), STAT_Collisions_GJK, STATGROUP_Chaos
 #define SCOPE_CYCLE_COUNTER_GJK()
 #endif
 
+#define CHAOS_COLLIDE_CLUSTERED_UNIONS 1
+
 //PRAGMA_DISABLE_OPTIMIZATION
 
 float CCDEnableThresholdBoundsScale = 0.4f;
@@ -2605,15 +2607,30 @@ namespace Chaos
 				return;
 			}
 
+#if CHAOS_COLLIDE_CLUSTERED_UNIONS
 			if (Implicit0OuterType == FImplicitObjectUnionClustered::StaticType())
 			{
 				const FImplicitObjectUnionClustered* Union0 = Implicit0->template GetObject<FImplicitObjectUnionClustered>();
-				for (const auto& Child0 : Union0->GetObjects())
+				if (Implicit1->HasBoundingBox())
 				{
-					ConstructConstraints(Particle0, Particle1, Child0.Get(), Implicit1, LocalTransform0, LocalTransform1, CullDistance, Context, NewConstraints);
+					TArray<Pair<const FImplicitObject*, FRigidTransform3>> Children;
+					Union0->FindAllIntersectingObjects(Children, Implicit1->BoundingBox());
+					for (const auto& Child0 : Children)
+					{
+						TRigidTransform<FReal, 3> TransformedChild0 = Child0.Second * LocalTransform0;
+						ConstructConstraints<T_TRAITS>(Particle0, Particle1, Child0.First, Implicit1, TransformedChild0, LocalTransform1, CullDistance, Context, NewConstraints);
+					}
+				}
+				else
+				{
+					for (const auto& Child0 : Union0->GetObjects())
+					{
+						ConstructConstraints<T_TRAITS>(Particle0, Particle1, Child0.Get(), Implicit1, LocalTransform0, LocalTransform1, CullDistance, Context, NewConstraints);
+					}
 				}
 				return;
 			}
+#endif
 
 			if (Implicit1OuterType == FImplicitObjectUnion::StaticType())
 			{
@@ -2625,16 +2642,30 @@ namespace Chaos
 				return;
 			}
 
-
+#if CHAOS_COLLIDE_CLUSTERED_UNIONS
 			if (Implicit1OuterType == FImplicitObjectUnionClustered::StaticType())
 			{
 				const FImplicitObjectUnionClustered* Union1 = Implicit1->template GetObject<FImplicitObjectUnionClustered>();
-				for (const auto& Child1 : Union1->GetObjects())
+				if (Implicit0->HasBoundingBox())
 				{
-					ConstructConstraints(Particle0, Particle1, Implicit0, Child1.Get(), LocalTransform0, LocalTransform1, CullDistance, Context, NewConstraints);
+					TArray<Pair<const FImplicitObject*, FRigidTransform3>> Children;
+					Union1->FindAllIntersectingObjects(Children, Implicit0->BoundingBox());
+					for (const auto& Child1 : Children)
+					{
+						TRigidTransform<FReal, 3> TransformedChild1 = Child1.Second * LocalTransform1;
+						ConstructConstraints<T_TRAITS>(Particle0, Particle1, Implicit0, Child1.First, LocalTransform0, TransformedChild1, CullDistance, Context, NewConstraints);
+					}
+				}
+				else
+				{
+					for (const auto& Child1 : Union1->GetObjects())
+					{
+						ConstructConstraints<T_TRAITS>(Particle0, Particle1, Implicit0, Child1.Get(), LocalTransform0, LocalTransform1, CullDistance, Context, NewConstraints);
+					}
 				}
 				return;
 			}
+#endif
 
 			// Check shape pair filtering if enable
 			if (Context.bFilteringEnabled && !DoCollide(Implicit0Type, Particle0->GetImplicitShape(Implicit0), Implicit1Type, Particle1->GetImplicitShape(Implicit1)))

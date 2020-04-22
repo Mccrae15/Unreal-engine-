@@ -21,6 +21,7 @@
 #include "Chaos/PerParticleEulerStepVelocity.h"
 #include "Chaos/PerParticleEtherDrag.h"
 #include "Chaos/PerParticlePBDEulerStep.h"
+#include "Chaos/EvolutionTraits.h"
 #include "CoreMinimal.h"
 
 namespace Chaos
@@ -113,9 +114,9 @@ namespace Chaos
 	}
 
 	DECLARE_CYCLE_STAT(TEXT("TPBDRigidClustering<>::RewindAndEvolve<BGF>()"), STAT_RewindAndEvolve_BGF, STATGROUP_Chaos);
-	template<class T, int d>
+	template<typename Traits, typename T, int d>
 	void RewindAndEvolve(
-		FPBDRigidsEvolutionGBF& Evolution, 
+		TPBDRigidsEvolutionGBF<Traits>& Evolution, 
 		TPBDRigidClusteredParticles<T, d>& InParticles, 
 		const TSet<int32>& IslandsToRecollide, 
 		const TSet<TPBDRigidParticleHandle<T, d>*> AllActivatedChildren,
@@ -1339,6 +1340,32 @@ namespace Chaos
 		bool bUseParticleImplicit = false;
 		bool bUsingMultiChildProxy = false;
 
+		// Need to extract a filter off one of the cluster children 
+		FCollisionFilterData Filter;
+		for(TPBDRigidParticleHandle<T, d>* Child : Children)
+		{
+			bool bFilterValid = false;
+			for(const TUniquePtr<FPerShapeData>& Shape : Child->ShapesArray())
+			{
+				if(Shape)
+				{
+					Filter = Shape->GetSimData();
+					bFilterValid = Filter.Word0 != 0 || Filter.Word1 != 0 || Filter.Word2 != 0 || Filter.Word3 != 0;
+				}
+
+				if(bFilterValid)
+				{
+					break;
+				}
+			}
+
+			// Bail once we've found one
+			if(bFilterValid)
+			{
+				break;
+			}
+		}
+
 		{ // STAT_UpdateGeometry_GatherObjects
 			SCOPE_CYCLE_COUNTER(STAT_UpdateGeometry_GatherObjects);
 
@@ -1443,7 +1470,7 @@ namespace Chaos
 			{
 				ensureMsgf(false, TEXT("Checking usage with no proxy and multiple ojects with levelsets"));
 
-				FImplicitObjectUnion UnionObject(MoveTemp(Objects));
+				FImplicitObjectUnionClustered UnionObject(MoveTemp(Objects));
 				TAABB<T, d> Bounds = UnionObject.BoundingBox();
 				const TVector<T, d> BoundsExtents = Bounds.Extents();
 				if (BoundsExtents.Min() >= MinLevelsetSize) //make sure the object is not too small
@@ -1541,6 +1568,12 @@ namespace Chaos
 			const Chaos::TRigidTransform<float, 3> Xf(Parent->X(), Parent->R());
 			const Chaos::TAABB<float, 3> TransformedBBox = LocalBounds.TransformedAABB(Xf);
 			Parent->SetWorldSpaceInflatedBounds(TransformedBBox);
+		}
+
+		// Set the captured filter to our new shapes
+		for(const TUniquePtr<FPerShapeData>& Shape : Parent->ShapesArray())
+		{
+			Shape->SetSimData(Filter);
 		}
 	}
 
@@ -2038,7 +2071,10 @@ namespace Chaos
 } // namespace Chaos
 
 using namespace Chaos;
-template class CHAOS_API Chaos::TPBDRigidClustering<FPBDRigidsEvolutionGBF, FPBDCollisionConstraints, float, 3>;
+
+#define EVOLUTION_TRAIT(Trait) template class CHAOS_API Chaos::TPBDRigidClustering<Chaos::TPBDRigidsEvolutionGBF<Trait>, FPBDCollisionConstraints, float, 3>;
+#include "Chaos/EvolutionTraits.inl"
+#undef EVOLUTION_TRAIT
 
 
 template CHAOS_API void Chaos::UpdateClusterMassProperties<float, 3>(

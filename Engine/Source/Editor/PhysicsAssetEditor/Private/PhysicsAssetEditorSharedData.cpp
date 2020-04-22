@@ -589,6 +589,67 @@ void FPhysicsAssetEditorSharedData::ToggleShowSelected()
 	}
 }
 
+void FPhysicsAssetEditorSharedData::ShowAll()
+{
+	HiddenConstraints.Empty();
+	HiddenBodies.Empty();
+}
+
+
+void FPhysicsAssetEditorSharedData::HideAll()
+{
+	if (PhysicsAsset != nullptr)
+	{
+		HiddenBodies.Empty();
+		for (int32 i = 0; i < PhysicsAsset->SkeletalBodySetups.Num(); ++i)
+		{
+			HiddenBodies.Add(i);
+		}
+
+		HiddenConstraints.Empty();
+		for (int32 i = 0; i < PhysicsAsset->ConstraintSetup.Num(); ++i)
+		{
+			HiddenConstraints.Add(i);
+		}
+	}
+}
+
+void FPhysicsAssetEditorSharedData::ShowSelected()
+{
+	for (const FSelection& Selection : SelectedConstraints)
+	{
+		if (HiddenConstraints.Contains(Selection.Index))
+		{
+			HiddenConstraints.Remove(Selection.Index);
+		}
+	}
+	for (const FSelection& Selection : SelectedBodies)
+	{
+		if (HiddenBodies.Contains(Selection.Index))
+		{
+			HiddenBodies.Remove(Selection.Index);
+		}
+	}
+}
+
+void FPhysicsAssetEditorSharedData::HideSelected()
+{
+	for (const FSelection& Selection : SelectedConstraints)
+	{
+		if (!HiddenConstraints.Contains(Selection.Index))
+		{
+			HiddenConstraints.Add(Selection.Index);
+		}
+	}
+	for (const FSelection& Selection : SelectedBodies)
+	{
+		if (!HiddenBodies.Contains(Selection.Index))
+		{
+			HiddenBodies.Add(Selection.Index);
+		}
+	}
+}
+
 void FPhysicsAssetEditorSharedData::UpdateNoCollisionBodies()
 {
 	NoCollisionBodies.Empty();
@@ -818,7 +879,7 @@ void FPhysicsAssetEditorSharedData::SetPrimitiveCollision(ECollisionEnabled::Typ
 
 	for (FSelection SelectedBody : SelectedBodies)
 	{
-		PhysicsAsset->SetPrimitiveCollision(SelectedBody.Index, SelectedBody.PrimitiveIndex, CollisionEnabled);
+		PhysicsAsset->SetPrimitiveCollision(SelectedBody.Index, SelectedBody.PrimitiveType, SelectedBody.PrimitiveIndex, CollisionEnabled);
 	}
 
 	PreviewChangedEvent.Broadcast();
@@ -838,7 +899,33 @@ bool FPhysicsAssetEditorSharedData::GetIsPrimitiveCollisionEnabled(ECollisionEna
 {
 	for (const FSelection SelectedBody : SelectedBodies)
 	{
-		if (PhysicsAsset->GetPrimitiveCollision(SelectedBody.Index, SelectedBody.PrimitiveIndex) == CollisionEnabled)
+		if (PhysicsAsset->GetPrimitiveCollision(SelectedBody.Index, SelectedBody.PrimitiveType, SelectedBody.PrimitiveIndex) == CollisionEnabled)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void FPhysicsAssetEditorSharedData::SetPrimitiveContributeToMass(bool bContributeToMass)
+{
+	for (const FSelection SelectedBody : SelectedBodies)
+	{
+		PhysicsAsset->SetPrimitiveContributeToMass(SelectedBody.Index, SelectedBody.PrimitiveType, SelectedBody.PrimitiveIndex, bContributeToMass);
+	}
+}
+
+bool FPhysicsAssetEditorSharedData::CanSetPrimitiveContributeToMass() const
+{
+	return true;
+}
+
+bool FPhysicsAssetEditorSharedData::GetPrimitiveContributeToMass() const
+{
+	for (const FSelection SelectedBody : SelectedBodies)
+	{
+		if (PhysicsAsset->GetPrimitiveContributeToMass(SelectedBody.Index, SelectedBody.PrimitiveType, SelectedBody.PrimitiveIndex))
 		{
 			return true;
 		}

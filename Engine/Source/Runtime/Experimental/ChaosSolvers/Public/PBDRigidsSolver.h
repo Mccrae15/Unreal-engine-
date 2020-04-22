@@ -96,7 +96,7 @@ namespace Chaos
 
 		typedef Chaos::TGeometryParticle<float, 3> FParticle;
 		typedef Chaos::TGeometryParticleHandle<float, 3> FHandle;
-		typedef Chaos::FPBDRigidsEvolutionGBF FPBDRigidsEvolution;
+		typedef Chaos::FPBDRigidsEvolution FPBDRigidsEvolution;
 
 		typedef TPBDRigidDynamicSpringConstraints<float, 3> FRigidDynamicSpringConstraints;
 		typedef TPBDPositionConstraints<float, 3> FPositionConstraints;
@@ -261,6 +261,12 @@ namespace Chaos
 		float GetMinDeltaTime() const { return MMinDeltaTime; }
 		void SetMaxSubSteps(const int32 InMaxSubSteps) { MMaxSubSteps = InMaxSubSteps; }
 		int32 GetMaxSubSteps() const { return MMaxSubSteps; }
+
+		/**/
+		void SetIterations(const int32 InNumIterations) { GetEvolution()->SetNumIterations(InNumIterations); }
+		void SetPushOutIterations(const int32 InNumIterations) {  GetEvolution()->SetNumPushOutIterations(InNumIterations); }
+		void SetPushOutPairIterations(const int32 InNumIterations) {  GetEvolution()->GetCollisionConstraints().SetPushOutPairIterations(InNumIterations); }
+		void SetUseContactGraph(const bool bInUseContactGraph) { GetEvolution()->GetCollisionConstraintsRule().SetUseContactGraph(bInUseContactGraph); }
 
 		/**/
 		void SetGenerateCollisionData(bool bDoGenerate) { GetEventFilters()->SetGenerateCollisionEvents(bDoGenerate); }

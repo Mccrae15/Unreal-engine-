@@ -423,7 +423,7 @@ namespace Audio
 		UpdateChannelMaps();
 
 #if ENABLE_AUDIO_DEBUG
-		FAudioDebugger::DrawDebugInfo(*this);
+		Audio::FAudioDebugger::DrawDebugInfo(*this);
 #endif // ENABLE_AUDIO_DEBUG
 	}
 
@@ -860,12 +860,7 @@ namespace Audio
 		if (AudioDevice->IsModulationPluginEnabled())
 		{
 			const int32 SourceId = MixerSourceVoice->GetSourceId();
-			const bool bUpdatePending = AudioDevice->ModulationInterface->ProcessControls(SourceId, WaveInstance->SoundModulationControls);
-
-			if (bUpdatePending)
-			{
-				AudioDevice->UpdateModulationControls(SourceId, WaveInstance->SoundModulationControls);
-			}
+			AudioDevice->ModulationInterface->ProcessControls(SourceId, WaveInstance->SoundModulationControls);
 		}
 	}
 

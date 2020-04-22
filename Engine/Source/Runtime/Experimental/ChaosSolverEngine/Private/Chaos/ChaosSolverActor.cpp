@@ -201,6 +201,7 @@ AChaosSolverActor::AChaosSolverActor(const FObjectInitializer& ObjectInitializer
 	, bHasFloor(true)
 	, FloorHeight(0.f)
 	, MassScale(1.f)
+	, bGenerateContactGraph(true)
 	, ChaosDebugSubstepControl()
 {
 	// @question(Benn) : Does this need to be created on the Physics thread using a queued command?
@@ -289,23 +290,25 @@ void AChaosSolverActor::BeginPlay()
 			, InTrailingFilterSettings = TrailingFilterSettings
 			, InHasFloor = bHasFloor
 			, InFloorHeight = FloorHeight
-			, InMassScale = MassScale]
+			, InMassScale = MassScale
+			, InGenerateContactGraph = bGenerateContactGraph]
 		(Chaos::FPhysicsSolver* InSolver)
 		{
 #if TODO_REIMPLEMENT_SOLVER_SETTINGS_ACCESSORS
 			InSolver->SetTimeStepMultiplier(InTimeStepMultiplier);
-			InSolver->SetIterations(InCollisionIterations);
-			InSolver->SetPushOutIterations(InPushOutIterations);
-			InSolver->SetPushOutPairIterations(InPushOutPairIterations);
 			InSolver->SetClusterConnectionFactor(InClusterConnectionFactor);
 			InSolver->SetClusterUnionConnectionType((Chaos::FClusterCreationParameters<float>::EConnectionMethod)InClusterUnionConnectionType);
 #endif
+			InSolver->SetIterations(InCollisionIterations);
+			InSolver->SetPushOutPairIterations(InPushOutPairIterations);
+			InSolver->SetPushOutIterations(InPushOutIterations);
 			InSolver->SetGenerateCollisionData(InDoGenerateCollisionData);
 			InSolver->SetGenerateBreakingData(InDoGenerateBreakingData);
 			InSolver->SetGenerateTrailingData(InDoGenerateTrailingData);
 			InSolver->SetCollisionFilterSettings(InCollisionFilterSettings);
 			InSolver->SetBreakingFilterSettings(InBreakingFilterSettings);
 			InSolver->SetTrailingFilterSettings(InTrailingFilterSettings);
+			InSolver->SetUseContactGraph(InGenerateContactGraph);
 
 #if TODO_REIMPLEMENT_SOLVER_SETTINGS_ACCESSORS
 			InSolver->SetMassScale(InMassScale);
@@ -526,6 +529,14 @@ void AChaosSolverActor::PostEditChangeProperty(struct FPropertyChangedEvent& Pro
 				{
 				});
 			}
+			else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(AChaosSolverActor, bGenerateContactGraph))
+			{
+				PhysDispatcher->EnqueueCommandImmediate(Solver, [InGenerateContactGraph = bGenerateContactGraph]
+				(Chaos::FPhysicsSolver* InSolver)
+				{
+				});
+			}
+
 #if TODO_REIMPLEMENT_TIMESTEP_MULTIPLIER
 			else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(AChaosSolverActor, MassScale))
 			{
