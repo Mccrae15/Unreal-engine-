@@ -241,6 +241,7 @@ public:
 		, DepthStencilState(InMinimalState.DepthStencilState)
 		, ImmutableSamplerState(InMinimalState.ImmutableSamplerState)
 		, bDepthBounds(InMinimalState.bDepthBounds)
+		, DrawShadingRate(InMinimalState.DrawShadingRate)
 		, PrimitiveType(InMinimalState.PrimitiveType)
 	{
 	}
@@ -271,6 +272,7 @@ public:
 			, bDepthBounds
 			, bMultiView
 			, bHasFragmentDensityAttachment
+			, DrawShadingRate
 		);
 	}
 
@@ -298,6 +300,7 @@ public:
 			bDepthBounds != rhs.bDepthBounds ||
 			bMultiView != rhs.bMultiView ||
 			bHasFragmentDensityAttachment != rhs.bHasFragmentDensityAttachment ||
+			DrawShadingRate != rhs.DrawShadingRate ||
 			PrimitiveType != rhs.PrimitiveType)
 		{
 			return false;
@@ -365,6 +368,7 @@ public:
 			COMPARE_FIELD(bDepthBounds)
 			COMPARE_FIELD(bMultiView)
 			COMPARE_FIELD(bHasFragmentDensityAttachment)
+			COMPARE_FIELD(DrawShadingRate)
 			COMPARE_FIELD(PrimitiveType)
 		COMPARE_FIELD_END;
 
@@ -396,6 +400,7 @@ public:
 			COMPARE_FIELD(bDepthBounds)
 			COMPARE_FIELD(bMultiView)
 			COMPARE_FIELD(bHasFragmentDensityAttachment)
+			COMPARE_FIELD(DrawShadingRate)
 			COMPARE_FIELD(PrimitiveType)
 			COMPARE_FIELD_END;
 
@@ -420,7 +425,7 @@ public:
 	bool							bDepthBounds = false;
 	bool							bMultiView = false;
 	bool							bHasFragmentDensityAttachment = false;
-	uint8							Padding[1] = {};
+	EVRSShadingRate					DrawShadingRate  = EVRSShadingRate::VRSSR_1x1;
 
 	EPrimitiveType			PrimitiveType;
 };
