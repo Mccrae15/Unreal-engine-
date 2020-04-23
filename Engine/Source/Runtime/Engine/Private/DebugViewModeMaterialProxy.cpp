@@ -66,7 +66,7 @@ FDebugViewModeMaterialProxy::FDebugViewModeMaterialProxy(
 		}
 
 		FMaterialShaderMapId ResourceId;
-		Resource->GetShaderMapId(ShaderPlatform, ResourceId);
+		Resource->GetShaderMapId(ShaderPlatform, nullptr, ResourceId);
 
 		{
 			TArray<FShaderType*> ShaderTypes;
