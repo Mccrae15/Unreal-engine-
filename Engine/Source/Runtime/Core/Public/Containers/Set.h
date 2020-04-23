@@ -1256,7 +1256,7 @@ private:
 public:
 	void WriteMemoryImage(FMemoryImageWriter& Writer) const
 	{
-		checkf(!Writer.GetTargetLayoutParams().b32Bit, TEXT("TSet does not currently support freezing for 32bits"));
+		checkf(!Writer.Is32BitTarget(), TEXT("TSet does not currently support freezing for 32bits"));
 		TSupportsFreezeMemoryImageHelper<SupportsFreezeMemoryImage>::WriteMemoryImage(Writer, *this);
 	}
 
