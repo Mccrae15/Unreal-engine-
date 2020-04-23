@@ -1975,7 +1975,7 @@ namespace Chaos
 			}
 
 			TGenericParticleHandle<FReal, 3> Particle1 = Constraint.Particle[1];
-			FRigidTransform3 LevelsetTM = FRigidTransform3(Particle1->P(), Particle1->Q());
+			FRigidTransform3 LevelsetTM = Constraint.ImplicitTransform[1] * FRigidTransform3(Particle1->P(), Particle1->Q());
 			if (!(ensure(!FMath::IsNaN(LevelsetTM.GetTranslation().X)) && ensure(!FMath::IsNaN(LevelsetTM.GetTranslation().Y)) && ensure(!FMath::IsNaN(LevelsetTM.GetTranslation().Z))))
 			{
 				return;
@@ -2001,13 +2001,17 @@ namespace Chaos
 		template<typename T_TRAITS>
 		void ConstructLevelsetLevelsetConstraints(TGeometryParticleHandle<FReal, 3>* Particle0, TGeometryParticleHandle<FReal, 3>* Particle1, const FImplicitObject* Implicit0, const FImplicitObject* Implicit1, const FRigidTransform3& LocalTransform0, const FRigidTransform3& LocalTransform1, const FReal CullDistance, FCollisionConstraintsArray& NewConstraints)
 		{
-			FRigidBodyPointContactConstraint Constraint = FRigidBodyPointContactConstraint(Particle0, Implicit0, LocalTransform0, Particle1, Implicit1, LocalTransform1, EContactShapesType::LevelSetLevelSet);
+			FRigidTransform3 ParticleImplicit0TM = LocalTransform0.GetRelativeTransform(Collisions::GetTransform(Particle0));
+			FRigidTransform3 ParticleImplicit1TM = LocalTransform1.GetRelativeTransform(Collisions::GetTransform(Particle1));
+			FRigidBodyPointContactConstraint Constraint = FRigidBodyPointContactConstraint(Particle0, Implicit0, ParticleImplicit0TM, Particle1, Implicit1, ParticleImplicit1TM, EContactShapesType::LevelSetLevelSet);
 
 			bool bIsParticleDynamic0 = Particle0->CastToRigidParticle() && Particle0->ObjectState() == EObjectStateType::Dynamic;
 			if (!Particle1->Geometry() || (bIsParticleDynamic0 && !Particle0->CastToRigidParticle()->CollisionParticlesSize() && Particle0->Geometry() && !Particle0->Geometry()->IsUnderlyingUnion()))
 			{
 				Constraint.Particle[0] = Particle1;
 				Constraint.Particle[1] = Particle0;
+				Constraint.ImplicitTransform[0] = ParticleImplicit1TM;
+				Constraint.ImplicitTransform[1] = ParticleImplicit0TM;
 				Constraint.SetManifold(Implicit1, Implicit0);
 			}
 			else
@@ -2614,7 +2618,7 @@ namespace Chaos
 				if (Implicit1->HasBoundingBox())
 				{
 					TArray<Pair<const FImplicitObject*, FRigidTransform3>> Children;
-					Union0->FindAllIntersectingObjects(Children, Implicit1->BoundingBox());
+					Union0->FindAllIntersectingObjects(Children, Implicit1->BoundingBox().TransformedAABB(LocalTransform1.GetRelativeTransform(LocalTransform0)));
 					for (const auto& Child0 : Children)
 					{
 						TRigidTransform<FReal, 3> TransformedChild0 = Child0.Second * LocalTransform0;
@@ -2649,7 +2653,7 @@ namespace Chaos
 				if (Implicit0->HasBoundingBox())
 				{
 					TArray<Pair<const FImplicitObject*, FRigidTransform3>> Children;
-					Union1->FindAllIntersectingObjects(Children, Implicit0->BoundingBox());
+					Union1->FindAllIntersectingObjects(Children, Implicit0->BoundingBox().TransformedAABB(LocalTransform0.GetRelativeTransform(LocalTransform1)));
 					for (const auto& Child1 : Children)
 					{
 						TRigidTransform<FReal, 3> TransformedChild1 = Child1.Second * LocalTransform1;

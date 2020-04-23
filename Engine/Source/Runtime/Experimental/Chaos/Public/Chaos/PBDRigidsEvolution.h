@@ -23,7 +23,11 @@ extern int32 ChaosNumPushOutIterationsOverride;
 extern int32 ChaosNumContactIterationsOverride;
 
 // Declaring so it can be friended for tests.
-namespace ChaosTest { void TestPendingSpatialDataHandlePointerConflict(); } 
+namespace ChaosTest
+{
+	template <typename TEvolution>
+	void TestPendingSpatialDataHandlePointerConflict();
+} 
 
 namespace Chaos
 {
@@ -232,6 +236,7 @@ class TPBDRigidsEvolutionBase
 	typedef TFunction<void(TPBDRigidParticles<FReal, 3>&, const FReal, const FReal, const int32)> FKinematicUpdateRule;
 	typedef TFunction<void(TParticleView<TPBDRigidParticles<FReal,3>>&)> FCaptureRewindRule;
 
+	template <typename TEvolution>
 	friend void ChaosTest::TestPendingSpatialDataHandlePointerConflict();
 
 	CHAOS_API TPBDRigidsEvolutionBase(TPBDRigidsSOAs<FReal, 3>& InParticles, THandleArray<FChaosPhysicsMaterial>& InSolverPhysicsMaterials, int32 InNumIterations = 1, int32 InNumPushOutIterations = 1, bool InIsSingleThreaded = false);
@@ -328,7 +333,6 @@ class TPBDRigidsEvolutionBase
 		RemoveParticleFromAccelerationStructure(*Particle);
 		Particles.DisableParticle(Particle);
 		ConstraintGraph.DisableParticle(Particle);
-
 		RemoveConstraints(TSet<TGeometryParticleHandle<FReal, 3>*>({ Particle }));
 	}
 
@@ -432,7 +436,6 @@ class TPBDRigidsEvolutionBase
 		}
 
 		ConstraintGraph.DisableParticles(InParticles);
-
 		RemoveConstraints(InParticles);
 	}
 
@@ -449,9 +452,13 @@ class TPBDRigidsEvolutionBase
 	// @todo(ccaulfield): Remove the uint version
 	CHAOS_API void RemoveConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles)
 	{
-		for (FPBDConstraintGraphRule* ConstraintRule : ConstraintRules)
+		// Only remove constraints if we have the possibility of rewinding state. Otherwise they will be rebuilt next frame
+		if(ChaosClusteringChildrenInheritVelocity < 1.0f)
 		{
-			ConstraintRule->RemoveConstraints(RemovedParticles);
+			for(FPBDConstraintGraphRule* ConstraintRule : ConstraintRules)
+			{
+				ConstraintRule->RemoveConstraints(RemovedParticles);
+			}
 		}
 	}
 
@@ -912,7 +919,7 @@ protected:
 	TUniquePtr<ISpatialAccelerationCollectionFactory> SpatialCollectionFactory;
 };
 
-#if PLATFORM_MAC
+#if PLATFORM_MAC || PLATFORM_LINUX
 #define EVOLUTION_TRAIT(Trait) extern template class CHAOS_API TPBDRigidsEvolutionBase<Trait>;
 #else
 #define EVOLUTION_TRAIT(Trait) extern template class TPBDRigidsEvolutionBase<Trait>;
