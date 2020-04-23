@@ -800,7 +800,12 @@ public:
 	/** A hash of the base property overrides for this material instance. */
 	FSHAHash BasePropertyOverridesHash;
 #endif // WITH_EDITOR
-	
+
+	/*
+	 * Type layout parameters of the memory image
+	 */
+	FPlatformTypeLayoutParameters LayoutParams;
+
 	FMaterialShaderMapId()
 		: QualityLevel(EMaterialQualityLevel::High)
 		, FeatureLevel(ERHIFeatureLevel::SM5)
@@ -886,7 +891,7 @@ public:
 	void UpdateFromParameterSet(const FStaticParameterSet& StaticParameters);
 
 	/** Appends string representations of this Id to a key string. */
-	void AppendKeyString(const FPlatformTypeLayoutParameters& LayoutParameters, FString& KeyString) const;
+	void AppendKeyString(FString& KeyString) const;
 
 	const TArray<FStaticSwitchParameter> &GetStaticSwitchParameters() const 					{ return StaticSwitchParameters; }
 	const TArray<FStaticComponentMaskParameter> &GetStaticComponentMaskParameters() const 		{ return StaticComponentMaskParameters; }
@@ -1039,7 +1044,7 @@ public:
 
 	/**
 	 * Finds the shader map for a material.
-	 * @param StaticParameterSet - The static parameter set identifying the shader map
+	 * @param ShaderMapId - The static parameter set and other properties identifying the shader map
 	 * @param Platform - The platform to lookup for
 	 * @return NULL if no cached shader map was found.
 	 */
@@ -1282,7 +1287,7 @@ private:
 	float CompileTime;
 #endif
 
-	/** The static parameter set that this shader map was compiled with */
+	/** The static parameter set that this shader map was compiled with and other parameters unique to this shadermap */
 	FMaterialShaderMapId ShaderMapId;
 
 	/** The platform being compiled, or nullptr for current platform */
@@ -1518,7 +1523,7 @@ public:
 	void DiscardShaderMap();
 
 	// Material properties.
-	ENGINE_API virtual void GetShaderMapId(EShaderPlatform Platform, FMaterialShaderMapId& OutId) const;
+	ENGINE_API virtual void GetShaderMapId(EShaderPlatform Platform, const ITargetPlatform* TargetPlatform, FMaterialShaderMapId& OutId) const;
 #if WITH_EDITORONLY_DATA
 	ENGINE_API virtual void GetStaticParameterSet(EShaderPlatform Platform, FStaticParameterSet& OutSet) const;
 #endif // WITH_EDITORONLY_DATA
@@ -2304,7 +2309,7 @@ public:
 	ENGINE_API virtual FString GetMaterialUsageDescription() const override;
 
 	// FMaterial interface.
-	ENGINE_API virtual void GetShaderMapId(EShaderPlatform Platform, FMaterialShaderMapId& OutId) const override;
+	ENGINE_API virtual void GetShaderMapId(EShaderPlatform Platform, const ITargetPlatform* TargetPlatform, FMaterialShaderMapId& OutId) const override;
 #if WITH_EDITORONLY_DATA
 	ENGINE_API virtual void GetStaticParameterSet(EShaderPlatform Platform, FStaticParameterSet& OutSet) const override;
 #endif
