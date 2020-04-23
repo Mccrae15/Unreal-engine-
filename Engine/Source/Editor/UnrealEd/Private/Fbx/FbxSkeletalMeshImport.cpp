@@ -156,11 +156,11 @@ struct FSkeletalMeshVertPosOctreeSemantics
 	}
 
 	/** Ignored for this implementation */
-	FORCEINLINE static void SetElementId(const FSoftSkinVertex& Element, FOctreeElementId Id)
+	FORCEINLINE static void SetElementId(const FSoftSkinVertex& Element, FOctreeElementId2 Id)
 	{
 	}
 };
-typedef TOctree<FSoftSkinVertex, FSkeletalMeshVertPosOctreeSemantics> TSKCVertPosOctree;
+typedef TOctree2<FSoftSkinVertex, FSkeletalMeshVertPosOctreeSemantics> TSKCVertPosOctree;
 
 void RemapSkeletalMeshVertexColorToImportData(const USkeletalMesh* SkeletalMesh, const int32 LODIndex, FSkeletalMeshImportData* SkelMeshImportData)
 {

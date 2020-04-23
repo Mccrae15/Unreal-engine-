@@ -12,10 +12,7 @@ fi
 echo Android Studio Path: $STUDIO_PATH
 
 if [ "$STUDIO_SDK_PATH" == "" ]; then
-	STUDIO_SDK_PATH=$ANDROID_HOME
-	if [ "$STUDIO_SDK_PATH" == "" ]; then
-		STUDIO_SDK_PATH=~/Library/Android/sdk
-	fi
+	STUDIO_SDK_PATH=~/Library/Android/sdk
 fi
 if [ "$1" != "" ]; then
 	STUDIO_SDK_PATH=$1
@@ -50,10 +47,9 @@ fi
 
 SDKMANAGERPATH="$STUDIO_SDK_PATH/tools/bin"
 if [ ! -d "$SDKMANAGERPATH" ]; then
-	SDKMANAGERPATH="$STUDIO_SDK_PATH/cmdline-tools/latest/bintools/bin"
+	SDKMANAGERPATH="$STUDIO_SDK_PATH/cmdline-tools/latest/bin"
 	if [ ! -d "$SDKMANAGERPATH" ]; then
-		echo Unable to locate sdkmanager.bat. Did you run Android Studio and install cmdline-tools after installing?
-		SDKMANAGERPATH="$STUDIO_SDK_PATH/cmdline-tools/latest/bintools/bin"
+		echo Unable to locate sdkmanager. Did you run Android Studio and install cmdline-tools after installing?
 		read -rsp $'Press any key to continue...\n' -n1 key
 		exit 1
 	fi

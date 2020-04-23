@@ -127,6 +127,7 @@ private:
 
 		// Note the loading behavior of the sound wave that inserted this element into the cache
 		ESoundWaveLoadingBehavior LoadingBehavior;
+		bool bLoadingBehaviorExternallyOverriden;
 
 		// if true, 
 		bool bWasCacheMiss;
@@ -175,7 +176,7 @@ private:
 #endif
 
 		// Handle to our async read request operation.
-		TUniquePtr<IBulkDataIORequest> ReadRequest;
+		IBulkDataIORequest* ReadRequest;
 
 #if DEBUG_STREAM_CACHE
 		FCacheElementDebugInfo DebugInfo;
@@ -188,6 +189,7 @@ private:
 			, LessRecentElement(nullptr)
 			, CacheLookupID(InCacheIndex)
 			, bIsLoaded(false)
+			, ReadRequest(nullptr)
 		{
 		}
 
@@ -205,15 +207,21 @@ private:
 			}
 #endif
 
-			if (ReadRequest.IsValid())
+			IBulkDataIORequest* LocalReadRequest = nullptr;
+			if (ReadRequest)
+			{
+				LocalReadRequest = (IBulkDataIORequest*)FPlatformAtomics::InterlockedExchangePtr((void* volatile*)&ReadRequest, nullptr);
+			}
+
+			if (LocalReadRequest)
 			{
 				if (bCancel)
 				{
-					ReadRequest->Cancel();
+					LocalReadRequest->Cancel();
 				}
 				
-				ReadRequest->WaitCompletion();
-				ReadRequest.Reset();
+				LocalReadRequest->WaitCompletion();
+				delete LocalReadRequest;
 			}
 		}
 

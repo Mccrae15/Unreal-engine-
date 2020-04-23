@@ -488,11 +488,11 @@ struct FStaticMeshComponentVertPosOctreeSemantics
 	}
 
 	/** Ignored for this implementation */
-	FORCEINLINE static void SetElementId( const FPaintedVertex& Element, FOctreeElementId Id )
+	FORCEINLINE static void SetElementId( const FPaintedVertex& Element, FOctreeElementId2 Id )
 	{
 	}
 };
-typedef TOctree<FPaintedVertex, FStaticMeshComponentVertPosOctreeSemantics> TSMCVertPosOctree;
+typedef TOctree2<FPaintedVertex, FStaticMeshComponentVertPosOctreeSemantics> TSMCVertPosOctree;
 
 void RemapPaintedVertexColors(const TArray<FPaintedVertex>& InPaintedVertices,
 	const FColorVertexBuffer* InOverrideColors,

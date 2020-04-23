@@ -586,11 +586,11 @@ void FPhysicsAssetEditor::ExtendMenu()
 			MenuBarBuilder.AddMenuEntry(Commands.SelectAllConstraints);
 			MenuBarBuilder.AddMenuEntry(Commands.ToggleSelectionType);
 			MenuBarBuilder.AddMenuEntry(Commands.ToggleShowSelected);
-			MenuBarBuilder.AddMenuEntry(Commands.ShowAll);
-			MenuBarBuilder.AddMenuEntry(Commands.HideAll);
 			MenuBarBuilder.AddMenuEntry(Commands.ShowSelected);
 			MenuBarBuilder.AddMenuEntry(Commands.HideSelected);
-			MenuBarBuilder.AddMenuEntry(Commands.ShowOnlySelected);
+			MenuBarBuilder.AddMenuEntry(Commands.ToggleShowOnlySelected);
+			MenuBarBuilder.AddMenuEntry(Commands.ShowAll);
+			MenuBarBuilder.AddMenuEntry(Commands.HideAll);
 			MenuBarBuilder.AddMenuEntry(Commands.DeselectAll);
 			MenuBarBuilder.EndSection();
 		}
@@ -884,16 +884,6 @@ void FPhysicsAssetEditor::BindCommands()
 		FCanExecuteAction::CreateSP(this, &FPhysicsAssetEditor::IsNotSimulation));
 
 	ToolkitCommands->MapAction(
-		Commands.ShowAll,
-		FExecuteAction::CreateSP(this, &FPhysicsAssetEditor::OnShowAll),
-		FCanExecuteAction::CreateSP(this, &FPhysicsAssetEditor::IsNotSimulation));
-
-	ToolkitCommands->MapAction(
-		Commands.HideAll,
-		FExecuteAction::CreateSP(this, &FPhysicsAssetEditor::OnHideAll),
-		FCanExecuteAction::CreateSP(this, &FPhysicsAssetEditor::IsNotSimulation));
-
-	ToolkitCommands->MapAction(
 		Commands.ShowSelected,
 		FExecuteAction::CreateSP(this, &FPhysicsAssetEditor::OnShowSelected),
 		FCanExecuteAction::CreateSP(this, &FPhysicsAssetEditor::IsNotSimulation));
@@ -903,10 +893,19 @@ void FPhysicsAssetEditor::BindCommands()
 		FExecuteAction::CreateSP(this, &FPhysicsAssetEditor::OnHideSelected),
 		FCanExecuteAction::CreateSP(this, &FPhysicsAssetEditor::IsNotSimulation));
 
+	ToolkitCommands->MapAction(
+		Commands.ToggleShowOnlySelected,
+		FExecuteAction::CreateSP(this, &FPhysicsAssetEditor::OnToggleShowOnlySelected),
+		FCanExecuteAction::CreateSP(this, &FPhysicsAssetEditor::IsNotSimulation));
 
 	ToolkitCommands->MapAction(
-		Commands.ShowOnlySelected,
-		FExecuteAction::CreateSP(this, &FPhysicsAssetEditor::OnShowOnlySelected),
+		Commands.ShowAll,
+		FExecuteAction::CreateSP(this, &FPhysicsAssetEditor::OnShowAll),
+		FCanExecuteAction::CreateSP(this, &FPhysicsAssetEditor::IsNotSimulation));
+
+	ToolkitCommands->MapAction(
+		Commands.HideAll,
+		FExecuteAction::CreateSP(this, &FPhysicsAssetEditor::OnHideAll),
 		FCanExecuteAction::CreateSP(this, &FPhysicsAssetEditor::IsNotSimulation));
 
 	ToolkitCommands->MapAction(
@@ -1340,11 +1339,11 @@ void FPhysicsAssetEditor::BuildMenuWidgetSelection(FMenuBuilder& InMenuBuilder)
 		InMenuBuilder.AddMenuEntry( Commands.SelectAllConstraints );
 		InMenuBuilder.AddMenuEntry( Commands.ToggleSelectionType );
 		InMenuBuilder.AddMenuEntry( Commands.ToggleShowSelected );
-		InMenuBuilder.AddMenuEntry( Commands.ShowAll );
-		InMenuBuilder.AddMenuEntry( Commands.HideAll );
 		InMenuBuilder.AddMenuEntry( Commands.ShowSelected );
 		InMenuBuilder.AddMenuEntry( Commands.HideSelected );
-		InMenuBuilder.AddMenuEntry( Commands.ShowOnlySelected );
+		InMenuBuilder.AddMenuEntry( Commands.ToggleShowOnlySelected );
+		InMenuBuilder.AddMenuEntry( Commands.ShowAll );
+		InMenuBuilder.AddMenuEntry( Commands.HideAll );
 		InMenuBuilder.EndSection();
 	}
 	InMenuBuilder.PopCommandList();
@@ -2827,16 +2826,6 @@ void FPhysicsAssetEditor::OnToggleShowSelected()
 	SharedData->ToggleShowSelected();
 }
 
-void FPhysicsAssetEditor::OnShowAll()
-{
-	SharedData->ShowAll();
-}
-
-void FPhysicsAssetEditor::OnHideAll()
-{
-	SharedData->HideAll();
-}
-
 void FPhysicsAssetEditor::OnShowSelected()
 {
 	SharedData->ShowSelected();
@@ -2847,12 +2836,21 @@ void FPhysicsAssetEditor::OnHideSelected()
 	SharedData->HideSelected();
 }
 
+void FPhysicsAssetEditor::OnToggleShowOnlySelected()
+{
+	SharedData->ToggleShowOnlySelected();
+}
 
-void FPhysicsAssetEditor::OnShowOnlySelected()
+void FPhysicsAssetEditor::OnShowAll()
+{
+	SharedData->ShowAll();
+}
+
+void FPhysicsAssetEditor::OnHideAll()
 {
 	SharedData->HideAll();
-	SharedData->ShowSelected();
 }
+
 
 void FPhysicsAssetEditor::OnDeselectAll()
 {
