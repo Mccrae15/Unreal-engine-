@@ -138,6 +138,8 @@ $ CppStandard : Which C++ stanard to use for compiling this target
 
 $ bStripSymbols : Whether to strip iOS symbols or not (implied by Shipping config).
 
+$ bEnableMemorySanitizer : Enables memory sanitizer (MSan)
+
 $ bIgnoreOutdatedImportLibraries : Whether to ignore import library files that are out of date when building targets. Set this to true to improve iteration time. By default, we do not bother re-linking targets if only a dependent .lib has changed, as chances are that the import library was not actually different unless a dependent header file of this target was also changed, in which case the target would automatically be rebuilt.
 
 $ bPrintDebugInfo : Whether debug info should be written to the console.
@@ -163,6 +165,8 @@ $ bUseUBTMakefiles : Enables support for very fast iterative builds by caching t
 $ bAllowDistcc : Whether DMUCS/Distcc may be used. Distcc requires some setup -- so by default, disable it so that we do not break local or remote building.
 
 $ bAllowParallelExecutor : Whether to allow using parallel executor on Windows.
+
+$ MaxParallelActions : Number of actions that can be executed in parallel. If 0 then code will pick a default based on the number of cores available. Only applies to the ParallelExecutor
 
 ### HybridExecutor
 
@@ -226,17 +230,11 @@ $ MaxProcessorCount : Maximum processor count for local execution.
 
 ### ParallelExecutor
 
-$ ProcessorCountMultiplier : Processor count multiplier for local execution. Can be below 1 to reserve CPU for other tasks.
-
 $ MaxProcessorCount : Maximum processor count for local execution.
+
+$ ProcessorCountMultiplier : Processor count multiplier for local execution. Can be below 1 to reserve CPU for other tasks.
 
 $ bStopCompilationAfterErrors : When enabled, will stop compiling targets after a compile error occurs.
-
-### SNDBS
-
-$ ProcessorCountMultiplier : Processor count multiplier for local execution. Can be below 1 to reserve CPU for other tasks.
-
-$ MaxProcessorCount : Maximum processor count for local execution.
 
 ### CLionGenerator
 
@@ -442,6 +440,8 @@ $ bMasterProjectNameFromFolder : If true, sets the master project name according
 
 $ Version : The version of Visual Studio to generate project files for.
 
+$ bBuildUBTInDebug : Forces UBT to be built in debug configuration, regardless of the solution configuration
+
 $ bBuildLiveCodingConsole : Whether to include a dependency on LiveCodingConsole when building targets that support live coding.
 
 $ bIncludeDocumentation : True if we should include documentation in the generated projects.
@@ -506,6 +506,8 @@ $ GitPath : Sets the path to use for the Git executable. Defaults to "git" (assu
 
 $ Version : The version of Visual Studio to generate project files for.
 
+$ bBuildUBTInDebug : Forces UBT to be built in debug configuration, regardless of the solution configuration
+
 $ bIncludeDocumentation : True if we should include documentation in the generated projects.
 
 $ bUsePrecompiled : True if build targets should pass the -useprecompiled argument.
@@ -563,6 +565,10 @@ $ bAllowHotReloadFromIDE : True if hot-reload from IDE is allowed.
 $ bForceDebugUnrealHeaderTool : If true, the Debug version of UnrealHeaderTool will be built and run instead of the Development version.
 
 ### WindowsPlatform
+
+$ MaxRootPathLength : Maximum recommended root path length.
+
+$ MaxNestedPathLength : Maximum length of a path relative to the root directory. Used on Windows to ensure paths are portable between machines. Defaults to off.
 
 $ Compiler : Version of the compiler toolchain to use on Windows platform. A value of "default" will be changed to a specific version at UBT start up.
 
