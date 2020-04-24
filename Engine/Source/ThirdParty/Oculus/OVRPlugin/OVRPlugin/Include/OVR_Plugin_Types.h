@@ -28,7 +28,7 @@ limitations under the License.
 #endif
 
 #define OVRP_MAJOR_VERSION 1
-#define OVRP_MINOR_VERSION 40
+#define OVRP_MINOR_VERSION 48
 #define OVRP_PATCH_VERSION 0
 
 #define OVRP_VERSION OVRP_MAJOR_VERSION, OVRP_MINOR_VERSION, OVRP_PATCH_VERSION
@@ -45,6 +45,8 @@ limitations under the License.
 #ifndef OVRP_EXPORT
 #ifdef _WIN32
 #define OVRP_EXPORT __declspec(dllexport)
+#elif __ANDROID__
+#define OVRP_EXPORT __attribute__ ((visibility ("default")))
 #else
 #define OVRP_EXPORT
 #endif
@@ -64,6 +66,8 @@ limitations under the License.
 #define OVRP_DEFAULTVALUE(Value)
 #endif
 
+#define OVRP_UNUSED(x) ((void)(x))
+
 #ifndef OVRP_MIXED_REALITY_PRIVATE
 #define OVRP_MIXED_REALITY_PRIVATE 0
 #endif
@@ -77,6 +81,9 @@ typedef int ovrpBool;
 
 /// Byte
 typedef unsigned char ovrpByte;
+
+/// Int16
+typedef short ovrpInt16;
 
 /// UInt16
 typedef unsigned short ovrpUInt16;
@@ -181,6 +188,16 @@ typedef enum {
   ovrpTracker_EnumSize = 0x7fffffff
 } ovrpTracker;
 
+
+
+
+
+
+
+
+
+
+
 /// Identifies a tracked VR Node.
 typedef enum {
   ovrpNode_None = -1,
@@ -195,6 +212,9 @@ typedef enum {
   ovrpNode_TrackerThree = 8,
   ovrpNode_Head = 9,
   ovrpNode_DeviceObjectZero = 10,
+
+
+
   ovrpNode_Count,
   ovrpNode_EnumSize = 0x7fffffff
 } ovrpNode;
@@ -204,6 +224,9 @@ typedef enum {
   ovrpTrackingOrigin_EyeLevel = 0,
   ovrpTrackingOrigin_FloorLevel = 1,
   ovrpTrackingOrigin_Stage = 2,
+
+
+
   ovrpTrackingOrigin_Count,
   ovrpTrackingOrigin_EnumSize = 0x7fffffff
 } ovrpTrackingOrigin;
@@ -244,6 +267,8 @@ typedef enum {
 
 typedef enum {
   ovrpSystemHeadset_None,
+
+  // Mobile & Standalone headsets
   ovrpSystemHeadset_GearVR_R320,  // Note4 Innovator
   ovrpSystemHeadset_GearVR_R321,  // S6 Innovator
   ovrpSystemHeadset_GearVR_R322,  // GearVR Commercial 1
@@ -253,11 +278,13 @@ typedef enum {
   ovrpSystemHeadset_Oculus_Go,    // Oculus Go Commercial 1
   ovrpSystemHeadset_Oculus_Quest, // Oculus Quest
 
+  // PC headsets
   ovrpSystemHeadset_Rift_DK1 = 0x1000,
   ovrpSystemHeadset_Rift_DK2,
   ovrpSystemHeadset_Rift_CV1,
   ovrpSystemHeadset_Rift_CB,
   ovrpSystemHeadset_Rift_S,
+  ovrpSystemHeadset_Oculus_Link_Quest,    // Quest connected through Oculus Link
   ovrpSystemHeadset_EnumSize = 0x7fffffff
 } ovrpSystemHeadset;
 
@@ -340,10 +367,13 @@ typedef enum {
   ovrpController_None = 0,
   ovrpController_LTouch = 0x01,
   ovrpController_RTouch = 0x02,
-  ovrpController_Touch = 0x03,
+  ovrpController_Touch = ovrpController_LTouch | ovrpController_RTouch,
   ovrpController_Remote = 0x04,
   ovrpController_Gamepad = 0x10,
-  ovrpController_Touchpad = 0x08000000,
+  ovrpController_LHand = 0x20,
+  ovrpController_RHand = 0x40,
+  ovrpController_Hands = ovrpController_LHand | ovrpController_RHand,
+  ovrpController_Touchpad_DEPRECATED = 0x08000000,
   ovrpController_LTrackedRemote = 0x01000000,
   ovrpController_RTrackedRemote = 0x02000000,
   ovrpController_Active = 0x80000000,
@@ -491,6 +521,9 @@ typedef struct { float x, y, z; } ovrpVector3f;
 
 /// A 4D vector with float components.
 typedef struct { float x, y, z, w; } ovrpVector4f;
+
+/// A 4D vector with Int16 components.
+typedef struct { ovrpInt16 x, y, z, w; } ovrpVector4s;
 
 /// A quaternion rotation.
 typedef struct { float x, y, z, w; } ovrpQuatf;
@@ -686,7 +719,7 @@ typedef enum {
   ovrpCameraDevice_WebCamera0 = ovrpCameraDevice_WebCamera_First + 0,
   ovrpCameraDevice_WebCamera1 = ovrpCameraDevice_WebCamera_First + 1,
   ovrpCameraDevice_WebCamera_Last = ovrpCameraDevice_WebCamera1,
-  ovrpCameraDevice_ZEDStereoCamera = 300,
+  ovrpCameraDevice_DEPRECATED_DEVICE = 300, // ovrpCameraDevice_ZEDStereoCamera before deprecation
   ovrpCameraDevice_EnumSize = 0x7fffffff
 } ovrpCameraDevice;
 #endif
@@ -724,7 +757,7 @@ const static ovrpFrustum2f s_identityFrustum2 = {0, 0, {0, 0, 0, 0}};
 const static ovrpVector3f s_vec3Zero = {0, 0, 0};
 const static ovrpVector2f s_vec2Zero = {0, 0};
 const static ovrpVector3f s_vec3One = {1, 1, 1};
-const static ovrpQuatf s_identifyQuat = {0, 0, 0, 1};
+const static ovrpQuatf s_identityQuat = {0, 0, 0, 1};
 const static ovrpCameraIntrinsics s_invalidCameraIntrinsics = {ovrpBool_False, -1, {0, 0, 0, 0}, 0, 0, {0, 0}};
 const static ovrpCameraExtrinsics s_invalidCameraExtrinsics = {ovrpBool_False,
                                                                -1,
@@ -761,6 +794,9 @@ typedef enum {
   ovrpShape_EyeFov = 3,
   ovrpShape_OffcenterCubemap = 4,
   ovrpShape_Equirect = 5,
+
+
+
   ovrpShape_EnumSize = 0xF
 } ovrpShape;
 
@@ -837,6 +873,9 @@ typedef OVRP_LAYER_DESC_TYPE ovrpLayerDesc_Quad;
 typedef OVRP_LAYER_DESC_TYPE ovrpLayerDesc_Cylinder;
 typedef OVRP_LAYER_DESC_TYPE ovrpLayerDesc_Cubemap;
 
+
+
+
 typedef struct {
   OVRP_LAYER_DESC_TYPE;
   ovrpFovf Fov[ovrpEye_Count];
@@ -857,6 +896,9 @@ typedef union {
   ovrpLayerDesc_EyeFov EyeFov;
   ovrpLayerDesc_OffcenterCubemap OffcenterCubemap;
   ovrpLayerDesc_Equirect Equirect;
+
+
+
 } ovrpLayerDescUnion;
 
 #undef OVRP_LAYER_DESC
@@ -882,6 +924,10 @@ typedef enum {
   ovrpLayerSubmitFlag_SpaceWarp = (1 << 7),
   /// Enable VrApi "Expensive" SuperSample Flag.
   ovrpLayerSubmitFlag_ExpensiveSuperSample = (1 << 8),
+  /// Enable per-overlay show/hide functionality.
+  ovrpLayerSubmitFlag_Hidden = (1 << 9),
+  /// Force the texture's alpha to 1.0 on Rift
+  ovrpLayerSubmitFlag_IgnoreSourceAlpha = (1 << 10),
 } ovrpLayerSubmitFlags;
 
 /// Layer state to submit to ovrp_EndFrame
@@ -921,14 +967,23 @@ typedef struct {
   float Radius;
 } ovrpLayerSubmit_Cylinder;
 
+
+
+
+
+
+
+
 typedef OVRP_LAYER_SUBMIT_TYPE ovrpLayerSubmit_Cubemap;
 
 typedef struct {
-	OVRP_LAYER_SUBMIT_TYPE;
-	// added in 1.18
-	ovrpOctilinearLayout OctilinearLayout[ovrpEye_Count];
-	float DepthNear;
-	float DepthFar;
+  OVRP_LAYER_SUBMIT_TYPE;
+  // added in 1.18
+  ovrpOctilinearLayout OctilinearLayout[ovrpEye_Count];
+  float DepthNear;
+  float DepthFar;
+  // added in 1.44
+  ovrpFovf Fov[ovrpEye_Count];
 } ovrpLayerSubmit_EyeFov;
 
 typedef OVRP_LAYER_SUBMIT_TYPE ovrpLayerSubmit_OffcenterCubemap;
@@ -942,6 +997,9 @@ typedef union {
   ovrpLayerSubmit_EyeFov EyeFov;
   ovrpLayerSubmit_OffcenterCubemap OffcenterCubemap;
   ovrpLayerSubmit_Equirect Equirect;
+
+
+
 } ovrpLayerSubmitUnion;
 
 typedef enum {
@@ -953,6 +1011,247 @@ typedef enum {
 
 #undef OVRP_LAYER_SUBMIT
 #undef OVRP_LAYER_SUBMIT_TYPE
+
+//-----------------------------------------------------------------
+// Hand tracking
+//-----------------------------------------------------------------
+
+typedef enum ovrpHandStatus_ {
+  ovrpHandStatus_HandTracked = (1 << 0), // hand is currently tracked by hand tracking
+  ovrpHandStatus_InputValid = (1 << 1), // if this is set the pointer pose and pinch data is usable
+  ovrpHandStatus_SystemGestureInProgress = (1 << 6), // if this is set the user is performing the system gesture
+  ovrpHandStatus_EnumSize = 0x7fffffff
+} ovrpHandStatus;
+
+typedef enum ovrpHandFinger_ {
+  ovrpHandFinger_Thumb = 0,
+  ovrpHandFinger_Index = 1,
+  ovrpHandFinger_Middle = 2,
+  ovrpHandFinger_Ring = 3,
+  ovrpHandFinger_Pinky = 4,
+  ovrpHandFinger_Max,
+  ovrpHandFinger_EnumSize = 0x7fffffff
+} ovrpHandFinger;
+
+typedef enum ovrpHandFingerPinch_ {
+  ovrpHandFingerPinch_Thumb    = (1 << ovrpHandFinger_Thumb),
+  ovrpHandFingerPinch_Index    = (1 << ovrpHandFinger_Index),
+  ovrpHandFingerPinch_Middle   = (1 << ovrpHandFinger_Middle),
+  ovrpHandFingerPinch_Ring     = (1 << ovrpHandFinger_Ring),
+  ovrpHandFingerPinch_Pinky    = (1 << ovrpHandFinger_Pinky),
+  ovrpHandFingerPinch_Max,
+  ovrpHandFingerPinch_EnumSize = 0x7fffffff
+} ovrpHandFingerPinch;
+
+typedef enum ovrpBoneId_ {
+  ovrpBoneId_Invalid                 = -1,
+  ovrpBoneId_Hand_Start              = 0,
+  ovrpBoneId_Hand_WristRoot          = ovrpBoneId_Hand_Start + 0, // root frame of the hand, where the wrist is located
+  ovrpBoneId_Hand_ForearmStub        = ovrpBoneId_Hand_Start + 1, // frame for user's forearm
+  ovrpBoneId_Hand_Thumb0             = ovrpBoneId_Hand_Start + 2, // thumb trapezium bone
+  ovrpBoneId_Hand_Thumb1             = ovrpBoneId_Hand_Start + 3, // thumb metacarpal bone
+  ovrpBoneId_Hand_Thumb2             = ovrpBoneId_Hand_Start + 4, // thumb proximal phalange bone
+  ovrpBoneId_Hand_Thumb3             = ovrpBoneId_Hand_Start + 5, // thumb distal phalange bone
+  ovrpBoneId_Hand_Index1             = ovrpBoneId_Hand_Start + 6, // index proximal phalange bone
+  ovrpBoneId_Hand_Index2             = ovrpBoneId_Hand_Start + 7, // index intermediate phalange bone
+  ovrpBoneId_Hand_Index3             = ovrpBoneId_Hand_Start + 8, // index distal phalange bone
+  ovrpBoneId_Hand_Middle1            = ovrpBoneId_Hand_Start + 9, // middle proximal phalange bone
+  ovrpBoneId_Hand_Middle2            = ovrpBoneId_Hand_Start + 10, // middle intermediate phalange bone
+  ovrpBoneId_Hand_Middle3            = ovrpBoneId_Hand_Start + 11, // middle distal phalange bone
+  ovrpBoneId_Hand_Ring1              = ovrpBoneId_Hand_Start + 12, // ring proximal phalange bone
+  ovrpBoneId_Hand_Ring2              = ovrpBoneId_Hand_Start + 13, // ring intermediate phalange bone
+  ovrpBoneId_Hand_Ring3              = ovrpBoneId_Hand_Start + 14, // ring distal phalange bone
+  ovrpBoneId_Hand_Pinky0             = ovrpBoneId_Hand_Start + 15, // pinky metacarpal bone
+  ovrpBoneId_Hand_Pinky1             = ovrpBoneId_Hand_Start + 16, // pinky proximal phalange bone
+  ovrpBoneId_Hand_Pinky2             = ovrpBoneId_Hand_Start + 17, // pinky intermediate phalange bone
+  ovrpBoneId_Hand_Pinky3             = ovrpBoneId_Hand_Start + 18, // pinky distal phalange bone
+  ovrpBoneId_Hand_MaxSkinnable       = ovrpBoneId_Hand_Start + 19,
+  // Bone tips are position only. They are not used for skinning but useful for hit-testing.
+  // NOTE: ovrBoneId_Hand_ThumbTip == ovrBoneId_Hand_MaxSkinnable since the extended tips need to be contiguous
+  ovrpBoneId_Hand_ThumbTip           = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 0, // tip of the thumb
+  ovrpBoneId_Hand_IndexTip           = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 1, // tip of the index finger
+  ovrpBoneId_Hand_MiddleTip          = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 2, // tip of the middle finger
+  ovrpBoneId_Hand_RingTip            = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 3, // tip of the ring finger
+  ovrpBoneId_Hand_PinkyTip           = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 4, // tip of the pinky
+  ovrpBoneId_Hand_End                = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 5,
+
+  // add other skeleton bone definitions here...
+
+  ovrpBoneId_Max                     = ovrpBoneId_Hand_End,
+  ovrpBoneId_EnumSize = 0x7fff
+} ovrpBoneId;
+
+//-----------------------------------------------------------------
+// Hand skeleton
+
+// ovrBoneCapsule
+//    _---_
+//  -"     "-
+// /         \
+// |----A----|
+// |    |    |
+// |    |    |
+// |    |-r->|
+// |    |    |
+// |    |    |
+// |----B----|
+// \         /
+//  -.     .-
+//    '---'
+typedef struct ovrpBoneCapsule_ {
+  short BoneIndex;
+  // Points at either end of the cylinder inscribed in the capsule. Also the center points for
+  // spheres at either end of the capsule. Points A and B in the diagram above.
+  ovrpVector3f Points[2];
+  // The radius of the capsule cylinder and of the half-sphere caps on the ends of the capsule.
+  float Radius;
+} ovrpBoneCapsule;
+
+typedef struct ovrpBone_ {
+  ovrpBoneId BoneId;
+  // index of this bone's parent bone (-1 if no parent)
+  short ParentBoneIndex;
+  ovrpPosef Pose;
+} ovrpBone;
+
+typedef enum ovrpSkeletonConstants_ {
+  ovrpSkeletonConstants_MaxBones = ovrpBoneId_Max,
+  ovrpSkeletonConstants_MaxBoneCapsules = 19,
+  ovrpSkeletonConstants_EnumSize = 0x7fffffff
+} ovrpSkeletonConstants;
+
+/// Identifies a skeleton type.
+typedef enum ovrpSkeletonType_ {
+  ovrpSkeletonType_None = -1,
+  ovrpSkeletonType_HandLeft = 0,
+  ovrpSkeletonType_HandRight = 1,
+  ovrpSkeletonType_Count,
+  ovrpSkeletonType_EnumSize = 0x7fffffff
+} ovrpSkeletonType;
+
+typedef struct ovrpSkeleton_ {
+  ovrpSkeletonType SkeletonType;
+  unsigned int NumBones;
+  unsigned int NumBoneCapsules;
+  ovrpBone Bones[ovrpSkeletonConstants_MaxBones];
+  ovrpBoneCapsule BoneCapsules[ovrpSkeletonConstants_MaxBoneCapsules];
+} ovrpSkeleton;
+
+//-----------------------------------------------------------------
+// Hand mesh
+
+typedef enum ovrpMeshConstants_ {
+  ovrpMesh_MaxVertices = 3000,
+  ovrpMesh_MaxIndices = ovrpMesh_MaxVertices * 6,
+  ovrpMesh_EnumSize = 0x7fffffff
+} ovrpMeshConstants;
+
+/// Identifies a mesh type.
+typedef enum ovrpMeshType_ {
+  ovrpMeshType_None = -1,
+  ovrpMeshType_HandLeft = 0,
+  ovrpMeshType_HandRight = 1,
+  ovrpMeshType_Count,
+  ovrpMeshType_EnumSize = 0x7fffffff
+} ovrpMeshType;
+
+
+typedef struct ovrpMesh_ {
+  // Type of mesh this data describes.
+  ovrpMeshType MeshType;
+  // Number of unique vertices in the mesh.
+  unsigned int NumVertices;
+  // Number of unique indices in the mesh.
+  unsigned int NumIndices;
+  // An array of count NumVertices positions for each vertex. Always valid.
+  ovrpVector3f VertexPositions[ovrpMesh_MaxVertices];
+  // An array of count NumIndices of vertex indices specifying triangles that make up the mesh. Always valid.
+  ovrpInt16 Indices[ovrpMesh_MaxIndices];
+  // An array of count NumVertices of normals for each vertex.
+  // If null, this attribute is not used.
+  ovrpVector3f VertexNormals[ovrpMesh_MaxVertices];
+  // An array of count NumVertices of texture coordinates for each vertex.
+  // If null, this attribute is not used.
+  ovrpVector2f VertexUV0[ovrpMesh_MaxVertices];
+  // An array of count NumVertices of blend indices for each of the bones that each vertex is weighted to.
+  // Always valid. An index of < 0 means no blend weight.
+  ovrpVector4s BlendIndices[ovrpMesh_MaxVertices];
+  // An array of count NumVertices of weights for each of the bones affecting each vertex. Always valid.
+  ovrpVector4f BlendWeights[ovrpMesh_MaxVertices];
+} ovrpMesh;
+
+//-----------------------------------------------------------------
+// Hand pose
+typedef enum ovrpTrackingConfidence_ {
+  ovrpTrackingConfidence_Low = 0,
+  ovrpTrackingConfidence_High = 0x3f800000,
+  ovrpTrackingConfidence_EnumSize = 0x7fffffff
+} ovrpTrackingConfidence;
+
+typedef struct ovrpHandState_ {
+  // Hand Status bitfield described by ovrpHandStatus flags.
+  unsigned int Status;
+
+  // Root pose of the hand in world space. Not to be confused with the root bone's transform.
+  // The root bone can still be offset from this by the skeleton's rest pose.
+  ovrpPosef RootPose;
+
+  // Current rotation of each bone.
+  ovrpQuatf BoneRotations[ovrpSkeletonConstants_MaxBones];
+
+  // Provides a bitmask indicating if each finger is "pinched" or not. Indexable via bitshifting with the ovrpHandFinger enum
+  // i.e. (1 << ovrpHandFinger_Index)
+  unsigned int Pinches;
+
+  // Provides a 0.0f to 1.0f value of how "pinched" each finger is. Indexable via the ovrpHandFinger enum.
+  float PinchStrength[ovrpHandFinger_Max];
+
+  // World space position and translation of the pointer attached to the hand.
+  ovrpPosef PointerPose;
+
+  float HandScale;
+
+  // Tracking confidence. Range [0,1], 0.0 = lowest confidence, 1.0 = highest confidence.
+  // This is useful for smoothly de-emphasizing hands as confidence decreases.
+  // This is the amount of confidence that the system has that the entire hand pose is correct.
+  ovrpTrackingConfidence HandConfidence;
+
+  // Per-finger tracking confidence. Range [0,1], 0.0 = lowest confidence, 1.0 = highest confidence.
+  // This is the amount of confidence the system has that the individual finger poses are correct.
+  ovrpTrackingConfidence FingerConfidences[ovrpHandFinger_Max];
+
+  // Time stamp for the pose that was requested in global system time.
+  double RequestedTimeStamp;
+
+  // Time stamp of the captured sample that the pose was extrapolated from.
+  double SampleTimeStamp;
+} ovrpHandState;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -9,6 +9,7 @@
 //#include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/SceneRenderTargets.h"
 #include "HeadMountedDisplayTypes.h" // for LogHMD
+#include "OculusHMD.h"
 #include "XRThreadUtils.h"
 #include "Engine/Texture2D.h"
 #include "UObject/ConstructorHelpers.h"
@@ -17,6 +18,7 @@
 #include "Engine/GameEngine.h"
 #include "Engine/Public/SceneUtils.h"
 #include "OculusHMDPrivate.h"
+#include "OculusHMDModule.h"
 
 
 namespace OculusHMD
@@ -34,11 +36,21 @@ FOvrpLayer::FOvrpLayer(uint32 InOvrpLayerId) :
 
 FOvrpLayer::~FOvrpLayer()
 {
-	if (!IsInGameThread())
+	if (IsInGameThread())
+	{
+		ExecuteOnRenderThread([this]()
+		{
+			ExecuteOnRHIThread_DoNotWait([this]()
+			{
+				FOculusHMDModule::GetPluginWrapper().DestroyLayer(OvrpLayerId);
+			});
+		});
+	}
+	else
 	{
 		ExecuteOnRHIThread_DoNotWait([this]()
 		{
-			ovrp_DestroyLayer(OvrpLayerId);
+			FOculusHMDModule::GetPluginWrapper().DestroyLayer(OvrpLayerId);
 		});
 	}
 }
@@ -147,11 +159,10 @@ void FLayer::HandlePokeAHoleComponent()
 			BuildPokeAHoleMesh(Vertices, Triangles, UV0);
 			PokeAHoleComponentPtr->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UV0, VertexColors, Tangents, false);
 
-			UMaterial *PokeAHoleMaterial = Cast<UMaterial>(StaticLoadObject(UMaterial::StaticClass(), NULL, TEXT("/OculusVR/Materials/PokeAHoleMaterial")));
+			FOculusHMD* OculusHMD = static_cast<FOculusHMD*>(GEngine->XRSystem->GetHMDDevice());
+			UMaterial* PokeAHoleMaterial = OculusHMD->GetResourceHolder()->PokeAHoleMaterial;
 			UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(PokeAHoleMaterial, NULL);
-
 			PokeAHoleComponentPtr->SetMaterial(0, DynamicMaterial);
-
 		}
 		PokeAHoleComponentPtr->SetWorldTransform(Desc.Transform);
 
@@ -395,7 +406,7 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 
 		EPixelFormat Format = Desc.Texture.IsValid() ? CustomPresent->GetPixelFormat(Desc.Texture->GetFormat()) : CustomPresent->GetDefaultPixelFormat();
 #if PLATFORM_ANDROID
-		uint32 NumMips = 1;
+		uint32 NumMips = Desc.Texture.IsValid() ? Desc.Texture->GetNumMips() : 1;
 #else
 		uint32 NumMips = 0;
 #endif
@@ -413,7 +424,7 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 		}
 
 		// Calculate layer desc
-		ovrp_CalculateLayerDesc(
+		FOculusHMDModule::GetPluginWrapper().CalculateLayerDesc(
 			Shape,
 			!Desc.LeftTexture.IsValid() ? ovrpLayout_Mono : ovrpLayout_Stereo,
 			ovrpSizei { (int) SizeX, (int) SizeY },
@@ -460,10 +471,10 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 
 		ExecuteOnRHIThread([&]()
 		{
-			// UNDONE Do this in RenderThread once OVRPlugin allows ovrp_SetupLayer to be called asynchronously
+			// UNDONE Do this in RenderThread once OVRPlugin allows FOculusHMDModule::GetPluginWrapper().SetupLayer to be called asynchronously
 			int32 TextureCount;
-			if (OVRP_SUCCESS(ovrp_SetupLayer(CustomPresent->GetOvrpDevice(), OvrpLayerDesc.Base, (int*) &OvrpLayerId)) &&
-				OVRP_SUCCESS(ovrp_GetLayerTextureStageCount(OvrpLayerId, &TextureCount)))
+			if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().SetupLayer(CustomPresent->GetOvrpDevice(), OvrpLayerDesc.Base, (int*) &OvrpLayerId)) &&
+				OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetLayerTextureStageCount(OvrpLayerId, &TextureCount)))
 			{
 				// Left
 				{
@@ -480,7 +491,7 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 					for (int32 TextureIndex = 0; TextureIndex < TextureCount; TextureIndex++)
 					{
 						ovrpTextureHandle* DepthTexHdlPtr = bHasDepth ? &DepthTextures[TextureIndex] : nullptr;
-						if (!OVRP_SUCCESS(ovrp_GetLayerTexture2(OvrpLayerId, TextureIndex, ovrpEye_Left, &ColorTextures[TextureIndex], DepthTexHdlPtr)))
+						if (!OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetLayerTexture2(OvrpLayerId, TextureIndex, ovrpEye_Left, &ColorTextures[TextureIndex], DepthTexHdlPtr)))
 						{
 							UE_LOG(LogHMD, Error, TEXT("Failed to create Oculus layer texture. NOTE: This causes a leak of %d other texture(s), which will go unused."), TextureIndex);
 							// skip setting bLayerCreated and allocating any other textures
@@ -490,7 +501,7 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 						{
 							// Call fails on unsupported platforms and returns null textures for no foveation texture
 							// Since this texture is not required for rendering, don't return on failure
-							if (!OVRP_SUCCESS(ovrp_GetLayerTextureFoveation(OvrpLayerId, TextureIndex, ovrpEye_Left, &FoveationTextures[TextureIndex], &FoveationTextureSize)) || 
+							if (!OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetLayerTextureFoveation(OvrpLayerId, TextureIndex, ovrpEye_Left, &FoveationTextures[TextureIndex], &FoveationTextureSize)) || 
 								FoveationTextures[TextureIndex] == (unsigned long long)nullptr)
 							{
 								bValidFoveationTextures = false;
@@ -511,7 +522,7 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 					for (int32 TextureIndex = 0; TextureIndex < TextureCount; TextureIndex++)
 					{
 						ovrpTextureHandle* DepthTexHdlPtr = bHasDepth ? &RightDepthTextures[TextureIndex] : nullptr;
-						if (!OVRP_SUCCESS(ovrp_GetLayerTexture2(OvrpLayerId, TextureIndex, ovrpEye_Right, &RightColorTextures[TextureIndex], DepthTexHdlPtr)))
+						if (!OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetLayerTexture2(OvrpLayerId, TextureIndex, ovrpEye_Right, &RightColorTextures[TextureIndex], DepthTexHdlPtr)))
 						{
 							UE_LOG(LogHMD, Error, TEXT("Failed to create Oculus layer texture. NOTE: This causes a leak of %d other texture(s), which will go unused."), TextureCount + TextureIndex);
 							// skip setting bLayerCreated and allocating any other textures
@@ -554,8 +565,15 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 				ResourceType = RRT_Texture2D;
 			}
 
-			uint32 ColorTexCreateFlags = TexCreate_ShaderResource | TexCreate_RenderTargetable | (bNeedsTexSrgbCreate ? TexCreate_SRGB : 0);
+			const bool bNeedsSRGBFlag = bNeedsTexSrgbCreate || CustomPresent->IsSRGB(OvrpLayerDesc.Format);
+
+			uint32 ColorTexCreateFlags = TexCreate_ShaderResource | TexCreate_RenderTargetable | (bNeedsSRGBFlag ? TexCreate_SRGB : 0);
 			uint32 DepthTexCreateFlags = TexCreate_ShaderResource | TexCreate_DepthStencilTargetable;
+
+			if (Desc.Texture.IsValid())
+			{
+				ColorTexCreateFlags |= (Desc.Texture->GetFlags() & TexCreate_SRGB);
+			}
 
 			FClearValueBinding ColorTextureBinding = FClearValueBinding();
 
@@ -609,7 +627,6 @@ void FLayer::UpdateTexture_RenderThread(FCustomPresent* CustomPresent, FRHIComma
 		{
 			bool bAlphaPremultiply = true;
 			bool bNoAlphaWrite = (Desc.Flags & IStereoLayers::LAYER_FLAG_TEX_NO_ALPHA_CHANNEL) != 0;
-			bool bIsCubemap = (Desc.ShapeType == IStereoLayers::ELayerShape::CubemapLayer);
 
 			// Left
 			{
@@ -770,11 +787,17 @@ const ovrpLayerSubmit* FLayer::UpdateLayer_RHIThread(const FSettings* Settings, 
 			}
 		}
 
+		OvrpLayerSubmit.EyeFov.Fov[0] = Frame->Fov[0];
+		OvrpLayerSubmit.EyeFov.Fov[1] = Frame->Fov[1];
+
 #if PLATFORM_ANDROID
 		if (LayerIndex != 0)
 		{
 			OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_InverseAlpha;
 		}
+#endif
+#if PLATFORM_WINDOWS
+		OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_IgnoreSourceAlpha;
 #endif
 	}
 

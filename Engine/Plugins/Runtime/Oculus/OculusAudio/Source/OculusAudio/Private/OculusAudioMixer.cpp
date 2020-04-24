@@ -19,16 +19,6 @@ OculusAudioSpatializationAudioMixer::OculusAudioSpatializationAudioMixer()
 
 OculusAudioSpatializationAudioMixer::~OculusAudioSpatializationAudioMixer()
 {
-	if (TickDelegateHandle.IsValid())
-	{
-		FTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
-	}
-
-	if (bOvrContextInitialized)
-	{
-		// clear context from map
-		Shutdown();
-	}
 }
 
 void OculusAudioSpatializationAudioMixer::SetContext(ovrAudioContext* SharedContext)
@@ -37,10 +27,7 @@ void OculusAudioSpatializationAudioMixer::SetContext(ovrAudioContext* SharedCont
 
 	Context = SharedContext;
 
-	if (SharedContext == nullptr)
-	{
-		return;
-	}
+	check(Context != nullptr);
 
 	Params.AddDefaulted(InitParams.NumSources);
 
@@ -74,6 +61,12 @@ void OculusAudioSpatializationAudioMixer::SetContext(ovrAudioContext* SharedCont
 
 	// Now initialize the high quality algorithm context
 	bOvrContextInitialized = true;
+}
+
+void OculusAudioSpatializationAudioMixer::ClearContext()
+{
+	bOvrContextInitialized = false;
+	Context = nullptr;
 }
 
 void OculusAudioSpatializationAudioMixer::Initialize(const FAudioPluginInitializationParams InitializationParams)
@@ -118,6 +111,10 @@ void OculusAudioSpatializationAudioMixer::ApplyOculusAudioSettings(const UOculus
 
 void OculusAudioSpatializationAudioMixer::Shutdown()
 {
+	if (TickDelegateHandle.IsValid())
+	{
+		FTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
+	}
 	bOvrContextInitialized = false;
 }
 
@@ -128,8 +125,13 @@ bool OculusAudioSpatializationAudioMixer::IsSpatializationEffectInitialized() co
 
 void OculusAudioSpatializationAudioMixer::OnInitSource(const uint32 SourceId, const FName& AudioComponentUserId, USpatializationPluginSourceSettingsBase* InSettings)
 {
+	if (!bOvrContextInitialized)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Oculus Audio Error - Context uninitialized. Sound %s (id=%d) will not play!"), *AudioComponentUserId.ToString(), SourceId);
+		return;
+	}
+
 	FScopeLock ScopeLock(&ContextLock);
-	check(bOvrContextInitialized);
 
 	if (InSettings != nullptr) 
 	{
@@ -165,7 +167,7 @@ void OculusAudioSpatializationAudioMixer::SetSpatializationParameters(uint32 Voi
 void OculusAudioSpatializationAudioMixer::ProcessAudio(const FAudioPluginSourceInputData& InputData, FAudioPluginSourceOutputData& OutputData)
 {
 	FScopeLock ScopeLock(&ContextLock);
-	if (InputData.SpatializationParams && *Context)
+	if (InputData.SpatializationParams && Context != nullptr && *Context != nullptr)
 	{
 		Params[InputData.SourceId] = *InputData.SpatializationParams;
 

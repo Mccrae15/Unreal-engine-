@@ -119,11 +119,6 @@ struct FOculusKey
 	static const FKey OculusRemote_VolumeUp;
 	static const FKey OculusRemote_VolumeDown;
 	static const FKey OculusRemote_Home;
-
-	static const FKey OculusTouchpad_Touchpad;
-	static const FKey OculusTouchpad_Touchpad_X;
-	static const FKey OculusTouchpad_Touchpad_Y;
-	static const FKey OculusTouchpad_Back;
 };
 
 
@@ -160,11 +155,6 @@ struct FOculusKeyNames
 	static const FName OculusRemote_VolumeUp;
 	static const FName OculusRemote_VolumeDown;
 	static const FName OculusRemote_Home;
-
-	static const FName OculusTouchpad_Touchpad;
-	static const FName OculusTouchpad_Touchpad_X;
-	static const FName OculusTouchpad_Touchpad_Y;
-	static const FName OculusTouchpad_Back;
 };
 
 
@@ -408,31 +398,6 @@ struct FOculusTouchControllerPair
 	{
 		ControllerStates[ (int32)EControllerHand::Left ] = FOculusTouchControllerState( EControllerHand::Left );
 		ControllerStates[ (int32)EControllerHand::Right ] = FOculusTouchControllerState( EControllerHand::Right );	
-	}
-};
-
-//-------------------------------------------------------------------------------------------------
-// FOculusTouchpadState
-//-------------------------------------------------------------------------------------------------
-struct FOculusTouchpadState
-{
-	/** Button states */
-	FOculusButtonState Buttons[(int32)EOculusTouchpadButton::TotalButtonCount];
-
-	/** Touchpad state */
-	FVector2D TouchpadPosition;
-
-	FOculusTouchpadState()
-		: TouchpadPosition(FVector2D::ZeroVector)
-	{
-		for (FOculusButtonState& Button : Buttons)
-		{
-			Button.bIsPressed = false;
-			Button.NextRepeatTime = 0.0;
-		}
-
-		Buttons[(int32)EOculusTouchpadButton::Touchpad].Key = FOculusKeyNames::OculusTouchpad_Touchpad;
-		Buttons[(int32)EOculusTouchpadButton::Back].Key = FOculusKeyNames::OculusTouchpad_Back;
 	}
 };
 

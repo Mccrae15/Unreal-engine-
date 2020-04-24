@@ -4,6 +4,8 @@
 #include "Engine/Engine.h"
 #include "ISpectatorScreenController.h"
 #include "IXRTrackingSystem.h"
+#include "StereoRendering.h"
+#include "StereoRenderTargetManager.h"
 #include "SceneCaptureComponent2D.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "EngineUtils.h"
@@ -17,6 +19,10 @@
 #include "OculusMR_State.h"
 #include "OculusMR_CastingCameraActor.h"
 #include "AudioDevice.h"
+#if PLATFORM_ANDROID
+#include "VulkanRHIBridge.h"
+#include "VulkanRHIPrivate.h"
+#endif
 
 #if WITH_EDITOR
 #include "Editor.h" // for FEditorDelegates::PostPIEStarted
@@ -32,8 +38,6 @@ namespace
 			return ovrpCameraDevice_WebCamera0;
 		else if (device == EOculusMR_CameraDeviceEnum::CD_WebCamera1)
 			return ovrpCameraDevice_WebCamera1;
-		else if (device == EOculusMR_CameraDeviceEnum::CD_ZEDCamera)
-			return ovrpCameraDevice_ZEDStereoCamera;
 		checkNoEntry();
 		return ovrpCameraDevice_None;
 	}
@@ -89,18 +93,18 @@ void FOculusMRModule::StartupModule()
 	const TCHAR* CmdLine = FCommandLine::Get();
 	const bool bAutoOpenFromParams = FParse::Param(CmdLine, TEXT("mixedreality"));
 
-	if (bAutoOpenFromParams && FOculusHMDModule::Get().PreInit() && OVRP_SUCCESS(ovrp_InitializeMixedReality()))
+	if (bAutoOpenFromParams && FOculusHMDModule::Get().PreInit() && OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().InitializeMixedReality()))
 	{
 		InitMixedRealityCapture();
 	}
 #elif PLATFORM_ANDROID
-	// On Android, ovrp_Media_Initialize() needs OVRPlugin to be initialized first, so we should handle that when the world is created
+	// On Android, FOculusHMDModule::GetPluginWrapper().Media_Initialize() needs OVRPlugin to be initialized first, so we should handle that when the world is created
 	if (GEngine)
 	{
 		InitialWorldAddedEventBinding = GEngine->OnWorldAdded().AddRaw(this, &FOculusMRModule::OnInitialWorldCreated);
 	}
 	InitialWorldLoadEventBinding = FCoreUObjectDelegates::PostLoadMapWithWorld.AddRaw(this, &FOculusMRModule::OnInitialWorldCreated);
-#endif // PLATFORM_WINDOWS || PLATFORM_ANDROID
+#endif
 #endif // OCULUS_MR_SUPPORTED_PLATFORMS
 }
 
@@ -124,12 +128,12 @@ void FOculusMRModule::ShutdownModule()
 		}
 #if PLATFORM_ANDROID
 		ovrpBool mediaInit = false;
-		if (OVRP_SUCCESS(ovrp_Media_GetInitialized(&mediaInit)) && mediaInit == ovrpBool_True)
+		if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().Media_GetInitialized(&mediaInit)) && mediaInit == ovrpBool_True)
 		{
-			ovrp_Media_Shutdown();
+			FOculusHMDModule::GetPluginWrapper().Media_Shutdown();
 		}
 #endif 
-		ovrp_ShutdownMixedReality();
+		FOculusHMDModule::GetPluginWrapper().ShutdownMixedReality();
 
 		if (MRSettings->IsRooted())
 		{
@@ -256,7 +260,7 @@ void FOculusMRModule::SetupExternalCamera()
 		// Close the camera device for external composition since we don't need the actual camera feed
 		if (MRState->CurrentCapturingCamera != ovrpCameraDevice_None)
 		{
-			ovrp_CloseCameraDevice(MRState->CurrentCapturingCamera);
+			FOculusHMDModule::GetPluginWrapper().CloseCameraDevice(MRState->CurrentCapturingCamera);
 		}
 	}
 #if PLATFORM_WINDOWS
@@ -271,7 +275,7 @@ void FOculusMRModule::SetupExternalCamera()
 		}
 
 		MRState->CurrentCapturingCamera = ConvertCameraDevice(MRSettings->CapturingCamera);
-		if (OVRP_FAILURE(ovrp_IsCameraDeviceAvailable2(MRState->CurrentCapturingCamera, &available)) || !available)
+		if (OVRP_FAILURE(FOculusHMDModule::GetPluginWrapper().IsCameraDeviceAvailable2(MRState->CurrentCapturingCamera, &available)) || !available)
 		{
 			MRState->CurrentCapturingCamera = ovrpCameraDevice_None;
 			UE_LOG(LogMR, Error, TEXT("CapturingCamera not available"));
@@ -283,26 +287,26 @@ void FOculusMRModule::SetupExternalCamera()
 		{
 			Size.w = MRState->TrackedCamera.SizeX;
 			Size.h = MRState->TrackedCamera.SizeY;
-			ovrp_SetCameraDevicePreferredColorFrameSize(MRState->CurrentCapturingCamera, Size);
+			FOculusHMDModule::GetPluginWrapper().SetCameraDevicePreferredColorFrameSize(MRState->CurrentCapturingCamera, Size);
 		}
 		else
 		{
 			Size.w = 1280;
 			Size.h = 720;
-			ovrp_SetCameraDevicePreferredColorFrameSize(MRState->CurrentCapturingCamera, Size);
+			FOculusHMDModule::GetPluginWrapper().SetCameraDevicePreferredColorFrameSize(MRState->CurrentCapturingCamera, Size);
 		}
 
 		if (MRSettings->bUseDynamicLighting)
 		{
 			ovrpBool supportDepth = ovrpBool_False;
-			if (OVRP_SUCCESS(ovrp_DoesCameraDeviceSupportDepth(MRState->CurrentCapturingCamera, &supportDepth)) && supportDepth)
+			if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().DoesCameraDeviceSupportDepth(MRState->CurrentCapturingCamera, &supportDepth)) && supportDepth)
 			{
-				ovrp_SetCameraDeviceDepthSensingMode(MRState->CurrentCapturingCamera, ovrpCameraDeviceDepthSensingMode_Fill);
-				ovrp_SetCameraDevicePreferredDepthQuality(MRState->CurrentCapturingCamera, ConvertCameraDepthQuality(MRSettings->DepthQuality));
+				FOculusHMDModule::GetPluginWrapper().SetCameraDeviceDepthSensingMode(MRState->CurrentCapturingCamera, ovrpCameraDeviceDepthSensingMode_Fill);
+				FOculusHMDModule::GetPluginWrapper().SetCameraDevicePreferredDepthQuality(MRState->CurrentCapturingCamera, ConvertCameraDepthQuality(MRSettings->DepthQuality));
 			}
 		}
 		ovrpBool cameraOpen;
-		if (OVRP_FAILURE(ovrp_HasCameraDeviceOpened2(MRState->CurrentCapturingCamera, &cameraOpen)) || (!cameraOpen && OVRP_FAILURE(ovrp_OpenCameraDevice(MRState->CurrentCapturingCamera))))
+		if (OVRP_FAILURE(FOculusHMDModule::GetPluginWrapper().HasCameraDeviceOpened2(MRState->CurrentCapturingCamera, &cameraOpen)) || (!cameraOpen && OVRP_FAILURE(FOculusHMDModule::GetPluginWrapper().OpenCameraDevice(MRState->CurrentCapturingCamera))))
 		{
 			MRState->CurrentCapturingCamera = ovrpCameraDevice_None;
 			UE_LOG(LogMR, Error, TEXT("Cannot open CapturingCamera"));
@@ -316,7 +320,7 @@ void FOculusMRModule::CloseExternalCamera()
 {
 	if (MRState->CurrentCapturingCamera != ovrpCameraDevice_None)
 	{
-		ovrp_CloseCameraDevice(MRState->CurrentCapturingCamera);
+		FOculusHMDModule::GetPluginWrapper().CloseCameraDevice(MRState->CurrentCapturingCamera);
 		MRState->CurrentCapturingCamera = ovrpCameraDevice_None;
 	}
 }
@@ -391,12 +395,32 @@ void FOculusMRModule::ChangeCaptureState()
 {
 	ovrpBool activated;
 	// Set up or close in-game capture when activation state changes
-	if (OVRP_SUCCESS(ovrp_Media_Update()) && OVRP_SUCCESS(ovrp_Media_IsMrcActivated(&activated)) && activated == ovrpBool_True)
+	if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().Media_Update()) && OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().Media_IsMrcActivated(&activated)) && activated == ovrpBool_True)
 	{
 		if (!bActivated)
 		{
 			UE_LOG(LogMR, Log, TEXT("Activating MR Capture"))
 			bActivated = true;
+
+			// UE resizes the main scene color and depth targets to the maximum dimensions of all rendertargets,
+			// which causes rendering issues if it doesn't match the compositor-allocated eye textures. This is
+			// a hacky fix by making sure that the scene capture rendertarget is no larger than the eye.
+			int frameWidth;
+			int frameHeight;
+			FOculusHMDModule::GetPluginWrapper().Media_GetMrcFrameSize(&frameWidth, &frameHeight);
+			uint32 maxWidth = frameWidth / 2;
+			uint32 maxHeight = frameHeight;
+			IStereoRenderTargetManager* const StereoRenderTargetManager = GEngine->StereoRenderingDevice->GetRenderTargetManager();
+			if (StereoRenderTargetManager)
+			{
+				StereoRenderTargetManager->CalculateRenderTargetSize(*(FViewport*)GEngine->GameViewport->GetGameViewport(), maxWidth, maxHeight);
+			}
+			maxWidth *= 2;
+			frameWidth = frameWidth > maxWidth ? maxWidth : frameWidth;
+			frameHeight = frameHeight > maxHeight ? maxHeight : frameHeight;
+			FOculusHMDModule::GetPluginWrapper().Media_SetMrcFrameSize(frameWidth, frameHeight);
+			UE_LOG(LogMR, Log, TEXT("MRC Frame width: %d height %d"), frameWidth, frameHeight);
+
 			SetupInGameCapture();
 		}
 	}
@@ -435,35 +459,63 @@ void FOculusMRModule::OnInitialWorldCreated(UWorld* NewWorld)
 	}
 
 	// Initialize and check if MRC is enabled
-	if (FOculusHMDModule::Get().PreInit() && OVRP_SUCCESS(ovrp_InitializeMixedReality()))
+	if (FOculusHMDModule::Get().PreInit() && OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().InitializeMixedReality()))
 	{
 		ovrpBool mrcEnabled;
-		if (OVRP_SUCCESS(ovrp_Media_Initialize()))
+
+		if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().Media_Initialize()))
 		{
 			UE_LOG(LogMR, Log, TEXT("MRC Initialized"));
-			if (OVRP_SUCCESS(ovrp_Media_IsMrcEnabled(&mrcEnabled)) && mrcEnabled == ovrpBool_True)
+
+			if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().Media_IsMrcEnabled(&mrcEnabled)) && mrcEnabled == ovrpBool_True)
 			{
 				UE_LOG(LogMR, Log, TEXT("MRC Enabled"));
-				ovrp_Media_SetMrcInputVideoBufferType(ovrpMediaInputVideoBufferType_TextureHandle);
-				ovrp_Media_SetMrcFrameImageFlipped(IsAndroidOpenGLESPlatform(GMaxRHIShaderPlatform));
-				ovrp_Media_SetMrcFrameInverseAlpha(ovrpBool_True);
+
+				// Find a free queue index for vulkan
+				if (IsVulkanPlatform(GMaxRHIShaderPlatform))
+				{
+					unsigned int queueIndex = 0;
+					ExecuteOnRenderThread([&queueIndex]()
+					{
+						ExecuteOnRHIThread([&queueIndex]()
+						{
+							FVulkanDevice* VulkanDevice = VulkanRHIBridge::GetDevice((FVulkanDynamicRHI*)GDynamicRHI);
+							int gfxIndex = VulkanDevice->GetGraphicsQueue() ? VulkanDevice->GetGraphicsQueue()->GetQueueIndex() : -1;
+							if (gfxIndex == queueIndex) {
+								++queueIndex;
+							}
+						});
+					});
+					FOculusHMDModule::GetPluginWrapper().Media_SetAvailableQueueIndexVulkan(queueIndex);
+				}
+
+				// We use the upside down scenecapture in GLES for performance (one less copy)
+				if (IsOpenGLPlatform(GMaxRHIShaderPlatform))
+				{
+					FOculusHMDModule::GetPluginWrapper().Media_SetMrcFrameImageFlipped(ovrpBool_True);
+				}
+
+				FOculusHMDModule::GetPluginWrapper().Media_SetMrcInputVideoBufferType(ovrpMediaInputVideoBufferType_TextureHandle);
+				FOculusHMDModule::GetPluginWrapper().Media_SetMrcFrameInverseAlpha(ovrpBool_True);
+
 				FAudioDevice* AudioDevice = FAudioDevice::GetMainAudioDevice();
 				float SampleRate = AudioDevice->GetSampleRate();
-				ovrp_Media_SetMrcAudioSampleRate((int)SampleRate);
+				FOculusHMDModule::GetPluginWrapper().Media_SetMrcAudioSampleRate((int)SampleRate);
+
 				InitMixedRealityCapture();
 				OnWorldCreated(NewWorld);
 			}
 			else
 			{
 				// Shut down if MRC not enabled or the media couldn't be enabled
-				ovrp_Media_Shutdown();
-				ovrp_ShutdownMixedReality();
+				FOculusHMDModule::GetPluginWrapper().Media_Shutdown();
+				FOculusHMDModule::GetPluginWrapper().ShutdownMixedReality();
 			}
 		}
 		else
 		{
 			// Shut down if MRC not enabled or the media couldn't be enabled
-			ovrp_ShutdownMixedReality();
+			FOculusHMDModule::GetPluginWrapper().ShutdownMixedReality();
 		}
 	}
 }
@@ -498,7 +550,7 @@ void FOculusMRModule::OnCapturingCameraChanged(EOculusMR_CameraDeviceEnum OldVal
 	if (OldVal != EOculusMR_CameraDeviceEnum::CD_None)
 	{
 		auto CameraDevice = ConvertCameraDevice(OldVal);
-		ovrp_CloseCameraDevice(CameraDevice);
+		FOculusHMDModule::GetPluginWrapper().CloseCameraDevice(CameraDevice);
 	}
 	SetupExternalCamera();
 }
@@ -512,7 +564,7 @@ void FOculusMRModule::OnIsCastingChanged(bool OldVal, bool NewVal)
 	if (NewVal == true)
 	{
 #if PLATFORM_ANDROID
-		ovrp_Media_SetMrcActivationMode(ovrpMediaMrcActivationMode_Automatic);
+		FOculusHMDModule::GetPluginWrapper().Media_SetMrcActivationMode(ovrpMediaMrcActivationMode_Automatic);
 #endif
 		// Initialize everything again if we turn MRC on
 		SetupExternalCamera();
@@ -521,7 +573,7 @@ void FOculusMRModule::OnIsCastingChanged(bool OldVal, bool NewVal)
 	else
 	{
 #if PLATFORM_ANDROID
-		ovrp_Media_SetMrcActivationMode(ovrpMediaMrcActivationMode_Disabled);
+		FOculusHMDModule::GetPluginWrapper().Media_SetMrcActivationMode(ovrpMediaMrcActivationMode_Disabled);
 #endif
 		CloseInGameCapture();
 		CloseExternalCamera();

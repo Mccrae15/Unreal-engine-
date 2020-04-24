@@ -29,6 +29,9 @@ public:
 	FTransform TrackingToWorld;		// (OnEndGameFrame)
 
 	EFixedFoveatedRenderingLevel FFRLevel; // OnStartGameFrame
+	bool FFRDynamic;					   //OnStartGameFrame
+
+	ovrpFovf Fov[ovrpEye_Count];	// UpdateStereoRenderingParams
 
 	union
 	{

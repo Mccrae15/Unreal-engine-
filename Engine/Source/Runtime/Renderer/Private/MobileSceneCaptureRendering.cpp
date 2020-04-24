@@ -351,7 +351,8 @@ void UpdateSceneCaptureContentMobile_RenderThread(
 	const FString& EventName,
 	const FResolveParams& ResolveParams,
 	bool bGenerateMips,
-	const FGenerateMipsParams& GenerateMipsParams)
+	const FGenerateMipsParams& GenerateMipsParams,
+	bool bDisableFlipCopyGLES)
 {
 	FMemMark MemStackMark(FMemStack::Get());
 
@@ -367,7 +368,7 @@ void UpdateSceneCaptureContentMobile_RenderThread(
 #endif
 
 		const bool bIsMobileHDR = IsMobileHDR();
-		const bool bRHINeedsFlip = RHINeedsToSwitchVerticalAxis(GMaxRHIShaderPlatform);
+		const bool bRHINeedsFlip = RHINeedsToSwitchVerticalAxis(GMaxRHIShaderPlatform) && bDisableFlipCopyGLES;
 		// note that GLES code will flip the image when:
 		//	bIsMobileHDR && SceneCaptureSource == SCS_FinalColorLDR (flip performed during post processing)
 		//	!bIsMobileHDR (rendering is flipped by vertex shader)

@@ -41,38 +41,38 @@ const uint64 UOvrAvatar::GearVRControllerMeshID = 7900549095409034633ull;
 const uint64 UOvrAvatar::GoControllerMeshID = 14216321678048096174ull;
 
 #if PLATFORM_ANDROID
-	FString UOvrAvatar::Single = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Mobile"));
-	FString UOvrAvatar::Combined = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Mobile_Combined"));
+FString UOvrAvatar::Single = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Mobile"));
+FString UOvrAvatar::Combined = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Mobile_Combined"));
 
-	FString UOvrAvatar::ExpressiveMaskedBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Body_Mobile"));
-	FString UOvrAvatar::ExpressiveAlphaBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Body_Mobile"));
-	FString UOvrAvatar::ExpressiveOpaqueBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Body_Mobile"));
+FString UOvrAvatar::ExpressiveMaskedBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Body_Mobile"));
+FString UOvrAvatar::ExpressiveAlphaBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Body_Mobile"));
+FString UOvrAvatar::ExpressiveOpaqueBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Body_Mobile"));
 
-	FString UOvrAvatar::ExpressiveAlphaSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Simple_Mobile"));
-	FString UOvrAvatar::ExpressiveMaskedSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Simple_Mobile"));
-	FString UOvrAvatar::ExpressiveOpaqueSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Simple_Mobile"));
+FString UOvrAvatar::ExpressiveAlphaSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Simple_Mobile"));
+FString UOvrAvatar::ExpressiveMaskedSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Simple_Mobile"));
+FString UOvrAvatar::ExpressiveOpaqueSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Simple_Mobile"));
 
-	FString UOvrAvatar::ExpressiveCombinedMasked = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Opaque_Mobile"));
-	FString UOvrAvatar::ExpressiveCombinedOpaque = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Opaque_Mobile"));
-	FString UOvrAvatar::ExpressiveCombinedAlpha = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Opaque_Mobile"));
+FString UOvrAvatar::ExpressiveCombinedMasked = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Opaque_Mobile"));
+FString UOvrAvatar::ExpressiveCombinedOpaque = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Opaque_Mobile"));
+FString UOvrAvatar::ExpressiveCombinedAlpha = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Opaque_Mobile"));
 #else
-	FString UOvrAvatar::Single = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2.OculusAvatars_PBRV2"));
-	FString UOvrAvatar::Combined = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined"));
+FString UOvrAvatar::Single = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2.OculusAvatars_PBRV2"));
+FString UOvrAvatar::Combined = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined"));
 
-	FString UOvrAvatar::ExpressiveMaskedBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Masked_Body"));
-	FString UOvrAvatar::ExpressiveAlphaBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Alpha_Body"));
-	FString UOvrAvatar::ExpressiveOpaqueBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Body"));
+FString UOvrAvatar::ExpressiveMaskedBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Masked_Body"));
+FString UOvrAvatar::ExpressiveAlphaBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Alpha_Body"));
+FString UOvrAvatar::ExpressiveOpaqueBody = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Body"));
 
-	FString UOvrAvatar::ExpressiveAlphaSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Alpha_Simple"));
-	FString UOvrAvatar::ExpressiveMaskedSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Masked_Simple"));
-	FString UOvrAvatar::ExpressiveOpaqueSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Simple"));
+FString UOvrAvatar::ExpressiveAlphaSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Alpha_Simple"));
+FString UOvrAvatar::ExpressiveMaskedSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Masked_Simple"));
+FString UOvrAvatar::ExpressiveOpaqueSimple = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Exp_Opaque_Simple"));
 
-	FString UOvrAvatar::ExpressiveCombinedMasked = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Masked"));
-	FString UOvrAvatar::ExpressiveCombinedOpaque = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Opaque"));
-	FString UOvrAvatar::ExpressiveCombinedAlpha = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Alpha"));
+FString UOvrAvatar::ExpressiveCombinedMasked = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Masked"));
+FString UOvrAvatar::ExpressiveCombinedOpaque = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Opaque"));
+FString UOvrAvatar::ExpressiveCombinedAlpha = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_Combined_Exp_Alpha"));
 #endif
-	FString UOvrAvatar::ExpressiveEyeShell = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_EyeShell"));
-	FString UOvrAvatar::ExpressiveController = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_ExpressiveController"));
+FString UOvrAvatar::ExpressiveEyeShell = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_EyeShell"));
+FString UOvrAvatar::ExpressiveController = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_ExpressiveController"));
 
 
 FColor UOvrAvatar::GetColorFromVertex(const ovrAvatarMeshVertex& vertex)
@@ -211,16 +211,16 @@ void UOvrAvatar::HandleAvatarSpecification(const ovrAvatarMessage_AvatarSpecific
 
 		FString Name = AvatarComponent->name;
 		USceneComponent* BaseComponent = nullptr;
-			
+
 		if (ShouldUseMotionControllerComponent)
 		{
 			BaseComponent = NewObject<UMotionControllerComponent>(this, *Name);
 			static_cast<UMotionControllerComponent*>(BaseComponent)->MotionSource
-				= IsLeftControllerComponent || IsLeftHandComponent 
-				? FXRMotionControllerBase::LeftHandSourceId 
+				= IsLeftControllerComponent || IsLeftHandComponent
+				? FXRMotionControllerBase::LeftHandSourceId
 				: FXRMotionControllerBase::RightHandSourceId;
 		}
-		else 
+		else
 		{
 			BaseComponent = NewObject<USceneComponent>(this, *Name);
 		}
@@ -392,7 +392,7 @@ void UOvrAvatar::HandleAvatarSpecification(const ovrAvatarMessage_AvatarSpecific
 				bool AddDepthMesh = BodyMaterial == MaterialType::Translucent && IsBodyComponent;
 				AddDepthMesh |= (IsLeftHandComponent || IsRightHandComponent) && HandMaterial == MaterialType::Translucent;
 				AddDepthMesh |= !EnableExpressive && UseDepthMeshes;
-				
+
 				if (AddDepthMesh)
 				{
 					MeshName += TEXT("_Depth");
@@ -428,6 +428,16 @@ void UOvrAvatar::HandleAvatarSpecification(const ovrAvatarMessage_AvatarSpecific
 	}
 }
 
+static inline USkeletalMesh * CreateAvatarSkeletalMesh(UObject* outer, uint64_t assetId)
+{
+	USkeletalMesh * mesh = NewObject<USkeletalMesh>(outer, NAME_None, RF_Transient);
+#if WITH_EDITORONLY_DATA
+	mesh->GetImportedModel()->SkeletalMeshModelGUID = FGuid(uint32(assetId & 0xffffffff), uint32((assetId >> 32) & 0xffffffff), 0, 0);
+#endif
+	return mesh;
+
+}
+
 void UOvrAvatar::HandleAssetLoaded(const ovrAvatarMessage_AssetLoaded* message)
 {
 	const ovrAvatarAssetType assetType = ovrAvatarAsset_GetType(message->asset);
@@ -450,7 +460,7 @@ void UOvrAvatar::HandleAssetLoaded(const ovrAvatarMessage_AssetLoaded* message)
 				BodyBlendShapeNames.Add(BlendName);
 			}
 
-			USkeletalMesh * mesh = NewObject<USkeletalMesh>(GetTransientPackage(), NAME_None, RF_Transient);
+			USkeletalMesh * mesh = CreateAvatarSkeletalMesh(GetTransientPackage(), BodyMeshID);
 
 			UE_LOG(LogAvatars, Display, TEXT("Loading Combined Mesh"));
 			FString MeshName = BodyName + TEXT("_Combined");
@@ -511,7 +521,7 @@ void UOvrAvatar::HandleAssetLoaded(const ovrAvatarMessage_AssetLoaded* message)
 		{
 			if (UPoseableMeshComponent* MeshComp = GetMeshComponent(message->assetID))
 			{
-				USkeletalMesh* mesh = NewObject<USkeletalMesh>(GetTransientPackage(), NAME_None, RF_Transient);
+				USkeletalMesh* mesh = CreateAvatarSkeletalMesh(GetTransientPackage(), message->assetID);
 				LoadMesh(mesh, ovrAvatarAsset_GetMeshData(message->asset), message->asset, message->assetID);
 
 				if (BodyMeshID == message->assetID)
@@ -663,7 +673,7 @@ void UOvrAvatar::UpdateSDK(float DeltaTime)
 void UOvrAvatar::UpdatePostSDK()
 {
 	ovrpHandedness HandedNess = ovrpHandedness_Unsupported;
-	ovrp_GetDominantHand(&HandedNess);
+	FOculusHMDModule::GetPluginWrapper().GetDominantHand(&HandedNess);
 
 	if (HandedNess != DominantHand)
 	{
@@ -688,7 +698,7 @@ void UOvrAvatar::UpdatePostSDK()
 			if (DominantHand == ovrpHandedness_LeftHanded && IsRightControllerComponent ||
 				DominantHand == ovrpHandedness_RightHanded && IsLeftControllerComponent)
 
-			continue;
+				continue;
 		}
 
 		const bool ShouldSkipTransformUpdate
@@ -843,7 +853,7 @@ void UOvrAvatar::UpdateTransforms(float DeltaTime)
 		ovrpPoseStatef InPoseState;
 		OculusHMD::FPose OutPose;
 
-		if (OVRP_SUCCESS(ovrp_GetNodePoseState3(ovrpStep_Render, CurrentFrame->FrameNumber, ovrpNode_Head, &InPoseState)) &&
+		if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetNodePoseState3(ovrpStep_Render, CurrentFrame->FrameNumber, ovrpNode_Head, &InPoseState)) &&
 			OculusHMD->ConvertPose_Internal(InPoseState.Pose, OutPose, Settings, 1.0f))
 		{
 			ovrpPosef ovrPose;
@@ -858,14 +868,14 @@ void UOvrAvatar::UpdateTransforms(float DeltaTime)
 	ovrpController ControllerMask = ovrpController_None;
 	ovrpController ActiveController = ovrpController_None;
 
-	if (OVRP_FAILURE(result = ovrp_GetConnectedControllers2(&ControllerMask)))
+	if (OVRP_FAILURE(result = FOculusHMDModule::GetPluginWrapper().GetConnectedControllers2(&ControllerMask)))
 	{
-		UE_LOG(LogAvatars, Display, TEXT("ovrp_GetConnectedControllers2 failed %d"), result);
+		UE_LOG(LogAvatars, Display, TEXT("FOculusHMDModule::GetPluginWrapper().GetConnectedControllers2 failed %d"), result);
 	}
 
-	if (OVRP_FAILURE(result = ovrp_GetActiveController2(&ActiveController)))
+	if (OVRP_FAILURE(result = FOculusHMDModule::GetPluginWrapper().GetActiveController2(&ActiveController)))
 	{
-		UE_LOG(LogAvatars, Display, TEXT("ovrp_GetActiveController2 failed %d"), result);
+		UE_LOG(LogAvatars, Display, TEXT("FOculusHMDModule::GetPluginWrapper().GetActiveController2 failed %d"), result);
 	}
 
 	// Left hand
@@ -889,7 +899,7 @@ void UOvrAvatar::UpdateTransforms(float DeltaTime)
 			ovrpPoseStatef InPoseState;
 			OculusHMD::FPose OutPose;
 
-			if (OVRP_SUCCESS(ovrp_GetNodePoseState3(ovrpStep_Render, CurrentFrame->FrameNumber, ovrpNode_HandLeft, &InPoseState)) &&
+			if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetNodePoseState3(ovrpStep_Render, CurrentFrame->FrameNumber, ovrpNode_HandLeft, &InPoseState)) &&
 				OculusHMD->ConvertPose_Internal(InPoseState.Pose, OutPose, Settings, 1.0f))
 			{
 				ovrpPosef ovrPose;
@@ -900,7 +910,7 @@ void UOvrAvatar::UpdateTransforms(float DeltaTime)
 			}
 
 			ovrpControllerState4 controllerState;
-			if (OVRP_SUCCESS(ovrp_GetControllerState4(LeftControllerType, &controllerState)))
+			if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetControllerState4(LeftControllerType, &controllerState)))
 			{
 				handInputState.isActive = true;
 				handInputState.indexTrigger = controllerState.IndexTrigger[ovrpHand_Left];
@@ -933,7 +943,7 @@ void UOvrAvatar::UpdateTransforms(float DeltaTime)
 			ovrpPoseStatef InPoseState;
 			OculusHMD::FPose OutPose;
 
-			if (OVRP_SUCCESS(ovrp_GetNodePoseState3(ovrpStep_Render, CurrentFrame->FrameNumber, ovrpNode_HandRight, &InPoseState)) &&
+			if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetNodePoseState3(ovrpStep_Render, CurrentFrame->FrameNumber, ovrpNode_HandRight, &InPoseState)) &&
 				OculusHMD->ConvertPose_Internal(InPoseState.Pose, OutPose, Settings, 1.0f))
 			{
 				ovrpPosef ovrPose;
@@ -944,7 +954,7 @@ void UOvrAvatar::UpdateTransforms(float DeltaTime)
 			}
 
 			ovrpControllerState4 controllerState;
-			if (OVRP_SUCCESS(ovrp_GetControllerState4(RightControllerType, &controllerState)))
+			if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetControllerState4(RightControllerType, &controllerState)))
 			{
 				handInputState.isActive = true;
 				handInputState.indexTrigger = controllerState.IndexTrigger[ovrpHand_Right];
@@ -993,7 +1003,23 @@ void UOvrAvatar::UpdateSkeleton(UPoseableMeshComponent& mesh, const ovrAvatarSki
 	FTransform LocalBone = FTransform::Identity;
 	for (uint32 BoneIndex = 0; BoneIndex < pose.jointCount; BoneIndex++)
 	{
-		OvrAvatarHelpers::OvrAvatarTransformToFTransfrom(pose.jointTransform[BoneIndex], LocalBone);
+		OvrAvatarHelpers::OvrAvatarBoneTransformToFTransform(pose.jointTransform[BoneIndex], LocalBone);
+
+		// Apply a fixup rotation to the root of the pose
+		if (BoneIndex == 0)
+		{
+			// For skeletal meshes with 1 joint, the root is the one affected so just do a normal conversion and apply then fixup
+			if (pose.jointCount == 1)
+			{
+				OvrAvatarHelpers::OvrAvatarTransformToFTransform(pose.jointTransform[BoneIndex], LocalBone);
+			}
+
+			FQuat FixupRotation = LocalBone.GetRotation();
+			FixupRotation *= FQuat(-0.5, 0.5, -0.5, 0.5);
+			
+			FixupRotation.Normalize();
+			LocalBone.SetRotation(FixupRotation);
+		}
 		mesh.BoneSpaceTransforms[BoneIndex] = LocalBone;
 	}
 
@@ -1385,7 +1411,8 @@ void UOvrAvatar::LoadMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMeshAssetD
 		FName BoneName = FName(*BoneString);
 
 		FTransform Transform = FTransform::Identity;
-		OvrAvatarHelpers::OvrAvatarTransformToFTransfrom(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::OvrAvatarBoneTransformToFTransform(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::GetBoneRootFixupTransform(BoneString, BoneIndex, Transform);
 
 		FReferenceSkeletonModifier Modifier = FReferenceSkeletonModifier(SkeletalMesh->RefSkeleton, nullptr);
 		int32 ParentIndex = BoneIndex > 0 && data->skinnedBindPose.jointParents[BoneIndex] < 0 ? 0 : data->skinnedBindPose.jointParents[BoneIndex];
@@ -1500,14 +1527,14 @@ void UOvrAvatar::LoadMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMeshAssetD
 
 #if WITH_EDITOR
 			FSoftSkinVertex ModelVertex;
-			ModelVertex.Position = 100.0f * FVector(-SourceVertex->z, SourceVertex->x, SourceVertex->y);
+			ModelVertex.Position = 100.0f * FVector(-SourceVertex->x, -SourceVertex->z, SourceVertex->y);
 			BoundBox += ModelVertex.Position;
 
 			ModelVertex.Color = UOvrAvatar::GetColorFromVertex(*SourceVertex);
 
 
-			FVector n = FVector(-SourceVertex->nz, SourceVertex->nx, SourceVertex->ny);
-			FVector t = FVector(-SourceVertex->tz, SourceVertex->tx, SourceVertex->ty);
+			FVector n = FVector(-SourceVertex->nx, -SourceVertex->nz, SourceVertex->ny);
+			FVector t = FVector(-SourceVertex->tx, -SourceVertex->tz, SourceVertex->ty);
 			FVector bt = FVector::CrossProduct(t, n) * FMath::Sign(SourceVertex->tw);
 			ModelVertex.TangentX = t;
 			ModelVertex.TangentY = bt;
@@ -1545,13 +1572,13 @@ void UOvrAvatar::LoadMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMeshAssetD
 			MeshSection.SoftVertices.Add(ModelVertex);
 #else
 			FModelVertex ModelVertex;
-			ModelVertex.Position = 100.0f * FVector(-SourceVertex->z, SourceVertex->x, SourceVertex->y);
+			ModelVertex.Position = 100.0f * FVector(-SourceVertex->x, -SourceVertex->z, SourceVertex->y);
 			BoundBox += ModelVertex.Position;
 
 			ColorArray.Add(UOvrAvatar::GetColorFromVertex(*SourceVertex));
 
-			FVector n = FVector(-SourceVertex->nz, SourceVertex->nx, SourceVertex->ny);
-			FVector t = FVector(-SourceVertex->tz, SourceVertex->tx, SourceVertex->ty);
+			FVector n = FVector(-SourceVertex->nx, -SourceVertex->nz, SourceVertex->ny);
+			FVector t = FVector(-SourceVertex->tx, -SourceVertex->tz, SourceVertex->ty);
 			ModelVertex.TangentX = t;
 			ModelVertex.TangentZ = n;
 			ModelVertex.TexCoord = FVector2D(SourceVertex->u, SourceVertex->v);
@@ -1644,10 +1671,10 @@ void UOvrAvatar::LoadMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMeshAssetD
 		for (uint32_t VertIndex = 0; VertIndex < data->vertexCount; VertIndex++)
 		{
 			FMorphTargetDelta NewVertData;
-			FMemory::Memcpy((void*)&CurrentVert, (void*)(blendVerts + BlendIndex*data->vertexCount + VertIndex), sizeof(ovrAvatarBlendVertex));
+			FMemory::Memcpy((void*)&CurrentVert, (void*)(blendVerts + BlendIndex * data->vertexCount + VertIndex), sizeof(ovrAvatarBlendVertex));
 
-			NewVertData.PositionDelta = 100.0f * FVector(-CurrentVert.z, CurrentVert.x, CurrentVert.y);
-			NewVertData.TangentZDelta = FVector(-CurrentVert.nz, CurrentVert.nx, CurrentVert.ny);
+			NewVertData.PositionDelta = 100.0f * FVector(-CurrentVert.x, -CurrentVert.z, CurrentVert.y);
+			NewVertData.TangentZDelta = FVector(-CurrentVert.nx, -CurrentVert.nz, CurrentVert.ny);
 			NewVertData.SourceIdx = VertIndex;
 			MorphLODModel.Vertices.Add(NewVertData);
 		}
@@ -1802,7 +1829,7 @@ void UOvrAvatar::InitializeMaterials()
 							{
 								MaterialInstance->SetTextureParameterValue(NormalFields[MatIndex], NormalTexture);
 							}
-							
+
 							FLinearColor TuningParam{ DiffuseIntensityValues[MatIndex], RimIntensityValues[MatIndex], 0.0f, 0.f };
 							MaterialInstance->SetVectorParameterValue(TuningParameterFields[MatIndex], TuningParam);
 						}
@@ -1824,7 +1851,7 @@ void UOvrAvatar::InitializeMaterials()
 						ovrAvatarBodyPartType PartType = ovrAvatarRenderPart_GetBodyPartType(Avatar, RenderPart);
 
 						if (MaterialInstance)
-						{	
+						{
 							FLinearColor TuningParam{ 0.f, 0.f, 0.3f, 0.f };
 
 							if (IsBodyComponent && PartType < ovrAvatarBodyPartType_Count)
@@ -1999,11 +2026,11 @@ ovrAvatarControllerType UOvrAvatar::GetControllerTypeByHardware()
 	ovrAvatarControllerType controllerType = ovrAvatarControllerType_Touch;
 
 	ovrpSystemHeadset hmdType = ovrpSystemHeadset_None;
-	ovrpResult result = ovrp_GetSystemHeadsetType2(&hmdType);
+	ovrpResult result = FOculusHMDModule::GetPluginWrapper().GetSystemHeadsetType2(&hmdType);
 
 	if (result != ovrpSuccess)
 	{
-		UE_LOG(LogAvatars, Warning, TEXT("GetControllerTypeByHardware: ovrp_GetSystemHeadsetType2 failed %d"), result);
+		UE_LOG(LogAvatars, Warning, TEXT("GetControllerTypeByHardware: FOculusHMDModule::GetPluginWrapper().GetSystemHeadsetType2 failed %d"), result);
 	}
 
 	switch (hmdType)
@@ -2021,14 +2048,17 @@ ovrAvatarControllerType UOvrAvatar::GetControllerTypeByHardware()
 		break;
 	case ovrpSystemHeadset_Oculus_Quest:
 	case ovrpSystemHeadset_Rift_S:
+	case ovrpSystemHeadset_Oculus_Link_Quest:
 		controllerType = ovrAvatarControllerType_Quest;
 		break;
 	case ovrpSystemHeadset_Rift_DK1:
 	case ovrpSystemHeadset_Rift_DK2:
 	case ovrpSystemHeadset_Rift_CV1:
 	case ovrpSystemHeadset_Rift_CB:
-	default:
 		controllerType = ovrAvatarControllerType_Touch;
+		break;
+	default:
+		controllerType = ovrAvatarControllerType_Quest;
 		break;
 	}
 
@@ -2041,11 +2071,11 @@ bool UOvrAvatar::Is3DOFHardware()
 		return false;
 
 	ovrpSystemHeadset hmdType = ovrpSystemHeadset_None;
-	ovrpResult result = ovrp_GetSystemHeadsetType2(&hmdType);
+	ovrpResult result = FOculusHMDModule::GetPluginWrapper().GetSystemHeadsetType2(&hmdType);
 
 	if (result != ovrpSuccess)
 	{
-		UE_LOG(LogAvatars, Warning, TEXT("GetControllerTypeByHardware: ovrp_GetSystemHeadsetType2 failed %d"), result);
+		UE_LOG(LogAvatars, Warning, TEXT("GetControllerTypeByHardware: FOculusHMDModule::GetPluginWrapper().GetSystemHeadsetType2 failed %d"), result);
 	}
 
 	switch (hmdType)
@@ -2059,6 +2089,7 @@ bool UOvrAvatar::Is3DOFHardware()
 	case ovrpSystemHeadset_Oculus_Go:
 		return true;
 	case ovrpSystemHeadset_Oculus_Quest:
+	case ovrpSystemHeadset_Oculus_Link_Quest:
 	case ovrpSystemHeadset_Rift_DK1:
 	case ovrpSystemHeadset_Rift_DK2:
 	case ovrpSystemHeadset_Rift_CV1:
@@ -2100,16 +2131,16 @@ void UOvrAvatar::UpdateHeadGazeTarget()
 }
 
 void  UOvrAvatar::SetHandMaterial(MaterialType type)
-{ 
+{
 #if PLATFORM_ANDROID
 	HandMaterial = type == MaterialType::Translucent ? MaterialType::Masked : type;
 #else
-	HandMaterial = type; 
+	HandMaterial = type;
 #endif
 }
 
-void  UOvrAvatar::SetBodyMaterial(MaterialType type) 
-{ 
+void  UOvrAvatar::SetBodyMaterial(MaterialType type)
+{
 #if PLATFORM_ANDROID
 	BodyMaterial = type == MaterialType::Translucent ? MaterialType::Masked : type;
 #else
@@ -2152,7 +2183,8 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 		FName BoneName = FName(*BoneString);
 
 		FTransform Transform = FTransform::Identity;
-		OvrAvatarHelpers::OvrAvatarTransformToFTransfrom(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::OvrAvatarBoneTransformToFTransform(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::GetBoneRootFixupTransform(BoneString, BoneIndex, Transform);
 
 		FReferenceSkeletonModifier Modifier = FReferenceSkeletonModifier(SkeletalMesh->RefSkeleton, nullptr);
 		int32 ParentIndex = BoneIndex > 0 && data->skinnedBindPose.jointParents[BoneIndex] < 0 ? 0 : data->skinnedBindPose.jointParents[BoneIndex];
@@ -2263,13 +2295,13 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 			const ovrAvatarMeshVertexV2* SourceVertex = &data->vertexBuffer[VertIndex];
 
 			FSoftSkinVertex DestVertex;
-			DestVertex.Position = 100.0f * FVector(-SourceVertex->z, SourceVertex->x, SourceVertex->y);
+			DestVertex.Position = 100.0f * FVector(-SourceVertex->x, -SourceVertex->z, SourceVertex->y);
 			DestVertex.Color = UOvrAvatar::GetColorFromVertex(*SourceVertex);
 
 			BoundBox += DestVertex.Position;
 
-			FVector n = FVector(-SourceVertex->nz, SourceVertex->nx, SourceVertex->ny);
-			FVector t = FVector(-SourceVertex->tz, SourceVertex->tx, SourceVertex->ty);
+			FVector n = FVector(-SourceVertex->nx, -SourceVertex->nz, SourceVertex->ny);
+			FVector t = FVector(-SourceVertex->tx, -SourceVertex->tz, SourceVertex->ty);
 			FVector bt = FVector::CrossProduct(t, n) * FMath::Sign(SourceVertex->tw);
 			DestVertex.TangentX = t;
 			DestVertex.TangentY = bt;
@@ -2344,8 +2376,8 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 		{
 			FMorphTargetDelta NewVertData;
 			CurrentBlendVert = BlendShapeSetOffset + VertIndex;
-			NewVertData.PositionDelta = 100.0f * FVector(-blendVerts[CurrentBlendVert].z, blendVerts[CurrentBlendVert].x, blendVerts[CurrentBlendVert].y);
-			NewVertData.TangentZDelta = FVector(-blendVerts[CurrentBlendVert].nz, blendVerts[CurrentBlendVert].nx, blendVerts[CurrentBlendVert].ny);
+			NewVertData.PositionDelta = 100.0f * FVector(-blendVerts[CurrentBlendVert].x, -blendVerts[CurrentBlendVert].z, blendVerts[CurrentBlendVert].y);
+			NewVertData.TangentZDelta = FVector(-blendVerts[CurrentBlendVert].nx, -blendVerts[CurrentBlendVert].nz, blendVerts[CurrentBlendVert].ny);
 			NewVertData.SourceIdx = VertIndex;
 			MorphLODModel.Vertices.Add(NewVertData);
 		}
@@ -2404,7 +2436,8 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 		FName BoneName = FName(*BoneString);
 
 		FTransform Transform = FTransform::Identity;
-		OvrAvatarHelpers::OvrAvatarTransformToFTransfrom(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::OvrAvatarBoneTransformToFTransform(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::GetBoneRootFixupTransform(BoneString, BoneIndex, Transform);
 
 		FReferenceSkeletonModifier Modifier = FReferenceSkeletonModifier(SkeletalMesh->RefSkeleton, nullptr);
 		int32 ParentIndex = BoneIndex > 0 && data->skinnedBindPose.jointParents[BoneIndex] < 0 ? 0 : data->skinnedBindPose.jointParents[BoneIndex];
@@ -2533,13 +2566,13 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 			const ovrAvatarMeshVertexV2* SourceVertex = &data->vertexBuffer[VertIndex];
 
 			FModelVertex ModelVertex;
-			ModelVertex.Position = 100.0f * FVector(-SourceVertex->z, SourceVertex->x, SourceVertex->y);
+			ModelVertex.Position = 100.0f * FVector(-SourceVertex->x, -SourceVertex->z, SourceVertex->y);
 			BoundBox += ModelVertex.Position;
 
 			ColorArray.Add(UOvrAvatar::GetColorFromVertex(*SourceVertex));
 
-			FVector n = FVector(-SourceVertex->nz, SourceVertex->nx, SourceVertex->ny);
-			FVector t = FVector(-SourceVertex->tz, SourceVertex->tx, SourceVertex->ty);
+			FVector n = FVector(-SourceVertex->nx, -SourceVertex->nz, SourceVertex->ny);
+			FVector t = FVector(-SourceVertex->tx, -SourceVertex->tz, SourceVertex->ty);
 			ModelVertex.TangentX = t;
 			ModelVertex.TangentZ = n;
 			ModelVertex.TexCoord = FVector2D(SourceVertex->u, SourceVertex->v);
@@ -2623,8 +2656,8 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 		{
 			FMorphTargetDelta NewVertData;
 			const ovrAvatarBlendVertex CurrentVert = blendVerts[CurrentBlendVert++];
-			NewVertData.PositionDelta = 100.0f * FVector(-CurrentVert.z, CurrentVert.x, CurrentVert.y);
-			NewVertData.TangentZDelta = FVector(-CurrentVert.nz, CurrentVert.nx, CurrentVert.ny);
+			NewVertData.PositionDelta = 100.0f * FVector(-CurrentVert.x, -CurrentVert.z, CurrentVert.y);
+			NewVertData.TangentZDelta = FVector(-CurrentVert.nx, -CurrentVert.nz, CurrentVert.ny);
 			NewVertData.SourceIdx = VertIndex;
 			MorphLODModel.Vertices.Add(NewVertData);
 		}
@@ -2660,11 +2693,11 @@ void UOvrAvatar::Root3DofControllers()
 	if (!b3DofHardware)
 		return;
 
-	if (OVRP_SUCCESS(ovrp_GetDominantHand(&DominantHand)))
+	if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetDominantHand(&DominantHand)))
 	{
 		HandType Hand = DominantHand == ovrpHandedness_RightHanded ? HandType_Right : HandType_Left;
 
-		UE_LOG(LogAvatars, Display, TEXT("ovrp_GetDominantHand - %s"), *ControllerNames[Hand]);
+		UE_LOG(LogAvatars, Display, TEXT("FOculusHMDModule::GetPluginWrapper().GetDominantHand - %s"), *ControllerNames[Hand]);
 
 		if (auto ScenePtr = RootAvatarComponents.Find(ControllerNames[Hand]))
 		{
@@ -2688,6 +2721,6 @@ void UOvrAvatar::Root3DofControllers()
 	}
 	else
 	{
-		UE_LOG(LogAvatars, Display, TEXT("ovrp_GetDominantHand Failed"));
+		UE_LOG(LogAvatars, Display, TEXT("FOculusHMDModule::GetPluginWrapper().GetDominantHand Failed"));
 	}
 }
