@@ -45,7 +45,7 @@ void FCrashReportAnalytics::Initialize()
 	#if defined(CRC_TELEMETRY_URL) && defined(CRC_TELEMETRY_KEY)
 
 		FAnalyticsET::Config Config;
-		Config.APIServerET = TEXT(PREPROCESSOR_TO_STRING(CRC_TELEMETRY_URL));
+		Config.APIServerET = FString::Printf(TEXT("https://%s"), TEXT(PREPROCESSOR_TO_STRING(CRC_TELEMETRY_URL)));
 		Config.APIKeyET = TEXT(PREPROCESSOR_TO_STRING(CRC_TELEMETRY_KEY));
 
 	#else
