@@ -30,22 +30,6 @@
 	#define FEATURE_GATHER4 0
 #endif
 
-#include "SHCommon.ush"
-#include "MobileBasePassCommon.ush"
-#include "/Engine/Generated/Material.ush"
-#include "/Engine/Generated/VertexFactory.ush"
-#include "ReflectionEnvironmentShared.ush"
-#include "LightmapCommon.ush"  
-#include "MobileShadingModels.ush"
-#include "ShadowFilteringCommon.ush"
-#include "DynamicLightingCommon.ush"
-#include "PlanarReflectionShared.ush"
-
-#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
-#define SIMPLE_SINGLE_LAYER_WATER 1
-#include "SingleLayerWaterCommon.ush"
-#endif
-
 // Add fading CSM plane:
 #define FADE_CSM 1
 
@@ -86,6 +70,22 @@ float4 SpotLightDirectionAndSpecularScale[MAX_DYNAMIC_POINT_LIGHTS];
 #define FORCE_VERTEX_NORMAL (MOBILE_QL_DISABLE_MATERIAL_NORMAL)
 
 #define ALLOW_CUBE_REFLECTIONS 0
+
+#include "SHCommon.ush"
+#include "MobileBasePassCommon.ush"
+#include "/Engine/Generated/Material.ush"
+#include "/Engine/Generated/VertexFactory.ush"
+#include "ReflectionEnvironmentShared.ush"
+#include "LightmapCommon.ush"  
+#include "MobileShadingModels.ush"
+#include "ShadowFilteringCommon.ush"
+#include "DynamicLightingCommon.ush"
+#include "PlanarReflectionShared.ush"
+
+#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
+#define SIMPLE_SINGLE_LAYER_WATER 1
+#include "SingleLayerWaterCommon.ush"
+#endif
 
 /** Prenormalized capture of the scene that's closest to the object being rendered. */
 #if !FULLY_ROUGH
