@@ -220,6 +220,7 @@ FShaderType::FShaderType(
 	Name(InName),
 	TypeName(InName),
 	HashedName(TypeName),
+	HashedSourceFilename(InSourceFilename),
 	SourceFilename(InSourceFilename),
 	FunctionName(InFunctionName),
 	Frequency(InFrequency),

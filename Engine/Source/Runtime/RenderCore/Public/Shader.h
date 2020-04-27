@@ -1126,6 +1126,10 @@ public:
 	{ 
 		return SourceFilename; 
 	}
+	inline const FHashedName& GetHashedShaderFilename() const
+	{
+		return HashedSourceFilename;
+	}
 	inline const TCHAR* GetFunctionName() const
 	{
 		return FunctionName;
@@ -1176,6 +1180,7 @@ private:
 	const TCHAR* Name;
 	FName TypeName;
 	FHashedName HashedName;
+	FHashedName HashedSourceFilename;
 	const TCHAR* SourceFilename;
 	const TCHAR* FunctionName;
 	uint32 Frequency;
