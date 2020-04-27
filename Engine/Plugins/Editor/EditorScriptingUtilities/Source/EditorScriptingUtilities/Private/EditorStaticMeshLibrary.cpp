@@ -159,6 +159,95 @@ void UEditorStaticMeshLibrary::SetLODProps(UStaticMesh* StaticMesh, int32 Androi
 	StaticMesh->PostEditChange();
 }
 
+void UEditorStaticMeshLibrary::SetLODScreenSizeProps(UStaticMesh* StaticMesh, TMap<int32,float> ScreenSize, FName Platform, bool PropagateToDefaults) {
+
+	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	{
+		return;
+	}
+
+	if (StaticMesh == nullptr)
+	{
+		UE_LOG(LogEditorScripting, Error, TEXT("GetLodScreenSizes: The StaticMesh is null."));
+		return ;
+	}
+
+
+	bool defaultsOnly = Platform == FName("Default");
+
+		if (StaticMesh->RenderData.IsValid())
+		{
+			TArray<int32> IdexesToUpdate;
+			for (auto& Elem : ScreenSize)
+			{
+				if (StaticMesh->RenderData->ScreenSize[Elem.Key].Default) 
+				{
+					if (!defaultsOnly)
+					{
+						if (StaticMesh->GetSourceModel(Elem.Key).ScreenSize.PerPlatform.Contains(Platform))
+						{
+							if (*StaticMesh->GetSourceModel(Elem.Key).ScreenSize.PerPlatform.Find(Platform) != Elem.Value)
+							{
+								IdexesToUpdate.Add(Elem.Key);
+							}
+						}
+						else
+						{
+							IdexesToUpdate.Add(Elem.Key);
+						}
+					}
+					else
+					{
+						if (StaticMesh->GetSourceModel(Elem.Key).ScreenSize.Default != Elem.Value)
+						{
+							IdexesToUpdate.Add(Elem.Key);
+						}
+					}
+				}
+			}
+			if (IdexesToUpdate.Num() > 0)
+			{
+				for (auto& Elem : IdexesToUpdate)
+				{
+					if (!defaultsOnly)
+					{
+						StaticMesh->GetSourceModel(Elem).ScreenSize.PerPlatform.Add(Platform, *ScreenSize.Find(Elem));
+					}
+					if (PropagateToDefaults || defaultsOnly)
+					{
+						StaticMesh->GetSourceModel(Elem).ScreenSize.Default = *ScreenSize.Find(Elem);
+					}
+					if (!(PropagateToDefaults || defaultsOnly))
+					{
+						StaticMesh->GetSourceModel(Elem).ScreenSize.Default = StaticMesh->RenderData->ScreenSize[Elem].Default;
+					}
+				}
+			}
+
+			bool bAutoComputeLODScreenSizeChanged = false;
+			if (StaticMesh->bAutoComputeLODScreenSize == true)
+			{
+				bAutoComputeLODScreenSizeChanged = true;
+				StaticMesh->bAutoComputeLODScreenSize = false;
+			}
+
+			
+			if ((IdexesToUpdate.Num() > 0) || bAutoComputeLODScreenSizeChanged)
+			{
+				StaticMesh->PostEditChange();
+				StaticMesh->MarkPackageDirty();
+			}
+			
+		}
+		else
+		{
+			UE_LOG(LogEditorScripting, Warning, TEXT("GetLodScreenSizes: The RenderData is invalid") );
+		}
+	
+
+		return;
+}
+
 int32 UEditorStaticMeshLibrary::SetLodsWithNotification(UStaticMesh* StaticMesh, const FEditorScriptingMeshReductionOptions& ReductionOptions, bool bApplyChanges)
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
