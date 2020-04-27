@@ -91,6 +91,9 @@ public:
 	/** Makes the actor tickable and according to r.HLOD.DitherPauseTime sets the MinDrawDistance back to non-zero */
 	void StartDitherTransition();
 
+	UFUNCTION(BlueprintCallable, Category = LODActor)
+		void setLodDrawDistance(float NewValue) { LODDrawDistance = NewValue; }
+	
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = LODActor)
 		UStaticMesh* getStaticMesh();
 
