@@ -9,12 +9,27 @@
 #include "CoreMinimal.h"
 #include "UObject/Field.h"
 #include "HAL/ThreadSafeCounter.h"
+#include "UObject/WeakObjectPtr.h"
+#include "UObject/WeakObjectPtrTemplates.h"
+#include "UObject/UObjectArray.h"
 
+class UStruct;
 class UField;
-class UObject;
+class FLinkerLoad;
 
 struct COREUOBJECT_API FFieldPath
 {
+	// GC needs access to GetResolvedOwnerItemInternal and ClearCachedFieldInternal
+	template <bool bParallel, typename ReferenceProcessorType, typename CollectorType, typename ArrayPoolType, bool bAutoGenerateTokenStream, bool bIgnoreNoopTokens>
+	friend class TFastReferenceCollector;
+
+	// TWeakFieldPtr needs access to ClearCachedField
+	template<class T>
+	friend struct TWeakFieldPtr;
+
+	// FFieldPathProperty needs access to ConvertFromFullPath
+	friend class FFieldPathProperty;
+
 protected:
 
 	/* Determines the behavior when resolving stored path */
@@ -25,58 +40,100 @@ protected:
 	};
 
 	/** Untracked pointer to the resolved property */
-	mutable FField* ResolvedField;
+	mutable FField* ResolvedField = nullptr;
 #if WITH_EDITORONLY_DATA
 	/** In editor builds, store the original class of the resolved property in case it changes after recompiling BPs */
-	mutable FFieldClass* InitialFieldClass;
+	mutable FFieldClass* InitialFieldClass = nullptr;
+	/** In editor builds, fields may get deleted even though their owner struct remains */
+	mutable int32 FieldPathSerialNumber = 0;
 #endif
-	/** GC tracked index of property owner UObject */
-	mutable int32 ResolvedFieldOwner;
-	/** Serial number this FFieldPath was last resolved with */
-	mutable int32 SerialNumber;
+	/** The cached owner of this field. Even though implemented as a weak pointer, GC will keep a strong reference to it if exposed through UPROPERTY macro */
+	mutable TWeakObjectPtr<UStruct> ResolvedOwner;
 
 	/** Path to the FField object from the innermost FField to the outermost UObject (UPackage) */
 	TArray<FName> Path;
 
-	/** Global serial number that gets increased each time UStruct destyroys its properties */
-	static int32 GlobalSerialNumber;
-
 	FORCEINLINE bool NeedsResolving() const
 	{
-		return !ResolvedField || SerialNumber != GlobalSerialNumber;
+		if (ResolvedField)
+		{
+#if WITH_EDITORONLY_DATA
+			UStruct* Owner = ResolvedOwner.Get();
+			// In uncooked builds we also need to check if the serial number on the owner struct is identical
+			// It will change if the struct has been recompiled or its properties have been destroyed
+			if (Owner && IsFieldPathSerialNumberIdentical(Owner))
+			{
+				return false;
+			}
+#else
+			// The assumption is that if we already resolved a field and its owner is still valid, there's no need to resolve again
+			return !ResolvedOwner.IsValid();
+#endif // WITH_EDITORONLY_DATA
+		}
+		return true;
 	}
+
+	/** Clears the cached value so that the next time Get() is called, it will be resolved again */
+	FORCEINLINE void ClearCachedField() const
+	{
+		ResolvedField = nullptr;
+#if WITH_EDITORONLY_DATA
+		InitialFieldClass = nullptr;
+		FieldPathSerialNumber = 0;
+#endif // WITH_EDITORONLY_DATA
+	}
+
+private:
+
+#if WITH_EDITORONLY_DATA
+	/** Used to check if the serial number on the provided struct is identical to the one stored in this FFieldPath */
+	bool IsFieldPathSerialNumberIdentical(UStruct* InStruct) const;
+	/** Gets the serial number stored on the provided struct */
+	int32 GetFieldPathSerialNumber(UStruct* InStruct) const;
+#endif
+
+	/** FOR INTERNAL USE ONLY: gets the pointer to the resolved field without trying to resolve it */
+	FORCEINLINE FUObjectItem* GetResolvedOwnerItemInternal()
+	{
+		return ResolvedOwner.Internal_GetObjectItem();
+	}
+	FORCEINLINE void ClearCachedFieldInternal()
+	{
+		ResolvedField = nullptr;
+		ResolvedOwner.Reset();
+	}
+
+	/**
+	 * Tries to resolve the field owner
+	 * @param InCurrentStruct Struct that's trying to resolve this field path
+	 * @param InResolveType Type of the resolve operation
+	 * @return Resolved owner struct
+	 */
+	UStruct* TryToResolveOwnerFromStruct(UStruct* InCurrentStruct = nullptr, EPathResolveType InResolveType = FFieldPath::UseStructIfOuterNotFound) const;
+	
+
+	/**
+	 * Tries to resolve the field owner
+	 * @param InLinker the current linker load serializing this field path
+	 * @return Resolved owner struct
+	 */
+	UStruct* TryToResolveOwnerFromLinker(FLinkerLoad* InLinker) const;
+
+
+	/**
+	 * Tries to convert the full path stored in this FFieldPath to the new format (Owner reference + path to the field)
+	 * @param InLinker the current linker load serializing this field path
+	 * @return Resulved owner struct
+	 */
+	UStruct* ConvertFromFullPath(FLinkerLoad* InLinker);
 
 public:
 
-	FFieldPath()
-		: ResolvedField(nullptr)
-#if WITH_EDITORONLY_DATA
-		, InitialFieldClass(nullptr)
-#endif // WITH_EDITORONLY_DATA
-		, ResolvedFieldOwner(-1)
-		, SerialNumber(-1)
-	{}
+	FFieldPath() = default;
 
 	FFieldPath(FField* InField)
-		: ResolvedField(InField)
-#if WITH_EDITORONLY_DATA
-		, InitialFieldClass(nullptr)
-#endif // WITH_EDITORONLY_DATA
-		, ResolvedFieldOwner(-1)
-		, SerialNumber(-1)
 	{
 		Generate(InField);
-	}
-
-	FFieldPath(const FFieldPath& Other)
-		: ResolvedField(Other.ResolvedField)
-#if WITH_EDITORONLY_DATA
-		, InitialFieldClass(Other.InitialFieldClass)
-#endif // WITH_EDITORONLY_DATA
-		, ResolvedFieldOwner(Other.ResolvedFieldOwner)
-		, SerialNumber(Other.SerialNumber)
-		, Path(Other.Path)
-	{
 	}
 
 #if WITH_EDITORONLY_DATA
@@ -93,24 +150,13 @@ public:
 	void GenerateFromUField(UField* InField);
 #endif
 
-	/** Clears the cached value so that the next time Get() is called, it will be resolved again */
-	inline void ClearCachedField()
-	{
-		ResolvedField = nullptr;
-#if WITH_EDITORONLY_DATA
-		InitialFieldClass = nullptr;
-#endif // WITH_EDITORONLY_DATA
-		ResolvedFieldOwner = -1;
-		SerialNumber = -1;
-	}
-
 	/**
 	 * Tries to resolve the path without caching the resolved pointer 
 	 * @param InCurrentStruct Struct that's trying to resolve this field path
 	 * @param OutOwnerIndex ObjectIndex of the Owner UObject
 	 * @return Resolved field or null
 	 */
-	FField* TryToResolvePath(UStruct* InCurrentStruct = nullptr, int32* OutOwnerIndex = nullptr, EPathResolveType InResolveType = FFieldPath::UseStructIfOuterNotFound) const;
+	FField* TryToResolvePath(UStruct* InCurrentStruct, EPathResolveType InResolveType = FFieldPath::UseStructIfOuterNotFound) const;
 
 	/**
 	 * Tries to resolve the path and caches the result
@@ -119,8 +165,7 @@ public:
 	 */
 	FORCEINLINE void ResolveField(FFieldClass* ExpectedClass = FField::StaticClass(), UStruct* InCurrentStruct = nullptr, EPathResolveType InResolveType = FFieldPath::UseStructIfOuterNotFound) const
 	{
-		int32 FoundOwner = -1;
-		FField* FoundField = TryToResolvePath(InCurrentStruct, &FoundOwner, InResolveType);
+		FField* FoundField = TryToResolvePath(InCurrentStruct, InResolveType);
 		if (FoundField && FoundField->IsA(ExpectedClass) 
 #if WITH_EDITORONLY_DATA
 			&& (!InitialFieldClass || FoundField->IsA(InitialFieldClass))
@@ -128,24 +173,42 @@ public:
 			)
 		{
 			ResolvedField = FoundField;
-			ResolvedFieldOwner = FoundOwner;
-			SerialNumber = GlobalSerialNumber;
 #if WITH_EDITORONLY_DATA
 			if (!InitialFieldClass)
 			{
 				InitialFieldClass = FoundField->GetClass();
 			}
+			UStruct* Owner = ResolvedOwner.Get();
+			check(Owner);
+			FieldPathSerialNumber = GetFieldPathSerialNumber(Owner);
 #endif // WITH_EDITORONLY_DATA
 		}
 		else
 		{
-			ResolvedField = nullptr;
-			ResolvedFieldOwner = -1;
+			ClearCachedField();
 		}
 	}
 
-	/** Returns true if the field path is empty */
-	inline bool IsEmpty() const
+	/**
+	 * Gets the field represented by this FFieldPath
+	 * @param ExpectedType Expected type of the resolved field
+	 * @param InCurrentStruct Struct that's trying to resolve this field path
+	 * @return Field represented by this FFieldPath or null if it couldn't be resolved
+	 */
+	FORCEINLINE FField* GetTyped(FFieldClass* ExpectedType, UStruct* InCurrentStruct = nullptr) const
+	{
+		if (NeedsResolving() && Path.Num())
+		{
+			ResolveField(ExpectedType, InCurrentStruct, FFieldPath::UseStructIfOuterNotFound);
+		}
+		return ResolvedField;
+	}
+
+	/** 
+	 * Returns true if the field path is empty (does not test if the owner is valid) 
+	 * This is usually used to verify if the reason behind this field being unresolved is because the owner is missing or the property couldn't be found.
+	 **/
+	inline bool IsPathToFieldEmpty() const
 	{
 		return !Path.Num();
 	}
@@ -156,7 +219,11 @@ public:
 	**/
 	inline bool IsStale() const
 	{
-		return ResolvedField && (TryToResolvePath() != ResolvedField);
+		return ResolvedField && (!ResolvedOwner.IsValid()
+#if WITH_EDITORONLY_DATA
+			|| !IsFieldPathSerialNumberIdentical(ResolvedOwner.Get())
+#endif // WITH_EDITORONLY_DATA
+			);
 	}
 
 	/**
@@ -165,38 +232,34 @@ public:
 	inline void Reset()
 	{
 		ClearCachedField();
+		ResolvedOwner.Reset();
 		Path.Empty();
 	}
 
-	inline bool IsPathIdentical(const FFieldPath& InOther) const
+	FORCEINLINE bool operator==(const FFieldPath& InOther) const
 	{
-		return Path == InOther.Path;
+		return ResolvedOwner == InOther.ResolvedOwner && Path == InOther.Path;
+	}
+
+	FORCEINLINE bool operator!=(const FFieldPath& InOther) const
+	{
+		return ResolvedOwner != InOther.ResolvedOwner || Path != InOther.Path;
 	}
 
 	FString ToString() const;
 
-	friend FArchive& operator<<(FArchive& Ar, FFieldPath& InOutPropertyPath)
+	COREUOBJECT_API friend FArchive& operator<<(FArchive& Ar, FFieldPath& InOutPropertyPath);
+
+	/** Hash function. */
+	FORCEINLINE friend uint32 GetTypeHash(const FFieldPath& InPropertyPath)
 	{
-		Ar << InOutPropertyPath.Path;
-		if (Ar.IsLoading())
+		uint32 HashValue = 0;
+		for (const FName PathSegment : InPropertyPath.Path)
 		{
-			InOutPropertyPath.ClearCachedField();
+			HashValue = HashCombine(HashValue, GetTypeHash(PathSegment));
 		}
-		return Ar;
+		return HashValue;
 	}
-
-	/** FOR INTERNAL USE ONLY: gets the pointer to the resolved field without trying to resolve it */
-	inline FField*& GetResolvedFieldInternal()
-	{
-		return ResolvedField;
-	}
-	inline int32& GetResolvedFieldOwnerInternal()
-	{
-		return ResolvedFieldOwner;
-	}
-
-	/** Called when fields have been deleted to bump the global serial number and invalidate cached pointers */
-	static void OnFieldDeleted();
 };
 
 template<class PropertyType>
@@ -309,17 +372,13 @@ public:
 	}
 
 	/**
-	* Dereference the weak pointer
-	* @param bEvenIfPendingKill, if this is true, pendingkill objects are considered valid
-	* @return NULL if this object is gone or the weak pointer was NULL, otherwise a valid uobject pointer
-	**/
+	 * Gets the field represented by this TFieldPath
+	 * @param InCurrentStruct Struct that's trying to resolve this field path
+	 * @return Field represented by this FFieldPath or null if it couldn't be resolved
+	 */
 	FORCEINLINE PropertyType* Get(UStruct* InCurrentStruct = nullptr) const
 	{
-		if (NeedsResolving() && Path.Num())
-		{
-			ResolveField(PropertyType::StaticClass(), InCurrentStruct, FFieldPath::UseStructIfOuterNotFound);
-		}
-		return static_cast<PropertyType*>(ResolvedField);
+		return (PropertyType*)GetTyped(PropertyType::StaticClass(), InCurrentStruct);
 	}
 
 	FORCEINLINE PropertyType* ResolveWithRenamedStructPackage(UStruct* InCurrentStruct)
@@ -345,21 +404,6 @@ public:
 		return Get();
 	}
 
-	/** Hash function. */
-	FORCEINLINE friend uint32 GetTypeHash(const TFieldPath& InPropertyPath)
-	{
-		uint32 HashValue = 0;
-		if (InPropertyPath.Path.Num())
-		{
-			HashValue = GetTypeHash(InPropertyPath.Path[0]);
-			for (int32 PathIndex = 1; PathIndex < InPropertyPath.Path.Num(); ++PathIndex)
-			{
-				HashValue = HashCombine(HashValue, GetTypeHash(InPropertyPath.Path[PathIndex]));
-			}
-		}
-		return HashValue;
-	}
-
 	/**
 	* Compare weak pointers for equality
 	* @param Other weak pointer to compare to
@@ -370,7 +414,7 @@ public:
 		static_assert(TPointerIsConvertibleFromTo<OtherPropertyType, FField>::Value, "TFieldPath can only be compared with FField types");
 		static_assert(TPointerIsConvertibleFromTo<PropertyType, OtherPropertyType>::Value, "Unable to compare TFieldPath with raw pointer - types are incompatible");
 
-		return Path == Other.Path;
+		return FFieldPath::operator==(Other);
 	}
 
 	/**
@@ -383,7 +427,7 @@ public:
 		static_assert(TPointerIsConvertibleFromTo<OtherPropertyType, FField>::Value, "TFieldPath can only be compared with FField types");
 		static_assert(TPointerIsConvertibleFromTo<PropertyType, OtherPropertyType>::Value, "Unable to compare TFieldPath with raw pointer - types are incompatible");
 
-		return Path != Other.Path;
+		return FFieldPath::operator!=(Other);
 	}
 
 	/**
