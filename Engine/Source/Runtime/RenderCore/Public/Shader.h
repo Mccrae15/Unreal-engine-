@@ -573,8 +573,8 @@ public:
 public:
 	static constexpr uint16 kInvalidBufferIndex = 0xFFFF;
 
-	void BindForLegacyShaderParameters(const FShader* Shader, const FShaderParameterMap& ParameterMaps, const FShaderParametersMetadata& StructMetaData, bool bShouldBindEverything = false);
-	void BindForRootShaderParameters(const FShader* Shader, const FShaderParameterMap& ParameterMaps);
+	void BindForLegacyShaderParameters(const FShader* Shader, int32 PermutationId, const FShaderParameterMap& ParameterMaps, const FShaderParametersMetadata& StructMetaData, bool bShouldBindEverything = false);
+	void BindForRootShaderParameters(const FShader* Shader, int32 PermutationId, const FShaderParameterMap& ParameterMaps);
 
 	LAYOUT_FIELD(TMemoryImageArray<FParameter>, Parameters);
 	LAYOUT_FIELD(TMemoryImageArray<FResourceParameter>, Textures);
@@ -703,9 +703,7 @@ public:
 	inline FVertexFactoryType* GetVertexFactoryType(const FShaderMapPointerTable& InPointerTable) const { return VFType.Get(InPointerTable.VFTypes); }
 	inline FVertexFactoryType* GetVertexFactoryType(const FPointerTableBase* InPointerTable) const { return VFType.Get(InPointerTable); }
 	inline FShaderType* GetTypeUnfrozen() const { return Type.GetUnfrozen(); }
-	inline const FHashedName& GetTypeName() const { return TypeName; }
 	inline int32 GetResourceIndex() const { checkSlow(ResourceIndex != INDEX_NONE); return ResourceIndex; }
-	inline int32 GetPermutationId() const { return PermutationId; }
 	inline EShaderPlatform GetShaderPlatform() const { return Target.GetPlatform(); }
 	inline EShaderFrequency GetFrequency() const { return Target.GetFrequency(); }
 	inline const FShaderTarget GetTarget() const { return Target; }
@@ -763,7 +761,7 @@ public:
 	void DumpDebugInfo(const FShaderMapPointerTable& InPtrTable);
 
 #if WITH_EDITOR
-	void SaveShaderStableKeys(const FShaderMapPointerTable& InPtrTable, EShaderPlatform TargetShaderPlatform, const struct FStableShaderKeyAndValue& SaveKeyVal);
+	void SaveShaderStableKeys(const FShaderMapPointerTable& InPtrTable, EShaderPlatform TargetShaderPlatform, int32 PermutationId, const struct FStableShaderKeyAndValue& SaveKeyVal);
 #endif // WITH_EDITOR
 
 	/** Returns the meta data for the root shader parameter struct. */
@@ -800,17 +798,11 @@ private:
 
 	LAYOUT_FIELD(TIndexedPtr<FVertexFactoryType>, VFType);
 
-	/** Shader Type metadata for this shader. */
-	LAYOUT_FIELD(FHashedName, TypeName);
-
 	/** Target platform and frequency. */
 	LAYOUT_FIELD(FShaderTarget, Target);
 
 	/** Index of this shader within the FShaderMapResource */
 	LAYOUT_FIELD(int32, ResourceIndex);
-
-	/** Unique permutation identifier of the shader in the shader type. */
-	LAYOUT_FIELD(int32, PermutationId);
 
 	/** The number of instructions the shader takes to execute. */
 	LAYOUT_FIELD(uint32, NumInstructions);
@@ -1607,26 +1599,21 @@ class RENDERCORE_API FShaderPipeline
 {
 	DECLARE_TYPE_LAYOUT(FShaderPipeline, NonVirtual);
 public:
-	FShaderPipeline(
-		const FShaderPipelineType* InPipelineType,
-		FShader* InVertexShader,
-		FShader* InHullShader,
-		FShader* InDomainShader,
-		FShader* InGeometryShader,
-		FShader* InPixelShader);
-
-	FShaderPipeline(const FShaderPipelineType* InPipelineType, const TArray<FShader*>& InStages);
-
+	explicit FShaderPipeline(const FShaderPipelineType* InType) : TypeName(InType->GetHashedName()) {}
 	~FShaderPipeline();
+
+	void AddShader(FShader* Shader, int32 PermutationId);
 
 	inline uint32 GetNumShaders() const
 	{
 		uint32 NumShaders = 0u;
-		if (VertexShader.IsValid()) ++NumShaders;
-		if (HullShader.IsValid()) ++NumShaders;
-		if (DomainShader.IsValid()) ++NumShaders;
-		if (GeometryShader.IsValid()) ++NumShaders;
-		if (PixelShader.IsValid()) ++NumShaders;
+		for (uint32 i = 0u; i < SF_NumGraphicsFrequencies; ++i)
+		{
+			if (Shaders[i].IsValid())
+			{
+				++NumShaders;
+			}
+		}
 		return NumShaders;
 	}
 
@@ -1634,89 +1621,47 @@ public:
 	template<typename ShaderType>
 	ShaderType* GetShader(const FShaderMapPointerTable& InPtrTable)
 	{
-		if (PixelShader && PixelShader->GetType(InPtrTable) == &ShaderType::StaticType)
+		const FShaderType& Type = ShaderType::StaticType;
+		const EShaderFrequency Frequency = Type.GetFrequency();
+		if (Frequency < SF_NumGraphicsFrequencies && Shaders[Frequency].IsValid())
 		{
-			return (ShaderType*)PixelShader.Get();
-		}
-		else if (VertexShader && VertexShader->GetType(InPtrTable) == &ShaderType::StaticType)
-		{
-			return (ShaderType*)VertexShader.Get();
-		}
-		else if (GeometryShader && GeometryShader->GetType(InPtrTable) == &ShaderType::StaticType)
-		{
-			return (ShaderType*)GeometryShader.Get();
-		}
-		else if (HullShader)
-		{
-			if (HullShader->GetType(InPtrTable) == &ShaderType::StaticType)
+			FShader* Shader = Shaders[Frequency].GetChecked();
+			if (Shader->GetType(InPtrTable) == &Type)
 			{
-				return (ShaderType*)HullShader.Get();
-			}
-			else if (DomainShader && DomainShader->GetType(InPtrTable) == &ShaderType::StaticType)
-			{
-				return (ShaderType*)DomainShader.Get();
+				return static_cast<ShaderType*>(Shader);
 			}
 		}
-
 		return nullptr;
 	}
 
 	FShader* GetShader(EShaderFrequency Frequency)
 	{
-		switch (Frequency)
-		{
-		case SF_Vertex: return VertexShader;
-		case SF_Domain: return DomainShader;
-		case SF_Hull: return HullShader;
-		case SF_Geometry: return GeometryShader;
-		case SF_Pixel: return PixelShader;
-		default: check(0);
-		}
-
-		return nullptr;
+		check(Frequency < SF_NumGraphicsFrequencies);
+		return Shaders[Frequency];
 	}
 
 	const FShader* GetShader(EShaderFrequency Frequency) const
 	{
-		switch (Frequency)
-		{
-		case SF_Vertex: return VertexShader;
-		case SF_Domain: return DomainShader;
-		case SF_Hull: return HullShader;
-		case SF_Geometry: return GeometryShader;
-		case SF_Pixel: return PixelShader;
-		default: check(0);
-		}
-
-		return nullptr;
+		check(Frequency < SF_NumGraphicsFrequencies);
+		return Shaders[Frequency];
 	}
 
 	inline TArray<TShaderRef<FShader>> GetShaders(const FShaderMapBase& InShaderMap) const
 	{
-		TArray<TShaderRef<FShader>> Shaders;
-
-		if (PixelShader)
+		TArray<TShaderRef<FShader>> Result;
+		for (uint32 i = 0u; i < SF_NumGraphicsFrequencies; ++i)
 		{
-			Shaders.Add(TShaderRef<FShader>(PixelShader, InShaderMap));
+			if (Shaders[i].IsValid())
+			{
+				Result.Add(TShaderRef<FShader>(Shaders[i].GetChecked(), InShaderMap));
+			}
 		}
-		if (GeometryShader)
-		{
-			Shaders.Add(TShaderRef<FShader>(GeometryShader, InShaderMap));
-		}
-		if (HullShader)
-		{
-			Shaders.Add(TShaderRef<FShader>(DomainShader, InShaderMap));
-			Shaders.Add(TShaderRef<FShader>(HullShader, InShaderMap));
-		}
-
-		Shaders.Add(TShaderRef<FShader>(VertexShader, InShaderMap));
-
-		return Shaders;
+		return Result;
 	}
 
 	void Validate(const FShaderPipelineType* InPipelineType) const;
 
-	void Finalize(FShaderMapResourceCode* Code);
+	void Finalize(const FShaderMapResourceCode* Code);
 
 	enum EFilter
 	{
@@ -1731,11 +1676,8 @@ public:
 #endif // WITH_EDITOR
 
 	LAYOUT_FIELD(FHashedName, TypeName);
-	LAYOUT_FIELD(TMemoryImagePtr<FShader>, VertexShader);
-	LAYOUT_FIELD(TMemoryImagePtr<FShader>, HullShader);
-	LAYOUT_FIELD(TMemoryImagePtr<FShader>, DomainShader);
-	LAYOUT_FIELD(TMemoryImagePtr<FShader>, GeometryShader);
-	LAYOUT_FIELD(TMemoryImagePtr<FShader>, PixelShader);
+	LAYOUT_ARRAY(TMemoryImagePtr<FShader>, Shaders, SF_NumGraphicsFrequencies);
+	LAYOUT_ARRAY(int32, PermutationIds, SF_NumGraphicsFrequencies);
 };
 
 inline bool operator<(const FShaderPipeline& Lhs, const FShaderPipeline& Rhs)
@@ -1779,43 +1721,18 @@ private:
 	const FShaderMapBase* ShaderMap;
 };
 
-struct FShaderMapKey
-{
-	FShaderMapKey() {}
-	FShaderMapKey(const FHashedName& InTypeName, int32 InPermutationId) : TypeName(InTypeName), PermutationId(InPermutationId) {}
-	explicit FShaderMapKey(const FShader& InShader) : FShaderMapKey(InShader.GetTypeName(), InShader.GetPermutationId()) {}
-
-	friend inline bool operator<(const FShaderMapKey& Lhs, const FShaderMapKey& Rhs)
-	{
-		if (Lhs.TypeName != Rhs.TypeName)
-		{
-			return Lhs.TypeName < Rhs.TypeName;
-		}
-		return Lhs.PermutationId < Rhs.PermutationId;
-	}
-
-	FHashedName TypeName;
-	int32 PermutationId;
-};
-
 /** A collection of shaders of different types */
 class RENDERCORE_API FShaderMapContent
 {
 	DECLARE_TYPE_LAYOUT(FShaderMapContent, NonVirtual);
 public:
-	struct FProjectShaderToKey
-	{
-		inline FShaderMapKey operator()(const FShader* InShader) { return FShaderMapKey(*InShader); }
-	};
-
 	struct FProjectShaderPipelineToKey
 	{
 		inline FHashedName operator()(const FShaderPipeline* InShaderPipeline) { return InShaderPipeline->TypeName; }
 	};
-
 	/** Default constructor. */
 	explicit FShaderMapContent(EShaderPlatform InPlatform)
-		: Platform(InPlatform)
+		: ShaderHash(128u), Platform(InPlatform)
 	{}
 
 	/** Destructor ensures pipelines cleared up. */
@@ -1860,7 +1777,7 @@ public:
 		return Shader != nullptr;
 	}
 
-	bool HasShader(FShaderType* Type, int32 PermutationId) const
+	bool HasShader(const FShaderType* Type, int32 PermutationId) const
 	{
 		return HasShader(Type->GetHashedName(), PermutationId);
 	}
@@ -1875,9 +1792,9 @@ public:
 		return ShaderPipelines;
 	}
 
-	void AddShader(FShader* Shader);
+	void AddShader(const FHashedName& TypeName, int32 PermutationId, FShader* Shader);
 
-	FShader* FindOrAddShader(FShader* Shader);
+	FShader* FindOrAddShader(const FHashedName& TypeName, int32 PermutationId, FShader* Shader);
 
 	void AddShaderPipeline(FShaderPipeline* Pipeline);
 
@@ -1887,7 +1804,12 @@ public:
 	 * Removes the shader of the given type from the shader map
 	 * @param Type Shader type to remove the entry for 
 	 */
-	void RemoveShaderTypePermutaion(const FShaderType* Type, int32 PermutationId);
+	void RemoveShaderTypePermutaion(const FHashedName& TypeName, int32 PermutationId);
+
+	inline void RemoveShaderTypePermutaion(const FShaderType* Type, int32 PermutationId)
+	{
+		RemoveShaderTypePermutaion(Type->GetHashedName(), PermutationId);
+	}
 
 	void RemoveShaderPipelineType(const FShaderPipelineType* ShaderPipelineType);
 
@@ -1942,9 +1864,18 @@ public:
 
 	uint32 GetMaxNumInstructionsForShader(const FShaderMapBase& InShaderMap, FShaderType* ShaderType) const;
 
+	void Finalize(const FShaderMapResourceCode* Code);
+
+	void UpdateHash(FSHA1& Hasher) const;
+
 protected:
 	void EmptyShaderPipelines();
 
+	using FMemoryImageHashTable = THashTable<FMemoryImageAllocator>;
+
+	LAYOUT_FIELD(FMemoryImageHashTable, ShaderHash);
+	LAYOUT_FIELD(TMemoryImageArray<FHashedName>, ShaderTypes);
+	LAYOUT_FIELD(TMemoryImageArray<int32>, ShaderPermutations);
 	LAYOUT_FIELD(TMemoryImageArray<TMemoryImagePtr<FShader>>, Shaders);
 	LAYOUT_FIELD(TMemoryImageArray<TMemoryImagePtr<FShaderPipeline>>, ShaderPipelines);
 	/** The platform this shader map was compiled with */
@@ -2013,6 +1944,14 @@ public:
 	inline const PointerTableType& GetPointerTable() const { return static_cast<const PointerTableType&>(FShaderMapBase::GetPointerTable()); }
 	inline const ContentType* GetContent() const { return static_cast<const ContentType*>(FShaderMapBase::GetContent()); }
 	inline ContentType* GetMutableContent() { return static_cast<ContentType*>(FShaderMapBase::GetMutableContent()); }
+
+	void FinalizeContent()
+	{
+		ContentType* LocalContent = this->GetMutableContent();
+		check(LocalContent);
+		LocalContent->Finalize(this->GetResourceCode());
+		FShaderMapBase::FinalizeContent();
+	}
 
 protected:
 	TShaderMap() : FShaderMapBase(StaticGetTypeLayoutDesc<ContentType>()) {}
