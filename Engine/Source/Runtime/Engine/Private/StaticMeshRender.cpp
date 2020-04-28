@@ -196,31 +196,15 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 
 #if RHI_RAYTRACING
 	bDynamicRayTracingGeometry = InComponent->bEvaluateWorldPositionOffset && MaterialRelevance.bUsesWorldPositionOffset;
+	
 	if (IsRayTracingEnabled())
 	{
-		if(bDynamicRayTracingGeometry)
+		RayTracingGeometries.AddDefaulted(RenderData->LODResources.Num());
+		for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); LODIndex++)
 		{
-			DynamicRayTracingGeometries.AddDefaulted(RenderData->LODResources.Num());
-			for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); LODIndex++)
-			{
-				auto& Initializer = DynamicRayTracingGeometries[LODIndex].Initializer;
-				Initializer = RenderData->LODResources[LODIndex].RayTracingGeometry.Initializer;
-				for (FRayTracingGeometrySegment& Segment : Initializer.Segments)
-				{
-					Segment.VertexBuffer = nullptr;
-				}
-				Initializer.bAllowUpdate = true;
-				Initializer.bFastBuild = true;
-			}
-		} 
-		else
-		{
-			RayTracingGeometries.AddDefaulted(RenderData->LODResources.Num());
-			for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); LODIndex++)
-			{
-				RayTracingGeometries[LODIndex] = &RenderData->LODResources[LODIndex].RayTracingGeometry;
-			}
+			RayTracingGeometries[LODIndex] = &RenderData->LODResources[LODIndex].RayTracingGeometry;
 		}
+
 	}
 #endif
 
@@ -561,12 +545,27 @@ void FStaticMeshSceneProxy::CreateRenderThreadResources()
 #if RHI_RAYTRACING
 	if(IsRayTracingEnabled())
 	{
+		if (bDynamicRayTracingGeometry)
+		{
+			DynamicRayTracingGeometries.AddDefaulted(RenderData->LODResources.Num());
+			for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); LODIndex++)
+			{
+				auto& Initializer = DynamicRayTracingGeometries[LODIndex].Initializer;
+				Initializer = RenderData->LODResources[LODIndex].RayTracingGeometry.Initializer;
+				for (FRayTracingGeometrySegment& Segment : Initializer.Segments)
+				{
+					Segment.VertexBuffer = nullptr;
+				}
+				Initializer.bAllowUpdate = true;
+				Initializer.bFastBuild = true;
+			}
+		}
+
 		DynamicRayTracingGeometryVertexBuffers.AddDefaulted(DynamicRayTracingGeometries.Num());
 		for(int32 i = 0; i < DynamicRayTracingGeometries.Num(); i++)
 		{
 			auto& Geometry = DynamicRayTracingGeometries[i];
-			DynamicRayTracingGeometryVertexBuffers[i]
-				.Initialize(4, 256, PF_R32_FLOAT, BUF_UnorderedAccess | BUF_ShaderResource, TEXT("FStaticMeshSceneProxy::RayTracingDynamicVertexBuffer"));
+			DynamicRayTracingGeometryVertexBuffers[i].Initialize(4, 256, PF_R32_FLOAT, BUF_UnorderedAccess | BUF_ShaderResource, TEXT("FStaticMeshSceneProxy::RayTracingDynamicVertexBuffer"));
 			Geometry.InitResource();
 		}
 	}
