@@ -3,11 +3,7 @@ setlocal
 pushd %~dp0
 
 rem Figure out if we should append the -prompt argument
-set PROMPT_ARGUMENT=
-for %%P in (%*) do if /I "%%P" == "--prompt" goto no_prompt_argument
-for %%P in (%*) do if /I "%%P" == "--force" goto no_prompt_argument
-set PROMPT_ARGUMENT=--prompt
-:no_prompt_argument
+set PROMPT_ARGUMENT="--force"
 
 rem Sync the dependencies...
 .\Engine\Binaries\DotNET\GitDependencies.exe %PROMPT_ARGUMENT% %*
@@ -22,11 +18,6 @@ echo #!/bin/sh >.git\hooks\post-merge
 echo Engine/Binaries/DotNET/GitDependencies.exe %* >>.git\hooks\post-merge
 :no_git_hooks_directory
 
-
-rem Register the engine installation...
-if not exist .\Engine\Binaries\Win64\UnrealVersionSelector-Win64-Shipping.exe goto :no_unreal_version_selector
-.\Engine\Binaries\Win64\UnrealVersionSelector-Win64-Shipping.exe /register
-:no_unreal_version_selector
 
 rem Done!
 goto :EOF
