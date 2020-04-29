@@ -253,10 +253,6 @@ VkImageCreateInfo FVulkanSurface::GenerateImageCreateInfo(
 	check(ImageCreateInfo.arrayLayers <= DeviceProperties.limits.maxImageArrayLayers);
 
 	ImageCreateInfo.flags = (ResourceType == VK_IMAGE_VIEW_TYPE_CUBE || ResourceType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
-	if ((UEFlags & TexCreate_SRGB) == TexCreate_SRGB)
-	{
-		ImageCreateInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
-	}
 
 #if VULKAN_SUPPORTS_MAINTENANCE_LAYER1
 	if (InDevice.GetOptionalExtensions().HasKHRMaintenance1 && ImageCreateInfo.imageType == VK_IMAGE_TYPE_3D)
@@ -279,16 +275,17 @@ VkImageCreateInfo FVulkanSurface::GenerateImageCreateInfo(
 	}
 	else if (UEFlags & (TexCreate_RenderTargetable | TexCreate_DepthStencilTargetable))
 	{
+		if ((UEFlags & TexCreate_Memoryless) == TexCreate_Memoryless)
+		{
+			//if the image is memoryless, we cannot have any TRANSFER or SAMPLED bit set.
+			ImageCreateInfo.usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+		}
 		if ((UEFlags & TexCreate_InputAttachmentRead) == TexCreate_InputAttachmentRead)
 		{
 			ImageCreateInfo.usage |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
 		}
 		ImageCreateInfo.usage |= ((UEFlags & TexCreate_RenderTargetable) ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
 		ImageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-		if ((UEFlags & TexCreate_Memoryless) == TexCreate_Memoryless)
-		{
-			ImageCreateInfo.usage |= VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
-		}
 	}
 	else if (UEFlags & (TexCreate_DepthStencilResolveTarget))
 	{
@@ -303,6 +300,8 @@ VkImageCreateInfo FVulkanSurface::GenerateImageCreateInfo(
 
 	if (UEFlags & TexCreate_UAV)
 	{
+		//cannot have the storage bit on a memoryless texture
+		ensure((UEFlags & TexCreate_Memoryless) == 0);
 		ImageCreateInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 	}
 
@@ -1888,8 +1887,8 @@ FVulkanTexture2DArray::FVulkanTexture2DArray(FVulkanDevice& Device, EPixelFormat
 }
 
 FVulkanTexture2DArray::FVulkanTexture2DArray(const FVulkanTexture2DArray* SrcTexture)
-	: FRHITexture2DArray(SrcTexture->GetSizeX(), SrcTexture->GetSizeY(), SrcTexture->GetSizeZ(), SrcTexture->GetNumMips(), SrcTexture->GetNumSamples(), SrcTexture->GetFormat(), SrcTexture->GetFlags(), SrcTexture->GetClearBinding())
-	, FVulkanTextureBase(static_cast<const FVulkanTextureBase*>(SrcTexture), VK_IMAGE_VIEW_TYPE_2D_ARRAY, SrcTexture->GetSizeX(), SrcTexture->GetSizeY(), SrcTexture->GetSizeZ())
+	: FRHITexture2DArray(SrcTexture->GetSizeX(), SrcTexture->GetSizeY(), SrcTexture->Surface.NumArrayLevels, SrcTexture->GetNumMips(), SrcTexture->GetNumSamples(), SrcTexture->GetFormat(), SrcTexture->GetFlags(), SrcTexture->GetClearBinding())
+	, FVulkanTextureBase(static_cast<const FVulkanTextureBase*>(SrcTexture), VK_IMAGE_VIEW_TYPE_2D_ARRAY, SrcTexture->GetSizeX(), SrcTexture->GetSizeY(), 1 )
 {
 }
 

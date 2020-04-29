@@ -16,11 +16,8 @@
 FSoftObjectPath FOculusAssetDirectory::AssetListing[] =
 {
 	FString(TEXT("/OculusVR/Meshes/RiftHMD.RiftHMD")),
-	FString(TEXT("/OculusVR/Meshes/GearVRController.GearVRController")),
 	FString(TEXT("/OculusVR/Meshes/LeftTouchController.LeftTouchController")),
 	FString(TEXT("/OculusVR/Meshes/RightTouchController.RightTouchController")),
-
-	FString(TEXT("/OculusVR/Materials/PokeAHoleMaterial.PokeAHoleMaterial"))
 };
 
 #if WITH_EDITORONLY_DATA
@@ -85,10 +82,10 @@ namespace OculusAssetManager_Impl
 		{ ovrpNode_Head,      FOculusAssetDirectory::AssetListing[0] },
 #if PLATFORM_ANDROID
 		{ ovrpNode_HandLeft,  FOculusAssetDirectory::AssetListing[1] },
-		{ ovrpNode_HandRight, FOculusAssetDirectory::AssetListing[1] },
+		{ ovrpNode_HandRight, FOculusAssetDirectory::AssetListing[2] },
 #else 
-		{ ovrpNode_HandLeft,  FOculusAssetDirectory::AssetListing[2] },
-		{ ovrpNode_HandRight, FOculusAssetDirectory::AssetListing[3] },
+		{ ovrpNode_HandLeft,  FOculusAssetDirectory::AssetListing[1] },
+		{ ovrpNode_HandRight, FOculusAssetDirectory::AssetListing[2] },
 #endif
 	};
 
@@ -127,10 +124,19 @@ static UObject* OculusAssetManager_Impl::FindDeviceMesh(const int32 DeviceID)
 FOculusAssetManager::FOculusAssetManager()
 {
 	IModularFeatures::Get().RegisterModularFeature(IXRSystemAssets::GetModularFeatureName(), this);
+
+	ResourceHolder = NewObject<UOculusResourceHolder>();
+	ResourceHolder->AddToRoot();
 }
 
 FOculusAssetManager::~FOculusAssetManager()
 {
+	if (ResourceHolder)
+	{
+		ResourceHolder->ConditionalBeginDestroy();
+		ResourceHolder = NULL;
+	}
+
 	IModularFeatures::Get().UnregisterModularFeature(IXRSystemAssets::GetModularFeatureName(), this);
 }
 

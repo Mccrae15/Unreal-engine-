@@ -590,14 +590,14 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 
 	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
 		ConsoleVariable = "vr.MobileMultiView", DisplayName = "Mobile Multi-View",
-		ToolTip = "Enable mobile multi-view rendering (only available on Oculus Mobile and some Gear VR Android devices).",
+		ToolTip = "Enable mobile multi-view rendering (only available on Oculus Mobile).",
 		ConfigRestartRequired = true))
 		uint32 bMobileMultiView : 1;
 
 	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
 		EditCondition = "bMobileMultiView",
 		ConsoleVariable = "vr.MobileMultiView.Direct", DisplayName = "Mobile Multi-View Direct",
-		ToolTip = "Enable direct mobile multi-view rendering (only available on multi-view enabled Oculus Mobile, Gear VR, and Daydream Android devices).",
+		ToolTip = "Enable direct mobile multi-view rendering (only available on multi-view enabled Oculus Mobile and Daydream Android devices).",
 		ConfigRestartRequired = true))
 		uint32 bMobileMultiViewDirect : 1;
 

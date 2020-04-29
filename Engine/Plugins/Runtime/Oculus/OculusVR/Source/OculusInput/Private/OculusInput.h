@@ -13,7 +13,7 @@
 	#pragma pack (push,8)
 #endif
 
-#include <OVR_Plugin.h>
+#include "OculusPluginWrapper.h"
 
 #if PLATFORM_SUPPORTS_PRAGMA_PACK
 	#pragma pack (pop)
@@ -87,8 +87,6 @@ private:
 
 	FOculusRemoteControllerState Remote;
 
-	FOculusTouchpadState Touchpad;
-
 	/** Threshold for treating trigger pulls as button presses, from 0.0 to 1.0 */
 	static float TriggerThreshold;
 
@@ -103,6 +101,8 @@ private:
 	static float ButtonRepeatDelay;
 
 	ovrpHapticsDesc OvrpHapticsDesc;
+
+	int LocalTrackingSpaceRecenterCount;
 };
 
 

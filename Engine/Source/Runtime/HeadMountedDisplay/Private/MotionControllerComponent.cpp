@@ -591,11 +591,74 @@ void UMotionControllerComponent::FViewExtension::PreRenderViewFamily_RenderThrea
 
 		OldTransform = MotionControllerComponent->RenderThreadRelativeTransform;
 		NewTransform = FTransform(Orientation, Position, MotionControllerComponent->RenderThreadComponentScale);
+#if WITH_LATE_LATCHING_CODE
+		MotionControllerComponent->RenderThreadRelativeTransform = NewTransform;
+#endif
 	} // Release the lock on the MotionControllerComponent
 
 	// Tell the late update manager to apply the offset to the scene components
+#if WITH_LATE_LATCHING_CODE
+	LateUpdate.Apply_RenderThread(InViewFamily.Scene, InViewFamily.bLateLatchingEnabled ? InViewFamily.FrameNumber : -1, OldTransform, NewTransform);
+#else
 	LateUpdate.Apply_RenderThread(InViewFamily.Scene, OldTransform, NewTransform);
+#endif
 }
+
+#if WITH_LATE_LATCHING_CODE
+void UMotionControllerComponent::FViewExtension::LateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
+{
+	SCOPED_NAMED_EVENT(UMotionControllerComponent_Latch, FColor::Orange);
+	if (!MotionControllerComponent)
+	{
+		return;
+	}
+
+	FTransform OldTransform;
+	FTransform NewTransform;
+	{
+		FScopeLock ScopeLock(&CritSect);
+		if (!MotionControllerComponent)
+		{
+			return;
+		}
+
+		// Find a view that is associated with this player.
+		float WorldToMetersScale = -1.0f;
+		for (const FSceneView* SceneView : InViewFamily.Views)
+		{
+			if (SceneView && SceneView->PlayerIndex == MotionControllerComponent->PlayerIndex)
+			{
+				WorldToMetersScale = SceneView->WorldToMetersScale;
+				break;
+			}
+		}
+		// If there are no views associated with this player use view 0.
+		if (WorldToMetersScale < 0.0f)
+		{
+			check(InViewFamily.Views.Num() > 0);
+			WorldToMetersScale = InViewFamily.Views[0]->WorldToMetersScale;
+		}
+
+		// Poll state for the most recent controller transform
+		FVector Position = MotionControllerComponent->RenderThreadRelativeTransform.GetTranslation();
+		FRotator Orientation = MotionControllerComponent->RenderThreadRelativeTransform.GetRotation().Rotator();
+
+		if (!MotionControllerComponent->PollControllerState(Position, Orientation, WorldToMetersScale))
+		{
+			return;
+		}
+
+		OldTransform = MotionControllerComponent->RenderThreadRelativeTransform;
+		NewTransform = FTransform(Orientation, Position, MotionControllerComponent->RenderThreadComponentScale);
+		MotionControllerComponent->RenderThreadRelativeTransform = NewTransform;
+
+	} // Release the lock on the MotionControllerComponent
+
+	// Tell the late update manager to apply the offset to the scene components
+	LateUpdate.Apply_RenderThread(InViewFamily.Scene, InViewFamily.FrameNumber, OldTransform, NewTransform);
+}
+#endif
+
 
 bool UMotionControllerComponent::FViewExtension::IsActiveThisFrame(class FViewport* InViewport) const
 {

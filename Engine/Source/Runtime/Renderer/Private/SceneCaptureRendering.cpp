@@ -426,7 +426,8 @@ static void UpdateSceneCaptureContent_RenderThread(
 	const FString& EventName,
 	const FResolveParams& ResolveParams,
 	bool bGenerateMips,
-	const FGenerateMipsParams& GenerateMipsParams)
+	const FGenerateMipsParams& GenerateMipsParams,
+	const bool bDisableFlipCopyLDRGLES)
 {
 	FMaterialRenderProxy::UpdateDeferredCachedUniformExpressions();
 
@@ -442,7 +443,8 @@ static void UpdateSceneCaptureContent_RenderThread(
 				EventName,
 				ResolveParams,
 				bGenerateMips,
-				GenerateMipsParams);
+				GenerateMipsParams,
+				bDisableFlipCopyLDRGLES);
 			break;
 		}
 		case EShadingPath::Deferred:
@@ -823,14 +825,17 @@ void FScene::UpdateSceneCaptureContents(USceneCaptureComponent2D* CaptureCompone
 		}
 
 		const bool bGenerateMips = TextureRenderTarget->bAutoGenerateMips;
-		FGenerateMipsParams GenerateMipsParams{TextureRenderTarget->MipsSamplerFilter == TF_Nearest ? SF_Point : (TextureRenderTarget->MipsSamplerFilter == TF_Trilinear ? SF_Trilinear : SF_Bilinear),
+		FGenerateMipsParams GenerateMipsParams{ TextureRenderTarget->MipsSamplerFilter == TF_Nearest ? SF_Point : (TextureRenderTarget->MipsSamplerFilter == TF_Trilinear ? SF_Trilinear : SF_Bilinear),
 			TextureRenderTarget->MipsAddressU == TA_Wrap ? AM_Wrap : (TextureRenderTarget->MipsAddressU == TA_Mirror ? AM_Mirror : AM_Clamp),
-			TextureRenderTarget->MipsAddressV == TA_Wrap ? AM_Wrap : (TextureRenderTarget->MipsAddressV == TA_Mirror ? AM_Mirror : AM_Clamp)};
+			TextureRenderTarget->MipsAddressV == TA_Wrap ? AM_Wrap : (TextureRenderTarget->MipsAddressV == TA_Mirror ? AM_Mirror : AM_Clamp) };
+
+
+		const bool bDisableFlipCopyGLES = CaptureComponent->bDisableFlipCopyGLES;
 
 		ENQUEUE_RENDER_COMMAND(CaptureCommand)(
-			[SceneRenderer, TextureRenderTargetResource, EventName, bGenerateMips, GenerateMipsParams](FRHICommandListImmediate& RHICmdList)
+			[SceneRenderer, TextureRenderTargetResource, EventName, bGenerateMips, GenerateMipsParams, bDisableFlipCopyGLES](FRHICommandListImmediate& RHICmdList)
 			{
-				UpdateSceneCaptureContent_RenderThread(RHICmdList, SceneRenderer, TextureRenderTargetResource, TextureRenderTargetResource, EventName, FResolveParams(), bGenerateMips, GenerateMipsParams);
+				UpdateSceneCaptureContent_RenderThread(RHICmdList, SceneRenderer, TextureRenderTargetResource, TextureRenderTargetResource, EventName, FResolveParams(), bGenerateMips, GenerateMipsParams, bDisableFlipCopyGLES);
 			}
 		);
 	}
@@ -951,7 +956,7 @@ void FScene::UpdateSceneCaptureContents(USceneCaptureComponentCube* CaptureCompo
 				ENQUEUE_RENDER_COMMAND(CaptureCommand)(
 					[SceneRenderer, TextureRenderTarget, EventName, TargetFace](FRHICommandListImmediate& RHICmdList)
 				{
-					UpdateSceneCaptureContent_RenderThread(RHICmdList, SceneRenderer, TextureRenderTarget, TextureRenderTarget, EventName, FResolveParams(FResolveRect(), TargetFace), false, FGenerateMipsParams());
+					UpdateSceneCaptureContent_RenderThread(RHICmdList, SceneRenderer, TextureRenderTarget, TextureRenderTarget, EventName, FResolveParams(FResolveRect(), TargetFace), false, FGenerateMipsParams(), false);
 				}
 				);
 			}

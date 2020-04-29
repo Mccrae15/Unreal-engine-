@@ -5,8 +5,7 @@
 #include "OVR_Avatar.h"
 #include "Math/Vector.h"
 #include "Math/Quat.h"
-#include "OVR_Plugin.h"
-#include "OVR_Plugin_Types.h"
+#include "OculusPluginWrapper.h"
 #include "DrawDebugHelpers.h"
 #include "Components/SceneComponent.h"
 
@@ -17,6 +16,8 @@ namespace OvrAvatarHelpers
 
 	static const float OvrAvatarScaleToUE4 = 100.0f;
 	static const float UE4ToOvrAvatarScale = 0.01f;
+
+	static const FQuat HandRootFixupRotation = FQuat(0.511645f, -0.624626f, -0.377335f, 0.453520f);
 
 	inline void DebugDrawCoords(const UWorld* world, FTransform& trans)
 	{
@@ -47,18 +48,33 @@ namespace OvrAvatarHelpers
 		FQuatToOvrAvatarQuat3f(inTrans.GetRotation(), outTransform.orientation);
 	}
 
-	inline void OvrAvatarTransformToFTransfrom(const ovrAvatarTransform& oTransform, FTransform& outTransform)
+	inline void OvrAvatarTransformToFTransform(const ovrAvatarTransform& oTransform, FTransform& outTransform)
 	{
 		outTransform.SetLocation(FVector(
 			float(-oTransform.position.z * OvrAvatarScaleToUE4),
-			float(oTransform.position.x  * OvrAvatarScaleToUE4),
-			float(oTransform.position.y  * OvrAvatarScaleToUE4)
+			float(oTransform.position.x * OvrAvatarScaleToUE4),
+			float(oTransform.position.y * OvrAvatarScaleToUE4)
 		));
 
 		outTransform.SetRotation(FQuat(float(-oTransform.orientation.z),
 			float(oTransform.orientation.x),
 			float(oTransform.orientation.y),
 			float(-oTransform.orientation.w)
+		));
+	}
+
+	inline void OvrAvatarBoneTransformToFTransform(const ovrAvatarTransform& oTransform, FTransform& outTransform)
+	{
+		outTransform.SetLocation(FVector(
+			float(-oTransform.position.x * OvrAvatarScaleToUE4),
+			float(-oTransform.position.y * OvrAvatarScaleToUE4),
+			float(-oTransform.position.z * OvrAvatarScaleToUE4)
+		));
+
+		outTransform.SetRotation(FQuat(float(oTransform.orientation.x),
+			float(oTransform.orientation.y),
+			float(oTransform.orientation.z),
+			float(oTransform.orientation.w)
 		));
 	}
 
@@ -159,8 +175,8 @@ namespace OvrAvatarHelpers
 	}
 
 	inline void OvrAvatarParseButtonsAndTouches(
-		const ovrpControllerState4& inputState, 
-		const ovrpHand hand, 
+		const ovrpControllerState4& inputState,
+		const ovrpHand hand,
 		ovrAvatarHandInputState& state)
 	{
 		state.buttonMask = 0;
@@ -179,9 +195,9 @@ namespace OvrAvatarHelpers
 			if (inputState.Touches & ovrpTouch_LThumbRest) state.touchMask |= ovrAvatarTouch_ThumbRest;
 			if (inputState.Touches & ovrpTouch_LIndexTrigger) state.touchMask |= ovrAvatarTouch_Index;
 
-			if (!((inputState.Touches & ovrpTouch_X) 
-				|| (inputState.Touches & ovrpTouch_Y) 
-				|| (inputState.Touches & ovrpTouch_LThumb) 
+			if (!((inputState.Touches & ovrpTouch_X)
+				|| (inputState.Touches & ovrpTouch_Y)
+				|| (inputState.Touches & ovrpTouch_LThumb)
 				|| (inputState.Touches & ovrpTouch_LThumbRest)))
 			{
 				state.touchMask |= ovrAvatarTouch_ThumbUp;
@@ -234,5 +250,30 @@ namespace OvrAvatarHelpers
 				state.touchMask &= ~(ovrAvatarTouch_Pointing);
 			}
 		}
+	}
+
+	// Fix up certain bone transforms in avatar meshes so that they align with their FBX imported counterparts
+	inline void GetBoneRootFixupTransform(const FString BoneName, const uint32 BoneIndex, FTransform& outTransform)
+	{
+		FQuat NewRotation = outTransform.GetRotation();
+		FVector NewLocation = outTransform.GetLocation();
+
+		if (BoneName.Contains("b_r_hand"))
+		{
+			NewRotation = FQuat(HandRootFixupRotation.W, -HandRootFixupRotation.Z, HandRootFixupRotation.Y, -HandRootFixupRotation.X);
+			NewLocation = FVector(NewLocation.X, NewLocation.Z, -NewLocation.Y);
+		}
+		else if (BoneName.Contains("b_l_hand"))
+		{
+			NewRotation = HandRootFixupRotation;
+			NewLocation = FVector(NewLocation.X, NewLocation.Z, -NewLocation.Y);
+		}
+		else if((BoneName.Contains("root") || BoneName.Contains("base") || BoneName.Contains("controller_world")) && BoneIndex == 0)
+		{
+			NewRotation = FQuat(-1.0f, 0.0f, 0.0f, 1.0f);
+		}
+
+		outTransform.SetRotation(NewRotation);
+		outTransform.SetLocation(NewLocation);
 	}
 };

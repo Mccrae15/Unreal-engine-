@@ -106,7 +106,7 @@ namespace UnrealBuildTool.Rules
 
 				// OVRPlugin
 				{
-					PublicDelayLoadDLLs.Add("OVRPlugin.dll");
+					//PublicDelayLoadDLLs.Add("OVRPlugin.dll");
 					RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/Oculus/OVRPlugin/OVRPlugin/" + Target.Platform.ToString() + "/OVRPlugin.dll");
 				}
 			}

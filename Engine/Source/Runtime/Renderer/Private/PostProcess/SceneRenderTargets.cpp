@@ -2523,7 +2523,9 @@ void FSceneRenderTargets::AllocateDeferredShadingPathRenderTargets(FRHICommandLi
 
 EPixelFormat FSceneRenderTargets::GetDesiredMobileSceneColorFormat() const
 {
-	EPixelFormat DefaultColorFormat = (!IsMobileHDR() || IsMobileHDR32bpp() || !GSupportsRenderTargetFormat_PF_FloatRGBA) ? PF_B8G8R8A8 : PF_FloatRGBA;
+	const EPixelFormat defaultLowpFormat = FPlatformMisc::IsStandaloneStereoOnlyDevice() ? PF_R8G8B8A8 : PF_B8G8R8A8;
+
+	EPixelFormat DefaultColorFormat = (!IsMobileHDR() || IsMobileHDR32bpp() || !GSupportsRenderTargetFormat_PF_FloatRGBA) ? defaultLowpFormat : PF_FloatRGBA;
 	check(GPixelFormats[DefaultColorFormat].Supported);
 
 	EPixelFormat MobileSceneColorBufferFormat = DefaultColorFormat;
@@ -2536,7 +2538,7 @@ EPixelFormat FSceneRenderTargets::GetDesiredMobileSceneColorFormat() const
 		case 2:
 			MobileSceneColorBufferFormat = PF_FloatR11G11B10; break;
 		case 3:
-			MobileSceneColorBufferFormat = PF_B8G8R8A8; break;
+			MobileSceneColorBufferFormat = defaultLowpFormat; break;
 		default:
 		break;
 	}

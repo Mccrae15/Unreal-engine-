@@ -16,6 +16,9 @@
 #include "Android/AndroidApplication.h"
 #endif
 
+#define VULKAN_CUBEMAP_POSITIVE_Y 2
+#define VULKAN_CUBEMAP_NEGATIVE_Y 3
+
 namespace OculusHMD
 {
 
@@ -46,7 +49,7 @@ void FCustomPresent::ReleaseResources_RHIThread()
 
 	if (MirrorTextureRHI.IsValid())
 	{
-		ovrp_DestroyMirrorTexture2();
+		FOculusHMDModule::GetPluginWrapper().DestroyMirrorTexture2();
 		MirrorTextureRHI = nullptr;
 	}
 }
@@ -132,7 +135,7 @@ void FCustomPresent::UpdateMirrorTexture_RenderThread()
 	const ESpectatorScreenMode MirrorWindowMode = OculusHMD->GetSpectatorScreenMode_RenderThread();
 	const FVector2D MirrorWindowSize = OculusHMD->GetFrame_RenderThread()->WindowSize;
 
-	if (ovrp_GetInitialized())
+	if (FOculusHMDModule::GetPluginWrapper().GetInitialized())
 	{
 		// Need to destroy mirror texture?
 		if (MirrorTextureRHI.IsValid() && (MirrorWindowMode != ESpectatorScreenMode::Distorted ||
@@ -140,7 +143,7 @@ void FCustomPresent::UpdateMirrorTexture_RenderThread()
 		{
 			ExecuteOnRHIThread([]()
 			{
-				ovrp_DestroyMirrorTexture2();
+				FOculusHMDModule::GetPluginWrapper().DestroyMirrorTexture2();
 			});
 
 			MirrorTextureRHI = nullptr;
@@ -157,7 +160,7 @@ void FCustomPresent::UpdateMirrorTexture_RenderThread()
 
 			ExecuteOnRHIThread([&]()
 			{
-				ovrp_SetupMirrorTexture2(GetOvrpDevice(), Height, Width, GetDefaultOvrpTextureFormat(), &TextureHandle);
+				FOculusHMDModule::GetPluginWrapper().SetupMirrorTexture2(GetOvrpDevice(), Height, Width, GetDefaultOvrpTextureFormat(), &TextureHandle);
 			});
 
 			UE_LOG(LogHMD, Log, TEXT("Allocated a new mirror texture (size %d x %d)"), Width, Height);
@@ -179,7 +182,7 @@ void FCustomPresent::FinishRendering_RHIThread()
 	if (OculusHMD->GetFrame_RHIThread()->ShowFlags.Rendering)
 	{
 		ovrpAppLatencyTimings AppLatencyTimings;
-		if(OVRP_SUCCESS(ovrp_GetAppLatencyTimings2(&AppLatencyTimings)))
+		if(OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetAppLatencyTimings2(&AppLatencyTimings)))
 		{
 			SET_FLOAT_STAT(STAT_LatencyRender, AppLatencyTimings.LatencyRender * 1000.0f);
 			SET_FLOAT_STAT(STAT_LatencyTimewarp, AppLatencyTimings.LatencyTimewarp * 1000.0f);
@@ -194,7 +197,7 @@ void FCustomPresent::FinishRendering_RHIThread()
 
 #if PLATFORM_ANDROID
 	float GPUFrameTime = 0.0f;
-	if (OVRP_SUCCESS(ovrp_GetGPUFrameTime(&GPUFrameTime)))
+	if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetGPUFrameTime(&GPUFrameTime)))
 	{
 		SubmitGPUFrameTime(GPUFrameTime);
 	}
@@ -237,18 +240,18 @@ EPixelFormat FCustomPresent::GetPixelFormat(ovrpTextureFormat Format) const
 }
 
 
-ovrpTextureFormat FCustomPresent::GetOvrpTextureFormat(EPixelFormat Format) const
+ovrpTextureFormat FCustomPresent::GetOvrpTextureFormat(EPixelFormat Format, bool usesRGB) const
 {
 	switch (GetPixelFormat(Format))
 	{
 	case PF_B8G8R8A8:
-		return bSupportsSRGB ? ovrpTextureFormat_B8G8R8A8_sRGB : ovrpTextureFormat_B8G8R8A8;
+		return bSupportsSRGB && usesRGB ? ovrpTextureFormat_B8G8R8A8_sRGB : ovrpTextureFormat_B8G8R8A8;
 	case PF_FloatRGBA:
 		return ovrpTextureFormat_R16G16B16A16_FP;
 	case PF_FloatR11G11B10:
 		return ovrpTextureFormat_R11G11B10_FP;
 	case PF_R8G8B8A8:
-		return bSupportsSRGB ? ovrpTextureFormat_R8G8B8A8_sRGB : ovrpTextureFormat_R8G8B8A8;
+		return bSupportsSRGB && usesRGB ? ovrpTextureFormat_R8G8B8A8_sRGB : ovrpTextureFormat_R8G8B8A8;
 	}
 
 	return ovrpTextureFormat_None;
@@ -271,7 +274,7 @@ bool FCustomPresent::IsSRGB(ovrpTextureFormat InFormat)
 int FCustomPresent::GetSystemRecommendedMSAALevel() const
 {
 	int SystemRecommendedMSAALevel = 1;
-	ovrp_GetSystemRecommendedMSAALevel2(&SystemRecommendedMSAALevel);
+	FOculusHMDModule::GetPluginWrapper().GetSystemRecommendedMSAALevel2(&SystemRecommendedMSAALevel);
 	return SystemRecommendedMSAALevel;
 }
 
@@ -393,53 +396,86 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 	{
 		sRGBSource &= ( ( SrcTexture->GetFlags() & TexCreate_SRGB ) != 0);
 
-		FRHIRenderPassInfo RPInfo(DstTexture, ERenderTargetActions::Load_Store);
-		RHICmdList.BeginRenderPass(RPInfo, TEXT("CopyTexture"));
+		// Need to copy over mip maps on Android since they are not generated like they are on PC
+#if PLATFORM_ANDROID
+		uint32 NumMips = SrcTexture->GetNumMips();
+#else
+		uint32 NumMips = 1;
+#endif
+
+		for (uint32 MipIndex = 0; MipIndex < NumMips; MipIndex++)
 		{
+			FRHIRenderPassInfo RPInfo(DstTexture, ERenderTargetActions::Load_Store);
+			RPInfo.ColorRenderTargets[0].MipIndex = MipIndex;
 
-			if (bNoAlphaWrite)
+			RHICmdList.BeginRenderPass(RPInfo, TEXT("CopyTexture"));
 			{
-				RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0.0f, DstRect.Max.X, DstRect.Max.Y, 1.0f);
-				DrawClearQuad(RHICmdList, bAlphaPremultiply ? FLinearColor::Black : FLinearColor::White);
+				const uint32 MipViewportWidth = ViewportWidth >> MipIndex;
+				const uint32 MipViewportHeight = ViewportHeight >> MipIndex;
+				const FIntPoint MipTargetSize(MipViewportWidth, MipViewportHeight);
+
+				if (bNoAlphaWrite)
+				{
+					RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0.0f, DstRect.Max.X, DstRect.Max.Y, 1.0f);
+					DrawClearQuad(RHICmdList, bAlphaPremultiply ? FLinearColor::Black : FLinearColor::White);
+				}
+
+				RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+				FRHISamplerState* SamplerState = DstRect.Size() == SrcRect.Size() ? TStaticSamplerState<SF_Point>::GetRHI() : TStaticSamplerState<SF_Bilinear>::GetRHI();
+
+				if (!sRGBSource)
+				{
+					TShaderMapRef<FScreenPSMipLevel> PixelShader(ShaderMap);
+					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+					PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI, MipIndex);
+				}
+				else
+				{
+					TShaderMapRef<FScreenPSsRGBSourceMipLevel> PixelShader(ShaderMap);
+					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
+					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+					PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI, MipIndex);
+				}
+
+				RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0.0f, MipViewportWidth, MipViewportHeight, 1.0f);
+
+				RendererModule->DrawRectangle(
+					RHICmdList,
+					0, 0, MipViewportWidth, MipViewportHeight,
+					U, V, USize, VSize,
+					MipTargetSize,
+					FIntPoint(1, 1),
+					*VertexShader,
+					EDRF_Default);
 			}
-
-			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-			FRHISamplerState* SamplerState = DstRect.Size() == SrcRect.Size() ? TStaticSamplerState<SF_Point>::GetRHI() : TStaticSamplerState<SF_Bilinear>::GetRHI();
-
-			if (!sRGBSource)
-			{
-				TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
-				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
-				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-				PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI);
-			}
-			else
-			{
-				TShaderMapRef<FScreenPSsRGBSource> PixelShader(ShaderMap);
-				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = GETSAFERHISHADER_PIXEL(*PixelShader);
-				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-				PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI);
-			}
-
-			RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0.0f, DstRect.Max.X, DstRect.Max.Y, 1.0f);
-
-			RendererModule->DrawRectangle(
-				RHICmdList,
-				0, 0, ViewportWidth, ViewportHeight,
-				U, V, USize, VSize,
-				TargetSize,
-				FIntPoint(1, 1),
-				*VertexShader,
-				EDRF_Default);
+			RHICmdList.EndRenderPass();
 		}
-		RHICmdList.EndRenderPass();
 	}
 	else
 	{
 		for (int FaceIndex = 0; FaceIndex < 6; FaceIndex++)
 		{
 			FRHIRenderPassInfo RPInfo(DstTexture, ERenderTargetActions::Load_Store);
-			RPInfo.ColorRenderTargets[0].ArraySlice = FaceIndex;
+
+			// On Vulkan the positive and negative Y faces of the cubemap need to be flipped
+			if (RenderAPI == ovrpRenderAPI_Vulkan)
+			{
+				int NewFaceIndex = 0;
+
+				if (FaceIndex == VULKAN_CUBEMAP_POSITIVE_Y)
+					NewFaceIndex = VULKAN_CUBEMAP_NEGATIVE_Y;
+				else if (FaceIndex == VULKAN_CUBEMAP_NEGATIVE_Y)
+					NewFaceIndex = VULKAN_CUBEMAP_POSITIVE_Y;
+				else
+					NewFaceIndex = FaceIndex;
+
+				RPInfo.ColorRenderTargets[0].ArraySlice = NewFaceIndex;
+			}
+			else
+			{
+				RPInfo.ColorRenderTargets[0].ArraySlice = FaceIndex;
+			}
 
 			RHICmdList.BeginRenderPass(RPInfo, TEXT("CopyTextureFace"));
 			{

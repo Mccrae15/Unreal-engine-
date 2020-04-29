@@ -16,11 +16,10 @@
 		<setBool result="bRemoveOSIG" value="true"/>
 
 		<!-- get packaging for Oculus Mobile from ini and reset it if architecture not supported -->
-		<setBoolFromProperty result="bPackageForGearVR" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="bPackageForGearVR" default="false"/>
-		<setBoolFromPropertyContains result="bPackageForOculusGoGearVR" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="GearGo"/>
+		<setBoolFromProperty result="bFocusAware" ini="Engine" section="/Script/OculusHMD.OculusHMDRuntimeSettings" property="bFocusAware" default="false"/>
+		<setBoolFromPropertyContains result="bPackageForOculusGo" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="Go"/>
 		<setBoolFromPropertyContains result="bPackageForOculusQuest" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="Quest"/>
-		<setBoolOr result="bPackageForOculusMobile" arg1="$B(bPackageForOculusGoGearVR)" arg2="$B(bPackageForOculusQuest)" />
-		<setBoolOr result="bPackageForOculusMobile" arg1="$B(bPackageForOculusMobile)" arg2="$B(bPackageForGearVR)" />
+		<setBoolOr result="bPackageForOculusMobile" arg1="$B(bPackageForOculusGo)" arg2="$B(bPackageForOculusQuest)" />
 		<if condition="bPackageForOculusMobile">
 			<true>
 				<if condition="bSupported">
@@ -114,12 +113,23 @@
 				<addFeature android:name="android.hardware.usb.host"/>
 			</true>
 		</if>
-		<setBool result="bOculus3Dof" value="$B(bPackageForOculusGoGearVR)" />
+		<setBool result="bOculus3Dof" value="$B(bPackageForOculusGo)" />
 		<setBool result="bOculus6Dof" value="$B(bPackageForOculusQuest)" />
 		<setBoolNot result="bNotOculus3Dof" source="$B(bOculus3Dof)" />
 		<if condition="bOculus6Dof">
 			<true>
 				<addFeature android:name="android.hardware.vr.headtracking" android:version="1" android:required="$B(bNotOculus3Dof)" />
+				<if condition="bNotOculus3Dof">
+					<true>
+						<if condition="bFocusAware">
+							<true>
+								<addElements tag="activity">
+									<meta-data android:name="com.oculus.vr.focusaware" android:value="true"/>
+								</addElements>
+							</true>
+						</if>
+					</true>
+				</if>
 			</true>
 		</if>
 	</androidManifestUpdates>
@@ -206,16 +216,9 @@
 					{
 						PackagedForOculusMobile = true;
 						String VRMode = bundle.getString("com.samsung.android.vr.application.mode");
+						bUsesVrKeyboard = true;
 						Log.debug("Found Oculus Mobile mode = " + VRMode);
 				</insert>
-				<if condition="bEntitlementCheck">
-					<true>
-						<!-- add entitlement check if osig files are removed -->
-						<insert>
-							com.oculus.svclib.OVREntitlementChecker.doAutomatedCheck(this);
-						</insert>
-					</true>
-				</if>
 				<insert>
 					}
 					else

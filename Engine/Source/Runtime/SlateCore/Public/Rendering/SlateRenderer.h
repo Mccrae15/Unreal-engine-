@@ -7,6 +7,7 @@
 #include "Brushes/SlateDynamicImageBrush.h"
 #include "Rendering/DrawElements.h"
 #include "Templates/RefCounting.h"
+#include "PixelFormat.h"
 
 class FRHITexture2D;
 class FRenderTarget;
@@ -485,6 +486,8 @@ public:
 											Care must be taken to destroy anything referenced in the context when it is safe to do so.
 	 */
 	virtual void AddWidgetRendererUpdate(const struct FRenderThreadUpdateContext& Context, bool bDeferredRenderTargetUpdate) {}
+
+	virtual EPixelFormat GetSlateRecommendedColorFormat() { return PF_B8G8R8A8; }
 private:
 
 	// Non-copyable

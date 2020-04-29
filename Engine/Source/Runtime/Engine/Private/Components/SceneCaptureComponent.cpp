@@ -450,6 +450,7 @@ USceneCaptureComponent2D::USceneCaptureComponent2D(const FObjectInitializer& Obj
 	ClipPlaneNormal = FVector(0, 0, 1);
 	bCameraCutThisFrame = false;
 	bConsiderUnrenderedOpaquePixelAsFullyTranslucent = false;
+	bDisableFlipCopyGLES = false;
 	
 	// Legacy initialization.
 	{
@@ -657,6 +658,11 @@ bool USceneCaptureComponent2D::CanEditChange(const UProperty* InProperty) const
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(USceneCaptureComponent2D, CustomProjectionMatrix))
 		{
 			return bUseCustomProjectionMatrix;
+		}
+
+		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(USceneCaptureComponent2D, bDisableFlipCopyGLES))
+		{
+			return CaptureSource == SCS_FinalColorLDR;
 		}
 	}
 
