@@ -791,6 +791,11 @@ void FD3D12DynamicRHI::DisableQuadBufferStereo()
 	bIsQuadBufferStereoEnabled = false;
 }
 
+int32 FD3D12DynamicRHI::GetResourceBarrierBatchSizeLimit()
+{
+	return INT32_MAX;
+}
+
 void FD3D12Device::Initialize()
 {
 	check(IsInGameThread());
