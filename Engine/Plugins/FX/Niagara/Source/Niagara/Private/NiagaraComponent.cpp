@@ -1379,10 +1379,12 @@ int32 UNiagaraComponent::GetNumMaterials() const
 		for (int32 i = 0; i < SystemInstance->GetEmitters().Num(); i++)
 		{
 			FNiagaraEmitterInstance* EmitterInst = &SystemInstance->GetEmitters()[i].Get();
-			UNiagaraEmitter* Emitter = EmitterInst->GetCachedEmitter();
-			for (UNiagaraRendererProperties* Properties : Emitter->GetEnabledRenderers())
+			if ( UNiagaraEmitter* Emitter = EmitterInst->GetCachedEmitter() )
 			{
-				Properties->GetUsedMaterials(EmitterInst, UsedMaterials);
+				for (UNiagaraRendererProperties* Properties : Emitter->GetEnabledRenderers())
+				{
+					Properties->GetUsedMaterials(EmitterInst, UsedMaterials);
+				}
 			}
 		}
 	}
