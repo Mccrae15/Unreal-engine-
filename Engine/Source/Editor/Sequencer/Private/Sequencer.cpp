@@ -8075,6 +8075,12 @@ void GetSupportedTracks(TSharedRef<FSequencerDisplayNode> DisplayNode, const TAr
 	}
 
 	TSharedRef<FSequencerTrackNode> TrackNode = StaticCastSharedRef<FSequencerTrackNode>(DisplayNode);
+
+	if (TracksToPasteOnto.Contains(TrackNode))
+	{
+		return;
+	}
+
 	UMovieSceneTrack* Track = TrackNode->GetTrack();
 	if (Track)
 	{
@@ -8085,6 +8091,7 @@ void GetSupportedTracks(TSharedRef<FSequencerDisplayNode> DisplayNode, const TAr
 			if (Track->SupportsType(Section->GetClass()))
 			{
 				TracksToPasteOnto.Add(TrackNode);
+				return;
 			}
 		}
 	}
