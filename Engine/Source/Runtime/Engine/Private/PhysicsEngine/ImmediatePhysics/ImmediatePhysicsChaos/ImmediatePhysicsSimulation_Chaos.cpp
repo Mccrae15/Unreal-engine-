@@ -56,7 +56,7 @@ FAutoConsoleVariableRef CVarChaosImmPhysFixedStepTolerance(TEXT("p.Chaos.ImmPhys
 
 int32 ChaosImmediate_Collision_Enabled = 1;
 int32 ChaosImmediate_Collision_PairIterations = -1;
-int32 ChaosImmediate_Collision_PushOutPairIterations = -1;
+int32 ChaosImmediate_Collision_PushOutPairIterations = 0;	// Force disabled - not compatible with ECollisionApplyType::Position
 int32 ChaosImmediate_Collision_Priority = 1;
 float ChaosImmediate_Collision_CullDistance = 1.0f;
 float ChaosImmediate_Collision_ShapePadding = 0;
@@ -182,7 +182,7 @@ namespace ImmediatePhysics_Chaos
 		FImplementation()
 			: Particles()
 			, Joints()
-			, Collisions(Particles, CollidedParticles, ParticleMaterials, 0, 0, ChaosImmediate_Collision_CullDistance, ChaosImmediate_Collision_ShapePadding)
+			, Collisions(Particles, CollidedParticles, ParticleMaterials, PerParticleMaterials, 0, 0, ChaosImmediate_Collision_CullDistance, ChaosImmediate_Collision_ShapePadding)
 			, BroadPhase(ActivePotentiallyCollidingPairs, ChaosImmediate_Collision_CullDistance)
 			, NarrowPhase()
 			, CollisionDetector(BroadPhase, NarrowPhase, Collisions)
@@ -196,6 +196,7 @@ namespace ImmediatePhysics_Chaos
 			, MaxNumRollingAverageStepTimes(ChaosImmediate_Evolution_DeltaTimeCount)
 			, bActorsDirty(false)
 		{
+			Particles.GetParticleHandles().AddArray(&CollidedParticles);
 			Particles.GetParticleHandles().AddArray(&ParticleMaterials);
 			Particles.GetParticleHandles().AddArray(&PerParticleMaterials);
 			Particles.GetParticleHandles().AddArray(&ParticlePrevXs);
@@ -401,11 +402,11 @@ namespace ImmediatePhysics_Chaos
 			}
 		}
 
-		Implementation->ParticleMaterials.Add(MakeSerializable(Material));
-		Implementation->PerParticleMaterials.Add(MoveTemp(Material));
-		Implementation->CollidedParticles.Add(false);
-		Implementation->ParticlePrevXs.Add(ActorHandle->GetParticle()->X());
-		Implementation->ParticlePrevRs.Add(ActorHandle->GetParticle()->R());
+		ActorHandle->GetParticle()->AuxilaryValue(Implementation->ParticleMaterials) = MakeSerializable(Material);
+		ActorHandle->GetParticle()->AuxilaryValue(Implementation->PerParticleMaterials) = MoveTemp(Material);
+		ActorHandle->GetParticle()->AuxilaryValue(Implementation->CollidedParticles) = false;
+		ActorHandle->GetParticle()->AuxilaryValue(Implementation->ParticlePrevXs) = ActorHandle->GetParticle()->X();
+		ActorHandle->GetParticle()->AuxilaryValue(Implementation->ParticlePrevRs) = ActorHandle->GetParticle()->R();
 
 		Implementation->bActorsDirty = true;
 
@@ -419,12 +420,6 @@ namespace ImmediatePhysics_Chaos
 
 		int32 Index = Implementation->ActorHandles.Remove(ActorHandle);
 		delete ActorHandle;
-
-		Implementation->ParticleMaterials.RemoveAt(Index, 1);
-		Implementation->PerParticleMaterials.RemoveAt(Index, 1);
-		Implementation->CollidedParticles.RemoveAt(Index, 1);
-		Implementation->ParticlePrevXs.RemoveAt(Index, 1);
-		Implementation->ParticlePrevRs.RemoveAt(Index, 1);
 
 		Implementation->bActorsDirty = true;
 	}

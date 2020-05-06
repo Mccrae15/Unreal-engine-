@@ -9,6 +9,7 @@
 #include "UObject/Package.h"
 #include "UObject/UObjectArray.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
+#include "UObject/ReleaseObjectVersion.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/UObjectThreadContext.h"
 #include "UObject/PropertyHelper.h"
@@ -31,14 +32,7 @@ static FString PathToString(const TArray<FName>& InPath)
 	{
 		// Allocate once and construct the path string
 		Result.Reserve(PathLength);
-
-		// Handle nativized blueprint oddities 
-		FString ObjName = InPath.Last().ToString();
-		if (ObjName.StartsWith(UDynamicClass::GetTempPackagePrefix(), ESearchCase::IgnoreCase))
-		{
-			ObjName.RemoveFromStart(UDynamicClass::GetTempPackagePrefix(), ESearchCase::IgnoreCase);
-		}
-		Result += ObjName;
+		Result += InPath.Last().ToString();
 
 		if (InPath.Num() > 1)
 		{
@@ -307,30 +301,49 @@ FString FFieldPath::ToString() const
 		// Revert back to old path format where the package and UStruct owner were also specified
 		Result = PathToString(Path);
 	}
+
+	// Nativized BP support
+	if (Result.StartsWith(UDynamicClass::GetTempPackagePrefix(), ESearchCase::IgnoreCase))
+	{
+		Result.RemoveFromStart(UDynamicClass::GetTempPackagePrefix(), ESearchCase::IgnoreCase);
+	}
+
 	return Result;
 }
 
 FArchive& operator<<(FArchive& Ar, FFieldPath& InOutPropertyPath)
 {
 	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
 
 	if (Ar.IsSaving())
 	{		
 		UStruct* Owner = InOutPropertyPath.ResolvedOwner.Get();
-		if (!Owner)
+		bool bFilterEditorOnlyProperty = false;
+		if (Owner && Ar.IsFilterEditorOnly())
+		{
+			FProperty* ResolvedProperty = CastField<FProperty>(InOutPropertyPath.GetTyped(FProperty::StaticClass()));
+			if (ResolvedProperty && ResolvedProperty->HasAnyPropertyFlags(CPF_EditorOnly))
+			{
+				bFilterEditorOnlyProperty = true;
+			}
+		}
+		if (!Owner || bFilterEditorOnlyProperty)
 		{
 			// If there's no owner, make sure we don't serialize potentially unresolved path from the actual field
 			// because if we don't save the owner, we won't be able to resolve it anyway.
 			// Possible scenario: the owner was GC'd and the path is no longer valid
 			TArray<FName> EmptyPath;
+			UStruct* NullOwner = nullptr;
 			Ar << EmptyPath;
+			Ar << NullOwner;
 			UE_CLOG(InOutPropertyPath.Path.Num(), LogProperty, Verbose, TEXT("Null owner but property path is not empty when saving \"%s\""), *PathToString(InOutPropertyPath.Path));
 		}
 		else
 		{
 			Ar << InOutPropertyPath.Path;
+			Ar << Owner;
 		}
-		Ar << Owner;
 		checkf(Owner == InOutPropertyPath.ResolvedOwner.Get(), TEXT("FFieldPath owner has changed when saving, this is not allowed (Path: \"%s\", new owner: \"%s\")"),
 			*InOutPropertyPath.ToString(), *GetPathNameSafe(Owner));
 	}
@@ -342,7 +355,7 @@ FArchive& operator<<(FArchive& Ar, FFieldPath& InOutPropertyPath)
 		{
 			InOutPropertyPath.Path.Empty();
 		}
-		if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::FFieldPathOwnerSerialization)
+		if (Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::FFieldPathOwnerSerialization || Ar.CustomVer(FReleaseObjectVersion::GUID) >= FReleaseObjectVersion::FFieldPathOwnerSerialization)
 		{
 			UStruct* SerializedOwner = InOutPropertyPath.ResolvedOwner.Get();
 			Ar << SerializedOwner;
@@ -409,5 +422,4 @@ int32 FFieldPath::GetFieldPathSerialNumber(UStruct* InStruct) const
 {
 	return InStruct->FieldPathSerialNumber;
 }
-
 #endif // WITH_EDITORONLY_DATA

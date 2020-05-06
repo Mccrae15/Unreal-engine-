@@ -589,7 +589,7 @@ public:
 		{
 			if (Resource)
 			{
-				Resource->ReleaseRHI();
+				BeginReleaseResource(Resource);
 			}
 		}
 		
@@ -774,7 +774,10 @@ void FShaderMapResource_SharedCode::ReleaseRHI()
 		}
 	}
 
-	LibraryInstance->Library->ReleasePreloadedShaderMap(ShaderMapIndex);
+	if(LibraryInstance->Library.IsValid())
+	{
+		LibraryInstance->Library->ReleasePreloadedShaderMap(ShaderMapIndex);
+	}
 
 	FShaderMapResource::ReleaseRHI();
 }
@@ -1755,7 +1758,11 @@ public:
 
 				for (int32 Platform = 0; Platform < PlatformNames.Num(); ++Platform)
 				{
-					FString LogFileDirectory = FPaths::Combine(FPlatformMisc::ProjectDir(), TEXT("Build"), *PlatformNames[Platform], TEXT("FileOpenOrder"));
+					FString LogFileDirectory = FPaths::Combine(FPlatformMisc::ProjectDir(), TEXT("Platforms"), *PlatformNames[Platform], TEXT("Build"), TEXT("FileOpenOrder"));
+					if (!FPaths::DirectoryExists(LogFileDirectory))
+					{
+						LogFileDirectory = FPaths::Combine(FPlatformMisc::ProjectDir(), TEXT("Build"), *PlatformNames[Platform], TEXT("FileOpenOrder"));
+					}
 					FString LogFilePath = FPaths::Combine(*LogFileDirectory, TEXT("GameOpenOrder.log"));
 					UE_LOG(LogShaderLibrary, Display, TEXT("Checking if '%s' exists..."), *LogFilePath);
 					if (FPaths::FileExists(LogFilePath))

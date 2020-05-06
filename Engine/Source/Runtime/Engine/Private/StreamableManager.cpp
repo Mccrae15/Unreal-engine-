@@ -412,13 +412,23 @@ void FStreamableHandle::GetRequestedAssets(TArray<FSoftObjectPath>& AssetList) c
 
 UObject* FStreamableHandle::GetLoadedAsset() const
 {
-	TArray<UObject *> LoadedAssets;
-
-	GetLoadedAssets(LoadedAssets);
-
-	if (LoadedAssets.Num() > 0)
+	if (HasLoadCompleted())
 	{
-		return LoadedAssets[0];
+		if (RequestedAssets.Num() > 0)
+		{
+			const FSoftObjectPath& Ref = RequestedAssets[0];
+			// Try manager, should be faster and will handle redirects better
+			return IsActive() ? OwningManager->GetStreamed(Ref) : Ref.ResolveObject();
+		}
+
+		// Check child handles
+		for (const TSharedPtr<FStreamableHandle>& ChildHandle : ChildHandles)
+		{
+			if (UObject* LoadedChildAsset = ChildHandle->GetLoadedAsset())
+			{
+				return LoadedChildAsset;
+			}
+		}	
 	}
 
 	return nullptr;
@@ -1457,7 +1467,7 @@ void FStreamableManager::RemoveReferencedAsset(const FSoftObjectPath& Target, TS
 	// This should always be in the active handles list
 	if (ensureMsgf(Existing, TEXT("Failed to find existing streamable for %s"), *Target.ToString()))
 	{
-		ensureMsgf(Existing->ActiveHandles.Remove(Handle) > 0, TEXT("Failed to remove active handle for %s"), *Target.ToString());
+		ensureMsgf(Existing->ActiveHandles.RemoveSingleSwap(Handle) > 0, TEXT("Failed to remove active handle for %s"), *Target.ToString());
 
 		// Try removing from loading list if it's still there, this won't call the callback as it's being called from cancel
 		// This may remove more than one copy if streamables were merged

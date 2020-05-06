@@ -13,6 +13,7 @@
 #include "ScreenRendering.h"
 #include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/PostProcessSubsurface.h"
+#include "PostProcess/PostProcessVisualizeCalibrationMaterial.h"
 #include "CompositionLighting/CompositionLighting.h"
 #include "FXSystem.h"
 #include "OneColorShader.h"
@@ -809,7 +810,9 @@ bool FDeferredShadingSceneRenderer::GatherRayTracingWorldInstances(FRHICommandLi
 
 				//#dxr_todo UE-68621  The Raytracing code path does not support ShowFlags since data moved to the SceneInfo. 
 				//Touching the SceneProxy to determine this would simply cost too much
-				if (SceneInfo->bIsRayTracingStaticRelevant && View.Family->EngineShowFlags.StaticMeshes)
+				static const auto RayTracingStaticMeshesCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.RayTracing.StaticMeshes"));
+
+				if (SceneInfo->bIsRayTracingStaticRelevant && View.Family->EngineShowFlags.StaticMeshes && RayTracingStaticMeshesCVar && RayTracingStaticMeshesCVar->GetValueOnRenderThread() > 0)
 				{
 					Item.ViewIndex = ViewIndex;
 					RelevantPrimitives.Add(Item);
@@ -1227,11 +1230,6 @@ bool FDeferredShadingSceneRenderer::DispatchRayTracingWorldUpdates(FRHICommandLi
 			EUniformBufferUsage::UniformBuffer_SingleFrame,
 			View.RayTracingLightingDataBuffer,
 			View.RayTracingLightingDataSRV);
-
-		if (CanUseRayTracingLightingMissShader(View.GetShaderPlatform()))
-		{
-			SetupRayTracingLightingMissShader(RHICmdList, View);
-		}
 	}
 
 	if (!bAsyncUpdateGeometry)
@@ -1288,21 +1286,57 @@ void FDeferredShadingSceneRenderer::WaitForRayTracingScene(FRHICommandListImmedi
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 	{
 		FViewInfo& View = Views[ViewIndex];
+		if (!View.RayTracingMaterialPipeline)
+		{
+			check(View.RayTracingMaterialBindings.Num() == 0);
+			continue;
+		}
+
 		if (View.RayTracingMaterialBindings.Num())
 		{
 			FTaskGraphInterface::Get().WaitUntilTaskCompletes(View.RayTracingMaterialBindingsTask, ENamedThreads::GetRenderThread_Local());
 
+			// Gather bindings from all chunks and submit them all as a single batch to allow RHI to bind all shader parameters in parallel.
+
+			uint32 NumTotalBindings = 0;
+
 			for (FRayTracingLocalShaderBindingWriter* BindingWriter : View.RayTracingMaterialBindings)
 			{
-				// Data is kept alive at the high level and explicitly deleted on RHI timeline,
-				// so we can avoid copying parameters to the command list and simply pass raw pointers around.
-				const bool bCopyDataToInlineStorage = false;
-				BindingWriter->Commit(
-					RHICmdList,
-					View.RayTracingScene.RayTracingSceneRHI,
-					View.RayTracingMaterialPipeline,
-					bCopyDataToInlineStorage);
+				const FRayTracingLocalShaderBindingWriter::FChunk* Chunk = BindingWriter->GetFirstChunk();
+				while (Chunk)
+				{
+					NumTotalBindings += Chunk->Num;
+					Chunk = Chunk->Next;
+				}
 			}
+
+			const uint32 MergedBindingsSize = sizeof(FRayTracingLocalShaderBindings) * NumTotalBindings;
+			FRayTracingLocalShaderBindings* MergedBindings = (FRayTracingLocalShaderBindings*) (RHICmdList.Bypass() 
+				? FMemStack::Get().Alloc(MergedBindingsSize, alignof(FRayTracingLocalShaderBindings))
+				: RHICmdList.Alloc(MergedBindingsSize, alignof(FRayTracingLocalShaderBindings)));
+
+			uint32 MergedBindingIndex = 0;
+			for (FRayTracingLocalShaderBindingWriter* BindingWriter : View.RayTracingMaterialBindings)
+			{
+				const FRayTracingLocalShaderBindingWriter::FChunk* Chunk = BindingWriter->GetFirstChunk();
+				while (Chunk)
+				{
+					const uint32 Num = Chunk->Num;
+					for (uint32_t i = 0; i < Num; ++i)
+					{
+						MergedBindings[MergedBindingIndex] = Chunk->Bindings[i];
+						MergedBindingIndex++;
+					}
+					Chunk = Chunk->Next;
+				}
+			}
+
+			const bool bCopyDataToInlineStorage = false; // Storage is already allocated from RHICmdList, no extra copy necessary
+			RHICmdList.SetRayTracingHitGroups(
+				View.RayTracingScene.RayTracingSceneRHI, 
+				View.RayTracingMaterialPipeline,
+				NumTotalBindings, MergedBindings,
+				bCopyDataToInlineStorage);
 
 			// Move the ray tracing binding container ownership to the command list, so that memory will be
 			// released on the RHI thread timeline, after the commands that reference it are processed.
@@ -1314,6 +1348,11 @@ void FDeferredShadingSceneRenderer::WaitForRayTracingScene(FRHICommandListImmedi
 				}
 			});
 		}
+
+		if (CanUseRayTracingLightingMissShader(View.GetShaderPlatform()))
+		{
+			SetupRayTracingLightingMissShader(RHICmdList, View);
+		}
 	}
 
 	if (RayTracingDynamicGeometryUpdateEndFence)
@@ -1323,7 +1362,6 @@ void FDeferredShadingSceneRenderer::WaitForRayTracingScene(FRHICommandListImmedi
 		RayTracingDynamicGeometryUpdateEndFence = nullptr;
 	}
 }
-
 
 #endif // RHI_RAYTRACING
 
@@ -1515,6 +1553,7 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 			// Clear virtual texture feedback to default value
 			FUnorderedAccessViewRHIRef FeedbackUAV = SceneContext.GetVirtualTextureFeedbackUAV();
+			RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, EResourceTransitionPipeline::EGfxToGfx, FeedbackUAV);
 			RHICmdList.ClearUAVUint(FeedbackUAV, FUintVector4(~0u, ~0u, ~0u, ~0u));
 			RHICmdList.TransitionResource(EResourceTransitionAccess::ERWNoBarrier, EResourceTransitionPipeline::EGfxToGfx, FeedbackUAV);
 		}
@@ -2875,18 +2914,37 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 				SCOPED_GPU_MASK(RHICmdList, View.GPUMask);
 				RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
-				AddDebugPostProcessingPasses(GraphBuilder, View, PostProcessingInputs);
+				AddDebugViewPostProcessingPasses(GraphBuilder, View, PostProcessingInputs);
 			}
 		}
-		else
+		else 
 		{
 			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 			{
 				FViewInfo& View = Views[ViewIndex];
 
-				SCOPED_GPU_MASK(RHICmdList, View.GPUMask);
-				RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
-				AddPostProcessingPasses(GraphBuilder, View, PostProcessingInputs);
+#if !(UE_BUILD_SHIPPING)
+
+				if (IsPostProcessVisualizeCalibrationMaterialEnabled(View))
+				{
+					const UMaterialInterface* DebugMaterialInterface = GetPostProcessVisualizeCalibrationMaterialInterface(View);
+					check(DebugMaterialInterface);
+
+					SCOPED_GPU_MASK(RHICmdList, View.GPUMask);
+					RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
+					AddVisualizeCalibrationMaterialPostProcessingPasses(GraphBuilder, View, PostProcessingInputs, DebugMaterialInterface);
+
+				}
+				else
+				{
+#endif
+					SCOPED_GPU_MASK(RHICmdList, View.GPUMask);
+					RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
+					AddPostProcessingPasses(GraphBuilder, View, PostProcessingInputs);
+
+#if !(UE_BUILD_SHIPPING)
+				}
+#endif
 			}
 		}
 

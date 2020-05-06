@@ -262,9 +262,6 @@ public:
 	UBrushSculptProperties* SculptProperties;
 
 	UPROPERTY()
-	UPlaneBrushProperties* PlaneBrushProperties;
-
-	UPROPERTY()
 	USculptMaxBrushProperties* SculptMaxBrushProperties;
 	
 	UPROPERTY()
@@ -290,9 +287,6 @@ public:
 
 	virtual void IncreaseBrushSpeedAction();
 	virtual void DecreaseBrushSpeedAction();
-
-	virtual void NextBrushModeAction();
-	virtual void PreviousBrushModeAction();
 
 	virtual void NextHistoryBrushModeAction();
 	virtual void PreviousHistoryBrushModeAction();

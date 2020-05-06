@@ -266,6 +266,9 @@ public:
 	/* Remove substitute one menu for another during generate */
 	void RemoveSubstitutionDuringGenerate(const FName InMenu);
 
+	/** Release references to UObjects of widgets that have been deleted. Combines multiple requests in one frame together for improved performance. */
+	void CleanupStaleWidgetsNextTick(bool bGarbageCollect = false);
+
 	/** Displaying extension points is for debugging menus */
 	DECLARE_DELEGATE_RetVal(bool, FShouldDisplayExtensionPoints);
 	FShouldDisplayExtensionPoints ShouldDisplayExtensionPoints;
@@ -296,15 +299,13 @@ public:
 	//~ End UObject Interface
 
 private:
+	friend class FPopulateMenuBuilderWithToolMenuEntry;
 
 	/** Create a finalized menu that combines given hierarchy array that will generate a widget. Advanced special use cases only. */
 	UToolMenu* GenerateMenuFromHierarchy(const TArray<UToolMenu*>& Hierarchy, const FToolMenuContext& InMenuContext);
 
 	/** Sets a timer to be called next engine tick so that multiple repeated actions can be combined together. */
 	void SetNextTickTimer();
-
-	/** Release references to UObjects of widgets that have been deleted. Combines multiple requests in one frame together for improved performance. */
-	void CleanupStaleWidgetsNextTick();
 
 	/** Release references to UObjects of widgets that have been deleted */
 	void CleanupStaleWidgets();
@@ -386,6 +387,7 @@ private:
 	bool bNextTickTimerIsSet;
 	bool bRefreshWidgetsNextTick;
 	bool bCleanupStaleWidgetsNextTick;
+	bool bCleanupStaleWidgetsNextTickGC;
 	bool bEditMenusMode;
 
 	static UToolMenus* Singleton;

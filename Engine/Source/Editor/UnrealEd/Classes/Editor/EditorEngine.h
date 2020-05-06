@@ -805,6 +805,7 @@ public:
 	virtual void SetMapBuildCancelled(bool InCancelled) override { /* Intentionally empty. */ }
 	virtual void HandleNetworkFailure(UWorld *World, UNetDriver *NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString) override;
 	virtual ERHIFeatureLevel::Type GetDefaultWorldFeatureLevel() const override { return DefaultWorldFeatureLevel; }
+	virtual bool GetPreviewPlatformName(FName& PlatformGroupName, FName& VanillaPlatformName) const override;
 
 protected:
 	virtual void InitializeObjectReferences() override;
@@ -988,6 +989,15 @@ public:
 	 * @param bTreatMovableBrushesAsStatic	Treat moveable brushes as static?.
 	 */
 	void RebuildModelFromBrushes(UModel* Model, bool bSelectedBrushesOnly, bool bTreatMovableBrushesAsStatic = false);
+
+	/**
+	 * Builds up a model from a given set of brushes. Used by BspConversionTool to build brushes before converting them
+	 * to static meshes.
+	 *
+	 * @param BrushesToBuild	List of brushes to build.
+	 * @param Model				Model into which to put the output.
+	 */
+	void RebuildModelFromBrushes(TArray<ABrush*>& BrushesToBuild, UModel* Model);
 
 	/**
 	 * Rebuilds levels containing currently selected brushes and should be invoked after a brush has been modified

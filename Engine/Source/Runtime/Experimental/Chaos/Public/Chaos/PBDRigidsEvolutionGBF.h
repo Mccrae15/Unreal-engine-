@@ -68,6 +68,7 @@ namespace Chaos
 		using Base::ApplyConstraints;
 		using Base::UpdateVelocities;
 		using Base::PhysicsMaterials;
+		using Base::PerParticlePhysicsMaterials;
 		using Base::ParticleDisableCount;
 		using Base::SolverPhysicsMaterials;
 		using Base::UnprepareIteration;
@@ -133,7 +134,10 @@ namespace Chaos
 
 		void DoInternalParticleInitilization(const TGeometryParticleHandle<float, 3>* OldParticle, const TGeometryParticleHandle<float, 3>* NewParticle) 
 		{ 
-			if (InternalParticleInitilization) InternalParticleInitilization(OldParticle, NewParticle); 
+			if(InternalParticleInitilization)
+			{
+				InternalParticleInitilization(OldParticle, NewParticle);
+			}
 		}
 
 
@@ -254,11 +258,7 @@ namespace Chaos
 		FPBDRigidsEvolutionInternalHandleCallback InternalParticleInitilization;
 	};
 
-#if PLATFORM_MAC || PLATFORM_LINUX
-#define EVOLUTION_TRAIT(Trait) extern template class CHAOS_API TPBDRigidsEvolutionGBF<Trait>;
-#else
-#define EVOLUTION_TRAIT(Trait) extern template class TPBDRigidsEvolutionGBF<Trait>;
-#endif
+#define EVOLUTION_TRAIT(Trait) extern template class CHAOS_TEMPLATE_API TPBDRigidsEvolutionGBF<Trait>;
 #include "Chaos/EvolutionTraits.inl"
 #undef EVOLUTION_TRAIT
 }

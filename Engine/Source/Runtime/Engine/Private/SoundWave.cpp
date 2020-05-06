@@ -429,6 +429,8 @@ void USoundWave::Serialize( FArchive& Ar )
 
 	Ar << CompressedDataGuid;
 
+	bool bBuiltStreamedAudio = false;
+
 	if (bShouldStreamSound)
 	{
 		if (bCooked)
@@ -444,6 +446,7 @@ void USoundWave::Serialize( FArchive& Ar )
 		if (Ar.IsLoading() && !Ar.IsTransacting() && !bCooked && !GetOutermost()->HasAnyPackageFlags(PKG_ReloadingForCooker))
 		{
 			CachePlatformData(false);
+			bBuiltStreamedAudio = true;
 		}
 #endif // #if WITH_EDITORONLY_DATA
 	}
@@ -453,8 +456,10 @@ void USoundWave::Serialize( FArchive& Ar )
 		// For non-editor builds, we can immediately cache the sample rate.
 		SampleRate = GetSampleRateForCurrentPlatform();
 
+		const bool bShouldLoadChunks = bCooked || bBuiltStreamedAudio;
+
 		// If stream caching is enabled, here we determine if we should retain or prime this wave on load.
-		if (bShouldStreamSound && FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching())
+		if (bShouldStreamSound && bShouldLoadChunks && FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching())
 		{
 			ESoundWaveLoadingBehavior CurrentLoadingBehavior = GetLoadingBehavior(false);
 
@@ -962,6 +967,11 @@ uint32 USoundWave::GetNumChunks() const
 	}
 	else if (IsTemplate() || IsRunningDedicatedServer())
 	{
+		return 0;
+	}
+	else if (GetOutermost()->HasAnyPackageFlags(PKG_ReloadingForCooker))
+	{
+		UE_LOG(LogAudio, Warning, TEXT("USoundWave::GetNumChunks called in the cook commandlet."))
 		return 0;
 	}
 	else
@@ -2582,8 +2592,11 @@ void USoundWave::OverrideLoadingBehavior(ESoundWaveLoadingBehavior InLoadingBeha
 	CachedSoundWaveLoadingBehavior = InLoadingBehavior;
 	bLoadingBehaviorOverridden = true;
 
+	// If we're reloading for the cook commandlet, we don't have streamed audio chunks to load.
+	const bool bReloadingForCooker = GetOutermost()->HasAnyPackageFlags(PKG_ReloadingForCooker);
+
 	// Manually perform prime/retain on already loaded sound waves
-	if (bAlreadyLoaded && IsStreaming())
+	if (!bReloadingForCooker && bAlreadyLoaded && IsStreaming())
 	{
 		if (InLoadingBehavior == ESoundWaveLoadingBehavior::RetainOnLoad)
 		{

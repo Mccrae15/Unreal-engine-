@@ -110,6 +110,9 @@ namespace Chaos
 		PrevXs[0] = PrevP0 + PrevQ0 * XL0.GetTranslation();
 		PrevXs[1] = PrevP1 + PrevQ1 * XL1.GetTranslation();
 
+		NetLinearImpulse = FVec3(0);
+		NetAngularImpulse = FVec3(0);
+
 		LinearSoftLambda = (FReal)0;
 		LinearDriveLambda = (FReal)0;
 		TwistSoftLambda = (FReal)0;
@@ -238,30 +241,57 @@ namespace Chaos
 		const EJointMotionType TwistMotion = JointSettings.AngularMotionTypes[(int32)EJointAngularConstraintIndex::Twist];
 		const EJointMotionType Swing1Motion = JointSettings.AngularMotionTypes[(int32)EJointAngularConstraintIndex::Swing1];
 		const EJointMotionType Swing2Motion = JointSettings.AngularMotionTypes[(int32)EJointAngularConstraintIndex::Swing2];
-		const bool bTwistSoft = JointSettings.bSoftTwistLimitsEnabled;
-		const bool bSwingSoft = JointSettings.bSoftSwingLimitsEnabled;
+		const bool bLinearSoft = FPBDJointUtilities::GetSoftLinearLimitEnabled(SolverSettings, JointSettings);
+		const bool bTwistSoft = FPBDJointUtilities::GetSoftTwistLimitEnabled(SolverSettings, JointSettings);
+		const bool bSwingSoft = FPBDJointUtilities::GetSoftSwingLimitEnabled(SolverSettings, JointSettings);
 
-		const bool bPointProject = 
-			(LinearProjection > 0.0f) 
+		const bool bPointProject =
+			(LinearProjection > 0.0f)
 			&& (LinearMotion[0] == EJointMotionType::Locked)
 			&& (LinearMotion[1] == EJointMotionType::Locked)
 			&& (LinearMotion[2] == EJointMotionType::Locked);
-		bool bConeProject = 
+		const bool bSphereProject =
+			(LinearProjection > 0.0f)
+			&& !bLinearSoft
+			&& (LinearMotion[0] == EJointMotionType::Limited)
+			&& (LinearMotion[1] == EJointMotionType::Limited)
+			&& (LinearMotion[2] == EJointMotionType::Limited);
+		bool bConeProject =
 			SolverSettings.bEnableSwingLimits 
 			&& (AngularProjection > 0.0f) 
 			&& !bSwingSoft 
 			&& (Swing1Motion == EJointMotionType::Limited) 
 			&& (Swing2Motion == EJointMotionType::Limited);
+		bool bTwoSwingLockProject =
+			SolverSettings.bEnableSwingLimits
+			&& (AngularProjection > 0.0f)
+			&& (Swing1Motion == EJointMotionType::Locked)
+			&& (Swing2Motion == EJointMotionType::Locked);
+		bool bTwistProject =
+			SolverSettings.bEnableTwistLimits
+			&& (AngularProjection > 0.0f)
+			&& !bTwistSoft
+			&& (TwistMotion != EJointMotionType::Free);
 
-		if (bPointProject && bConeProject)
+		if (bPointProject && bTwoSwingLockProject)
 		{
-			// Fixed point constraint with cone limits
-			NumActive += ApplyPointConeProjection(Dt, SolverSettings, JointSettings);
+			// Fixed point constraint with two locked swing axes and possible twist limit
+			NumActive += ApplyPointDoubleSwingLockProjection(Dt, SolverSettings, JointSettings, bPointProject, bTwoSwingLockProject, bTwistProject);
 		}
-		else if (bPointProject)
+		else if (bSphereProject && bTwoSwingLockProject)
 		{
-			// Fixed point constraint with no angular limits
-			NumActive += ApplyPointProjection(Dt, SolverSettings, JointSettings);
+			// @todo(ccaulfield): support swing/twist limits with spherical limited position projection
+			NumActive += ApplySphereConeTwistProjection(Dt, SolverSettings, JointSettings, bSphereProject, false, false);
+		}
+		else if (bSphereProject)
+		{
+			// Limited spherical position constraint with possible cone and twist angular limits
+			NumActive += ApplySphereConeTwistProjection(Dt, SolverSettings, JointSettings, bSphereProject, bConeProject, bTwistProject);
+		}
+		else if (bPointProject || bConeProject || bTwistProject)
+		{
+			// Fixed point constraint with possible cone and twist angular limits
+			NumActive += ApplyPointConeTwistProjection(Dt, SolverSettings, JointSettings, bPointProject, bConeProject, bTwistProject);
 		}
 
 		return NumActive;
@@ -279,8 +309,8 @@ namespace Chaos
 		EJointMotionType TwistMotion = JointSettings.AngularMotionTypes[(int32)EJointAngularConstraintIndex::Twist];
 		EJointMotionType Swing1Motion = JointSettings.AngularMotionTypes[(int32)EJointAngularConstraintIndex::Swing1];
 		EJointMotionType Swing2Motion = JointSettings.AngularMotionTypes[(int32)EJointAngularConstraintIndex::Swing2];
-		bool bTwistSoft = JointSettings.bSoftTwistLimitsEnabled;
-		bool bSwingSoft = JointSettings.bSoftSwingLimitsEnabled;
+		bool bTwistSoft = FPBDJointUtilities::GetSoftTwistLimitEnabled(SolverSettings, JointSettings);
+		bool bSwingSoft = FPBDJointUtilities::GetSoftSwingLimitEnabled(SolverSettings, JointSettings);
 
 		// If the twist axes are opposing, we cannot decompose the orientation into swing and twist angles, so just give up
 		const FVec3 Twist0 = Rs[0] * FJointConstants::TwistAxis();
@@ -717,6 +747,8 @@ namespace Chaos
 
 		ApplyPositionDelta(Stiffness, DP0, DP1);
 		ApplyRotationDelta(Stiffness, DR0, DR1);
+
+		NetLinearImpulse += Stiffness * DX;
 	}
 
 
@@ -765,9 +797,11 @@ namespace Chaos
 			const FVec3 DR0 = DLambda * Utilities::Multiply(InvIs[0], AngularAxis0);
 			const FVec3 DR1 = -DLambda * Utilities::Multiply(InvIs[1], AngularAxis1);
 	
-			Lambda += DLambda;
 			ApplyPositionDelta((FReal)1, DP0, DP1);
 			ApplyRotationDelta((FReal)1, DR0, DR1);
+
+			Lambda += DLambda;
+			NetLinearImpulse += DLambda * Axis;
 		}
 	}
 	
@@ -779,8 +813,12 @@ namespace Chaos
 		const FVec3& Axis,
 		const FReal Angle)
 	{
-		const FVec3 DR1 = -Angle * Axis;
+		// NOTE: May be called with non-normalized axis (and similarly scaled angle), hence the divide by 
+		// length squared which is already handled by the joint mass calc in ApplyRotationConstraintDD
+		const FVec3 DR1 = (-Angle / Axis.SizeSquared()) * Axis;
 		ApplyRotationDelta(DIndex, Stiffness, DR1);
+
+		NetAngularImpulse += (-Stiffness / InvMs[DIndex]) * DR1;
 	}
 
 
@@ -789,11 +827,9 @@ namespace Chaos
 		const FVec3& Axis,
 		const FReal Angle)
 	{
-		// World-space inverse mass
+		// Joint-space inverse mass
 		const FVec3 IA0 = Utilities::Multiply(InvIs[0], Axis);
 		const FVec3 IA1 = Utilities::Multiply(InvIs[1], Axis);
-
-		// Joint-space inverse mass
 		const FReal II0 = FVec3::DotProduct(Axis, IA0);
 		const FReal II1 = FVec3::DotProduct(Axis, IA1);
 
@@ -803,6 +839,8 @@ namespace Chaos
 		//const FVec3 DR1 = Axis * -(Angle * II1 / (II0 + II1));
 
 		ApplyRotationDelta(Stiffness, DR0, DR1);
+
+		NetAngularImpulse += Axis * (Stiffness * Angle / (II0 + II1));
 	}
 
 
@@ -872,8 +910,10 @@ namespace Chaos
 			//const FVec3 DR1 = IA1 * -DLambda;
 			const FVec3 DR1 = Axis * -(DLambda * II1);
 
-			Lambda += DLambda;
 			ApplyRotationDelta(DIndex, 1.0f, DR1);
+	
+			Lambda += DLambda;
+			NetAngularImpulse += DLambda * Axis;
 		}
 	}
 
@@ -927,8 +967,10 @@ namespace Chaos
 			const FVec3 DR0 = Axis * (DLambda * II0);
 			const FVec3 DR1 = Axis * -(DLambda * II1);
 
-			Lambda += DLambda;
 			ApplyRotationDelta(1.0f, DR0, DR1);
+
+			Lambda += DLambda;
+			NetAngularImpulse += DLambda * Axis;
 		}
 	}
 
@@ -1433,6 +1475,8 @@ namespace Chaos
 				const FVec3 DR1 = Utilities::Multiply(InvIs[DIndex], FVec3::CrossProduct(Xs[DIndex] - Ps[DIndex], -DX));
 
 				ApplyDelta(DIndex, LinearStiffness, DP1, DR1);
+
+				NetLinearImpulse += LinearStiffness * DX;
 			}
 			return 1;
 		}
@@ -1478,6 +1522,8 @@ namespace Chaos
 
 				ApplyPositionDelta(LinearStiffness, DP0, DP1);
 				ApplyRotationDelta(LinearStiffness, DR0, DR1);
+
+				NetLinearImpulse += LinearStiffness * DX;
 			}
 			return 1;
 		}
@@ -1497,7 +1543,7 @@ namespace Chaos
 		const FReal Error = FMath::Max((FReal)0, Delta - JointSettings.LinearLimit);
 		if (FMath::Abs(Error) > PositionTolerance)
 		{
-			if (!JointSettings.bSoftLinearLimitsEnabled)
+			if (!FPBDJointUtilities::GetSoftLinearLimitEnabled(SolverSettings, JointSettings))
 			{
 				const FReal Stiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
 				ApplyPositionConstraint(Stiffness, Axis, Error);
@@ -1552,7 +1598,7 @@ namespace Chaos
 		
 		int32 NumActive = 0;
 
-		if ((AxialMotion == EJointMotionType::Limited) && JointSettings.bSoftLinearLimitsEnabled)
+		if ((AxialMotion == EJointMotionType::Limited) && FPBDJointUtilities::GetSoftLinearLimitEnabled(SolverSettings, JointSettings))
 		{
 			// Soft Axial constraint
 			const FReal AxialLimit = JointSettings.LinearLimit;
@@ -1579,7 +1625,7 @@ namespace Chaos
 			}
 		}
 
-		if ((RadialMotion == EJointMotionType::Limited) && JointSettings.bSoftLinearLimitsEnabled)
+		if ((RadialMotion == EJointMotionType::Limited) && FPBDJointUtilities::GetSoftLinearLimitEnabled(SolverSettings, JointSettings))
 		{
 			// Soft Radial constraint
 			const FReal RadialLimit = JointSettings.LinearLimit;
@@ -1648,7 +1694,7 @@ namespace Chaos
 		if (FMath::Abs(Delta) > Limit + PositionTolerance)
 		{
 			const FReal Error = (Delta > 0) ? Delta - Limit : Delta + Limit;
-			if ((AxialMotion == EJointMotionType::Limited) && JointSettings.bSoftLinearLimitsEnabled)
+			if ((AxialMotion == EJointMotionType::Limited) && FPBDJointUtilities::GetSoftLinearLimitEnabled(SolverSettings, JointSettings))
 			{
 				const FReal Stiffness = FPBDJointUtilities::GetSoftLinearStiffness(SolverSettings, JointSettings);
 				const FReal Damping = FPBDJointUtilities::GetSoftLinearDamping(SolverSettings, JointSettings);
@@ -1689,328 +1735,248 @@ namespace Chaos
 	}
 
 
-	// Projection for a fixed point constraint and no rotation constraint
-	int32 FJointSolverGaussSeidel::ApplyPointProjection(
+	int32 FJointSolverGaussSeidel::ApplyPointConeTwistProjection(
 		const FReal Dt,
 		const FPBDJointSolverSettings& SolverSettings,
-		const FPBDJointSettings& JointSettings)
-	{
-		FReal LinearProjection = FPBDJointUtilities::GetLinearProjection(SolverSettings, JointSettings);
-		const FVec3 CX = Xs[1] - Xs[0];
-		bool bApplyProjection = (CX.Size() > KINDA_SMALL_NUMBER); // + PositionTolerance);
-		if (bApplyProjection)
-		{
-			if (bChaos_Joint_ISPC_Enabled)
-			{
-#if INTEL_ISPC
-				ispc::ApplyPointPositionProjection((ispc::FJointSolverGaussSeidel*)this, (ispc::FVector&)CX, LinearProjection);
-#endif
-			}
-			else
-			{
-				// Apply a position correction
-				{
-					const FReal InvM0 = ProjectionInvMassScale * InvMs[0];
-					const FMatrix33 InvI0 = ProjectionInvMassScale * InvIs[0];
-
-					FMatrix33 J = FMatrix33(0, 0, 0);
-					if (InvM0 > SMALL_NUMBER)
-					{
-						J += Utilities::ComputeJointFactorMatrix(Xs[0] - Ps[0], InvI0, InvM0);
-					}
-					if (InvMs[1] > SMALL_NUMBER)
-					{
-						J += Utilities::ComputeJointFactorMatrix(Xs[1] - Ps[1], InvIs[1], InvMs[1]);
-					}
-					const FMatrix33 IJ = J.Inverse();
-					const FVec3 DX = Utilities::Multiply(IJ, CX);
-
-					if (InvM0 > SMALL_NUMBER)
-					{
-						const FVec3 DP0 = InvM0 * DX;
-						const FVec3 DR0 = Utilities::Multiply(InvI0, FVec3::CrossProduct(Xs[0] - Ps[0], DX));
-						ApplyDelta(0, LinearProjection, DP0, DR0);
-					}
-
-					if (InvMs[1] > SMALL_NUMBER)
-					{
-						const FVec3 DP1 = -InvMs[1] * DX;
-						const FVec3 DR1 = Utilities::Multiply(InvIs[1], FVec3::CrossProduct(Xs[1] - Ps[1], -DX));
-						ApplyDelta(1, LinearProjection, DP1, DR1);
-					}
-				}
-
-				// Apply a velocity correction to set the relative velocity at the joint to zero
-				{
-					const FReal InvM0 = VelProjectionInvMassScale * InvMs[0];
-					const FMatrix33 InvI0 = VelProjectionInvMassScale * InvIs[0];
-
-					// Calculate joint-space mass
-					FMatrix33 J = FMatrix33(0, 0, 0);
-					if (InvM0 > SMALL_NUMBER)
-					{
-						J = J + Utilities::ComputeJointFactorMatrix(Xs[0] - Ps[0], InvI0, InvM0);
-					}
-					if (InvMs[1] > SMALL_NUMBER)
-					{
-						J = J + Utilities::ComputeJointFactorMatrix(Xs[1] - Ps[1], InvIs[1], InvMs[1]);
-					}
-					const FMatrix33 IJ = J.Inverse();
-
-					// Velocity correction
-					const FVec3 V0 = Vs[0] + FVec3::CrossProduct(Ws[0], Xs[0] - Ps[0]);
-					const FVec3 V1 = Vs[1] + FVec3::CrossProduct(Ws[1], Xs[1] - Ps[1]);
-					const FVec3 DV = Utilities::Multiply(IJ, V1 - V0);
-
-					if (InvM0 > SMALL_NUMBER)
-					{
-						const FVec3 DV0 = InvM0 * DV;
-						const FVec3 DW0 = Utilities::Multiply(InvI0, FVec3::CrossProduct(Xs[0] - Ps[0], DV));
-						ApplyVelocityDelta(0, LinearProjection, DV0, DW0);
-					}
-					if (InvMs[1] > SMALL_NUMBER)
-					{
-						const FVec3 DV1 = -InvMs[1] * DV;
-						const FVec3 DW1 = Utilities::Multiply(InvIs[1], FVec3::CrossProduct(Xs[1] - Ps[1], -DV));
-						ApplyVelocityDelta(1, LinearProjection, DV1, DW1);
-					}
-				}
-			}
-			return 1;
-		}
-		return 0;
-	}
-
-	// Projection for fixed point constraint and cone limited angular constraint
-	int32 FJointSolverGaussSeidel::ApplyPointConeProjection(
-		const FReal Dt,
-		const FPBDJointSolverSettings& SolverSettings,
-		const FPBDJointSettings& JointSettings)
+		const FPBDJointSettings& JointSettings,
+		bool bApplyPositionCorrection,
+		bool bApplySwingCorrection,
+		bool bApplyTwistCorrection)
 	{
 		FReal LinearProjection = FPBDJointUtilities::GetLinearProjection(SolverSettings, JointSettings);
 		const FReal AngularProjection = FPBDJointUtilities::GetAngularProjection(SolverSettings, JointSettings);
 
 		int32 NumApplied = 0;
-		bool bConeActive = false;
+
+		const FReal ProjectionPositionTolerance = 0.0f;//PositionTolerance;
+		const FReal ProjectionAngleTolerance = 0.0f;//AngleTolerance;
+
+		FVec3 NetDP1 = FVec3(0);
+		FVec3 NetDR1 = FVec3(0);
 
 		// Correct the position error
-		const FVec3 CX = Xs[1] - Xs[0];
-		if (CX.Size() > PositionTolerance)
+		if (bApplyPositionCorrection)
 		{
-			const FReal InvM0 = ProjectionInvMassScale * InvMs[0];
-			const FMatrix33 InvI0 = ProjectionInvMassScale * InvIs[0];
+			const FVec3 CX = Xs[1] - Xs[0];
+			if (CX.Size() > ProjectionPositionTolerance)
+			{
+				FMatrix33 J = Utilities::ComputeJointFactorMatrix(Xs[1] - Ps[1], InvIs[1], InvMs[1]);
+				const FMatrix33 IJ = J.Inverse();
+				const FVec3 DX = Utilities::Multiply(IJ, CX);
 
-			FMatrix33 J = FMatrix33(0, 0, 0);
-			if (InvM0 > SMALL_NUMBER)
-			{
-				J += Utilities::ComputeJointFactorMatrix(Xs[0] - Ps[0], InvI0, InvM0);
-			}
-			if (InvMs[1] > SMALL_NUMBER)
-			{
-				J += Utilities::ComputeJointFactorMatrix(Xs[1] - Ps[1], InvIs[1], InvMs[1]);
-			}
-			const FMatrix33 IJ = J.Inverse();
-			const FVec3 DX = Utilities::Multiply(IJ, CX);
-
-			if (InvM0 > SMALL_NUMBER)
-			{
-				const FVec3 DP0 = InvM0 * DX;
-				const FVec3 DR0 = Utilities::Multiply(InvI0, FVec3::CrossProduct(Xs[0] - Ps[0], DX));
-				ApplyDelta(0, LinearProjection, DP0, DR0);
-			}
-			if (InvMs[1] > SMALL_NUMBER)
-			{
 				const FVec3 DP1 = -InvMs[1] * DX;
 				const FVec3 DR1 = Utilities::Multiply(InvIs[1], FVec3::CrossProduct(Xs[1] - Ps[1], -DX));
 				ApplyDelta(1, LinearProjection, DP1, DR1);
-			}
 
-			++NumApplied;
+				NetDP1 += DP1;
+				NetDR1 += DR1;
+				++NumApplied;
+			}
 		}
 
-		// Correct the cone error, maintaining position constraint
-		const FReal Swing1Limit = JointSettings.AngularLimits[(int32)EJointAngularConstraintIndex::Swing1];
-		const FReal Swing2Limit = JointSettings.AngularLimits[(int32)EJointAngularConstraintIndex::Swing2];
-		FVec3 SwingAxis = FVec3(0);
+		// Correct the swing error while maintaining position constraint by rotating about the swing axis through the joint position
+		if (bApplySwingCorrection)
 		{
-			const FReal InvM0 = ProjectionInvMassScale * InvMs[0];
-			const FMatrix33 InvI0 = ProjectionInvMassScale * InvIs[0];
-			FVec3 SwingAxisLocal;
-			FReal DSwingAngle = 0.0f;
-			FPBDJointUtilities::GetEllipticalConeAxisErrorLocal(Rs[0], Rs[1], Swing2Limit, Swing1Limit, SwingAxisLocal, DSwingAngle);
-			SwingAxis = Rs[0] * SwingAxisLocal;
-			if (DSwingAngle > AngleTolerance)
 			{
-				if (InvM0 > SMALL_NUMBER)
-				{
-					const FVec3 DR0 = DSwingAngle * SwingAxis;
-					const FVec3 DP0 = FVec3::CrossProduct(DR0, Xs[0] - Ps[0]);
-					ApplyDelta(0, AngularProjection, DP0, DR0);
-				}
-				if (InvMs[1] > SMALL_NUMBER)
+				FVec3 SwingAxisLocal;
+				FReal DSwingAngle = 0.0f;
+				const FReal Swing1Limit = JointSettings.AngularLimits[(int32)EJointAngularConstraintIndex::Swing1];
+				const FReal Swing2Limit = JointSettings.AngularLimits[(int32)EJointAngularConstraintIndex::Swing2];
+				FPBDJointUtilities::GetEllipticalConeAxisErrorLocal(Rs[0], Rs[1], Swing2Limit, Swing1Limit, SwingAxisLocal, DSwingAngle);
+				FVec3 SwingAxis = Rs[0] * SwingAxisLocal;
+				if (DSwingAngle > ProjectionAngleTolerance)
 				{
 					const FVec3 DR1 = -DSwingAngle * SwingAxis;
 					const FVec3 DP1 = -FVec3::CrossProduct(DR1, Xs[1] - Ps[1]);
 					ApplyDelta(1, AngularProjection, DP1, DR1);
-				}
 
+					NetDP1 += DP1;
+					NetDR1 += DR1;
+					++NumApplied;
+				}
+			}
+		}
+
+		// Correct the Twist angle
+		if (bApplyTwistCorrection)
+		{
+			FVec3 TwistAxis;
+			FReal TwistAngle;
+			FPBDJointUtilities::GetTwistAxisAngle(Rs[0], Rs[1], TwistAxis, TwistAngle);
+			FReal DTwistAngle = 0;
+			const FReal TwistLimit = JointSettings.AngularLimits[(int32)EJointAngularConstraintIndex::Twist];
+			if (TwistAngle > TwistLimit)
+			{
+				DTwistAngle = TwistAngle - TwistLimit;
+			}
+			else if (TwistAngle < -TwistLimit)
+			{
+				DTwistAngle = TwistAngle + TwistLimit;
+			}
+
+			if (FMath::Abs(DTwistAngle) > ProjectionAngleTolerance)
+			{
+				const FVec3 DR1 = -DTwistAngle * TwistAxis;
+				const FVec3 DP1 = -FVec3::CrossProduct(DR1, Xs[1] - Ps[1]);
+				ApplyDelta(1, AngularProjection, DP1, DR1);
+
+				NetDP1 += DP1;
+				NetDR1 += DR1;
 				++NumApplied;
-				bConeActive = true;
 			}
 		}
 
-		static bool b4x4 = false;
-
-		// Velocity correction
-		// NON-ITERATIVE VERSION
-		if (b4x4)
+		// Final position correction. Following this, both the position constraint and swing
+		// constraint should be exactly resolved.
+		if (bApplyPositionCorrection)
 		{
-			const FReal InvM0 = VelProjectionInvMassScale * InvMs[0];
-			const FMatrix33 InvI0 = VelProjectionInvMassScale * InvIs[0];
+			const FVec3 DP1 = -(Xs[1] - Xs[0]);
+			ApplyPositionDelta(1, LinearProjection, DP1);
 
-			if (InvM0 > SMALL_NUMBER)
-			{
-				// If the parent body moved, we need to recalculate the swing axis
-				FVec3 SwingAxisLocal;
-				FReal DSwingAngle = 0.0f;
-				FPBDJointUtilities::GetEllipticalConeAxisErrorLocal(Rs[0], Rs[1], Swing2Limit, Swing1Limit, SwingAxisLocal, DSwingAngle);
-				SwingAxis = Rs[0] * SwingAxisLocal;
-			}
-
-			// Calculate velocity and angular velocity error at joint
-			const FVec3 V0 = Vs[0] + FVec3::CrossProduct(Ws[0], Xs[0] - Ps[0]);
-			const FVec3 V1 = Vs[1] + FVec3::CrossProduct(Ws[1], Xs[1] - Ps[1]);
-			const FReal W0 = FVec3::DotProduct(Ws[0], SwingAxis);
-			const FReal W1 = FVec3::DotProduct(Ws[1], SwingAxis);
-			const FVec3 CV = V1 - V0;
-			const FReal CW = FMath::Max(0.0f, W1 - W0);
-			const TVector<FReal, 4> C = TVector<FReal, 4>(CV.X, CV.Y, CV.Z, CW);
-
-			// Calculate joint-space mass from the Jacobian
-			FMatrix33 J00 = FMatrix33(0, 0, 0);
-			FVec3 J01 = FVec3(0);
-			FReal J11 = 1.0f;
-			if (InvM0 > SMALL_NUMBER)
-			{
-				J00 += Utilities::ComputeJointFactorMatrix(Xs[0] - Ps[0], InvI0, InvM0);
-				if (bConeActive && (CW > 0.0f))
-				{
-					J01 = FVec3::CrossProduct(Xs[0] - Ps[0], Utilities::Multiply(InvI0, SwingAxis));
-					J11 = FVec3::DotProduct(SwingAxis, Utilities::Multiply(InvI0, SwingAxis));
-				}
-			}
-			if (InvMs[1] > SMALL_NUMBER)
-			{
-				J00 += Utilities::ComputeJointFactorMatrix(Xs[1] - Ps[1], InvIs[1], InvMs[1]);
-				if (bConeActive && (CW > 0.0f))
-				{
-					J01 = FVec3::CrossProduct(Xs[1] - Ps[1], Utilities::Multiply(InvIs[1], SwingAxis));
-					J11 = FVec3::DotProduct(SwingAxis, Utilities::Multiply(InvIs[1], SwingAxis));
-				}
-			}
-			PMatrix<FReal, 4, 4>& J = reinterpret_cast<PMatrix<FReal, 4, 4>&>(J00);
-			J.M[3][0] = J01.X;
-			J.M[3][1] = J01.Y;
-			J.M[3][2] = J01.Z;
-			J.M[0][3] = -J01.X;
-			J.M[1][3] = -J01.Y;
-			J.M[2][3] = -J01.Z;
-			J.M[3][3] = J11;
-			PMatrix<FReal, 4, 4> IJ = J.Inverse();
-
-			// Calculate the joint-space velocity and angular velocity correction
-			const TVector<FReal, 4> D = IJ.TransformFVector4(C);
-			const FVec3 DV = FVec3(D.X, D.Y, D.Z);
-			const FReal DW = D.W;
-
-			// Apply the world-space velocity and angular velocity correction
-			if (InvM0 > SMALL_NUMBER)
-			{
-				FVec3 DV0 = InvM0 * DV;
-				FVec3 DW0 = FVec3::CrossProduct(Xs[0] - Ps[0], Utilities::Multiply(InvI0, DV)) - Utilities::Multiply(InvI0, SwingAxis) * DW;
-				ApplyVelocityDelta(0, 1.0f, DV0, DW0);
-			}
-			if (InvMs[1] > SMALL_NUMBER)
-			{
-				FVec3 DV1 = -InvMs[1] * DV;
-				FVec3 DW1 = FVec3::CrossProduct(Xs[1] - Ps[1], Utilities::Multiply(InvIs[1], DV)) - Utilities::Multiply(InvIs[1], SwingAxis) * DW;
-				ApplyVelocityDelta(1, 1.0f, DV1, DW1);
-			}
+			NetDP1 += DP1;
 		}
 
-		// Velocity correction
-		// ITERATIVE VERSION
-		if (!b4x4)
+		if (Chaos_Joint_VelProjectionAlpha > 0.0f)
 		{
-			const FReal InvM0 = VelProjectionInvMassScale * InvMs[0];
-			const FMatrix33 InvI0 = VelProjectionInvMassScale * InvIs[0];
-
-			FMatrix33 J = FMatrix33(0, 0, 0);
-			if (InvM0 > 0)
-			{
-				J = J + Utilities::ComputeJointFactorMatrix(Xs[0] - Ps[0], InvI0, InvM0);
-			}
-			if (InvMs[1] > 0)
-			{
-				J = J + Utilities::ComputeJointFactorMatrix(Xs[1] - Ps[1], InvIs[1], InvMs[1]);
-			}
-			const FMatrix33 IJ = J.Inverse();
-
-			FVec3 IA0 = FVec3(0);
-			FVec3 IA1 = FVec3(0);
-			FReal II0 = 0.0f;
-			FReal II1 = 0.0f;
-			if (bConeActive)
-			{
-				if (InvM0 > 0.0f)
-				{
-					II0 = FVec3::DotProduct(SwingAxis, Utilities::Multiply(InvI0, SwingAxis));
-				}
-				if (InvMs[1] > 0.0f)
-				{
-					II1 = FVec3::DotProduct(SwingAxis, Utilities::Multiply(InvIs[1], SwingAxis));
-				}
-			}
-
-			static int32 NumVelIts = 10;
-			for (int32 VelIt = 0; VelIt < NumVelIts; ++VelIt)
-			{
-				const FVec3 V0 = Vs[0] + FVec3::CrossProduct(Ws[0], Xs[0] - Ps[0]);
-				const FVec3 V1 = Vs[1] + FVec3::CrossProduct(Ws[1], Xs[1] - Ps[1]);
-				const FReal W0 = FVec3::DotProduct(Ws[0], SwingAxis);
-				const FReal W1 = FVec3::DotProduct(Ws[1], SwingAxis);
-				const FVec3 DV = Utilities::Multiply(IJ, V1 - V0);
-				const FVec3 DW = (W1 - W0) * SwingAxis;
-
-				if (InvM0 > 0)
-				{
-					FVec3 DV0 = InvM0 * DV;
-					FVec3 DW0 = Utilities::Multiply(InvI0, FVec3::CrossProduct(Xs[0] - Ps[0], DV));
-
-					if (bConeActive && ((W1 - W0) > 0.0f))
-					{
-						DW0 += (II0 / (II0 + II1)) * DW;
-						DV0 += FVec3(0);// -FVec3::CrossProduct(DW0, Xs[0] - Ps[0]);
-					}
-
-					ApplyVelocityDelta(0, 1.0f, DV0, DW0);
-				}
-				if (InvMs[1] > 0)
-				{
-					FVec3 DV1 = -InvMs[1] * DV;
-					FVec3 DW1 = FVec3::CrossProduct(Xs[1] - Ps[1], Utilities::Multiply(InvIs[1], -DV));
-
-					if (bConeActive && ((W1 - W0) > 0.0f))
-					{
-						DW1 += -(II1 / (II0 + II1)) * DW;
-						DV1 += FVec3(0);// -FVec3::CrossProduct(DW0, Xs[0] - Ps[0]);
-					}
-
-					ApplyVelocityDelta(1, 1.0f, DV1, DW1);
-				}
-			}
+			const FVec3 DV1 = NetDP1 / Dt;
+			const FVec3 DW1 = NetDR1 / Dt;
+			ApplyVelocityDelta(1, Chaos_Joint_VelProjectionAlpha * LinearProjection, DV1, DW1);
 		}
 
 		return NumApplied;
 	}
+
+
+	int32 FJointSolverGaussSeidel::ApplySphereConeTwistProjection(
+		const FReal Dt,
+		const FPBDJointSolverSettings& SolverSettings,
+		const FPBDJointSettings& JointSettings,
+		bool bApplyPositionCorrection,
+		bool bApplySwingCorrection,
+		bool bApplyTwistCorrection)
+	{
+		FReal LinearProjection = FPBDJointUtilities::GetLinearProjection(SolverSettings, JointSettings);
+		const FReal ProjectionPositionTolerance = 0.0f;//PositionTolerance;
+
+		FVec3 NetDP1 = FVec3(0);
+		FVec3 NetDR1 = FVec3(0);
+
+		// Position correction
+		if (bApplyPositionCorrection)
+		{
+			FVec3 Axis;
+			FReal Delta;
+			FPBDJointUtilities::GetSphericalAxisDelta(Xs[0], Xs[1], Axis, Delta);
+			const FReal Error = FMath::Max((FReal)0, Delta - JointSettings.LinearLimit);
+			if (FMath::Abs(Error) > ProjectionPositionTolerance)
+			{
+				const FVec3 AngularAxis1 = FVec3::CrossProduct(Xs[1] - Ps[1], Axis);
+				const FVec3 IA1 = Utilities::Multiply(InvIs[1], AngularAxis1);
+				const FReal II1 = FVec3::DotProduct(AngularAxis1, IA1);
+				const FReal IM = InvMs[1] + II1;
+				const FVec3 DX = Axis * Delta / IM;
+
+				const FVec3 DP1 = -InvMs[1] * DX;
+				const FVec3 DR1 = Utilities::Multiply(InvIs[1], FVec3::CrossProduct(Xs[1] - Ps[1], -DX));
+				ApplyDelta(1, LinearProjection, DP1, DR1);
+
+				NetDP1 += DP1;
+				NetDR1 += DR1;
+			}
+		}
+
+		// @todo(ccaulfiedl): apply swing and twist correction, taking into account whether position limit is active
+
+		// Velocity correction
+		if (Chaos_Joint_VelProjectionAlpha > 0.0f)
+		{
+			const FVec3 DV1 = NetDP1 / Dt;
+			const FVec3 DW1 = NetDR1 / Dt;
+			ApplyVelocityDelta(1, Chaos_Joint_VelProjectionAlpha * LinearProjection, DV1, DW1);
+		}
+
+		return 1;
+	}
+
+
+	int32 FJointSolverGaussSeidel::ApplyPointDoubleSwingLockProjection(
+		const FReal Dt,
+		const FPBDJointSolverSettings& SolverSettings,
+		const FPBDJointSettings& JointSettings,
+		bool bApplyPositionCorrection,
+		bool bApplySwingCorrection,
+		bool bApplyTwistCorrection)
+	{
+		const FReal AngularProjection = FPBDJointUtilities::GetAngularProjection(SolverSettings, JointSettings);
+		const FReal ProjectionAngleTolerance = 0.0f;//AngleTolerance;
+
+		int32 NumApplied = 0;
+
+		// Correct position error
+		if (bApplyPositionCorrection)
+		{
+			NumApplied += ApplyPointConeTwistProjection(Dt, SolverSettings, JointSettings, bApplyPositionCorrection, false, false);
+		}
+
+		FVec3 NetDP1 = FVec3(0);
+		FVec3 NetDR1 = FVec3(0);
+
+		// Correct the swing error while maintaining position constraint by rotating about the swing axis through the joint position
+		if (bApplySwingCorrection)
+		{
+			FVec3 SwingAxisLocal;
+			FReal DSwingAngle = 0.0f;
+			FPBDJointUtilities::GetCircularConeAxisErrorLocal(Rs[0], Rs[1], 0.0f, SwingAxisLocal, DSwingAngle);
+			FVec3 SwingAxis = Rs[0] * SwingAxisLocal;
+			if (DSwingAngle > ProjectionAngleTolerance)
+			{
+				const FVec3 DR1 = -DSwingAngle * SwingAxis;
+				const FVec3 DP1 = -FVec3::CrossProduct(DR1, Xs[1] - Ps[1]);
+				ApplyDelta(1, AngularProjection, DP1, DR1);
+
+				NetDP1 += DP1;
+				NetDR1 += DR1;
+				++NumApplied;
+			}
+		}
+
+		if (bApplyTwistCorrection)
+		{
+			FVec3 TwistAxis;
+			FReal TwistAngle;
+			FPBDJointUtilities::GetTwistAxisAngle(Rs[0], Rs[1], TwistAxis, TwistAngle);
+			FReal DTwistAngle = 0;
+			const FReal TwistLimit = JointSettings.AngularLimits[(int32)EJointAngularConstraintIndex::Twist];
+			if (TwistAngle > TwistLimit)
+			{
+				DTwistAngle = TwistAngle - TwistLimit;
+			}
+			else if (TwistAngle < -TwistLimit)
+			{
+				DTwistAngle = TwistAngle + TwistLimit;
+			}
+
+			if (FMath::Abs(DTwistAngle) > ProjectionAngleTolerance)
+			{
+				const FVec3 DR1 = -DTwistAngle * TwistAxis;
+				const FVec3 DP1 = -FVec3::CrossProduct(DR1, Xs[1] - Ps[1]);
+				ApplyDelta(1, AngularProjection, DP1, DR1);
+
+				NetDP1 += DP1;
+				NetDR1 += DR1;
+				++NumApplied;
+			}
+		}
+
+		// Correct angular velocity error
+		if (Chaos_Joint_VelProjectionAlpha > 0.0f)
+		{
+			const FVec3 DV1 = NetDP1 / Dt;
+			const FVec3 DW1 = NetDR1 / Dt;
+			ApplyVelocityDelta(1, Chaos_Joint_VelProjectionAlpha * AngularProjection, DV1, DW1);
+		}
+
+		return NumApplied;
+	}
+
 }

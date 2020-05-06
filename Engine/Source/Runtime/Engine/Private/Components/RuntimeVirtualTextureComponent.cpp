@@ -3,10 +3,14 @@
 #include "Components/RuntimeVirtualTextureComponent.h"
 
 #include "Components/PrimitiveComponent.h"
-#include "GameFramework/Actor.h"
+#include "Logging/MessageLog.h"
+#include "Misc/UObjectToken.h"
+#include "Misc/MapErrors.h"
 #include "SceneInterface.h"
 #include "VT/RuntimeVirtualTexture.h"
 #include "VT/VirtualTextureBuilder.h"
+
+#define LOCTEXT_NAMESPACE "URuntimeVirtualTextureComponent"
 
 URuntimeVirtualTextureComponent::URuntimeVirtualTextureComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -61,7 +65,7 @@ FTransform URuntimeVirtualTextureComponent::GetVirtualTextureTransform() const
 	return FTransform(FVector(-0.5f, -0.5f, 0.f)) * GetComponentTransform();
 }
 
-uint32 URuntimeVirtualTextureComponent::CalculateStreamingTextureSettingsHash() const
+uint64 URuntimeVirtualTextureComponent::CalculateStreamingTextureSettingsHash() const
 {
 	// Shouldn't need to call this when there is VirtualTexture == nullptr
 	check(VirtualTexture != nullptr);
@@ -69,13 +73,14 @@ uint32 URuntimeVirtualTextureComponent::CalculateStreamingTextureSettingsHash() 
 	// If a setting change can cause the streaming texture to no longer be valid then it should be included in this hash.
 	union FPackedSettings
 	{
-		uint32 PackedValue;
+		uint64 PackedValue;
 		struct
 		{
 			uint32 MaterialType : 4;
 			uint32 TileSize : 12;
 			uint32 TileBorderSize : 4;
 			uint32 StreamLowMips : 4;
+			uint32 LODGroup : 8;
 			uint32 CompressTextures : 1;
 			uint32 SinglePhysicalSpace : 1;
 			uint32 EnableCompressCrunch : 1;
@@ -88,6 +93,7 @@ uint32 URuntimeVirtualTextureComponent::CalculateStreamingTextureSettingsHash() 
 	Settings.TileSize = (uint32)VirtualTexture->GetTileSize();
 	Settings.TileBorderSize = (uint32)VirtualTexture->GetTileBorderSize();
 	Settings.StreamLowMips = (uint32)StreamLowMips;
+	Settings.LODGroup = (uint32)VirtualTexture->GetLODGroup();
 	Settings.CompressTextures = (uint32)VirtualTexture->GetCompressTextures();
 	Settings.SinglePhysicalSpace = (uint32)VirtualTexture->GetSinglePhysicalSpace();
 	Settings.EnableCompressCrunch = (uint32)bEnableCompressCrunch;
@@ -126,6 +132,7 @@ void URuntimeVirtualTextureComponent::InitializeStreamingTexture(uint32 InSizeX,
 
 		BuildDesc.TileSize = VirtualTexture->GetTileSize();
 		BuildDesc.TileBorderSize = VirtualTexture->GetTileBorderSize();
+		BuildDesc.LODGroup = VirtualTexture->GetLODGroup();
 		BuildDesc.bCrunchCompressed = bEnableCompressCrunch;
 
 		BuildDesc.LayerCount = VirtualTexture->GetLayerCount();
@@ -159,4 +166,20 @@ void URuntimeVirtualTextureComponent::InitializeStreamingTexture(uint32 InSizeX,
 	}
 }
 
+void URuntimeVirtualTextureComponent::CheckForErrors()
+{
+	Super::CheckForErrors();
+
+	// Check if streaming texture has been built with the latest settings. If not then it won't be used which would cause a performance regression.
+	if (VirtualTexture != nullptr && StreamingTexture != nullptr && StreamingTexture->Texture != nullptr && StreamingTexture->BuildHash != CalculateStreamingTextureSettingsHash())
+	{
+		FMessageLog("MapCheck").PerformanceWarning()
+			->AddToken(FUObjectToken::Create(this))
+			->AddToken(FTextToken::Create(LOCTEXT("RuntimeVirtualTextureComponent_StreamingTextureNeedsUpdate", "The settings have changed since the streaming texture was last rebuilt. Streaming mips are disabled.")))
+			->AddToken(FMapErrorToken::Create(FName(TEXT("RuntimeVirtualTextureComponent_StreamingTextureNeedsUpdate"))));
+	}
+}
+
 #endif
+
+#undef LOCTEXT_NAMESPACE

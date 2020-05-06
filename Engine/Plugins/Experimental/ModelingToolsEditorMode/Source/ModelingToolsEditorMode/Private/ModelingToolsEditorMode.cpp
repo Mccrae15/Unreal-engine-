@@ -31,6 +31,7 @@
 #include "PlaneCutTool.h"
 #include "SelfUnionMeshesTool.h"
 #include "CSGMeshesTool.h"
+#include "BspConversionTool.h"
 #include "HoleFillTool.h"
 #include "PolygonOnMeshTool.h"
 #include "DisplaceMeshTool.h"
@@ -603,6 +604,10 @@ void FModelingToolsEditorMode::Enter()
 	CSGMeshesToolBuilder->AssetAPI = ToolsContext->GetAssetAPI();
 	RegisterToolFunc(ToolManagerCommands.BeginMeshBooleanTool, TEXT("CSGMeshesTool"), CSGMeshesToolBuilder);
 
+	auto BspConversionToolBuilder = NewObject<UBspConversionToolBuilder>();
+	BspConversionToolBuilder->AssetAPI = ToolsContext->GetAssetAPI();
+	RegisterToolFunc(ToolManagerCommands.BeginBspConversionTool, TEXT("BspConversionTool"), BspConversionToolBuilder);
+
 	auto PlaneCutToolBuilder = NewObject<UPlaneCutToolBuilder>();
 	PlaneCutToolBuilder->AssetAPI = ToolsContext->GetAssetAPI();
 	RegisterToolFunc(ToolManagerCommands.BeginPlaneCutTool, TEXT("PlaneCutTool"), PlaneCutToolBuilder);
@@ -675,9 +680,17 @@ void FModelingToolsEditorMode::Exit()
 
 	if (Toolkit.IsValid())
 	{
+		const FModelingToolsManagerCommands& ToolManagerCommands = FModelingToolsManagerCommands::Get();
+		const TSharedRef<FUICommandList>& ToolkitCommandList = Toolkit->GetToolkitCommands();
+		ToolkitCommandList->UnmapAction(ToolManagerCommands.AcceptActiveTool);
+		ToolkitCommandList->UnmapAction(ToolManagerCommands.CancelActiveTool);
+		ToolkitCommandList->UnmapAction(ToolManagerCommands.CompleteActiveTool);
+
 		FToolkitManager::Get().CloseToolkit(Toolkit.ToSharedRef());
 		Toolkit.Reset();
 	}
+
+	FModelingModeActionCommands::UnRegisterCommandBindings(UICommandList);
 
 	// clear realtime viewport override
 	ConfigureRealTimeViewportsOverride(false);

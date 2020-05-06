@@ -75,7 +75,7 @@ namespace UnrealBuildTool
 		static private Dictionary<string, string[]> LibrariesToSkip = new Dictionary<string, string[]> {
 			{ "-armv7", new string[] { } },
 			{ "-arm64", new string[] { "nvToolsExt", "nvToolsExtStub", "vorbisenc", } },
-			{ "-x86",   new string[] { "nvToolsExt", "nvToolsExtStub", "oculus", "OVRPlugin", "vrapi", "ovrkernel", "systemutils", "openglloader", "ovrplatformloader", "opus", "speex_resampler", "vorbisenc", } },
+			{ "-x86",   new string[] { "nvToolsExt", "nvToolsExtStub", "oculus", "OVRPlugin", "vrapi", "ovrkernel", "systemutils", "openglloader", "ovrplatformloader", "vorbisenc", } },
 			{ "-x64",   new string[] { "nvToolsExt", "nvToolsExtStub", "oculus", "OVRPlugin", "vrapi", "ovrkernel", "systemutils", "openglloader", "ovrplatformloader", "gpg", "vorbisenc", } },
 		};
 
@@ -352,6 +352,8 @@ namespace UnrealBuildTool
 			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(ProjectFile), UnrealTargetPlatform.Android);
 			Arches = new List<string>();
 			bool bBuild = true;
+			bool bUnsupportedBinaryBuildArch = false;
+
 			if (Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bBuildForArmV7", out bBuild) && bBuild
 				|| (AdditionalArches != null && (AdditionalArches.Contains("armv7", StringComparer.OrdinalIgnoreCase) || AdditionalArches.Contains("-armv7", StringComparer.OrdinalIgnoreCase))))
 			{
@@ -365,18 +367,41 @@ namespace UnrealBuildTool
 			if (Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bBuildForx86", out bBuild) && bBuild
 				|| (AdditionalArches != null && (AdditionalArches.Contains("x86", StringComparer.OrdinalIgnoreCase) || AdditionalArches.Contains("-x86", StringComparer.OrdinalIgnoreCase))))
 			{
-				Arches.Add("-x86");
+				if (File.Exists(Path.Combine(UnrealBuildTool.EngineDirectory.FullName, "Build", "InstalledBuild.txt")))
+				{
+					bUnsupportedBinaryBuildArch = true;
+					Log.TraceWarningOnce("Please install source to build for x86 (-x86); ignoring this architecture target.");
+				}
+				else
+				{
+					Arches.Add("-x86");
+				}
 			}
 			if (Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bBuildForx8664", out bBuild) && bBuild
 				|| (AdditionalArches != null && (AdditionalArches.Contains("x64", StringComparer.OrdinalIgnoreCase) || AdditionalArches.Contains("-x64", StringComparer.OrdinalIgnoreCase))))
 			{
-				Arches.Add("-x64");
+				if (File.Exists(Path.Combine(UnrealBuildTool.EngineDirectory.FullName, "Build", "InstalledBuild.txt")))
+				{
+					bUnsupportedBinaryBuildArch = true;
+					Log.TraceWarningOnce("Please install source to build for x86_64 (-x64); ignoring this architecture target.");
+				}
+				else
+				{
+					Arches.Add("-x64");
+				}
 			}
 
 			// force armv7 if something went wrong
 			if (Arches.Count == 0)
 			{
-				Arches.Add("-armv7");
+				if (bUnsupportedBinaryBuildArch)
+				{
+					throw new BuildException("Only architectures unsupported by binary-only engine selected.");
+				}
+				else
+				{
+					Arches.Add("-armv7");
+				}
 			}
 
 			// For android just set the GPUArchitecture to an empty string
@@ -760,7 +785,6 @@ namespace UnrealBuildTool
 			{
 				Result += " -funwind-tables";           // Just generates any needed static data, affects no code
 				Result += " -fstack-protector-strong";  // Emits extra code to check for buffer overflows
-				Result += " -fstrict-aliasing";
 				Result += " -fPIC";                     // Generates position-independent code (PIC) suitable for use in a shared library
 				Result += " -fno-omit-frame-pointer";
 				Result += " -fno-strict-aliasing";
@@ -779,7 +803,6 @@ namespace UnrealBuildTool
 			{
 				Result += " -funwind-tables";           // Just generates any needed static data, affects no code
 				Result += " -fstack-protector-strong";  // Emits extra code to check for buffer overflows
-				Result += " -fstrict-aliasing";
 				Result += " -fPIC";                     // Generates position-independent code (PIC) suitable for use in a shared library
 				Result += " -fno-omit-frame-pointer";
 				Result += " -fno-strict-aliasing";

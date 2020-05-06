@@ -324,7 +324,8 @@ public:
 		});
 	}
 
-	void SyncToParticle(TGeometryParticle<FReal,3>& Particle) const
+	template <typename TParticle>
+	void SyncToParticle(TParticle& Particle) const
 	{
 		ParticlePositionRotation.SyncToParticle([&Particle](const auto& Data)
 		{
@@ -355,6 +356,15 @@ public:
 			{
 				Rigid->SetMassProps(Data);
 			});
+
+			if(Rigid->ResimType() != EResimType::FullResim)
+			{
+				//Not full resim so apply dynamics automatically
+				Dynamics.SyncToParticle([Rigid](const auto& Data)
+				{
+					Rigid->SetDynamics(Data);
+				});
+			}
 		}
 	}
 
@@ -712,7 +722,7 @@ public:
 	FRewindData(int32 NumFrames)
 	: Managers(NumFrames+1)	//give 1 extra for saving at head
 	, CurFrame(0)
-	, LatestFrame(0)
+	, LatestFrame(-1)
 	, CurWave(1)
 	, FramesSaved(0)
 	, DataIdxOffset(0)
@@ -769,17 +779,17 @@ public:
 				if(const FGeometryParticleStateBase* RewindState = GetStateAtFrameImp(DirtyParticleInfo, Frame))
 				{
 
-					LatestState.SyncIfDirty(FDirtyPropData(DestManager,DataIdx++),*DirtyParticleInfo.Particle,*RewindState);
+					LatestState.SyncIfDirty(FDirtyPropData(DestManager,DataIdx++),*DirtyParticleInfo.GetGTParticle(),*RewindState);
 					CoalesceBack(DirtyParticleInfo.Frames, CurFrame);
 
-					RewindState->SyncToParticle(*DirtyParticleInfo.Particle);
+					RewindState->SyncToParticle(*DirtyParticleInfo.GetGTParticle());
 				}
 			}
 			else
 			{
 				if(const FGeometryParticleStateBase* RewindState = GetStateAtFrameImp(DirtyParticleInfo,Frame))
 				{
-					RewindState->SyncToParticle(*DirtyParticleInfo.Particle);
+					RewindState->SyncToParticle(*DirtyParticleInfo.GetGTParticle());
 				}
 			}
 		}
@@ -833,6 +843,7 @@ public:
 	EFutureQueryResult GetFutureStateAtFrame(FGeometryParticleState& OutState,int32 Frame) const
 	{
 		ensure(IsResim());
+		ensure(IsInGameThread());
 		const TGeometryParticle<FReal,3>& Particle = OutState.GetParticle();
 
 		if(const FDirtyParticleInfo* Info = FindParticle(Particle.UniqueIdx()))
@@ -857,8 +868,6 @@ public:
 		QUICK_SCOPE_CYCLE_COUNTER(RewindDataAdvance);
 		Managers[CurFrame].DeltaTime = DeltaTime;
 
-		++CurFrame;
-		LatestFrame = FMath::Max(LatestFrame,CurFrame);
 		FramesSaved = FMath::Min(FramesSaved+1,static_cast<int32>(Managers.Capacity()));
 		
 		const int32 EarliestFrame = CurFrame - 1 - FramesSaved;
@@ -872,19 +881,73 @@ public:
 			}
 			else if(IsResim())
 			{
+				EResimType ResimType = EResimType::FullResim;
+				if(auto* Rigid = Info.GetPTParticle()->CastToRigidParticle())
+				{
+					ResimType = Rigid->ResimType();
+				}
+
 				//During a resim it's possible the user will not dirty a particle that was previously dirty.
 				//If this happens we need to mark the particle as desynced
-				if(!Info.bDesync && Info.GTDirtyOnFrame[CurFrame-1].MissingWrite(CurFrame-1, CurWave))
+				if(ResimType == EResimType::FullResim && !Info.bDesync && Info.GTDirtyOnFrame[CurFrame].MissingWrite(CurFrame, CurWave))
 				{
-					Info.Desync(CurFrame-1, LatestFrame);
+					Info.Desync(CurFrame, LatestFrame);
+				}
+
+				if(Info.bDesync)
+				{
+					//Any desync from GT is considered a hard desync - in theory we could make this more fine grained
+					Info.GetPTParticle()->SetSyncState(ESyncState::HardDesync);
 				}
 			}
 		}
 	}
 
+	void FinishFrame()
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(RewindDataFinishFrame);
+		
+		if(IsResim())
+		{
+			const bool bLastResim = IsFinalResim();
+			ensure(IsInGameThread());
+			//snap particles forward that are not desynced or  do not have resim enabled
+			//TODO: handle desync case
+			for(FDirtyParticleInfo& Info : AllDirtyParticles)
+			{
+				if(auto* Rigid = Info.GetPTParticle()->CastToRigidParticle())
+				{
+					if(Rigid->ResimType() == EResimType::ResimAsSlave)
+					{
+						ensure(!Info.bDesync);
+						const FGeometryParticleStateBase* State = GetStateAtFrameImp(Info,CurFrame+1);
+						if(ensure(State != nullptr))
+						{
+							State->SyncToParticle(*Rigid);
+						}
+					}
+				}
+
+				//Last resim so mark everything as in sync
+				if(bLastResim)
+				{
+					Info.GetPTParticle()->SetSyncState(ESyncState::InSync);
+				}
+			}
+		}
+
+		++CurFrame;
+		LatestFrame = FMath::Max(LatestFrame,CurFrame);
+	}
+
 	bool IsResim() const
 	{
 		return CurFrame < LatestFrame;
+	}
+
+	bool IsFinalResim() const
+	{
+		return (CurFrame + 1) == LatestFrame;
 	}
 
 	//Number of particles that we're currently storing history for
@@ -908,9 +971,8 @@ public:
 		bNeedsSave = true;
 
 		//If manager already exists for previous frame, use it
-		const int32 PrevFrame = CurFrame - 1;
-		FFrameManagerInfo& Info = Managers[PrevFrame];
-		ensure(Info.Manager && Info.FrameCreatedFor == (PrevFrame));
+		FFrameManagerInfo& Info = Managers[CurFrame];
+		ensure(Info.Manager && Info.FrameCreatedFor == (CurFrame));
 
 		DataIdxOffset = Info.Manager->GetNumParticles();
 		Info.Manager->SetNumParticles(DataIdxOffset + NumActiveParticles);
@@ -934,24 +996,35 @@ public:
 		auto ProcessProxy = [this,&SrcManagerWrapper, SrcDataIdx, Dirty, &DestManagerWrapper](const auto Proxy)
 		{
 			const auto PTParticle = Proxy->GetHandle();
-			FDirtyParticleInfo& Info = FindOrAddParticle(*Proxy->GetParticle(),PTParticle->UniqueIdx());
+			FDirtyParticleInfo& Info = FindOrAddParticle(*PTParticle);
 			Info.LastDirtyFrame = CurFrame;
 			Info.GTDirtyOnFrame[CurFrame].SetWave(CurFrame,CurWave);
 
 			//check if particle has desynced
 			if(bResim)
 			{
-				FGeometryParticleState FutureState(*Proxy->GetParticle());
-				if(GetFutureStateAtFrame(FutureState,CurFrame) == EFutureQueryResult::Ok)
+				EResimType ResimType = EResimType::FullResim;
+				if(const auto* Rigid = PTParticle->CastToRigidParticle())
 				{
-					if(FutureState.IsDesynced(SrcManagerWrapper, *PTParticle, Dirty.ParticleData.GetFlags()))
+					ResimType = Rigid->ResimType();
+				}
+				
+				//Only desync if full resim - might be nice to give a log warning for other cases
+				if(ResimType == EResimType::FullResim)
+				{
+					//TODO: should not be passing GTParticle in here, it's not used so ok but not safe if someone decides to use it by mistake
+					FGeometryParticleState FutureState(*Proxy->GetParticle());
+					if(GetFutureStateAtFrame(FutureState,CurFrame) == EFutureQueryResult::Ok)
+					{
+						if(FutureState.IsDesynced(SrcManagerWrapper, *PTParticle, Dirty.ParticleData.GetFlags()))
+						{
+							Info.Desync(CurFrame-1, LatestFrame);
+						}
+					}
+					else if(!Info.bDesync)
 					{
 						Info.Desync(CurFrame-1, LatestFrame);
 					}
-				}
-				else if(!Info.bDesync)
-				{
-					Info.Desync(CurFrame-1, LatestFrame);
 				}
 			}
 
@@ -1002,25 +1075,40 @@ public:
 	}
 
 	template <bool bResim>
-	void PushPTDirtyData(const TPBDRigidParticleHandle<FReal,3>& Rigid, const int32 SrcDataIdx)
+	void PushPTDirtyData(TPBDRigidParticleHandle<FReal,3>& Rigid, const int32 SrcDataIdx)
 	{
 		const int32 DestDataIdx = SrcDataIdx + DataIdxOffset;
+
+		//during resim only full resim objects should modify future
+		if(bResim && Rigid.ResimType() != EResimType::FullResim)
+		{
+			if(FindParticle(Rigid.UniqueIdx()) == nullptr)
+			{
+				//no history but collision moved/woke us up so snap back manually (if history exists we'll snap in FinishFrame
+				Rigid.SetP(Rigid.X());
+				Rigid.SetQ(Rigid.R());
+				Rigid.SetV(Rigid.PreV());
+				Rigid.SetW(Rigid.PreW());
+			}
+			
+			return;
+		}
 
 		//todo: is this check needed? why do we pass sleeping rigids into this function?
 		if(SimWritablePropsMayChange(Rigid))
 		{
-			FDirtyParticleInfo& Info = FindOrAddParticle(*Rigid.GTGeometryParticle(), Rigid.UniqueIdx());
-			Info.LastDirtyFrame = CurFrame-1;
+			FDirtyParticleInfo& Info = FindOrAddParticle(Rigid);
+			Info.LastDirtyFrame = CurFrame;
 
 			//User called PrepareManagerForFrame (or PrepareFrameForPTDirty) for the previous frame, so use it
-			FDirtyPropData DestManagerWrapper(Managers[CurFrame-1].Manager.Get(), DestDataIdx);
+			FDirtyPropData DestManagerWrapper(Managers[CurFrame].Manager.Get(),DestDataIdx);
 
 			//sim-writable properties changed at head, so we must write down what they were
-			FGeometryParticleStateBase& LatestState = Info.AddFrame(CurFrame-1);
+			FGeometryParticleStateBase& LatestState = Info.AddFrame(CurFrame);
 			LatestState.SyncSimWritablePropsFromSim(DestManagerWrapper,Rigid);
 
 			//update any previous frames that were pointing at head
-			CoalesceBack(Info.Frames, CurFrame-1);
+			CoalesceBack(Info.Frames,CurFrame);
 		}
 	}
 
@@ -1126,20 +1214,35 @@ private:
 	{
 		TCircularBuffer<FFrameInfo> Frames;
 		TCircularBuffer<FDirtyFrameInfo> GTDirtyOnFrame;
-		TGeometryParticle<FReal,3>* Particle;
+	private:
+		TGeometryParticle<FReal,3>* GTParticle;
+		TGeometryParticleHandle<FReal,3>* PTParticle;
+	public:
 		FUniqueIdx CachedUniqueIdx;	//Needed when manipulating on physics thread and Particle data cannot be read
 		int32 LastDirtyFrame;	//Track how recently this was made dirty
 		bool bDesync;
 
-		FDirtyParticleInfo(TGeometryParticle<FReal,3>& UnsafeGTParticle,const FUniqueIdx UniqueIdx,const int32 CurFrame,const int32 NumFrames)
+		FDirtyParticleInfo(TGeometryParticle<FReal,3>& UnsafeGTParticle, TGeometryParticleHandle<FReal,3>& InPTParticle, const FUniqueIdx UniqueIdx,const int32 CurFrame,const int32 NumFrames)
 		: Frames(NumFrames)
 		, GTDirtyOnFrame(NumFrames)
-		, Particle(&UnsafeGTParticle)
+		, GTParticle(&UnsafeGTParticle)
+		, PTParticle(&InPTParticle)
 		, CachedUniqueIdx(UniqueIdx)
 		, LastDirtyFrame(CurFrame)
 		, bDesync(true)
 		{
 
+		}
+
+		TGeometryParticle<FReal,3>* GetGTParticle() const
+		{
+			ensure(IsInGameThread());
+			return GTParticle;
+		}
+
+		TGeometryParticleHandle<FReal,3>* GetPTParticle() const
+		{
+			return PTParticle;
 		}
 
 		FGeometryParticleStateBase& AddFrame(int32 FrameIdx)
@@ -1218,14 +1321,17 @@ private:
 		return nullptr;
 	}
 
-	FDirtyParticleInfo& FindOrAddParticle(TGeometryParticle<FReal,3>& UnsafeGTParticle,const FUniqueIdx UniqueIdx)
+	FDirtyParticleInfo& FindOrAddParticle(TGeometryParticleHandle<FReal,3>& PTParticle)
 	{
+		const FUniqueIdx UniqueIdx = PTParticle.UniqueIdx();
 		if(FDirtyParticleInfo* Info = FindParticle(UniqueIdx))
 		{
 			return *Info;
 		}
 
-		const int32 DirtyIdx = AllDirtyParticles.Add(FDirtyParticleInfo(UnsafeGTParticle,UniqueIdx,CurFrame,Managers.Capacity()));
+		auto* GTUnsafeParticle = PTParticle.GTGeometryParticle();
+		check(GTUnsafeParticle != nullptr);
+		const int32 DirtyIdx = AllDirtyParticles.Add(FDirtyParticleInfo(*GTUnsafeParticle, PTParticle,UniqueIdx,CurFrame,Managers.Capacity()));
 		ParticleToAllDirtyIdx.Add(UniqueIdx,DirtyIdx);
 
 		return AllDirtyParticles[DirtyIdx];

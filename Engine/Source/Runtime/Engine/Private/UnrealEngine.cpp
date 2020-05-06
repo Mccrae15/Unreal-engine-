@@ -146,6 +146,7 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
+#include "LandscapeSubsystem.h"
 #endif
 // @todo this is here only due to circular dependency to AIModule. To be removed
 
@@ -1108,11 +1109,12 @@ void FWorldContext::SetCurrentWorld(UWorld* World)
 {
 	if (World != nullptr && AudioDeviceID != INDEX_NONE)
 	{
-		// Set the world's audio device handle so that audio components playing in the 
-		// world will use the correct audio device instance.
-		FAudioDeviceHandle AudioDevice = FAudioDeviceManager::Get()->GetAudioDevice(AudioDeviceID);
-
-		World->SetAudioDevice(AudioDevice);
+		if (FAudioDeviceManager* DeviceManager = FAudioDeviceManager::Get())
+		{
+			// Set the world's audio device handle so that audio components playing in the 
+			// world will use the correct audio device instance.
+			FAudioDeviceManager::Get()->SetAudioDevice(*World, AudioDeviceID);
+		}
 	}
 
 	for (int32 idx = 0; idx < ExternalReferences.Num(); ++idx)
@@ -9985,6 +9987,19 @@ float DrawMapWarnings(UWorld* World, FViewport* Viewport, FCanvas* Canvas, UCanv
 #endif
 	}
 
+#if WITH_EDITOR && !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
+	{
+		if (int32 OutdatedGrassMapCount = LandscapeSubsystem->GetOutdatedGrassMapCount())
+		{
+			SmallTextItem.SetColor(FLinearColor::Red);
+			SmallTextItem.Text = FText::Format(LOCTEXT("GRASS_MAPS_NEED_TO_BE_REBUILT_FMT", "GRASS MAPS NEED TO BE REBUILT ({0} {0}|plural(one=object,other=objects))"), OutdatedGrassMapCount);
+			Canvas->DrawItem(SmallTextItem, FVector2D(MessageX, MessageY));
+			MessageY += FontSizeY;
+		}
+	}
+#endif
+
 	if (World->NumTextureStreamingUnbuiltComponents > 0 || World->NumTextureStreamingDirtyResources > 0)
 	{
 		SmallTextItem.SetColor(FLinearColor::Red);
@@ -15145,10 +15160,12 @@ int32 UEngine::RenderStatUnit(UWorld* World, FViewport* Viewport, FCanvas* Canva
 int32 UEngine::RenderStatDrawCount(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation, const FRotator* ViewRotation)
 {
 #if CSV_PROFILER
+	int32 TotalCount = 0;
 	// Display all the categories of draw counts. This may always report 0 in some modes if AreGPUStatsEnabled is not enabled.
 	// Most likely because we are not currently capturing a CSV.
 	for (int32 Index = 0; Index < FDrawCallCategoryName::NumCategory; ++Index)
 	{
+		TotalCount += FDrawCallCategoryName::DisplayCounts[Index];
 		FDrawCallCategoryName* CategoryName = FDrawCallCategoryName::Array[Index];
 		Canvas->DrawShadowedString(X - 50,
 			Y,
@@ -15157,6 +15174,12 @@ int32 UEngine::RenderStatDrawCount(UWorld* World, FViewport* Viewport, FCanvas* 
 			FColor::Green);
 		Y += 12;
 	}
+	Canvas->DrawShadowedString(X - 50,
+		Y,
+		*FString::Printf(TEXT("Total: %i"), TotalCount),
+		GetSmallFont(),
+		FColor::Green);
+	Y += 12;
 #else
 	Canvas->DrawShadowedString(X - 200,
 		Y,
@@ -15853,7 +15876,7 @@ int32 UEngine::RenderStatSoundModulators(UWorld* World, FViewport* Viewport, FCa
 {
 #if ENABLE_AUDIO_DEBUG
 	const int32 FontHeight = GetStatsFont()->GetMaxCharHeight() + 2.0f;
-	Canvas->DrawShadowedString(X, Y, TEXT("'stat soundmodulators' is deprecated. Use au.Debug.Modulators"), GetStatsFont(), FLinearColor::Yellow);
+	Canvas->DrawShadowedString(X, Y, TEXT("'stat soundmodulators' is deprecated. Use au.Debug.SoundModulators"), GetStatsFont(), FLinearColor::Yellow);
 	Y += FontHeight;
 
 	return Audio::FAudioDebugger::RenderStatModulators(World, Viewport, Canvas, X, Y, ViewLocation, ViewRotation);
@@ -16123,6 +16146,11 @@ int32 UEngine::RenderStatSlateBatches(UWorld* World, FViewport* Viewport, FCanva
 }
 #endif
 
+ERHIFeatureLevel::Type UEngine::GetDefaultWorldFeatureLevel() const
+{
+	return GMaxRHIFeatureLevel;
+}
+
 #if WITH_EDITOR
 void UEngine::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -16155,6 +16183,34 @@ void UEngine::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChang
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
+
+bool UEngine::GetPreviewPlatformName(FName& PlatformGroupName, FName& VanillaPlatformName) const
+{
+	// Support returning "Mobile" when started with -featureleveles31 etc
+
+	static bool bHasCachedResult = false;
+	static bool bCachedMobile = false;
+
+	if (!bHasCachedResult)
+	{
+		bHasCachedResult = true;
+		ERHIFeatureLevel::Type FeatureLevel;
+
+		bCachedMobile = (RHIGetPreviewFeatureLevel(FeatureLevel) && FeatureLevel <= ERHIFeatureLevel::ES3_1);
+	}
+
+	if (bCachedMobile)
+	{
+		PlatformGroupName = NAME_Mobile;
+		PlatformGroupName = NAME_None;
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+
 #endif
 
 #undef LOCTEXT_NAMESPACE

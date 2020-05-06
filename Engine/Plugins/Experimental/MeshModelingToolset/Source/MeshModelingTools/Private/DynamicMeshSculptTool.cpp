@@ -157,10 +157,6 @@ void UDynamicMeshSculptTool::Setup()
 	AddToolPropertySource(SculptProperties);
 
 	// add brush-specific properties 
-	PlaneBrushProperties = NewObject<UPlaneBrushProperties>(this);
-	PlaneBrushProperties->RestoreProperties(this);
-	AddToolPropertySource(PlaneBrushProperties);
-
 	SculptMaxBrushProperties = NewObject<USculptMaxBrushProperties>();
 	SculptMaxBrushProperties->RestoreProperties(this);
 	AddToolPropertySource(SculptMaxBrushProperties);
@@ -183,7 +179,6 @@ void UDynamicMeshSculptTool::Setup()
 	SculptProperties->RestoreProperties(this);
 
 	// disable tool-specific properties
-	SetToolPropertySourceEnabled(PlaneBrushProperties, false);
 	SetToolPropertySourceEnabled(GizmoProperties, false);
 	SetToolPropertySourceEnabled(SculptMaxBrushProperties, false);
 	SetToolPropertySourceEnabled(KelvinBrushProperties, false);
@@ -283,7 +278,6 @@ void UDynamicMeshSculptTool::Shutdown(EToolShutdownType ShutdownType)
 	KelvinBrushProperties->SaveProperties(this);
 	ViewProperties->SaveProperties(this);
 	GizmoProperties->SaveProperties(this);
-	PlaneBrushProperties->SaveProperties(this);
 	SculptMaxBrushProperties->SaveProperties(this);
 	RemeshProperties->SaveProperties(this);
 }
@@ -564,7 +558,7 @@ void UDynamicMeshSculptTool::ApplySmoothBrush(const FRay& WorldRay)
 		double Falloff = CalculateBrushFalloff(OrigPos.Distance(NewBrushPosLocal));
 
 		FVector3d SmoothedPos = (SculptProperties->bPreserveUVFlow) ?
-			FMeshWeights::MeanValueCentroid(*Mesh, VertIdx) : FMeshWeights::UniformCentroid(*Mesh, VertIdx);
+			FMeshWeights::CotanCentroidSafe(*Mesh, VertIdx, 10.0) : FMeshWeights::UniformCentroid(*Mesh, VertIdx);
 
 		FVector3d NewPos = FVector3d::Lerp(OrigPos, SmoothedPos, Falloff*SculptProperties->SmoothBrushSpeed);
 
@@ -810,7 +804,7 @@ void UDynamicMeshSculptTool::ApplyPlaneBrush(const FRay& WorldRay)
 	}
 
 	static const double PlaneSigns[3] = { 0, -1, 1 };
-	double PlaneSign = PlaneSigns[(int32)PlaneBrushProperties->WhichSide];
+	double PlaneSign = PlaneSigns[0];
 
 	FVector3d NewBrushPosLocal = CurTargetTransform.InverseTransformPosition(LastBrushPosWorld);
 	FVector3d BrushNormalLocal = CurTargetTransform.InverseTransformNormal(LastBrushPosNormalWorld);
@@ -853,7 +847,7 @@ void UDynamicMeshSculptTool::ApplyFixedPlaneBrush(const FRay& WorldRay)
 	}
 
 	static const double PlaneSigns[3] = { 0, -1, 1 };
-	double PlaneSign = PlaneSigns[(int32)PlaneBrushProperties->WhichSide];
+	double PlaneSign = PlaneSigns[0];
 
 	FVector3d NewBrushPosLocal = CurTargetTransform.InverseTransformPosition(LastBrushPosWorld);
 	FVector3d BrushNormalLocal = CurTargetTransform.InverseTransformNormal(LastBrushPosNormalWorld);
@@ -902,7 +896,7 @@ void UDynamicMeshSculptTool::ApplyFlattenBrush(const FRay& WorldRay)
 	}
 
 	static const double PlaneSigns[3] = { 0, -1, 1 };
-	double PlaneSign = PlaneSigns[(int32)PlaneBrushProperties->WhichSide];
+	double PlaneSign = PlaneSigns[0];
 
 	FVector3d NewBrushPosLocal = CurTargetTransform.InverseTransformPosition(LastBrushPosWorld);
 	FVector3d BrushNormalLocal = CurTargetTransform.InverseTransformNormal(LastBrushPosNormalWorld);
@@ -1992,25 +1986,6 @@ void UDynamicMeshSculptTool::DecreaseBrushFalloffAction()
 
 
 
-void UDynamicMeshSculptTool::NextBrushModeAction()
-{
-	uint8 LastMode = (uint8)EDynamicMeshSculptBrushType::LastValue;
-	SculptProperties->PrimaryBrushType = (EDynamicMeshSculptBrushType)(((uint8)SculptProperties->PrimaryBrushType + 1) % LastMode);
-}
-
-void UDynamicMeshSculptTool::PreviousBrushModeAction()
-{
-	uint8 LastMode = (uint8)EDynamicMeshSculptBrushType::LastValue;
-	uint8 CurMode = (uint8)SculptProperties->PrimaryBrushType;
-	if (CurMode == 0)
-	{
-		SculptProperties->PrimaryBrushType = (EDynamicMeshSculptBrushType)((uint8)LastMode - 1);
-	}
-	else
-	{
-		SculptProperties->PrimaryBrushType = (EDynamicMeshSculptBrushType)((uint8)CurMode - 1);
-	}
-}
 
 void UDynamicMeshSculptTool::NextHistoryBrushModeAction()
 {
@@ -2063,20 +2038,6 @@ void UDynamicMeshSculptTool::RegisterActions(FInteractiveToolActionSet& ActionSe
 		EModifierKey::Shift | EModifierKey::Control, EKeys::LeftBracket,
 		[this]() { DecreaseBrushFalloffAction(); });
 
-
-	ActionSet.RegisterAction(this, (int32)EStandardToolActions::BaseClientDefinedActionID+1,
-		TEXT("NextBrushMode"),
-		LOCTEXT("SculptNextBrushMode", "Next Brush Type"),
-		LOCTEXT("SculptNextBrushModeTooltip", "Cycle to next Brush Type"),
-		EModifierKey::None, EKeys::A,
-		[this]() { NextBrushModeAction(); });
-
-	ActionSet.RegisterAction(this, (int32)EStandardToolActions::BaseClientDefinedActionID+2,
-		TEXT("PreviousBrushMode"),
-		LOCTEXT("SculptPreviousBrushMode", "Previous Brush Type"),
-		LOCTEXT("SculptPreviousBrushModeTooltip", "Cycle to previous Brush Type"),
-		EModifierKey::None, EKeys::Q,
-		[this]() { PreviousBrushModeAction(); });
 
 	//ActionSet.RegisterAction(this, (int32)EStandardToolActions::BaseClientDefinedActionID + 10,
 	//	TEXT("NextBrushHistoryState"),
@@ -2309,23 +2270,17 @@ void UDynamicMeshSculptTool::UpdateImageSetting(UTexture2D* NewImage)
 
 void UDynamicMeshSculptTool::UpdateBrushType(EDynamicMeshSculptBrushType BrushType)
 {
-	static const FText BaseMessage = LOCTEXT("OnStartSculptTool", "Hold Shift to Smooth, Ctrl to Invert (where applicable). Q/A keys cycle Brush Type. S/D changes Size (+Shift to small-step), W/E changes Strength.");
+	static const FText BaseMessage = LOCTEXT("OnStartSculptTool", "Hold Shift to Smooth, Ctrl to Invert (where applicable). [/] and S/D change Size (+Shift to small-step), W/E changes Strength.");
 	FTextBuilder Builder;
 	Builder.AppendLine(BaseMessage);
 
 	SetToolPropertySourceEnabled(GizmoProperties, false);
-	SetToolPropertySourceEnabled(PlaneBrushProperties, false);
 	SetToolPropertySourceEnabled(SculptMaxBrushProperties, false);
 
 	if (BrushType == EDynamicMeshSculptBrushType::FixedPlane)
 	{
 		Builder.AppendLine(LOCTEXT("FixedPlaneTip", "Use T to reposition Work Plane at cursor, Shift+T to align to Normal, Ctrl+Shift+T to align to View"));
-		SetToolPropertySourceEnabled(PlaneBrushProperties, true);
 		SetToolPropertySourceEnabled(GizmoProperties, true);
-	}
-	if (BrushType == EDynamicMeshSculptBrushType::Plane || BrushType == EDynamicMeshSculptBrushType::PlaneViewAligned || BrushType == EDynamicMeshSculptBrushType::Flatten)
-	{
-		SetToolPropertySourceEnabled(PlaneBrushProperties, true);
 	}
 	if (BrushType == EDynamicMeshSculptBrushType::SculptMax)
 	{

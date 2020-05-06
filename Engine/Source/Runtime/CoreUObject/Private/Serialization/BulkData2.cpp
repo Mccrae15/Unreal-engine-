@@ -255,7 +255,7 @@ private:
 	{
 		// Even though SetComplete called in the constructor and sets bCompleteAndCallbackCalled=true, we still need to implement WaitComplete as
 		// the CompleteCallback can end up starting async tasks that can overtake the constructor execution and need to wait for the constructor to finish.
-		while (!bCompleteAndCallbackCalled);
+		while (!*(volatile bool*)&bCompleteAndCallbackCalled);
 	}
 
 	virtual void CancelImpl() override
@@ -895,7 +895,7 @@ void* FBulkDataBase::Realloc(int64 SizeInBytes)
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FBulkDataBase::Realloc"), STAT_UBD_Realloc, STATGROUP_Memory);
 
-	checkf(LockStatus == LOCKSTATUS_Unlocked, TEXT("Attempting to modify a BulkData object that is locked"));
+	checkf(LockStatus == LOCKSTATUS_ReadWriteLock, TEXT("BulkData must be locked for 'write' before reallocating!"));
 	checkf(!CanLoadFromDisk(), TEXT("Cannot re-allocate a FBulkDataBase object that represents a file on disk!"));
 
 	// We might want to consider this a valid use case if anyone can come up with one?

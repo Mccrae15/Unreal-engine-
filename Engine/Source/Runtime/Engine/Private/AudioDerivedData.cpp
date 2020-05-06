@@ -1025,8 +1025,8 @@ static void CookSimpleWave(USoundWave* SoundWave, FName FormatName, const IAudio
 		SoundWave->RawData.ForceBulkDataResident();
 	}
 	
-	UE_CLOG(SoundWave->RawData.IsBulkDataLoaded(), LogAudioDerivedData, Display, TEXT("calling ForceBulkDataResident for LPCM data for USoundWave %s failed."), *SoundWave->GetFullName());
-
+	UE_CLOG(!SoundWave->RawData.IsBulkDataLoaded(), LogAudioDerivedData, Display, TEXT("Calling ForceBulkDataResident for LPCM data for USoundWave %s failed."), *SoundWave->GetFullName());
+	
 	// Lock raw wave data.
 	const uint8* RawWaveData = (const uint8*)SoundWave->RawData.LockReadOnly();
 	bWasLocked = true;
@@ -1634,7 +1634,7 @@ void USoundWave::WillNeverCacheCookedPlatformDataAgain()
 	Super::WillNeverCacheCookedPlatformDataAgain();
 
 	// TODO: We can clear these arrays if we never need to cook again.
-	RawData.UnloadBulkData();
+	RawData.RemoveBulkData();
 	CompressedFormatData.FlushData();
 }
 #endif

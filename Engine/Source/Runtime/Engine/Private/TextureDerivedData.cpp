@@ -459,7 +459,12 @@ static void GetTextureBuildSettings(
 		OutBuildSettings.bVirtualTextureEnableCompressCrunch = VirtualTextureBuildSettings.bEnableCompressCrunch;
 		OutBuildSettings.VirtualTextureTileSize = FMath::RoundUpToPowerOfTwo(VirtualTextureBuildSettings.TileSize);
 
-		// don't all max resolution to be less than VT tile size
+		// Apply any LOD group tile size bias here
+		const int32 TileSizeBias = TextureLODSettings.GetTextureLODGroup(Texture.LODGroup).VirtualTextureTileSizeBias;
+		OutBuildSettings.VirtualTextureTileSize >>= (TileSizeBias < 0) ? -TileSizeBias : 0;
+		OutBuildSettings.VirtualTextureTileSize <<= (TileSizeBias > 0) ? TileSizeBias : 0;
+
+		// Don't allow max resolution to be less than VT tile size
 		OutBuildSettings.MaxTextureResolution = FMath::Max<uint32>(OutBuildSettings.MaxTextureResolution, OutBuildSettings.VirtualTextureTileSize);
 
 		// 0 is a valid value for border size
@@ -1164,7 +1169,7 @@ bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData, 
 			}
 			else
 			{
-				UE_LOG(LogTexture, Warning, TEXT("DDC.GetAsynchronousResults() failed for %s, MipIndex: %d"),
+				UE_LOG(LogTexture, Verbose, TEXT("DDC.GetAsynchronousResults() failed for %s, MipIndex: %d"),
 					Texture ? *Texture->GetPathName() : TEXT("nullptr"),
 					MipIndex);
 			}
@@ -1175,7 +1180,7 @@ bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData, 
 
 	if (NumMipsCached != (LoadableMips - FirstMipToLoad))
 	{
-		UE_LOG(LogTexture, Warning, TEXT("TryLoadMips failed for %s, NumMipsCached: %d, LoadableMips: %d, FirstMipToLoad: %d"),
+		UE_LOG(LogTexture, Verbose, TEXT("TryLoadMips failed for %s, NumMipsCached: %d, LoadableMips: %d, FirstMipToLoad: %d"),
 			Texture ? *Texture->GetPathName() : TEXT("nullptr"),
 			NumMipsCached,
 			LoadableMips,
@@ -1185,7 +1190,7 @@ bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData, 
 		for (int32 MipIndex = FirstMipToLoad; MipIndex < LoadableMips; ++MipIndex)
 		{
 			FTexture2DMipMap& Mip = Mips[MipIndex];
-			UE_LOG(LogTexture, Warning, TEXT("  Mip %d, BulkDataSize: %d"),
+			UE_LOG(LogTexture, Verbose, TEXT("  Mip %d, BulkDataSize: %d"),
 				MipIndex,
 				(int32)Mip.BulkData.GetBulkDataSize());
 

@@ -64,8 +64,8 @@ public:
 		RootCache = NULL;
 		TMap<FString, FDerivedDataBackendInterface*> ParsedNodes;		
 
-		// Create the graph using ini settings
-		if( FParse::Value( FCommandLine::Get(), TEXT("-DDC="), GraphName ) )
+		// Create the graph using ini settings. The string "default" forwards creation to use the default graph.
+		if( FParse::Value( FCommandLine::Get(), TEXT("-DDC="), GraphName ) && FCString::Stricmp(*GraphName, TEXT("default")) != 0 )
 		{
 			if( GraphName.Len() > 0 )
 			{
@@ -77,7 +77,7 @@ public:
 				// Remove references to any backend instances that might have been created
 				ParsedNodes.Empty();
 				DestroyCreatedBackends();
-				UE_LOG( LogDerivedDataCache, Warning, TEXT("FDerivedDataBackendGraph:  Unable to create backend graph using the specified graph settings (%s). Reverting to default."), *GraphName );
+				UE_LOG( LogDerivedDataCache, Warning, TEXT("FDerivedDataBackendGraph: Unable to create backend graph using the specified graph settings (\"%s\"). Reverting to the default graph."), *GraphName );
 			}
 		}
 
@@ -580,8 +580,12 @@ public:
 				// Don't create the file system if shared data cache directory is not mounted
 				bool bShared = FCString::Stricmp(NodeName, TEXT("Shared")) == 0;
 				
+				// parameters we read here from the ini file
 				FString WriteAccessLog;
-				FParse::Value( Entry, TEXT("WriteAccessLog="), WriteAccessLog );				
+				bool bPromptIfMissing = false;
+
+				FParse::Value( Entry, TEXT("WriteAccessLog="), WriteAccessLog );		
+				FParse::Bool(Entry, TEXT("PromptIfMissing="), bPromptIfMissing);
 
 				if (!bShared || IFileManager::Get().DirectoryExists(*Path))
 				{
@@ -603,7 +607,7 @@ public:
 					UE_LOG(LogDerivedDataCache, Warning, TEXT("%s"), *Message);
 
 					// Give the user a chance to retry incase they need to connect a network drive or something.
-					if (!FApp::IsUnattended() && !IS_PROGRAM)
+					if (bPromptIfMissing && !FApp::IsUnattended() && !IS_PROGRAM)
 					{
 						Message += FString::Printf(TEXT("\n\nRetry connection to %s?"), *Path);
 						EAppReturnType::Type MessageReturn = FPlatformMisc::MessageBoxExt(EAppMsgType::YesNo, *Message, TEXT("Could not access DDC"));

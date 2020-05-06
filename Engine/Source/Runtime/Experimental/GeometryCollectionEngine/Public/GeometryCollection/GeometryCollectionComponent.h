@@ -21,12 +21,12 @@
 #include "Chaos/ChaosGameplayEventDispatcher.h"
 #include "Chaos/ChaosNotifyHandlerInterface.h"
 #include "Chaos/ChaosSolverComponentTypes.h"
+#include "Chaos/PBDRigidsEvolutionFwd.h"
 
 #include "GeometryCollectionComponent.generated.h"
 
 struct FGeometryCollectionConstantData;
 struct FGeometryCollectionDynamicData;
-class FGeometryCollectionPhysicsProxy;
 class UGeometryCollectionComponent;
 class UBoxComponent;
 class UGeometryCollectionCache;
@@ -464,8 +464,6 @@ public:
 	
 	bool GetIsObjectLoading() { return IsObjectLoading; }
 
-
-
 	/**
 	*
 	*/
@@ -533,6 +531,7 @@ public:
 	UPROPERTY(Transient, VisibleAnywhere, BlueprintReadWrite, Category = "Chaos")
 	bool CachePlayback;
 
+	bool DoCustomNavigableGeometryExport(FNavigableGeometryExport& GeomExport) const override;
 
 public:
 	UPROPERTY(BlueprintAssignable, Category = "Collision")

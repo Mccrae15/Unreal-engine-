@@ -68,6 +68,11 @@ static FAutoConsoleVariableRef CVarEnableNiagaraRibbonRendering(
 	ECVF_Default
 );
 
+static TAutoConsoleVariable<int32> CVarRayTracingNiagaraRibbons(
+	TEXT("r.RayTracing.Geometry.NiagaraRibbons"),
+	1,
+	TEXT("Include Niagara ribbons in ray tracing effects (default = 1 (Niagara ribbons enabled in ray tracing))"));
+
 // max absolute error 9.0x10^-3
 // Eberly's polynomial degree 1 - respect bounds
 // input [-1, 1] and output [0, PI]
@@ -702,6 +707,10 @@ FNiagaraDynamicDataBase* FNiagaraRendererRibbons::GenerateDynamicData(const FNia
 
 			DynamicData->PackPerRibbonData(U0Scale, U0Offset, U1Scale, U1Offset, NumSegments, StartIndex);
 		}
+		else
+		{
+			DynamicData->PackPerRibbonData(0, 0, 0, 0, 0, 0);
+		}
 	};
 
 	DynamicData->MultiRibbonInfos.Reset();
@@ -1099,6 +1108,11 @@ void FNiagaraRendererRibbons::CreatePerViewResources(
 #if RHI_RAYTRACING
 void FNiagaraRendererRibbons::GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances, const FNiagaraSceneProxy* SceneProxy)
 {
+	if (!CVarRayTracingNiagaraRibbons.GetValueOnRenderThread())
+	{
+		return;
+	}
+
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraRender);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraRenderRibbons);
 	check(SceneProxy);
@@ -1126,42 +1140,45 @@ void FNiagaraRendererRibbons::GetDynamicRayTracingInstances(FRayTracingMaterialG
 		return;
 	}
 
+	auto& View = Context.ReferenceView;
+	auto& ViewFamily = Context.ReferenceViewFamily;
+	// Setup material for our ray tracing instance
+	FNiagaraMeshCollectorResourcesRibbon& CollectorResources = Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FNiagaraMeshCollectorResourcesRibbon>();
+
+	FGlobalDynamicIndexBuffer::FAllocationEx DynamicIndexAllocation;
+	CreatePerViewResources(Context.ReferenceView, Context.ReferenceViewFamily, SceneProxy, Context.RayTracingMeshResourceCollector, CollectorResources.UniformBuffer, DynamicIndexAllocation);
+
+	if (DynamicIndexAllocation.MaxUsedIndex <= 0)
+	{
+		return;
+	}
+
 	FRayTracingInstance RayTracingInstance;
 	RayTracingInstance.Geometry = &RayTracingGeometry;
 	RayTracingInstance.InstanceTransforms.Add(FMatrix::Identity);
 
-	{
-		auto& View = Context.ReferenceView;
-		auto& ViewFamily = Context.ReferenceViewFamily;
-		// Setup material for our ray tracing instance
-		FNiagaraMeshCollectorResourcesRibbon& CollectorResources = Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FNiagaraMeshCollectorResourcesRibbon>();
+	RayTracingGeometry.Initializer.IndexBuffer = DynamicIndexAllocation.IndexBuffer->IndexBufferRHI;
+	RayTracingGeometry.Initializer.IndexBufferOffset = DynamicIndexAllocation.FirstIndex * DynamicIndexAllocation.IndexStride;
 
-		FGlobalDynamicIndexBuffer::FAllocationEx DynamicIndexAllocation;
-		CreatePerViewResources(Context.ReferenceView, Context.ReferenceViewFamily, SceneProxy, Context.RayTracingMeshResourceCollector, CollectorResources.UniformBuffer, DynamicIndexAllocation);
+	FMeshBatch MeshBatch;
 
-		RayTracingGeometry.Initializer.IndexBuffer = DynamicIndexAllocation.IndexBuffer->IndexBufferRHI;
-		RayTracingGeometry.Initializer.IndexBufferOffset = DynamicIndexAllocation.FirstIndex * DynamicIndexAllocation.IndexStride;
+	SetupMeshBatchAndCollectorResourceForView(Context.ReferenceView, Context.ReferenceViewFamily, SceneProxy, Context.RayTracingMeshResourceCollector, DynamicDataRibbon, DynamicIndexAllocation, MeshBatch, CollectorResources);
 
-		FMeshBatch MeshBatch;
+	RayTracingInstance.Materials.Add(MeshBatch);
 
-		SetupMeshBatchAndCollectorResourceForView(Context.ReferenceView, Context.ReferenceViewFamily, SceneProxy, Context.RayTracingMeshResourceCollector, DynamicDataRibbon, DynamicIndexAllocation, MeshBatch, CollectorResources);
-
-		RayTracingInstance.Materials.Add(MeshBatch);
-
-		const uint32 VertexCount = DynamicIndexAllocation.MaxUsedIndex;
-		Context.DynamicRayTracingGeometriesToUpdate.Add(
-			FRayTracingDynamicGeometryUpdateParams
-			{
-				RayTracingInstance.Materials,
-				false,
-				VertexCount,
-				VertexCount * (uint32)sizeof(FVector),
-				MeshBatch.Elements[0].NumPrimitives,
-				&RayTracingGeometry,
-				&RayTracingDynamicVertexBuffer,
-			}
-		);
-	}
+	const uint32 VertexCount = DynamicIndexAllocation.MaxUsedIndex;
+	Context.DynamicRayTracingGeometriesToUpdate.Add(
+		FRayTracingDynamicGeometryUpdateParams
+		{
+			RayTracingInstance.Materials,
+			false,
+			VertexCount,
+			VertexCount * (uint32)sizeof(FVector),
+			MeshBatch.Elements[0].NumPrimitives,
+			&RayTracingGeometry,
+			&RayTracingDynamicVertexBuffer,
+		}
+	);
 
 	RayTracingInstance.BuildInstanceMaskAndFlags();
 

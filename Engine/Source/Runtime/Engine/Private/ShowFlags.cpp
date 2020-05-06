@@ -509,7 +509,7 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 		}
 	}
 
-	// disable AA in full screen GBuffer visualization
+	// disable AA in full screen GBuffer visualization or calibration material visualization
 	if (bCanDisableTonemapper && EngineShowFlags.VisualizeBuffer)
 	{
 		EngineShowFlags.SetTonemapper(false);

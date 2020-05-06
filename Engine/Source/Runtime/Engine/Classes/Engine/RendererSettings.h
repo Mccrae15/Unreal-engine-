@@ -821,6 +821,27 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip="Whether to discard skeletal mesh LODs below minimum LOD levels at cook time."))
 	FPerPlatformBool bDiscardSkeletalMeshOptionalLODs;
 
+	/**
+	" Visualize calibration material settings for post process calibration materials, used for setting full-screen images used for monitor calibration."
+	*/
+	UPROPERTY(config, EditAnywhere, Category = PostProcessCalibrationMaterials, meta = (AllowedClasses = "Material",
+		DisplayName = "Visualize Calibration Color Material Path",
+		ToolTip = "When the VisualizeCalibrationColor show flag is enabled, this path will be used as the post-process material to render.",
+		ConfigRestartRequired = true))
+	FSoftObjectPath VisualizeCalibrationColorMaterialPath;
+
+	UPROPERTY(config, EditAnywhere, Category = PostProcessCalibrationMaterials, meta = (AllowedClasses = "Material",
+		DisplayName = "Visualize Calibration Grayscale Material Path",
+		ToolTip = "When the VisualizeCalibrationGrayscale show flag is enabled, this path will be used as the post-process material to render.",
+		ConfigRestartRequired = true))
+	FSoftObjectPath VisualizeCalibrationGrayscaleMaterialPath;
+
+	UPROPERTY(config, EditAnywhere, Category = PostProcessCalibrationMaterials, meta = (AllowedClasses = "Material",
+		DisplayName = "Visualize Calibration Custom Material Path",
+		ToolTip = "When the VisualizeCalibrationCustom show flag is enabled, this path will be used as the post-process material to render.",
+		ConfigRestartRequired = true))
+	FSoftObjectPath VisualizeCalibrationCustomMaterialPath;
+
 public:
 
 	//~ Begin UObject Interface

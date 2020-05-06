@@ -2070,6 +2070,9 @@ namespace Chaos
 			const FImplicitObject& Implicit0 = *Constraint.Manifold.Implicit[0];
 			const FImplicitObject& Implicit1 = *Constraint.Manifold.Implicit[1];
 
+			const FVec3 OriginalContactPositionLocal0 = WorldTransform0.InverseTransformPosition(Constraint.Manifold.Location);
+			const FVec3 OriginalContactPositionLocal1 = WorldTransform1.InverseTransformPosition(Constraint.Manifold.Location);
+
 			switch (Constraint.Manifold.ShapesType)
 			{
 			case EContactShapesType::SphereSphere:
@@ -2183,6 +2186,10 @@ namespace Chaos
 				ensure(false);
 				break;
 			}
+
+			const FVec3 NewContactPositionLocal0 = WorldTransform0.InverseTransformPosition(Constraint.Manifold.Location);
+			const FVec3 NewContactPositionLocal1 = WorldTransform1.InverseTransformPosition(Constraint.Manifold.Location);
+			Constraint.Manifold.ContactMoveSQRDistance = FMath::Max((NewContactPositionLocal0 - OriginalContactPositionLocal0).SizeSquared(), (NewContactPositionLocal1 - OriginalContactPositionLocal1).SizeSquared());
 		}
 
 		template<typename T_TRAITS>
@@ -2407,10 +2414,12 @@ namespace Chaos
 			// Get the plane and point transforms (depends which body owns the plane)
 			const FRigidTransform3& PlaneTransform = (Constraint.GetManifoldPlaneOwnerIndex() == 0) ? WorldTransform0 : WorldTransform1;
 			const FRigidTransform3& PointsTransform = (Constraint.GetManifoldPlaneOwnerIndex() == 0) ? WorldTransform1 : WorldTransform0;
+			const FVec3 OriginalContactPositionLocal = PointsTransform.InverseTransformPosition(Constraint.Manifold.Location);
 
 			// World-space manifold plane
 			FVec3 PlaneNormal = PlaneTransform.TransformVectorNoScale(Constraint.GetManifoldPlaneNormal());
 			FVec3 PlanePos = PlaneTransform.TransformPosition(Constraint.GetManifoldPlanePosition());
+			FReal ContactMoveSQRDistance = 0;
 
 			// Select the best manifold point
 			for (int32 PointIndex = 0; PointIndex < NumPoints; ++PointIndex)
@@ -2428,8 +2437,10 @@ namespace Chaos
 					Constraint.Manifold.Phi = PointDistance;
 					Constraint.Manifold.Location = ContactPos;
 					Constraint.Manifold.Normal = ContactNormal;
+					ContactMoveSQRDistance = (OriginalContactPositionLocal - Constraint.GetManifoldPoint(PointIndex)).SizeSquared();
 				}
 			}
+			Constraint.Manifold.ContactMoveSQRDistance = ContactMoveSQRDistance;
 		}
 
 
@@ -2610,22 +2621,29 @@ namespace Chaos
 			}
 
 #if CHAOS_COLLIDE_CLUSTERED_UNIONS
-			if (Implicit0OuterType == FImplicitObjectUnionClustered::StaticType())
+			if(Implicit0OuterType == FImplicitObjectUnionClustered::StaticType())
 			{
 				const FImplicitObjectUnionClustered* Union0 = Implicit0->template GetObject<FImplicitObjectUnionClustered>();
-				if (Implicit1->HasBoundingBox())
+				if(Implicit1->HasBoundingBox())
 				{
 					TArray<Pair<const FImplicitObject*, FRigidTransform3>> Children;
-					Union0->FindAllIntersectingObjects(Children, Implicit1->BoundingBox().TransformedAABB(LocalTransform1.GetRelativeTransform(LocalTransform0)));
-					for (const auto& Child0 : Children)
+
+					// Need to get transformed bounds of 1 in the space of 0
+					FRigidTransform3 TM0 = LocalTransform0 * Collisions::GetTransform(Particle0);
+					FRigidTransform3 TM1 = LocalTransform1 * Collisions::GetTransform(Particle1);
+					FRigidTransform3 TM1ToTM0 = TM1.GetRelativeTransform(TM0);
+					FAABB3 QueryBounds = Implicit1->BoundingBox().TransformedAABB(TM1ToTM0);
+
+					Union0->FindAllIntersectingObjects(Children, QueryBounds);
+
+					for(const Pair<const FImplicitObject*, FRigidTransform3>& Child0 : Children)
 					{
-						TRigidTransform<FReal, 3> TransformedChild0 = Child0.Second * LocalTransform0;
-						ConstructConstraints<T_TRAITS>(Particle0, Particle1, Child0.First, Implicit1, TransformedChild0, LocalTransform1, CullDistance, Context, NewConstraints);
+						ConstructConstraints<T_TRAITS>(Particle0, Particle1, Child0.First, Implicit1, Child0.Second * LocalTransform0, LocalTransform1, CullDistance, Context, NewConstraints);
 					}
 				}
 				else
 				{
-					for (const auto& Child0 : Union0->GetObjects())
+					for(const TUniquePtr<FImplicitObject>& Child0 : Union0->GetObjects())
 					{
 						ConstructConstraints<T_TRAITS>(Particle0, Particle1, Child0.Get(), Implicit1, LocalTransform0, LocalTransform1, CullDistance, Context, NewConstraints);
 					}
@@ -2645,22 +2663,29 @@ namespace Chaos
 			}
 
 #if CHAOS_COLLIDE_CLUSTERED_UNIONS
-			if (Implicit1OuterType == FImplicitObjectUnionClustered::StaticType())
+			if(Implicit1OuterType == FImplicitObjectUnionClustered::StaticType())
 			{
 				const FImplicitObjectUnionClustered* Union1 = Implicit1->template GetObject<FImplicitObjectUnionClustered>();
-				if (Implicit0->HasBoundingBox())
+				if(Implicit0->HasBoundingBox())
 				{
 					TArray<Pair<const FImplicitObject*, FRigidTransform3>> Children;
-					Union1->FindAllIntersectingObjects(Children, Implicit0->BoundingBox().TransformedAABB(LocalTransform0.GetRelativeTransform(LocalTransform1)));
-					for (const auto& Child1 : Children)
+					
+					// Need to get transformed bounds of 0 in the space of 1
+					FRigidTransform3 TM0 = LocalTransform0 * Collisions::GetTransform(Particle0);
+					FRigidTransform3 TM1 = LocalTransform1 * Collisions::GetTransform(Particle1);
+					FRigidTransform3 TM0ToTM1 = TM0.GetRelativeTransform(TM1);
+					FAABB3 QueryBounds = Implicit0->BoundingBox().TransformedAABB(TM0ToTM1);
+
+					Union1->FindAllIntersectingObjects(Children, QueryBounds);
+
+					for(const Pair<const FImplicitObject*, FRigidTransform3>& Child1 : Children)
 					{
-						TRigidTransform<FReal, 3> TransformedChild1 = Child1.Second * LocalTransform1;
-						ConstructConstraints<T_TRAITS>(Particle0, Particle1, Implicit0, Child1.First, LocalTransform0, TransformedChild1, CullDistance, Context, NewConstraints);
+						ConstructConstraints<T_TRAITS>(Particle0, Particle1, Implicit0, Child1.First, LocalTransform0, Child1.Second * LocalTransform1, CullDistance, Context, NewConstraints);
 					}
 				}
 				else
 				{
-					for (const auto& Child1 : Union1->GetObjects())
+					for(const TUniquePtr<FImplicitObject>& Child1 : Union1->GetObjects())
 					{
 						ConstructConstraints<T_TRAITS>(Particle0, Particle1, Implicit0, Child1.Get(), LocalTransform0, LocalTransform1, CullDistance, Context, NewConstraints);
 					}
