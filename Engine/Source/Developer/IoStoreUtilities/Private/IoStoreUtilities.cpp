@@ -1362,10 +1362,7 @@ static void BuildBundles(FExportGraph& ExportGraph, const TArray<FPackage*>& Pac
 		{
 			uint32* FindDependentBundleIndex = ExternalDependency->Package->ExportBundleMap.Find(ExternalDependency);
 			check(FindDependentBundleIndex);
-			if (BundleIndex > 0)
-			{
-				AddUniqueExternalBundleArc(*ExternalDependency->Package, *FindDependentBundleIndex, *Package, BundleIndex);
-			}
+			AddUniqueExternalBundleArc(*ExternalDependency->Package, *FindDependentBundleIndex, *Package, BundleIndex);
 		}
 		Bundle->Nodes.Add(Node);
 		Package->ExportBundleMap.Add(Node, BundleIndex);
@@ -2909,10 +2906,16 @@ void SerializePackageStoreEntries(
 
 	for (FPackage* Package : Packages)
 	{
+		uint64 ExportBundlesSize = Package->HeaderSerialSize + Package->ExportsSerialSize;
+		StoreTocArchive << ExportBundlesSize;
 		FMappedName PackageName;
 		StoreTocArchive << PackageName;
 		StoreTocArchive << Package->SourceGlobalPackageId;
 		StoreTocArchive << Package->ExportCount;
+		int32 ExportBundleCount = Package->ExportBundles.Num();
+		StoreTocArchive << ExportBundleCount;
+		uint32 LoadOrder = Package->ExportBundles.Num() > 0 ? Package->ExportBundles[0].LoadOrder : 0;
+		StoreTocArchive << LoadOrder;
 
 		// Global imported packages meta data
 		{
@@ -2930,22 +2933,6 @@ void SerializePackageStoreEntries(
 			for (FPackageObjectIndex ObjectIndex : Package->PublicExports)
 			{
 				StoreDataArchive << ObjectIndex;
-			}
-		}
-
-		// Global export bundle meta data
-		{
-			// TODO: Request IO for each package export bundle individually in the loader,
-			//       or just store the data for the first entry directly on the package entry itself
-			SerializePackageEntryCArrayHeader(Package->ExportBundles.Num());
-			FExportBundleMetaEntry ExportBundleMetaEntry;
-			ExportBundleMetaEntry.PayloadSize = Package->HeaderSerialSize + Package->ExportsSerialSize;
-			for (const FExportBundle& ExportBundle : Package->ExportBundles)
-			{
-				ExportBundleMetaEntry.LoadOrder = ExportBundle.LoadOrder;
-				StoreDataArchive << ExportBundleMetaEntry;
-
-				ExportBundleMetaEntry.PayloadSize = 0; // currently only specified for the first entry
 			}
 		}
 	}
@@ -3377,14 +3364,19 @@ static void CreateGlobalScriptObjects(
 	{
 		if (!Package->HasAnyPackageFlags(PKG_CompiledIn))
 		{
-			UE_LOG(LogIoStore, Warning, TEXT("Skipping script package: %s"), *Package->GetName());
-			continue;
+			UE_LOG(LogIoStore, Display, TEXT("Referenced script package %s is missing the flag PKG_CompiledIn"), *Package->GetName());
 		}
-
-		if (Package->HasAnyPackageFlags(PKG_EditorOnly | PKG_Developer | PKG_UncookedOnly))
+		else if (Package->HasAnyPackageFlags(PKG_EditorOnly))
 		{
-			UE_LOG(LogIoStore, Warning, TEXT("Skipping script package: %s"), *Package->GetName());
-			continue;
+			UE_LOG(LogIoStore, Display, TEXT("Referenced script package %s has the flag PKG_EditorOnly"), *Package->GetName());
+		}
+		else if (Package->HasAnyPackageFlags(PKG_Developer))
+		{
+			UE_LOG(LogIoStore, Display, TEXT("Referenced script package %s has the flag PKG_Developer"), *Package->GetName());
+		}
+		else if (Package->HasAnyPackageFlags(PKG_UncookedOnly))
+		{
+			UE_LOG(LogIoStore, Display, TEXT("Referenced script package %s has the flag PKG_UncookedOnly"), *Package->GetName());
 		}
 
 		FName ObjectName = Package->GetFName();

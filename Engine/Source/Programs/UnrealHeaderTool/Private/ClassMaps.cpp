@@ -31,14 +31,18 @@ void FClassDeclarations::AddIfMissing(FName Name, TUniqueFunction<TSharedRef<FCl
 	}
 }
 
-TSharedRef<FClassDeclarationMetaData>* FClassDeclarations::Find(FName Name)
+FClassDeclarationMetaData* FClassDeclarations::Find(FName Name)
 {
 	FRWScopeLock Lock(ClassDeclLock, SLT_ReadOnly);
-	return ClassDeclarations.Find(Name);
+	if (TSharedRef<FClassDeclarationMetaData>* ClassDecl = ClassDeclarations.Find(Name))
+	{
+		return &ClassDecl->Get();
+	}
+	return nullptr;
 }
 
-TSharedRef<FClassDeclarationMetaData>& FClassDeclarations::FindChecked(FName Name)
+FClassDeclarationMetaData& FClassDeclarations::FindChecked(FName Name)
 {
 	FRWScopeLock Lock(ClassDeclLock, SLT_ReadOnly);
-	return ClassDeclarations.FindChecked(Name);
+	return ClassDeclarations.FindChecked(Name).Get();
 }

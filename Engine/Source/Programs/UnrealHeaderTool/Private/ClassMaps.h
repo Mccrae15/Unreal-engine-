@@ -55,8 +55,8 @@ private:
 struct FClassDeclarations
 {
 	void AddIfMissing(FName Name, TUniqueFunction<TSharedRef<FClassDeclarationMetaData>()>&& DeclConstructFunc);
-	TSharedRef<FClassDeclarationMetaData>* Find(FName Name);
-	TSharedRef<FClassDeclarationMetaData>& FindChecked(FName Name);
+	FClassDeclarationMetaData* Find(FName Name);
+	FClassDeclarationMetaData& FindChecked(FName Name);
 
 private:
 	TMap<FName, TSharedRef<FClassDeclarationMetaData>> ClassDeclarations;
