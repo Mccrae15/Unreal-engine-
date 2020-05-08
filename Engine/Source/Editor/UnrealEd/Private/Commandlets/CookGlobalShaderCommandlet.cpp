@@ -1,9 +1,13 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/CookGlobalShadersCommandlet.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
 #include "Misc/ConfigCacheIni.h"
+#include "HAL/PlatformFileManager.h"
+#include "GenericPlatform/GenericPlatformFile.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/Class.h"
 #include "ShaderCompiler.h"
 #include "CookOnTheSide/CookOnTheFlyServer.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
