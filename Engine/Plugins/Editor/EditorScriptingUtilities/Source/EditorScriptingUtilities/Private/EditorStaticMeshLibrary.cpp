@@ -172,6 +172,14 @@ void UEditorStaticMeshLibrary::SetLODScreenSizeProps(UStaticMesh* StaticMesh, TM
 		return ;
 	}
 
+	// Close the mesh editor to prevent crashing. If changes are applied, reopen it after the mesh has been built.
+	bool bStaticMeshIsEdited = false;
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (AssetEditorSubsystem->FindEditorForAsset(StaticMesh, false))
+	{
+		AssetEditorSubsystem->CloseAllEditorsForAsset(StaticMesh);
+		bStaticMeshIsEdited = true;
+	}
 
 	bool defaultsOnly = Platform == FName("Default");
 
@@ -243,9 +251,61 @@ void UEditorStaticMeshLibrary::SetLODScreenSizeProps(UStaticMesh* StaticMesh, TM
 		{
 			UE_LOG(LogEditorScripting, Warning, TEXT("GetLodScreenSizes: The RenderData is invalid") );
 		}
+
+		// Reopen MeshEditor on this mesh if the MeshEditor was previously opened in it
+		if (bStaticMeshIsEdited)
+		{
+			AssetEditorSubsystem->OpenEditorForAsset(StaticMesh);
+		}
 	
 
 		return;
+}
+
+void UEditorStaticMeshLibrary::SetDistanceFieldResolutionScalePerLOD(UStaticMesh* StaticMesh, TMap<int32, float> DistanceResolutionScale)
+{
+	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	{
+		return;
+	}
+
+	if (StaticMesh == nullptr)
+	{
+		UE_LOG(LogEditorScripting, Error, TEXT("SetDistanceFieldResolutionScalePerLOD: The StaticMesh is null."));
+		return;
+	}
+
+	// Close the mesh editor to prevent crashing. If changes are applied, reopen it after the mesh has been built.
+	bool bStaticMeshIsEdited = false;
+	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (AssetEditorSubsystem->FindEditorForAsset(StaticMesh, false))
+	{
+		AssetEditorSubsystem->CloseAllEditorsForAsset(StaticMesh);
+		bStaticMeshIsEdited = true;
+	}
+
+
+	bool NeedsResave = false;
+	for (auto& Elem : DistanceResolutionScale)
+	{
+		if (StaticMesh->GetSourceModel(Elem.Key).BuildSettings.DistanceFieldResolutionScale != Elem.Value)
+		{
+			StaticMesh->GetSourceModel(Elem.Key).BuildSettings.DistanceFieldResolutionScale = Elem.Value;
+			NeedsResave = true;
+		};
+	}
+
+	if (NeedsResave)
+	{
+		// Request re-building of mesh with new LODs
+		StaticMesh->PostEditChange();
+
+		// Reopen MeshEditor on this mesh if the MeshEditor was previously opened in it
+		if (bStaticMeshIsEdited)
+		{
+			AssetEditorSubsystem->OpenEditorForAsset(StaticMesh);
+		}
+	}
 }
 
 int32 UEditorStaticMeshLibrary::SetLodsWithNotification(UStaticMesh* StaticMesh, const FEditorScriptingMeshReductionOptions& ReductionOptions, bool bApplyChanges)

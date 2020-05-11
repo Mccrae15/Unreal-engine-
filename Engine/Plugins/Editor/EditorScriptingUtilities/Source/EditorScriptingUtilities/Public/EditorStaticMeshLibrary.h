@@ -121,6 +121,9 @@ public:
 	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
 	 static void SetLODScreenSizeProps(UStaticMesh * StaticMesh, TMap<int32, float> ScreenSize, FName Platform, bool PropagateToDefaults = false);
 
+	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
+	 static void SetDistanceFieldResolutionScalePerLOD(UStaticMesh * StaticMesh, TMap<int32, float> DistanceResolutionScale);
+
 	/**
 	 * Get number of LODs present on a static mesh.
 	 * @param	StaticMesh				Mesh to process.
