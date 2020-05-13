@@ -431,7 +431,7 @@ void USoundSubmix::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 		}
 
 		// Force the properties to be initialized for this SoundSubmix on all active audio devices
-		if (FAudioDeviceManager* AudioDeviceManager = GEngine->GetAudioDeviceManager())
+		if (FAudioDeviceManager* AudioDeviceManager = FAudioDeviceManager::Get())
 		{
 			if (bUpdateSubmixGain)
 			{
@@ -444,15 +444,11 @@ void USoundSubmix::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 					Device->SetSubmixWetDryLevel(SoundSubmix, NewOutputVolume, NewWetLevel, NewDryLevel);
 				});
 			}
-		}
-	}
 
-	if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(USoundSubmix, SubmixEffectChain))
-	{
-		// Force the properties to be initialized for this SoundSubmix on all active audio devices
-		if (FAudioDeviceManager* AudioDeviceManager = GEngine->GetAudioDeviceManager())
-		{
-			AudioDeviceManager->RegisterSoundSubmix(this);
+			if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(USoundSubmix, SubmixEffectChain))
+			{
+				AudioDeviceManager->RegisterSoundSubmix(this);
+			}
 		}
 	}
 
@@ -836,9 +832,7 @@ void USoundfieldSubmix::PostEditChangeProperty(struct FPropertyChangedEvent& Pro
 
 	if (PropertyChangedEvent.Property != nullptr)
 	{
-		static const FName NAME_SoundfieldFormat(TEXT("SoundfieldEncodingFormat"));
-
-		if (PropertyChangedEvent.Property->GetFName() == NAME_SoundfieldFormat)
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(USoundfieldSubmix, SoundfieldEncodingFormat))
 		{
 			bShouldSanitizeLinks = true;
 		}

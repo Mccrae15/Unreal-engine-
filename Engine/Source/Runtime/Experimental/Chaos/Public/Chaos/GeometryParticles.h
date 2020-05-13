@@ -14,6 +14,8 @@
 #include "UObject/ExternalPhysicsCustomObjectVersion.h"
 #include "UObject/ExternalPhysicsMaterialCustomObjectVersion.h"
 #include "Chaos/Properties.h"
+#include "Chaos/Framework/PhysicsProxyBase.h"
+#include "Chaos/Framework/PhysicsSolverBase.h"
 
 #ifndef CHAOS_DETERMINISTIC
 #define CHAOS_DETERMINISTIC 1
@@ -244,7 +246,8 @@ namespace Chaos
 		Clustered,	//only applicable on physics thread side
 		StaticMesh,
 		SkeletalMesh,
-		GeometryCollection
+		GeometryCollection,
+		Unknown
 	};
 
 	//Holds the data for getting back at the real handle if it's still valid

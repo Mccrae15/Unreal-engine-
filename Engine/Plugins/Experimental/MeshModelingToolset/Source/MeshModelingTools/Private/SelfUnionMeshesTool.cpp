@@ -142,6 +142,7 @@ void USelfUnionMeshesTool::ConfigurePreviewMaterials()
 
 	CombinedSourceMeshes = MakeShared<FDynamicMesh3>();
 	CombinedSourceMeshes->EnableAttributes();
+	CombinedSourceMeshes->EnableTriangleGroups(0);
 	CombinedSourceMeshes->Attributes()->EnableMaterialID();
 	FDynamicMeshEditor AppendEditor(CombinedSourceMeshes.Get());
 
@@ -270,6 +271,8 @@ TUniquePtr<FDynamicMeshOperator> USelfUnionMeshesTool::MakeNewOperator()
 	TUniquePtr<FSelfUnionMeshesOp> Op = MakeUnique<FSelfUnionMeshesOp>();
 	
 	Op->bAttemptFixHoles = Properties->bAttemptFixHoles;
+	Op->WindingNumberThreshold = Properties->WindingNumberThreshold;
+	Op->bTrimFlaps = Properties->bTrimFlaps;
 
 	Op->SetResultTransform(FTransform3d::Identity()); // TODO Center the combined meshes (when building them) and change this transform accordingly
 	Op->CombinedMesh = CombinedSourceMeshes;

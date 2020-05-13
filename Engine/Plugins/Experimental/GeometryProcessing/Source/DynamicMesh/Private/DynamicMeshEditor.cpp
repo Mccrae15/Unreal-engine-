@@ -1233,17 +1233,23 @@ void FDynamicMeshEditor::CopyAttributes(int FromTriangleID, int ToTriangleID, FM
 		}
 	}
 
+	// Make sure the storage in NewNormalOverlayElements has a slot for each normal layer.
+	if (ResultOut.NewNormalOverlayElements.Num() < Mesh->Attributes()->NumNormalLayers())
+	{
+		ResultOut.NewNormalOverlayElements.AddDefaulted(Mesh->Attributes()->NumNormalLayers() - ResultOut.NewNormalOverlayElements.Num());
+	}
 
 	for (int NormalLayerIndex = 0; NormalLayerIndex < Mesh->Attributes()->NumNormalLayers(); NormalLayerIndex++)
 	{
 		FDynamicMeshNormalOverlay* NormalOverlay = Mesh->Attributes()->GetNormalLayer(NormalLayerIndex);
+
 		if (NormalOverlay->IsSetTriangle(FromTriangleID))
 		{
 			FIndex3i FromElemTri = NormalOverlay->GetTriangle(FromTriangleID);
 			FIndex3i ToElemTri = NormalOverlay->GetTriangle(ToTriangleID);
 			for (int j = 0; j < 3; ++j)
 			{
-				int NewElemID = FindOrCreateDuplicateNormal(FromElemTri[j], NormalLayerIndex, IndexMaps);
+				int NewElemID = FindOrCreateDuplicateNormal(FromElemTri[j], NormalLayerIndex, IndexMaps, &ResultOut);
 				ToElemTri[j] = NewElemID;
 			}
 			NormalOverlay->SetTriangle(ToTriangleID, ToElemTri);
@@ -1274,7 +1280,7 @@ int FDynamicMeshEditor::FindOrCreateDuplicateUV(int ElementID, int UVLayerIndex,
 
 
 
-int FDynamicMeshEditor::FindOrCreateDuplicateNormal(int ElementID, int NormalLayerIndex, FMeshIndexMappings& IndexMaps)
+int FDynamicMeshEditor::FindOrCreateDuplicateNormal(int ElementID, int NormalLayerIndex, FMeshIndexMappings& IndexMaps, FDynamicMeshEditResult* ResultOut)
 {
 	int NewElementID = IndexMaps.GetNewNormal(NormalLayerIndex, ElementID);
 	if (NewElementID == IndexMaps.InvalidID())
@@ -1282,6 +1288,11 @@ int FDynamicMeshEditor::FindOrCreateDuplicateNormal(int ElementID, int NormalLay
 		FDynamicMeshNormalOverlay* NormalOverlay = Mesh->Attributes()->GetNormalLayer(NormalLayerIndex);
 		NewElementID = NormalOverlay->AppendElement(NormalOverlay->GetElement(ElementID));
 		IndexMaps.SetNormal(NormalLayerIndex, ElementID, NewElementID);
+		if (ResultOut)
+		{
+			check(ResultOut->NewNormalOverlayElements.Num() > NormalLayerIndex);
+			ResultOut->NewNormalOverlayElements[NormalLayerIndex].Add(NewElementID);
+		}
 	}
 	return NewElementID;
 }
@@ -1621,13 +1632,17 @@ void FDynamicMeshEditor::AppendTriangles(const FDynamicMesh3* SourceMesh, const 
 		FIndex3i Tri = SourceMesh->GetTriangle(SourceTriangleID);
 
 		// FindOrCreateDuplicateGroup
-		int SourceGroupID = SourceMesh->GetTriangleGroup(SourceTriangleID);
-		int NewGroupID = IndexMaps.GetNewGroup(SourceGroupID);
-		if (NewGroupID == IndexMaps.InvalidID())
+		int NewGroupID = FDynamicMesh3::InvalidID;
+		if (SourceMesh->HasTriangleGroups())
 		{
-			NewGroupID = Mesh->AllocateTriangleGroup();
-			IndexMaps.SetGroup(SourceGroupID, NewGroupID);
-			ResultOut.NewGroups.Add(NewGroupID);
+			int SourceGroupID = SourceMesh->GetTriangleGroup(SourceTriangleID);
+			NewGroupID = IndexMaps.GetNewGroup(SourceGroupID);
+			if (NewGroupID == IndexMaps.InvalidID())
+			{
+				NewGroupID = Mesh->AllocateTriangleGroup();
+				IndexMaps.SetGroup(SourceGroupID, NewGroupID);
+				ResultOut.NewGroups.Add(NewGroupID);
+			}
 		}
 
 		// FindOrCreateDuplicateVertex
@@ -1722,8 +1737,9 @@ bool FDynamicMeshEditor::SplitMesh(const FDynamicMesh3* SourceMesh, TArray<FDyna
 		FIndex3i Tri = SourceMesh->GetTriangle(SourceTID);
 
 		// FindOrCreateDuplicateGroup
-		int SourceGID = SourceMesh->GetTriangleGroup(SourceTID);
-		int NewGID = IndexMaps.GetNewGroup(SourceGID);
+		// TODO: despite the FindOrCreateDuplicateGroup comment, this code does not create?  check about intent!
+		int NewGID = SourceMesh->HasTriangleGroups() ?
+			IndexMaps.GetNewGroup(SourceMesh->GetTriangleGroup(SourceTID)) : FDynamicMesh3::InvalidID;
 
 		FIndex3i NewTri;
 		for (int j = 0; j < 3; ++j)

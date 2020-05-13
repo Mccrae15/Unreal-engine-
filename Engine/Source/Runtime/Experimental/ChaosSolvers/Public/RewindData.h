@@ -325,6 +325,33 @@ public:
 		});
 	}
 
+	bool IsSimWritableDesynced(TPBDRigidParticleHandle<FReal,3>& Particle) const
+	{
+		const FParticlePositionRotation& XR = ParticlePositionRotation.Read();
+		if(XR.X() != Particle.X())
+		{
+			return true;
+		}
+
+		if(XR.R() != Particle.R())
+		{
+			return true;
+		}
+
+		const FParticleVelocities& Vels = Velocities.Read();
+		if(Vels.V() != Particle.V())
+		{
+			return true;
+		}
+
+		if(Vels.W() != Particle.W())
+		{
+			return true;
+		}
+
+		return false;
+	}
+
 	template <typename TParticle>
 	void SyncToParticle(TParticle& Particle) const
 	{
@@ -864,27 +891,51 @@ public:
 		return EFutureQueryResult::Untracked;
 	}
 
+	IResimCacheBase* GetCurrentStepResimCache() const
+	{
+		return Managers[CurFrame].ExternalResimCache.Get();
+	}
+
 	template <typename CreateCache>
 	void AdvanceFrame(FReal DeltaTime, const CreateCache& CreateCacheFunc)
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(RewindDataAdvance);
 		Managers[CurFrame].DeltaTime = DeltaTime;
-		if(Managers[CurFrame].ExternalResimCache)
+		TUniquePtr<IResimCacheBase>& ResimCache = Managers[CurFrame].ExternalResimCache;
+
+		if(IsResim())
 		{
-			Managers[CurFrame].ExternalResimCache->Reset();
+			if(ResimCache)
+			{
+				ResimCache->SetResimming(true);
+			}
 		}
 		else
 		{
-			Managers[CurFrame].ExternalResimCache = CreateCacheFunc();
+			if(ResimCache)
+			{
+				ResimCache->ResetCache();
+			} else
+			{
+				ResimCache = CreateCacheFunc();
+			}
+			ResimCache->SetResimming(false);
 		}
 
 		FramesSaved = FMath::Min(FramesSaved+1,static_cast<int32>(Managers.Capacity()));
 		
 		const int32 EarliestFrame = CurFrame - 1 - FramesSaved;
-		//remove any old dirty particles
+		
+		TArray<TGeometryParticleHandle<FReal,3>*> DesyncedParticles;
+		if(IsResim() && ResimCache)
+		{
+			DesyncedParticles.Reserve(AllDirtyParticles.Num());
+		}
+
 		for(int32 DirtyIdx = AllDirtyParticles.Num() - 1; DirtyIdx >= 0; --DirtyIdx)
 		{
 			FDirtyParticleInfo& Info = AllDirtyParticles[DirtyIdx];
+			//if hasn't changed in a while stop tracking
 			if(Info.LastDirtyFrame < EarliestFrame)
 			{
 				RemoveParticle(AllDirtyParticles[DirtyIdx].CachedUniqueIdx);
@@ -897,20 +948,47 @@ public:
 					ResimType = Rigid->ResimType();
 				}
 
-				//During a resim it's possible the user will not dirty a particle that was previously dirty.
-				//If this happens we need to mark the particle as desynced
-				if(ResimType == EResimType::FullResim && !Info.bDesync && Info.GTDirtyOnFrame[CurFrame].MissingWrite(CurFrame, CurWave))
+				if(ResimType == EResimType::FullResim && !Info.bDesync)
 				{
-					Info.Desync(CurFrame, LatestFrame);
+					//During a resim it's possible the user will not dirty a particle that was previously dirty.
+					//If this happens we need to mark the particle as desynced
+					if(Info.GTDirtyOnFrame[CurFrame].MissingWrite(CurFrame, CurWave))
+					{
+						Info.Desync(CurFrame, LatestFrame);
+					}
+					else if(auto Rigid = Info.GetPTParticle()->CastToRigidParticle())
+					{
+						//If we have a simulated particle, make sure its sim-writable properties are still in sync
+						const FGeometryParticleStateBase* ExpectedState = GetStateAtFrameImp(Info,CurFrame);
+						if(ensure(ExpectedState))
+						{
+							if(ExpectedState->IsSimWritableDesynced(*Rigid))
+							{
+								Info.Desync(CurFrame,LatestFrame);
+							}
+						}
+						
+					}
 				}
 
 				if(Info.bDesync)
 				{
 					//Any desync from GT is considered a hard desync - in theory we could make this more fine grained
 					Info.GetPTParticle()->SetSyncState(ESyncState::HardDesync);
+
+					if(ResimCache)
+					{
+						DesyncedParticles.Add(Info.GetPTParticle());
+					}
 				}
 			}
 		}
+
+		if(IsResim() && ResimCache)
+		{
+			ResimCache->SetDesyncedParticles(MoveTemp(DesyncedParticles));
+		}
+
 	}
 
 	void FinishFrame()
@@ -929,11 +1007,11 @@ public:
 				{
 					if(Rigid->ResimType() == EResimType::ResimAsSlave)
 					{
-						ensure(!Info.bDesync);
-						const FGeometryParticleStateBase* State = GetStateAtFrameImp(Info,CurFrame+1);
-						if(ensure(State != nullptr))
+						const FGeometryParticleStateBase* FutureState = GetStateAtFrameImp(Info,CurFrame+1);
+						ensure(!Info.bDesync);	
+						if(ensure(FutureState != nullptr))
 						{
-							State->SyncToParticle(*Rigid);
+							FutureState->SyncToParticle(*Rigid);
 						}
 					}
 				}

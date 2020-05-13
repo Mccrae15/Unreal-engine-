@@ -1177,9 +1177,7 @@ void PrecacheInputSceneColorToLDS(in FTAAInputParameters InputParams)
 			(LDS_COLOR_ARRAY_SIZE % THREADGROUP_TOTAL) == 0)
 		{
 			#if LDS_FLOAT_UV
-				float2 BufferUV = TexelLocation * InputSceneColorSize.zw;
-
-				int2 Coord = int2(BufferUV);
+				int2 Coord = TexelLocation;
 				Coord = clamp(Coord, InputMinPixelCoord, InputMaxPixelCoord);
 
 				float4 RawColor = InputSceneColor[Coord];
