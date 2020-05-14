@@ -19,6 +19,14 @@ public class WebSockets : ModuleRules
 		}
 	}
 
+	protected virtual bool bPlatformSupportsWinHttpWebSockets
+	{
+		get
+		{
+			return Target.Platform.IsInGroup(UnrealPlatformGroup.Windows);
+		}
+	}
+
 	protected virtual bool UsePlatformSSL
 	{
 		get
@@ -34,7 +42,7 @@ public class WebSockets : ModuleRules
 			bool bPlatformSupportsXboxWebsockets = Target.Platform == UnrealTargetPlatform.XboxOne;
 			bool bPlatformSupportsWinRTWebsockets = Target.Platform == UnrealTargetPlatform.HoloLens;
 
-			return PlatformSupportsLibWebsockets || bPlatformSupportsXboxWebsockets || bPlatformSupportsWinRTWebsockets;
+			return PlatformSupportsLibWebsockets || bPlatformSupportsXboxWebsockets || bPlatformSupportsWinRTWebsockets || bPlatformSupportsWinHttpWebSockets;
 		}
 	}
 
@@ -74,6 +82,21 @@ public class WebSockets : ModuleRules
 					AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL", "libWebSockets", "zlib");
 					PrivateDependencyModuleNames.Add("SSL");
 				}
+			}
+			if (bPlatformSupportsWinHttpWebSockets)
+			{
+				AddEngineThirdPartyPrivateStaticDependencies(Target, "WinHttp");
+
+				// We need to access the WinHttp folder in HTTP
+				PrivateIncludePaths.AddRange(
+					new string[] {
+						"Runtime/Online/HTTP/Private",
+					}
+				);
+			}
+			else
+			{
+				PublicDefinitions.Add("WITH_WINHTTP=0");
 			}
 		}
 
