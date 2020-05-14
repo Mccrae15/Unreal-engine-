@@ -28,7 +28,7 @@
 	#endif // !PLATFORM_SWITCH
 #elif WITH_WINHTTP
 	typedef FWinHttpWebSocketsManager FPlatformWebSocketsManager;
-#elif
+#elif PLATFORM_XBOXONE && WITH_LEGACY_XDK
 	typedef FXboxOneWebSocketsManager FPlatformWebSocketsManager;
 #elif PLATFORM_HOLOLENS
 	typedef FHoloLensWebSocketsManager FPlatformWebSocketsManager;
