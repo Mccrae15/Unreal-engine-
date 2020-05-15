@@ -4631,7 +4631,7 @@ public:
 
 			if (CompressedBlockSize > UncompressedBlockSize)
 			{
-				UE_LOG(LogPakFile, Display, TEXT("Bigger compressed? Block[%d]: %d -> %d > %d [%d min %d]"), CompressionBlockIndex, Block.CompressedStart, Block.CompressedEnd, UncompressedBlockSize, PakEntry.UncompressedSize - Pos, PakEntry.CompressionBlockSize);
+				UE_LOG(LogPakFile, Verbose, TEXT("Bigger compressed? Block[%d]: %d -> %d > %d [%d min %d]"), CompressionBlockIndex, Block.CompressedStart, Block.CompressedEnd, UncompressedBlockSize, PakEntry.UncompressedSize - Pos, PakEntry.CompressionBlockSize);
 			}
 
 
@@ -4944,6 +4944,7 @@ void FPakFile::Initialize(FArchive* Reader, bool bLoadIndex)
 		if (FileInfoPos >= 0)
 		{
 			Reader->Seek(FileInfoPos);
+			Reader->Precache(FileInfoPos, 0); // Inform the archive that we're going to repeatedly serialize from the current location
 
 			SCOPED_BOOT_TIMING("PakFile_SerilizeTrailer");
 
