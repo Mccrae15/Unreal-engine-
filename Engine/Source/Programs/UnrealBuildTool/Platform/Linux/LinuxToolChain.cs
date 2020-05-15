@@ -316,7 +316,7 @@ namespace UnrealBuildTool
 					);
 
 					// If our file is greater then 4GB we'll have to create a debug file anyway
-					Out += string.Format(") ELSE (\necho DummyDebug >> {0}\n)\n",
+					Out += string.Format(") ELSE (\necho DummyDebug >> \"{0}\"\n)\n",
 						DebugFile.AbsolutePath
 					);
 				}
