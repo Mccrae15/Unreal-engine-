@@ -1941,7 +1941,7 @@ static void SetupHiddenAreaMeshes(vr::IVRSystem* const VRSystem, FHMDViewMesh Re
 	const vr::HiddenAreaMesh_t RightEyeMesh = VRSystem->GetHiddenAreaMesh(vr::Hmd_Eye::Eye_Right, MeshType);
 
 	const uint32 VertexCount = LeftEyeMesh.unTriangleCount * 3;
-	check(LeftEyeMesh.unTriangleCount == RightEyeMesh.unTriangleCount);
+	//check(LeftEyeMesh.unTriangleCount == RightEyeMesh.unTriangleCount);
 
 	// Copy mesh data from SteamVR format to ours, then initialize the meshes.
 	if (VertexCount > 0)
