@@ -15,6 +15,72 @@ T* USourceFilterCollection::CreateNewFilter(UClass* Class /*= T::StaticClass()*/
 	return NewFilter;
 }
 
+void USourceFilterCollection::OnObjectsReplaced(const TMap<UObject*, UObject*>& OldToNewInstanceMap)
+{
+	for (int32 FilterIndex = 0; FilterIndex < Filters.Num(); ++FilterIndex)
+	{
+		UDataSourceFilter* Filter = Filters[FilterIndex];
+		if (UObject* const * NewObjectPtr = OldToNewInstanceMap.Find(Filter))
+		{
+			Filters.Insert(Cast<UDataSourceFilter>(*NewObjectPtr), FilterIndex);
+			Filters.Remove(Filter);
+		}
+	}
+
+	TArray<UDataSourceFilter*> KeyFilters;
+	ChildToParent.GenerateKeyArray(KeyFilters);
+
+	for (UDataSourceFilter* Filter : KeyFilters)
+	{
+		if (UObject* const * NewObjectPtr = OldToNewInstanceMap.Find(Filter))
+		{
+			UDataSourceFilterSet* ParentFilterSet = nullptr;			
+			ChildToParent.RemoveAndCopyValue(Filter, ParentFilterSet);
+
+			ChildToParent.Add(Cast<UDataSourceFilter>(*NewObjectPtr), ParentFilterSet);
+		}
+	}
+
+	TArray<FObjectKey> Keys;
+	FilterClassMap.GenerateKeyArray(Keys);
+
+	for (const FObjectKey& ObjectKey : Keys)
+	{
+		if (UObject* const* NewObjectPtr = OldToNewInstanceMap.Find(ObjectKey.ResolveObjectPtr()))
+		{
+			FString ClassName;
+			FilterClassMap.RemoveAndCopyValue(ObjectKey, ClassName);
+			FilterClassMap.Add(*NewObjectPtr, ClassName);
+		}
+	}
+}
+
+void USourceFilterCollection::AddClassFilter(TSubclassOf<AActor> InClass)
+{
+	ClassFilters.AddUnique({ FSoftClassPath(InClass), false });
+}
+
+void USourceFilterCollection::RemoveClassFilter(TSubclassOf<AActor> InClass)
+{
+	ClassFilters.RemoveAll([InClass](FActorClassFilter FilteredClass)
+	{
+		return FilteredClass.ActorClass == FSoftClassPath(InClass);
+	});
+}
+
+void USourceFilterCollection::UpdateClassFilter(TSubclassOf<AActor> InClass, bool bIncludeDerivedClasses)
+{
+	FActorClassFilter* Class = ClassFilters.FindByPredicate([InClass](FActorClassFilter FilteredClass)
+	{
+		return FilteredClass.ActorClass == FSoftClassPath(InClass);
+	});
+
+	checkf(Class, TEXT("Invalid class provided"));
+	if (Class)
+	{
+		Class->bIncludeDerivedClasses = bIncludeDerivedClasses;
+	}
+}
 
 void USourceFilterCollection::AddFilter(UDataSourceFilter* NewFilter)
 {
@@ -299,6 +365,7 @@ void USourceFilterCollection::Reset()
 	}
 	FilterClasses.Empty();
 	FilterClassMap.Empty();
+	ClassFilters.Empty();
 }
 
 void USourceFilterCollection::CopyData(USourceFilterCollection* OtherCollection)
@@ -306,6 +373,7 @@ void USourceFilterCollection::CopyData(USourceFilterCollection* OtherCollection)
 	Filters.Empty();
 	ChildToParent.Empty();
 	FilterClasses = OtherCollection->FilterClasses;
+	ClassFilters = OtherCollection->ClassFilters;
 
 	int32 FilterOffset = 0;
 	for (UDataSourceFilter* Filter : OtherCollection->Filters)

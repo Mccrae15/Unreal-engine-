@@ -14,6 +14,7 @@
 #include "IFilterObject.h"
 #include "FilterObject.h"
 #include "FilterSetObject.h"
+#include "ClassFilterObject.h"
 
 #include "ClassViewerFilter.h"
 #include "ClassViewerModule.h"
@@ -45,11 +46,12 @@ FEditorSessionSourceFilterService::FEditorSessionSourceFilterService()
 	FilterCollection = FTraceSourceFiltering::Get().GetFilterCollection();
 	if (GEditor)
 	{
+		GEditor->OnObjectsReplaced().AddRaw(this, &FEditorSessionSourceFilterService::OnObjectsReplaced);
 		GEditor->RegisterForUndo(this);
 	}
 
 	// Register delegate to catch engine-level trace filtering system changes 
-	FTraceWorldFiltering::OnFilterStateChanged().AddRaw(this, &FEditorSessionSourceFilterService::UpdateTimeStamp);	
+	FTraceWorldFiltering::OnFilterStateChanged().AddRaw(this, &FEditorSessionSourceFilterService::StateChanged);	
 	SetupWorldFilters();
 	
 	// Try and load the user-defined default filter preset
@@ -57,7 +59,7 @@ FEditorSessionSourceFilterService::FEditorSessionSourceFilterService()
 	if (PresetCollection)
 	{
 		FilterCollection->CopyData(PresetCollection);
-		UpdateTimeStamp();
+		StateChanged();
 	}
 }
 
@@ -66,6 +68,7 @@ FEditorSessionSourceFilterService::~FEditorSessionSourceFilterService()
 	if (GEditor)
 	{
 		GEditor->UnregisterForUndo(this);
+		GEditor->OnObjectsReplaced().RemoveAll(this);
 	}
 	
 	FTraceWorldFiltering::OnFilterStateChanged().RemoveAll(this);
@@ -81,7 +84,7 @@ void FEditorSessionSourceFilterService::AddFilter(const FString& FilterClassName
 
 		FilterCollection->AddFilterOfClass(Class);
 
-		UpdateTimeStamp();
+		StateChanged();
 	}
 }
 
@@ -95,7 +98,7 @@ void FEditorSessionSourceFilterService::AddFilterToSet(TSharedRef<const IFilterO
 
 		FilterCollection->AddFilterOfClassToSet(Class, CastChecked<UDataSourceFilterSet>(FilterSet->GetFilter()));
 
-		UpdateTimeStamp();
+		StateChanged();
 	}
 }
 
@@ -108,7 +111,7 @@ void FEditorSessionSourceFilterService::AddFilterToSet(TSharedRef<const IFilterO
 	UDataSourceFilterSet* Set = CastChecked<UDataSourceFilterSet>(FilterSet->GetFilter());
 	FilterCollection->MoveFilter(Filter, Set);
 
-	UpdateTimeStamp();
+	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::RemoveFilter(TSharedRef<const IFilterObject> InFilter)
@@ -118,7 +121,7 @@ void FEditorSessionSourceFilterService::RemoveFilter(TSharedRef<const IFilterObj
 
 	FilterCollection->RemoveFilter(CastChecked<UDataSourceFilter>(InFilter->GetFilter()));
 
-	UpdateTimeStamp();
+	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::SetFilterSetMode(TSharedRef<const IFilterObject> InFilter, EFilterSetMode Mode)
@@ -130,7 +133,7 @@ void FEditorSessionSourceFilterService::SetFilterSetMode(TSharedRef<const IFilte
 
 		FilterSet->SetFilterMode(Mode);
 
-		UpdateTimeStamp();
+		StateChanged();
 	}
 }
 
@@ -152,12 +155,12 @@ void FEditorSessionSourceFilterService::ResetFilters()
 
 	FilterCollection->Reset();
 
-	UpdateTimeStamp();
+	StateChanged();
 }
 
-void FEditorSessionSourceFilterService::UpdateTimeStamp()
+void FEditorSessionSourceFilterService::StateChanged()
 {
-	Timestamp = FDateTime::Now();
+	GetOnSessionStateChanged().Broadcast();
 }
 
 UTraceSourceFilteringSettings* FEditorSessionSourceFilterService::GetFilterSettings()
@@ -196,6 +199,69 @@ TSharedRef<SWidget> FEditorSessionSourceFilterService::GetFilterPickerWidget(FOn
 	Options.bShowUnloadedBlueprints = true;
 	Options.bShowNoneOption = false;
 	TSharedPtr<FFilterClassFilter> ClassFilter = MakeShareable(new FFilterClassFilter);
+	Options.ClassFilter = ClassFilter;
+
+	FOnClassPicked ClassPicked = FOnClassPicked::CreateLambda([InFilterClassPicked](UClass* Class)
+	{
+		InFilterClassPicked.ExecuteIfBound(Class->GetPathName());
+	});
+
+	return SNew(SBox)
+		.WidthOverride(280)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.MaxHeight(500)
+			[
+				FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer").CreateClassViewer(Options, ClassPicked)
+			]
+		];
+}
+
+TSharedRef<SWidget> FEditorSessionSourceFilterService::GetClassFilterPickerWidget(FOnFilterClassPicked InFilterClassPicked)
+{
+	/** Class filter implementation, ensuring we only show valid UDataSourceFilter (sub)classes */
+	class FFilterClassFilter : public IClassViewerFilter
+	{
+	public:
+		FFilterClassFilter(const TArray<TSharedPtr<FClassFilterObject>>& InExistingClasses) : ExistingClasses(InExistingClasses) {}
+
+		bool IsClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const UClass* InClass, TSharedRef< FClassViewerFilterFuncs > InFilterFuncs) override
+		{
+			if (InClass->HasAnyClassFlags(CLASS_Abstract | CLASS_HideDropDown | CLASS_Deprecated))
+			{
+				return false;
+			}
+
+			if (ExistingClasses.ContainsByPredicate([InClass](TSharedPtr<FClassFilterObject> Object)
+			{
+				return Object->GetClass() == InClass;
+			}))
+			{
+				return false;
+			}
+
+			return InClass->IsChildOf(AActor::StaticClass());
+		}
+
+		virtual bool IsUnloadedClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const TSharedRef< const IUnloadedBlueprintData > InClass, TSharedRef< FClassViewerFilterFuncs > InFilterFuncs) override
+		{
+			return InClass->IsChildOf(AActor::StaticClass());
+		}
+
+	protected:
+		const TArray<TSharedPtr<FClassFilterObject>> ExistingClasses;
+	};
+
+	FClassViewerInitializationOptions Options;
+	Options.bShowUnloadedBlueprints = true;
+	Options.bShowNoneOption = false;
+
+	TArray<TSharedPtr<FClassFilterObject>> ExistingClasses;
+	GetClassFilters(ExistingClasses);
+
+	TSharedPtr<FFilterClassFilter> ClassFilter = MakeShared<FFilterClassFilter>(ExistingClasses);
 	Options.ClassFilter = ClassFilter;
 
 	FOnClassPicked ClassPicked = FOnClassPicked::CreateLambda([InFilterClassPicked](UClass* Class)
@@ -279,7 +345,7 @@ void FEditorSessionSourceFilterService::OnSaveAsPreset()
 			SavePackageHelper(NewPackage, PackageFilename);
 		}
 		
-		UpdateTimeStamp();
+		StateChanged();
 	}
 }
 
@@ -340,7 +406,7 @@ TSharedPtr<FExtender> FEditorSessionSourceFilterService::GetExtender()
 										if (USourceFilterCollection* PresetCollection = Cast<USourceFilterCollection>(Asset))
 										{
 											FilterCollection->CopyData(PresetCollection);
-											UpdateTimeStamp();
+											StateChanged();
 										}
 									}
 								});
@@ -446,14 +512,51 @@ const TArray<TSharedPtr<IWorldTraceFilter>>& FEditorSessionSourceFilterService::
 	return WorldFilters;
 }
 
+void FEditorSessionSourceFilterService::AddClassFilter(const FString& ActorClassName)
+{
+	FSoftClassPath ClassPath(ActorClassName);
+	if (UClass* Class = ClassPath.TryLoadClass<AActor>())
+	{
+		const FScopedTransaction Transaction(*FEditorSessionSourceFilterService::TransactionContext, LOCTEXT("AddClassFilter", "Adding Class Filter"), FilterCollection);
+
+		FilterCollection->AddClassFilter(Class);
+
+		StateChanged();
+	}
+}
+
+void FEditorSessionSourceFilterService::RemoveClassFilter(TSharedRef<FClassFilterObject> ClassFilterObject)
+{
+	const FScopedTransaction Transaction(*FEditorSessionSourceFilterService::TransactionContext, LOCTEXT("RemoveClassFilter", "Removing Class Filter"), FilterCollection);
+
+	FilterCollection->RemoveClassFilter(ClassFilterObject->GetClass());
+	StateChanged();
+}
+
+void FEditorSessionSourceFilterService::GetClassFilters(TArray<TSharedPtr<FClassFilterObject>>& OutClasses) const
+{
+	for (const FActorClassFilter& FilterClass : FilterCollection->GetClassFilters())
+	{
+		OutClasses.Add(MakeShared<FClassFilterObject>(FilterClass.ActorClass.TryLoadClass<AActor>(), FilterClass.bIncludeDerivedClasses));
+	}
+}
+
+void FEditorSessionSourceFilterService::SetIncludeDerivedClasses(TSharedRef<FClassFilterObject> ClassFilterObject, bool bIncluded)
+{
+	const FScopedTransaction Transaction(*FEditorSessionSourceFilterService::TransactionContext, LOCTEXT("AddClassFilter", "Adding Class Filter"), FilterCollection);
+
+	FilterCollection->UpdateClassFilter(ClassFilterObject->GetClass(), bIncluded);
+	StateChanged();
+}
+
 void FEditorSessionSourceFilterService::PostUndo(bool bSuccess)
 {
-	UpdateTimeStamp();
+	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::PostRedo(bool bSuccess)
 {
-	UpdateTimeStamp();
+	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::MakeFilterSet(TSharedRef<const IFilterObject> ExistingFilter, TSharedRef<const IFilterObject> ExistingFilterOther)
@@ -463,7 +566,7 @@ void FEditorSessionSourceFilterService::MakeFilterSet(TSharedRef<const IFilterOb
 
 	FilterCollection->MakeFilterSet(CastChecked<UDataSourceFilter>(ExistingFilter->GetFilter()), CastChecked<UDataSourceFilter>(ExistingFilterOther->GetFilter()), EFilterSetMode::AND);
 
-	UpdateTimeStamp();
+	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::MakeFilterSet(TSharedRef<const IFilterObject> ExistingFilter, EFilterSetMode Mode)
@@ -473,7 +576,7 @@ void FEditorSessionSourceFilterService::MakeFilterSet(TSharedRef<const IFilterOb
 
 	FilterCollection->ConvertFilterToSet(CastChecked<UDataSourceFilter>(ExistingFilter->GetFilter()), Mode);
 
-	UpdateTimeStamp();
+	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::MakeTopLevelFilter(TSharedRef<const IFilterObject> Filter)
@@ -483,7 +586,7 @@ void FEditorSessionSourceFilterService::MakeTopLevelFilter(TSharedRef<const IFil
 
 	FilterCollection->MoveFilter(CastChecked<UDataSourceFilter>(Filter->GetFilter()), nullptr);
 
-	UpdateTimeStamp();
+	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::PopulateTreeView(FTreeViewDataBuilder& InBuilder)
@@ -572,13 +675,21 @@ void FEditorSessionSourceFilterService::OnBlueprintCompiled(UBlueprint* InBluepr
 {
 	if (InBlueprint)
 	{
-		UpdateTimeStamp();
+		StateChanged();
 
 		for (UBlueprint* Blueprint : DelegateRegisteredBlueprints)
 		{
 			Blueprint->OnCompiled().RemoveAll(this);
 		}
 		DelegateRegisteredBlueprints.Empty();
+	}
+}
+
+void FEditorSessionSourceFilterService::OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementsMap)
+{
+	if (FilterCollection)
+	{
+		FilterCollection->OnObjectsReplaced(ReplacementsMap);
 	}
 }
 

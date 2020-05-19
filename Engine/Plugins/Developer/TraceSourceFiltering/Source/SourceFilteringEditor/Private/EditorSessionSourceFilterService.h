@@ -42,15 +42,20 @@ public:
 	virtual void SetFilterSetMode(TSharedRef<const IFilterObject> InFilter, EFilterSetMode Mode) override;
 	virtual void SetFilterState(TSharedRef<const IFilterObject> InFilter, bool bState) override;
 	virtual void ResetFilters() override;	
-	virtual const FDateTime& GetTimestamp() const override { return Timestamp; }	
+	virtual FOnSessionStateChanged& GetOnSessionStateChanged() override { return OnSessionStateChanged; }
 	virtual void UpdateFilterSettings(UTraceSourceFilteringSettings* InSettings) override {}
 	virtual UTraceSourceFilteringSettings* GetFilterSettings() override;
 	virtual bool IsActionPending() const override;
 	virtual TSharedRef<SWidget> GetFilterPickerWidget(FOnFilterClassPicked InFilterClassPicked) override;
+	virtual TSharedRef<SWidget> GetClassFilterPickerWidget(FOnFilterClassPicked InFilterClassPicked) override;
 	virtual TSharedPtr<FExtender> GetExtender() override;
 	virtual void GetWorldObjects(TArray<TSharedPtr<FWorldObject>>& OutWorldObjects) override;
 	virtual void SetWorldTraceability(TSharedRef<FWorldObject> InWorldObject, bool bState) override;
 	virtual const TArray<TSharedPtr<IWorldTraceFilter>>& GetWorldFilters() override;
+	virtual void AddClassFilter(const FString& ActorClassName) override;
+	virtual void RemoveClassFilter(TSharedRef<FClassFilterObject> ClassFilterObject) override;
+	virtual void GetClassFilters(TArray<TSharedPtr<FClassFilterObject>>& OutClasses) const override;
+	virtual void SetIncludeDerivedClasses(TSharedRef<FClassFilterObject> ClassFilterObject, bool bIncluded) override;
 	/** End ISessionSourceFilterService overrides */	
 
 	/** Begin FEditorUndoClient overrides*/
@@ -63,14 +68,17 @@ public:
 	/** End FGCObject overrides */
 
 protected:
-	/** Updates the timestamp provided through GetTimestamp, indicating that the contained data has changed  */
-	void UpdateTimeStamp();
+	/** Fires the OnSessionStateChanged delegate, indicating that the contained data has changed  */
+	void StateChanged();
 
 	/** Callback for whenever the user opts to save the current filtering state as a preset */
 	void OnSaveAsPreset();
 
 	/** Callback for whenever any Filter instance blueprint class gets (re)compiled */
 	void OnBlueprintCompiled(UBlueprint* InBlueprint);
+
+	/** Callback for whenever any Filter blueprint instances are reinstanced */
+	void OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementsMap);
 
 	/** Helper function to populate FTreeViewDataBuilder with a specific FilterObject */
 	TSharedRef<IFilterObject> AddFilterObjectToDataBuilder(UDataSourceFilter* Filter, FTreeViewDataBuilder& InBuilder);
@@ -83,8 +91,8 @@ protected:
 	/** Filter collection this session represents, retrieved from FTraceSourceFiltering */
 	USourceFilterCollection* FilterCollection;
 
-	/** Timestamp used to rely data updates to anyone polling against GetTimeStamp */
-	FDateTime Timestamp;
+	/** Delegate used to rely data updates to notify anyone interested */
+	FOnSessionStateChanged OnSessionStateChanged;
 	
 	/** UI extender, used to insert preset functionality into STraceSourceFilteringWindow */
 	TSharedPtr<FExtender> Extender;
