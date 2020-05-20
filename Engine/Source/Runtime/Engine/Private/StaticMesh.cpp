@@ -2681,13 +2681,6 @@ void UStaticMesh::InitResources()
 		LinkStreaming();
 	}
 	
-	// Make sure the first LOD is actually the lowest LOD.
-	if (RenderData)
-	{
-		RenderData->CurrentFirstLODIdx = RenderData->GetFirstValidLODIdx(0);
-		SetCachedNumResidentLODs(RenderData->LODResources.Num() - RenderData->CurrentFirstLODIdx);
-	}
-
 #if	STATS
 	UStaticMesh* This = this;
 	ENQUEUE_RENDER_COMMAND(UpdateMemoryStats)(
