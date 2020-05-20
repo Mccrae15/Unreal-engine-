@@ -3361,7 +3361,7 @@ void FLandscapeComponentSceneProxy::GetDynamicMeshElements(const TArray<const FS
 #if RHI_RAYTRACING
 void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances)
 {
-	if (!CVarRayTracingLandscape.GetValueOnRenderThread())
+	if (!bRegistered || !CVarRayTracingLandscape.GetValueOnRenderThread())
 	{
 		return;
 	}
