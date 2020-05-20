@@ -159,6 +159,11 @@ void UEditorStaticMeshLibrary::SetLODProps(UStaticMesh* StaticMesh, int32 Androi
 	StaticMesh->PostEditChange();
 }
 
+void UEditorStaticMeshLibrary::SetPreviewMeshForAnimAsset(USkeletalMesh* PreviewMesh, UAnimationAsset* AnimationAsset)
+{
+	AnimationAsset->SetPreviewMesh(PreviewMesh);
+}
+
 void UEditorStaticMeshLibrary::SetLODScreenSizeProps(UStaticMesh* StaticMesh, TMap<int32,float> ScreenSize, FName Platform, bool PropagateToDefaults) {
 
 	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())

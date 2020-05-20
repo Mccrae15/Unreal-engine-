@@ -117,6 +117,9 @@ public:
 
 	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
 		 static void SetLODProps(UStaticMesh* StaticMesh, int32 Android_LOD = 2, int32 PS4_LOD = 1, int32 LODForOccluderMesh = -1);
+
+	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | AnimationAsset")
+	 static void SetPreviewMeshForAnimAsset(USkeletalMesh * PreviewMesh, UAnimationAsset* AnimationAsset);
 	 
 	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
 	 static void SetLODScreenSizeProps(UStaticMesh * StaticMesh, TMap<int32, float> ScreenSize, FName Platform, bool PropagateToDefaults = false);
