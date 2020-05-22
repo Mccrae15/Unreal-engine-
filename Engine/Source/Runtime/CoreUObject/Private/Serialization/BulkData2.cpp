@@ -1084,16 +1084,8 @@ int64 FBulkDataBase::GetBulkDataSize() const
 {
 	if (IsUsingIODispatcher())
 	{
-		// If not available, return a size of 0 so that the high level fallbacks.
 		TIoStatusOr<uint64> Result = IoDispatcher->GetSizeForChunk(Data.ChunkID);
-		if (Result.IsOk())
-		{
-			return Result.ValueOrDie();
-		}
-		else
-		{
-			return 0;
-		}
+		return Result.ValueOrDie(); // TODO: Consider logging errors instead of relying on ::ValueOrDie
 	}
 	else
 	{

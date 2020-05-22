@@ -147,6 +147,7 @@ UNiagaraComponent* FNCPool::Acquire(UWorld* World, UNiagaraSystem* Template, ENC
 void FNCPool::Reclaim(UNiagaraComponent* Component, const float CurrentTimeSeconds)
 {
 	check(Component);
+	ensureMsgf(!Component->IsPendingKillOrUnreachable(), TEXT("Component is pending kill or unreachable when reclaimed Component(%s)"), *Component->GetFullName());
 
 #if ENABLE_NC_POOL_DEBUGGING
 	int32 InUseIdx = INDEX_NONE;
@@ -341,7 +342,7 @@ void UNiagaraComponentPool::ReclaimWorldParticleSystem(UNiagaraComponent* Compon
 {
 	check(IsInGameThread());
 
-	FNiagaraCrashReporterScope CRScope(Component ? Component->GetAsset() : nullptr);
+	FNiagaraCrashReporterScope CRScope(Component->GetAsset());
 	
 	//If this component has been already destroyed we don't add it back to the pool. Just warn so users can fix it.
 	if (Component->IsPendingKill())

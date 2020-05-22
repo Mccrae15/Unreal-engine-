@@ -2204,44 +2204,50 @@ void UNiagaraComponent::SetParameterOverride(const FNiagaraVariableBase& InKey, 
 		return;
 	}
 
+	// we want to be sure we're storing data based on the fully qualified key name (i.e. taking the user redirection into account)
+	const FNiagaraVariableBase ParameterKey = OverrideParameters.FindRedirection(InKey);
+
 	if (IsTemplate())
 	{
-		TemplateParameterOverrides.Add(InKey, InValue);
+		TemplateParameterOverrides.Add(ParameterKey, InValue);
 	}
 	else
 	{
-		InstanceParameterOverrides.Add(InKey, InValue);
+		InstanceParameterOverrides.Add(ParameterKey, InValue);
 	}
 
-	SetOverrideParameterStoreValue(InKey, InValue);
+	SetOverrideParameterStoreValue(ParameterKey, InValue);
 }
 
 void UNiagaraComponent::RemoveParameterOverride(const FNiagaraVariableBase& InKey)
 {
+	// we want to be sure we're storing data based on the fully qualified key name (i.e. taking the user redirection into account)
+	const FNiagaraVariableBase ParameterKey = OverrideParameters.FindRedirection(InKey);
+
 	if (!IsTemplate())
 	{
-		InstanceParameterOverrides.Remove(InKey);
+		InstanceParameterOverrides.Remove(ParameterKey);
 	}
 	else
 	{
-		TemplateParameterOverrides.Remove(InKey);
+		TemplateParameterOverrides.Remove(ParameterKey);
 
 		// we are an archetype, but check if we have an archetype and inherit the value from there
 		const UNiagaraComponent* Archetype = Cast<UNiagaraComponent>(GetArchetype());
 		if (Archetype != nullptr)
 		{
-			FNiagaraVariant ArchetypeValue = Archetype->FindParameterOverride(InKey);
+			FNiagaraVariant ArchetypeValue = Archetype->FindParameterOverride(ParameterKey);
 			if (ArchetypeValue.IsValid())
 			{
 				// defined in archetype, reset value to that
-				if (InKey.IsDataInterface())
+				if (ParameterKey.IsDataInterface())
 				{
 					UNiagaraDataInterface* DataInterface = DuplicateObject(ArchetypeValue.GetDataInterface(), this);
-					TemplateParameterOverrides.Add(InKey, FNiagaraVariant(DataInterface));
+					TemplateParameterOverrides.Add(ParameterKey, FNiagaraVariant(DataInterface));
 				}
 				else
 				{
-					TemplateParameterOverrides.Add(InKey, ArchetypeValue);
+					TemplateParameterOverrides.Add(ParameterKey, ArchetypeValue);
 				}
 			}
 		}
@@ -2302,6 +2308,14 @@ float UNiagaraComponent::GetMaxSimTime() const
 void UNiagaraComponent::SetMaxSimTime(float InMaxTime)
 {
 	MaxSimTime = InMaxTime;
+}
+
+void UNiagaraComponent::SetAutoDestroy(bool bInAutoDestroy)
+{
+	if (ensureMsgf(!bInAutoDestroy || (PoolingMethod == ENCPoolMethod::None), TEXT("Attempting to set AutoDestroy on a pooled component!  Component(%s) Asset(%s)"), *GetFullName(), GetAsset() != nullptr ? *GetAsset()->GetPathName() : TEXT("None")))
+	{
+		bAutoDestroy = bInAutoDestroy;
+	}
 }
 
 #if WITH_NIAGARA_COMPONENT_PREVIEW_DATA

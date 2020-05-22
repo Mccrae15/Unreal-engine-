@@ -44,33 +44,26 @@ FString FEditorSessionSourceFilterService::TransactionContext = TEXT("FEditorSou
 FEditorSessionSourceFilterService::FEditorSessionSourceFilterService()
 {
 	FilterCollection = FTraceSourceFiltering::Get().GetFilterCollection();
+	FilterCollection->GetSourceFiltersUpdated().AddRaw(this, &FEditorSessionSourceFilterService::StateChanged);
+
 	if (GEditor)
 	{
 		GEditor->OnObjectsReplaced().AddRaw(this, &FEditorSessionSourceFilterService::OnObjectsReplaced);
-		GEditor->RegisterForUndo(this);
 	}
 
 	// Register delegate to catch engine-level trace filtering system changes 
 	FTraceWorldFiltering::OnFilterStateChanged().AddRaw(this, &FEditorSessionSourceFilterService::StateChanged);	
 	SetupWorldFilters();
-	
-	// Try and load the user-defined default filter preset
-	USourceFilterCollection* PresetCollection = GetDefault<UTraceSourceFilteringProjectSettings>()->DefaultFilterPreset.LoadSynchronous();
-	if (PresetCollection)
-	{
-		FilterCollection->CopyData(PresetCollection);
-		StateChanged();
-	}
 }
 
 FEditorSessionSourceFilterService::~FEditorSessionSourceFilterService()
 {
 	if (GEditor)
 	{
-		GEditor->UnregisterForUndo(this);
 		GEditor->OnObjectsReplaced().RemoveAll(this);
 	}
 	
+	FilterCollection->GetSourceFiltersUpdated().RemoveAll(this);
 	FTraceWorldFiltering::OnFilterStateChanged().RemoveAll(this);
 }
 
@@ -83,8 +76,6 @@ void FEditorSessionSourceFilterService::AddFilter(const FString& FilterClassName
 		FilterCollection->Modify();
 
 		FilterCollection->AddFilterOfClass(Class);
-
-		StateChanged();
 	}
 }
 
@@ -97,8 +88,6 @@ void FEditorSessionSourceFilterService::AddFilterToSet(TSharedRef<const IFilterO
 		FilterCollection->Modify();
 
 		FilterCollection->AddFilterOfClassToSet(Class, CastChecked<UDataSourceFilterSet>(FilterSet->GetFilter()));
-
-		StateChanged();
 	}
 }
 
@@ -110,8 +99,6 @@ void FEditorSessionSourceFilterService::AddFilterToSet(TSharedRef<const IFilterO
 	UDataSourceFilter* Filter = CastChecked<UDataSourceFilter>(ExistingFilter->GetFilter());
 	UDataSourceFilterSet* Set = CastChecked<UDataSourceFilterSet>(FilterSet->GetFilter());
 	FilterCollection->MoveFilter(Filter, Set);
-
-	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::RemoveFilter(TSharedRef<const IFilterObject> InFilter)
@@ -120,8 +107,6 @@ void FEditorSessionSourceFilterService::RemoveFilter(TSharedRef<const IFilterObj
 	FilterCollection->Modify();
 
 	FilterCollection->RemoveFilter(CastChecked<UDataSourceFilter>(InFilter->GetFilter()));
-
-	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::SetFilterSetMode(TSharedRef<const IFilterObject> InFilter, EFilterSetMode Mode)
@@ -129,11 +114,8 @@ void FEditorSessionSourceFilterService::SetFilterSetMode(TSharedRef<const IFilte
 	if (UDataSourceFilterSet* FilterSet = CastChecked<UDataSourceFilterSet>(InFilter->GetFilter()))
 	{
 		const FScopedTransaction Transaction(*FEditorSessionSourceFilterService::TransactionContext, LOCTEXT("SetFilterSetMode", "Set Filter Set Mode"), FilterSet);
-		FilterSet->Modify();
 
-		FilterSet->SetFilterMode(Mode);
-
-		StateChanged();
+		FilterCollection->SetFilterSetMode(FilterSet, Mode);
 	}
 }
 
@@ -142,9 +124,8 @@ void FEditorSessionSourceFilterService::SetFilterState(TSharedRef<const IFilterO
 	if (UDataSourceFilter* Filter = CastChecked<UDataSourceFilter>(InFilter->GetFilter()))
 	{
 		const FScopedTransaction Transaction(*FEditorSessionSourceFilterService::TransactionContext, LOCTEXT("SetFilterState", "Set Filter State"), Filter);
-		Filter->Modify();
 
-		Filter->SetEnabled(bState);
+		FilterCollection->SetFilterState(Filter, bState);
 	}
 }
 
@@ -154,13 +135,16 @@ void FEditorSessionSourceFilterService::ResetFilters()
 	FilterCollection->Modify();
 
 	FilterCollection->Reset();
-
-	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::StateChanged()
 {
 	GetOnSessionStateChanged().Broadcast();
+}
+
+void FEditorSessionSourceFilterService::UpdateFilterSettings(UTraceSourceFilteringSettings* InSettings)
+{
+	InSettings->PostEditChange();
 }
 
 UTraceSourceFilteringSettings* FEditorSessionSourceFilterService::GetFilterSettings()
@@ -344,8 +328,6 @@ void FEditorSessionSourceFilterService::OnSaveAsPreset()
 		{
 			SavePackageHelper(NewPackage, PackageFilename);
 		}
-		
-		StateChanged();
 	}
 }
 
@@ -406,7 +388,6 @@ TSharedPtr<FExtender> FEditorSessionSourceFilterService::GetExtender()
 										if (USourceFilterCollection* PresetCollection = Cast<USourceFilterCollection>(Asset))
 										{
 											FilterCollection->CopyData(PresetCollection);
-											StateChanged();
 										}
 									}
 								});
@@ -520,8 +501,6 @@ void FEditorSessionSourceFilterService::AddClassFilter(const FString& ActorClass
 		const FScopedTransaction Transaction(*FEditorSessionSourceFilterService::TransactionContext, LOCTEXT("AddClassFilter", "Adding Class Filter"), FilterCollection);
 
 		FilterCollection->AddClassFilter(Class);
-
-		StateChanged();
 	}
 }
 
@@ -530,7 +509,6 @@ void FEditorSessionSourceFilterService::RemoveClassFilter(TSharedRef<FClassFilte
 	const FScopedTransaction Transaction(*FEditorSessionSourceFilterService::TransactionContext, LOCTEXT("RemoveClassFilter", "Removing Class Filter"), FilterCollection);
 
 	FilterCollection->RemoveClassFilter(ClassFilterObject->GetClass());
-	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::GetClassFilters(TArray<TSharedPtr<FClassFilterObject>>& OutClasses) const
@@ -546,7 +524,6 @@ void FEditorSessionSourceFilterService::SetIncludeDerivedClasses(TSharedRef<FCla
 	const FScopedTransaction Transaction(*FEditorSessionSourceFilterService::TransactionContext, LOCTEXT("AddClassFilter", "Adding Class Filter"), FilterCollection);
 
 	FilterCollection->UpdateClassFilter(ClassFilterObject->GetClass(), bIncluded);
-	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::PostUndo(bool bSuccess)
@@ -559,14 +536,25 @@ void FEditorSessionSourceFilterService::PostRedo(bool bSuccess)
 	StateChanged();
 }
 
+bool FEditorSessionSourceFilterService::MatchesContext(const FTransactionContext& InContext, const TArray<TPair<UObject*, FTransactionObjectEvent>>& TransactionObjectContexts) const
+{
+	TArray<UClass*> MatchingClasses = { UDataSourceFilter::StaticClass(), UDataSourceFilterSet::StaticClass(), USourceFilterCollection::StaticClass() };
+
+	return TransactionObjectContexts.ContainsByPredicate([&MatchingClasses](TPair<UObject*, FTransactionObjectEvent>& Pair)
+	{
+		return MatchingClasses.ContainsByPredicate([Pair](UClass* InClass)
+		{
+			return Pair.Key->GetClass()->IsChildOf(InClass);
+		});
+	});
+}
+
 void FEditorSessionSourceFilterService::MakeFilterSet(TSharedRef<const IFilterObject> ExistingFilter, TSharedRef<const IFilterObject> ExistingFilterOther)
 {
 	const FScopedTransaction Transaction(*FEditorSessionSourceFilterService::TransactionContext, LOCTEXT("CreateFilterSet", "Creating Filter Set"), FilterCollection);
 	FilterCollection->Modify();
 
 	FilterCollection->MakeFilterSet(CastChecked<UDataSourceFilter>(ExistingFilter->GetFilter()), CastChecked<UDataSourceFilter>(ExistingFilterOther->GetFilter()), EFilterSetMode::AND);
-
-	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::MakeFilterSet(TSharedRef<const IFilterObject> ExistingFilter, EFilterSetMode Mode)
@@ -575,8 +563,6 @@ void FEditorSessionSourceFilterService::MakeFilterSet(TSharedRef<const IFilterOb
 	FilterCollection->Modify();
 
 	FilterCollection->ConvertFilterToSet(CastChecked<UDataSourceFilter>(ExistingFilter->GetFilter()), Mode);
-
-	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::MakeTopLevelFilter(TSharedRef<const IFilterObject> Filter)
@@ -585,8 +571,6 @@ void FEditorSessionSourceFilterService::MakeTopLevelFilter(TSharedRef<const IFil
 	FilterCollection->Modify();
 
 	FilterCollection->MoveFilter(CastChecked<UDataSourceFilter>(Filter->GetFilter()), nullptr);
-
-	StateChanged();
 }
 
 void FEditorSessionSourceFilterService::PopulateTreeView(FTreeViewDataBuilder& InBuilder)
@@ -675,8 +659,6 @@ void FEditorSessionSourceFilterService::OnBlueprintCompiled(UBlueprint* InBluepr
 {
 	if (InBlueprint)
 	{
-		StateChanged();
-
 		for (UBlueprint* Blueprint : DelegateRegisteredBlueprints)
 		{
 			Blueprint->OnCompiled().RemoveAll(this);

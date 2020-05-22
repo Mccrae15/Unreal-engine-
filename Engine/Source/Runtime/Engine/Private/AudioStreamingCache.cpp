@@ -84,6 +84,14 @@ FAutoConsoleVariableRef CVarStreamCacheSizeOverrideMB(
 	TEXT("0: use cache size from project settings. n: the new cache size in megabytes."),
 	ECVF_Default);
 
+static int32 SaveAudioMemReportOnCacheOverflowCVar = 0;
+FAutoConsoleVariableRef CVarSaveAudiomemReportOnCacheOverflow(
+	TEXT("au.streamcaching.SaveAudiomemReportOnCacheOverflow"),
+	SaveAudioMemReportOnCacheOverflowCVar,
+	TEXT("When set to one, we print an audiomemreport when the cache has overflown.\n")
+	TEXT("0: Disabled, 1: Enabled"),
+	ECVF_Default);
+
 static FAutoConsoleCommand GFlushAudioCacheCommand(
 	TEXT("au.streamcaching.FlushAudioCache"),
 	TEXT("This will flush any non retained audio from the cache when Stream Caching is enabled."),
@@ -358,11 +366,14 @@ FAudioChunkHandle FCachedAudioStreamingManager::GetLoadedChunk(const USoundWave*
 				if (!bCacheCurrentlyBlown)
 				{
 					bCacheCurrentlyBlown = true;
+					Cache->IncrementCacheOverflowCounter();
+
 					UE_LOG(LogAudio, Warning, TEXT("Cache overflow!!! couldn't load chunk %d for sound %s!"), ChunkIndex, *SoundWave->GetName());
+
 					AsyncTask(ENamedThreads::GameThread, []()
 					{
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
-						if (GEngine && GEngine->GetMainAudioDevice())
+						if (SaveAudioMemReportOnCacheOverflowCVar && GEngine && GEngine->GetMainAudioDevice())
 						{
 							GEngine->GetMainAudioDevice()->Exec(nullptr, TEXT("audiomemreport"));
 						}
