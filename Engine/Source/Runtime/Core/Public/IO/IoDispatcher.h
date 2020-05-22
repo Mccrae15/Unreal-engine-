@@ -12,6 +12,8 @@
 #include "Templates/TypeCompatibleBytes.h"
 #include "HAL/PlatformAtomics.h"
 #include "Misc/SecureHash.h"
+#include "Misc/AES.h"
+#include "Misc/IEngineCrypto.h"
 
 #if __cplusplus >= 201703L
 #	define UE_NODISCARD		[[nodiscard]]
@@ -52,7 +54,8 @@ enum class EIoErrorCode
 	NotFound,
 	CorruptToc,
 	UnknownChunkID,
-	InvalidParameter
+	InvalidParameter,
+	SignatureError
 };
 
 /**
@@ -888,6 +891,22 @@ struct FIoDispatcherMountedContainer
 	FIoContainerId ContainerId;
 };
 
+struct FIoSignatureError
+{
+	FString ContainerName;
+	int32 BlockIndex = INDEX_NONE;
+	FSHAHash ExpectedHash;
+	FSHAHash ActualHash;
+};
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FIoSignatureErrorDelegate, const FIoSignatureError&);
+
+struct FIoSignatureErrorEvent
+{
+	FCriticalSection CriticalSection;
+	FIoSignatureErrorDelegate SignatureErrorDelegate;
+};
+
 /** I/O dispatcher
   */
 class FIoDispatcher
@@ -914,6 +933,7 @@ public:
 
 	// Events
 	CORE_API FIoContainerMountedEvent& OnContainerMounted();
+	CORE_API FIoSignatureErrorEvent& GetSignatureErrorEvent();
 
 	FIoDispatcher(const FIoDispatcher&) = default;
 	FIoDispatcher& operator=(const FIoDispatcher&) = delete;
@@ -937,9 +957,42 @@ private:
 struct FIoStoreWriterSettings
 {
 	FName CompressionMethod = NAME_None;
-	int64 CompressionBlockSize = 0;
-	int64 CompressionBlockAlignment = 0;
+	uint64 CompressionBlockSize = 0;
+	uint64 CompressionBlockAlignment = 0;
+	uint64 WriterMemoryLimit = 0;
 	bool bEnableCsvOutput = false;
+};
+
+enum class EIoContainerFlags : uint8
+{
+	None,
+	Compressed	= (1 << 0),
+	Encrypted	= (1 << 1),
+	Signed		= (1 << 2),
+};
+ENUM_CLASS_FLAGS(EIoContainerFlags);
+
+struct FIoContainerSettings
+{
+	EIoContainerFlags ContainerFlags = EIoContainerFlags::None;
+	FGuid EncryptionKeyGuid;
+	FAES::FAESKey EncryptionKey;
+	FRSAKeyHandle SigningKey;
+
+	bool IsCompressed() const
+	{
+		return !!(ContainerFlags & EIoContainerFlags::Compressed);
+	}
+
+	bool IsEncrypted() const
+	{
+		return !!(ContainerFlags & EIoContainerFlags::Encrypted);
+	}
+
+	bool IsSigned() const
+	{
+		return !!(ContainerFlags & EIoContainerFlags::Signed);
+	}
 };
 
 struct FIoStoreWriterResult
@@ -952,12 +1005,13 @@ struct FIoStoreWriterResult
 	int64 UncompressedContainerSize = 0;
 	int64 CompressedContainerSize = 0;
 	FName CompressionMethod = NAME_None;
+	EIoContainerFlags ContainerFlags;
 };
 
 struct FIoWriteOptions
 {
 	const TCHAR* DebugName = nullptr;
-	int64 Alignment = 0;
+	uint64 Alignment = 0;
 	bool bForceUncompressed = false;
 };
 
@@ -984,7 +1038,7 @@ public:
 	FIoStoreWriter(const FIoStoreWriter&) = delete;
 	FIoStoreWriter& operator=(const FIoStoreWriter&) = delete;
 
-	UE_NODISCARD CORE_API FIoStatus	Initialize(const FIoStoreWriterContext& Context, bool bIsContainerCompressed);
+	UE_NODISCARD CORE_API FIoStatus	Initialize(const FIoStoreWriterContext& Context, const FIoContainerSettings& ContainerSettings);
 	UE_NODISCARD CORE_API FIoStatus	Append(const FIoChunkId& ChunkId, const FIoChunkHash& ChunkHash, FIoBuffer Chunk, const FIoWriteOptions& WriteOptions);
 	UE_NODISCARD CORE_API FIoStatus	Append(const FIoChunkId& ChunkId, FIoBuffer Chunk, const FIoWriteOptions& WriteOptions);
 	UE_NODISCARD CORE_API FIoStatus	AppendPadding(uint64 Count);
@@ -1026,7 +1080,10 @@ public:
 	CORE_API FIoStoreReader();
 	CORE_API ~FIoStoreReader();
 
-	UE_NODISCARD CORE_API FIoStatus Initialize(const FIoStoreEnvironment& InEnvironment);
+	UE_NODISCARD CORE_API FIoStatus Initialize(const FIoStoreEnvironment& InEnvironment, const TMap<FGuid, FAES::FAESKey>& InDecryptionKeys);
+	CORE_API FIoContainerId GetContainerId() const;
+	CORE_API EIoContainerFlags GetContainerFlags() const;
+	CORE_API FGuid GetEncryptionKeyGuid() const;
 	CORE_API void EnumerateChunks(TFunction<bool(const FIoStoreTocChunkInfo&)>&& Callback) const;
 	CORE_API void EnumeratePartialChunks(TFunction<bool(const FIoStoreTocPartialChunkInfo&)>&& Callback) const;
 	CORE_API TIoStatusOr<FIoBuffer> Read(const FIoChunkId& Chunk, const FIoReadOptions& Options) const;

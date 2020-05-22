@@ -25,7 +25,7 @@ public:
 	virtual ~IBulkDataIORequest() {}
 
 	virtual bool PollCompletion() const = 0;
-	virtual bool WaitCompletion(float TimeLimitSeconds = 0.0f) const = 0;
+	virtual bool WaitCompletion(float TimeLimitSeconds = 0.0f) = 0;
 
 	virtual uint8* GetReadResults() = 0;
 	virtual int64 GetSize() const = 0;
@@ -76,7 +76,8 @@ public:
 	void Free(FBulkDataBase* Owner);
 
 	// Set as a raw buffer
-	void* AllocateData(FBulkDataBase* Owner, SIZE_T SizeInBytes); //DataBuffer = FMemory::Realloc(DataBuffer, SizeInBytes, DEFAULT_ALIGNMENT);
+	void* AllocateData(FBulkDataBase* Owner, SIZE_T SizeInBytes); 
+	void* ReallocateData(FBulkDataBase* Owner, SIZE_T SizeInBytes);
 	void SetData(FBulkDataBase* Owner, void* Buffer);
 
 	// Set as memory mapped
@@ -237,6 +238,7 @@ private:
 
 	// Methods for dealing with the allocated data
 	FORCEINLINE void* AllocateData(SIZE_T SizeInBytes) { return DataAllocation.AllocateData(this, SizeInBytes); }
+	FORCEINLINE void* ReallocateData(SIZE_T SizeInBytes) { return DataAllocation.ReallocateData(this, SizeInBytes); }
 	FORCEINLINE void  FreeData() { DataAllocation.Free(this); }
 	FORCEINLINE void* GetDataBufferForWrite() const { return DataAllocation.GetAllocationForWrite(this); }
 	FORCEINLINE const void* GetDataBufferReadOnly() const { return DataAllocation.GetAllocationReadOnly(this); }

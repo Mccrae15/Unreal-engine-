@@ -192,6 +192,22 @@ public partial class Project : CommandUtils
 		WritePakResponseFile(UnrealPakResponseFileName, UnrealPakResponseFile, bCompressed, CryptoSettings, bForceEncryption);
 		CmdLine.AppendFormat(" -ResponseFile={0}", CommandUtils.MakePathSafeToUseWithCommandLine(UnrealPakResponseFileName));
 
+		if (CryptoSettings != null && CryptoSettings.bDataCryptoRequired)
+		{
+			if (CryptoSettings.bEnablePakIndexEncryption)
+			{
+				CmdLine.AppendFormat(" -encryptindex");
+			}
+			if (!string.IsNullOrEmpty(EncryptionKeyGuid))
+			{
+				CmdLine.AppendFormat(" -EncryptionKeyOverrideGuid={0}", EncryptionKeyGuid);
+			}
+			if (CryptoSettings.bDataCryptoRequired && CryptoSettings.bEnablePakSigning && CryptoSettings.SigningKey.IsValid())
+			{
+				CmdLine.AppendFormat(" -sign");
+			}
+		}
+
 		return CmdLine.ToString();
 	}
 
@@ -2300,7 +2316,7 @@ public partial class Project : CommandUtils
 					}
 
 					ConfigHierarchy PlatformEngineConfig;
-                    if (Params.EngineConfigs.TryGetValue(SC.StageTargetPlatform.PlatformType, out PlatformEngineConfig))					
+					if (Params.EngineConfigs.TryGetValue(SC.StageTargetPlatform.PlatformType, out PlatformEngineConfig))					
 					{
 						// if the runtime will want to reduce memory usage, we have to disable the pak index freezing
 						bool bUnloadPakEntries = false;
@@ -2319,21 +2335,35 @@ public partial class Project : CommandUtils
 					Dictionary<string, string> UnrealPakResponseFile = PakParams.UnrealPakResponseFile;
 					if (ShouldCreateIoStoreContainerFiles(Params, SC))
 					{
+						bool bAllowBulkDataInIoStore = false;
+						PlatformEngineConfig.GetBool("Core.System", "AllowBulkDataInIoStore", out bAllowBulkDataInIoStore);
+
 						UnrealPakResponseFile = new Dictionary<string, string>();
 						Dictionary<string, string> IoStoreResponseFile = new Dictionary<string, string>();
 						foreach (var Entry in PakParams.UnrealPakResponseFile)
 						{
 							if (Path.GetExtension(Entry.Key).Contains(".uasset") ||
-								Path.GetExtension(Entry.Key).Contains(".umap") ||
-								Path.GetExtension(Entry.Key).Contains(".ubulk") ||
-								Path.GetExtension(Entry.Key).Contains(".uptnl"))
+								Path.GetExtension(Entry.Key).Contains(".umap"))
 							{
 								IoStoreResponseFile.Add(Entry.Key, Entry.Value);
+							}
+							else if(Path.GetExtension(Entry.Key).Contains(".ubulk") ||
+									Path.GetExtension(Entry.Key).Contains(".uptnl"))
+							{
+								if(bAllowBulkDataInIoStore)
+								{
+									IoStoreResponseFile.Add(Entry.Key, Entry.Value);
+								}
+								else
+								{
+									UnrealPakResponseFile.Add(Entry.Key, Entry.Value);
+								}
 							}
 							else if (!Path.GetExtension(Entry.Key).Contains(".uexp"))
 							{
 								UnrealPakResponseFile.Add(Entry.Key, Entry.Value);
 							}
+
 						}
 
 						string ContainerPatchSourcePath = null;
@@ -2411,12 +2441,26 @@ public partial class Project : CommandUtils
 				}
 			}
 
-			string AdditionalArgs = " " 
+			string AdditionalArgs =
+				SC.StageTargetPlatform.GetPlatformPakCommandLine(Params, SC)
 				+ SC.StageTargetPlatform.GetPlatformIoStoreCommandLine(Params, SC)
 				+ BulkOption
 				+ CompressionFormats
 				+ " " + AdditionalCompressionOptionsOnCommandLine
 				+ " " + Params.AdditionalPakOptions;
+
+			if (CryptoKeysCacheFilename != null)
+			{
+				AdditionalArgs += String.Format(" -cryptokeys={0}", CommandUtils.MakePathSafeToUseWithCommandLine(CryptoKeysCacheFilename.FullName));
+			}
+
+			if (CryptoSettings != null)
+			{
+				if (CryptoSettings.bDataCryptoRequired && CryptoSettings.bEnablePakSigning && CryptoSettings.SigningKey.IsValid())
+				{
+					AdditionalArgs += String.Format(" -sign");
+				}
+			}
 
 			RunIoStore(Params, SC, IoStoreCommandsFileName, GameOpenOrderFileLocation, CookerOpenOrderFileLocation, AdditionalArgs);
 		}
@@ -2611,6 +2655,7 @@ public partial class Project : CommandUtils
 		{
 			CommandletParams += String.Format(" -BasedOnReleaseVersionDirectory={0}", MakePathSafeToUseWithCommandLine(Params.GetBasedOnReleaseVersionPath(SC, Params.Client)));
 		}
+		CommandletParams += String.Format(" -TargetPlatform={0}", SC.StageTargetPlatform.GetCookPlatform(Params.DedicatedServer, Params.Client));
 
 		LogInformation("Running IoStore commandlet with arguments: {0}", CommandletParams);
 		RunCommandlet(SC.RawProjectPath, Params.UE4Exe, "IoStore", CommandletParams);
