@@ -345,6 +345,13 @@ namespace UnrealBuildTool
 					);
 				}
 			}
+			else
+			{
+				// If we have disabled objcopy then we need to create a dummy debug file
+				Out += string.Format("echo DummyDebug >> {0}\n",
+					DebugFile.AbsolutePath
+				);
+			}
 
 			return Out;
 		}
