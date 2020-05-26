@@ -290,7 +290,8 @@ void FVulkanSurface::GenerateImageCreateInfo(
 		}
 		else
 		{
-			ImageCreateInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+            // temp oculus fix : mutable textures disable compression on QCOM
+			// ImageCreateInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
 		}
 
 	}
@@ -316,16 +317,17 @@ void FVulkanSurface::GenerateImageCreateInfo(
 	}
 	else if (UEFlags & (TexCreate_RenderTargetable | TexCreate_DepthStencilTargetable))
 	{
+		if ((UEFlags & TexCreate_Memoryless) == TexCreate_Memoryless)
+		{
+			//if the image is memoryless, we cannot have any TRANSFER or SAMPLED bit set.
+			ImageCreateInfo.usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+		}
 		if ((UEFlags & TexCreate_InputAttachmentRead) == TexCreate_InputAttachmentRead)
 		{
 			ImageCreateInfo.usage |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
 		}
 		ImageCreateInfo.usage |= ((UEFlags & TexCreate_RenderTargetable) ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
 		ImageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-		if ((UEFlags & TexCreate_Memoryless) == TexCreate_Memoryless)
-		{
-			ImageCreateInfo.usage |= VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
-		}
 	}
 	else if (UEFlags & (TexCreate_DepthStencilResolveTarget))
 	{
@@ -340,6 +342,8 @@ void FVulkanSurface::GenerateImageCreateInfo(
 
 	if (UEFlags & TexCreate_UAV)
 	{
+		//cannot have the storage bit on a memoryless texture
+		ensure((UEFlags & TexCreate_Memoryless) == 0);
 		ImageCreateInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 	}
 
@@ -583,6 +587,10 @@ FVulkanSurface::FVulkanSurface(FVulkanDevice& InDevice, VkImageViewType Resource
 		&StorageFormat, &ViewFormat);
 
 	VERIFYVULKANRESULT(VulkanRHI::vkCreateImage(InDevice.GetInstanceHandle(), &ImageCreateInfo.ImageCreateInfo, VULKAN_CPU_ALLOCATOR, &Image));
+
+	// forcing new textures's layouts to be undefined in the map, temp fix
+	VkImageLayout& Layout = Device->GetImmediateContext().GetTransitionAndLayoutManager().FindOrAddLayoutRW(Image, VK_IMAGE_LAYOUT_UNDEFINED);
+	Layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 	// Fetch image size
 	VulkanRHI::vkGetImageMemoryRequirements(InDevice.GetInstanceHandle(), Image, &MemoryRequirements);
@@ -1998,8 +2006,8 @@ FVulkanTexture2DArray::FVulkanTexture2DArray(FVulkanDevice& Device, EPixelFormat
 }
 
 FVulkanTexture2DArray::FVulkanTexture2DArray(FTextureRHIRef& SrcTextureRHI, const FVulkanTexture2DArray* SrcTexture)
-	: FRHITexture2DArray(SrcTexture->GetSizeX(), SrcTexture->GetSizeY(), SrcTexture->GetSizeZ(), SrcTexture->GetNumMips(), SrcTexture->GetNumSamples(), SrcTexture->GetFormat(), SrcTexture->GetFlags(), SrcTexture->GetClearBinding())
-	, FVulkanTextureBase(SrcTextureRHI, static_cast<const FVulkanTextureBase*>(SrcTexture), VK_IMAGE_VIEW_TYPE_2D_ARRAY, SrcTexture->GetSizeX(), SrcTexture->GetSizeY(), SrcTexture->GetSizeZ())
+	: FRHITexture2DArray(SrcTexture->GetSizeX(), SrcTexture->GetSizeY(), SrcTexture->Surface.NumArrayLevels, SrcTexture->GetNumMips(), SrcTexture->GetNumSamples(), SrcTexture->GetFormat(), SrcTexture->GetFlags(), SrcTexture->GetClearBinding())
+	, FVulkanTextureBase(SrcTextureRHI, static_cast<const FVulkanTextureBase*>(SrcTexture), VK_IMAGE_VIEW_TYPE_2D_ARRAY, SrcTexture->GetSizeX(), SrcTexture->GetSizeY(), 1)
 {
 }
 

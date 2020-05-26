@@ -19,11 +19,19 @@ UOculusHMDRuntimeSettings::UOculusHMDRuntimeSettings(const FObjectInitializer& O
 	bHQDistortion = DefaultSettings.Flags.bHQDistortion;
 	bChromaCorrection = DefaultSettings.Flags.bChromaAbCorrectionEnabled;
 	FFRLevel = DefaultSettings.FFRLevel;
+	FFRDynamic = DefaultSettings.FFRDynamic;
 	CPULevel = DefaultSettings.CPULevel;
 	GPULevel = DefaultSettings.GPULevel;
 	PixelDensityMin = DefaultSettings.PixelDensityMin;
 	PixelDensityMax = DefaultSettings.PixelDensityMax;
 	bRecenterHMDWithController = DefaultSettings.Flags.bRecenterHMDWithController;
+	bFocusAware = DefaultSettings.Flags.bFocusAware;
+	bEnableSpecificColorGamut = DefaultSettings.bEnableSpecificColorGamut;
+	ColorSpace = DefaultSettings.ColorSpace;
+	HandTrackingSupport = DefaultSettings.HandTrackingSupport;
+#if WITH_LATE_LATCHING_CODE
+	bLateLatching = DefaultSettings.bLateLatching;
+#endif
 
 #else
 	// Some set of reasonable defaults, since blueprints are still available on non-Oculus platforms.
@@ -32,11 +40,19 @@ UOculusHMDRuntimeSettings::UOculusHMDRuntimeSettings(const FObjectInitializer& O
 	bHQDistortion = false;
 	bChromaCorrection = false;
 	FFRLevel = EFixedFoveatedRenderingLevel::EFixedFoveatedRenderingLevel_Off;
+	FFRDynamic = false;
 	CPULevel = 2;
 	GPULevel = 3;
 	PixelDensityMin = 0.5f;
 	PixelDensityMax = 1.0f;
 	bRecenterHMDWithController = true;
+	bFocusAware = false;
+	bEnableSpecificColorGamut = false;
+	ColorSpace = EColorSpace::Unknown;
+	HandTrackingSupport = EHandTrackingSupport::ControllersOnly;
+#if WITH_LATE_LATCHING_CODE
+	bLateLatching = false;
+#endif
 #endif
 
 	LoadFromIni();
@@ -66,9 +82,5 @@ void UOculusHMDRuntimeSettings::LoadFromIni()
 	if (GConfig->GetBool(OculusSettings, TEXT("bCompositeDepth"), v, GEngineIni))
 	{
 		bCompositesDepth = v;
-	}
-	if (GConfig->GetBool(OculusSettings, TEXT("bSupportsDash"), v, GEngineIni))
-	{
-		bSupportsDash = v;
 	}
 }

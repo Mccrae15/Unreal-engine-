@@ -240,18 +240,18 @@ EPixelFormat FCustomPresent::GetPixelFormat(ovrpTextureFormat Format) const
 }
 
 
-ovrpTextureFormat FCustomPresent::GetOvrpTextureFormat(EPixelFormat Format) const
+ovrpTextureFormat FCustomPresent::GetOvrpTextureFormat(EPixelFormat Format, bool usesRGB) const
 {
 	switch (GetPixelFormat(Format))
 	{
 	case PF_B8G8R8A8:
-		return bSupportsSRGB ? ovrpTextureFormat_B8G8R8A8_sRGB : ovrpTextureFormat_B8G8R8A8;
+		return bSupportsSRGB && usesRGB ? ovrpTextureFormat_B8G8R8A8_sRGB : ovrpTextureFormat_B8G8R8A8;
 	case PF_FloatRGBA:
 		return ovrpTextureFormat_R16G16B16A16_FP;
 	case PF_FloatR11G11B10:
 		return ovrpTextureFormat_R11G11B10_FP;
 	case PF_R8G8B8A8:
-		return bSupportsSRGB ? ovrpTextureFormat_R8G8B8A8_sRGB : ovrpTextureFormat_R8G8B8A8;
+		return bSupportsSRGB && usesRGB ? ovrpTextureFormat_R8G8B8A8_sRGB : ovrpTextureFormat_R8G8B8A8;
 	}
 
 	return ovrpTextureFormat_None;
@@ -438,7 +438,7 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 					PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI, MipIndex);
 				}
 
-				RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0.0f, DstRect.Min.X + MipViewportWidth, DstRect.Min.Y + MipViewportHeight, 1.0f);
+				RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0.0f, MipViewportWidth, MipViewportHeight, 1.0f);
 
 				RendererModule->DrawRectangle(
 					RHICmdList,

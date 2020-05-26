@@ -1,0 +1,23 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "{A3D4FB8F-4902-8657-EEA0-4480E076CFA7}",
+	"Category": "",
+	"Description": "",
+	"Modules": [
+		{
+			"Name": "HandsTrainSample",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"AdditionalDependencies": [
+				"Engine",
+				"CoreUObject"
+			]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "OnlineSubsystemOculus",
+			"Enabled": true
+		}
+	]
+}

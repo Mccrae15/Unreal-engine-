@@ -11,7 +11,7 @@ enum class EOculusPlatformTarget : uint8
 {
 	Rift UMETA(DisplayName="Rift"),
 	Quest UMETA(DisplayName="Quest"),
-	Mobile UMETA(DisplayName="Oculus Go | Gear VR"),
+	Mobile UMETA(DisplayName="Oculus Go"),
 	Length UMETA(DisplayName="Invalid")
 };
 

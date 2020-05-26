@@ -663,7 +663,6 @@ FSceneView::FSceneView(const FSceneViewInitOptions& InitOptions)
 	, bIsInstancedStereoEnabled(false)
 	, bIsMultiViewEnabled(false)
 	, bIsMobileMultiViewEnabled(false)
-	, bIsMobileMultiViewDirectEnabled(false)
 	, bShouldBindInstancedViewUB(false)
 	, UnderwaterDepth(-1.0f)
 	, bForceCameraVisibilityReset(false)
@@ -773,9 +772,9 @@ FSceneView::FSceneView(const FSceneViewInitOptions& InitOptions)
 		bIsInstancedStereoEnabled = RHISupportsInstancedStereo(ShaderPlatform);
 	}
 
-	// If the plugin uses separate render targets it is required to support mobile multi-view direct
+	// If the plugin uses separate render targets it is required to support mobile multi-view
 	IStereoRenderTargetManager* const StereoRenderTargetManager = GEngine->StereoRenderingDevice.IsValid() ? GEngine->StereoRenderingDevice->GetRenderTargetManager() : nullptr;
-	bIsMobileMultiViewDirectEnabled = bIsMobileMultiViewEnabled && StereoRenderTargetManager && StereoRenderTargetManager->ShouldUseSeparateRenderTarget();
+	bIsMobileMultiViewEnabled = bIsMobileMultiViewEnabled && StereoRenderTargetManager && StereoRenderTargetManager->ShouldUseSeparateRenderTarget() && IStereoRendering::IsStereoEyePass(StereoPass);
 
 	bShouldBindInstancedViewUB = bIsInstancedStereoEnabled || bIsMobileMultiViewEnabled;
 
@@ -2401,6 +2400,9 @@ FSceneViewFamily::FSceneViewFamily(const ConstructionValues& CVS)
 	bWorldIsPaused(false),
 	bIsHDR(false),
 	GammaCorrection(CVS.GammaCorrection),
+#if WITH_LATE_LATCHING_CODE
+	bLateLatchingEnabled(false),
+#endif
 	SecondaryViewFraction(1.0f),
 	SecondaryScreenPercentageMethod(ESecondaryScreenPercentageMethod::LowerPixelDensitySimulation),
 	ScreenPercentageInterface(nullptr)

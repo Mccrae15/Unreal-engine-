@@ -54,13 +54,13 @@ struct FTrackedCamera
 	UPROPERTY()
 	FVector UserOffset;
 
-	/** The raw pose of the camera to the attached tracking device */
-	UPROPERTY()
-	FRotator RawRotation;
+	/** The raw pose of the camera to the attached tracking device (Deprecated) */
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "All camera pose info is now in stage space, do not use raw pose data."))
+	FRotator RawRotation_DEPRECATED;
 
-	/** The raw pose of the camera to the attached tracking device */
-	UPROPERTY()
-	FVector RawOffset;
+	/** The raw pose of the camera to the attached tracking device (Deprecated) */
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "All camera pose info is now in stage space, do not use raw pose data."))
+	FVector RawOffset_DEPRECATED;
 
 	FTrackedCamera()
 		: Index(-1)
@@ -73,8 +73,8 @@ struct FTrackedCamera
 		, CalibratedOffset(EForceInit::ForceInitToZero)
 		, UserRotation(EForceInit::ForceInitToZero)
 		, UserOffset(EForceInit::ForceInitToZero)
-		, RawRotation(EForceInit::ForceInitToZero)
-		, RawOffset(EForceInit::ForceInitToZero)
+		, RawRotation_DEPRECATED(EForceInit::ForceInitToZero)
+		, RawOffset_DEPRECATED(EForceInit::ForceInitToZero)
 	{}
 };
 

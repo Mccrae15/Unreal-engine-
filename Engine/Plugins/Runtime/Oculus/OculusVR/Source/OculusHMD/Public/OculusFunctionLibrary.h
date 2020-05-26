@@ -97,6 +97,57 @@ enum class EBoundaryType : uint8
 	Boundary_PlayArea	UMETA(DisplayName = "Play Area"),
 };
 
+UENUM(BlueprintType)
+enum class EColorSpace : uint8
+{
+	/// The default value from GetHmdColorSpace until SetClientColorDesc is called. Only valid on PC, and will be remapped to Quest on Mobile
+	Unknown = 0,
+	/// No color correction, not recommended for production use. See documentation for more info
+	Unmanaged = 1,
+	/// Preferred color space for standardized color across all Oculus HMDs with D65 white point
+	Rec_2020 = 2,
+	/// Rec. 709 is used on Oculus Go and shares the same primary color coordinates as sRGB
+	Rec_709 = 3,
+	/// Oculus Rift CV1 uses a unique color space, see documentation for more info
+	Rift_CV1 = 4,
+	/// Oculus Rift S uses a unique color space, see documentation for more info
+	Rift_S = 5,
+	/// Oculus Quest's native color space is slightly different than Rift CV1
+	Quest = 6,
+	/// Similar to DCI-P3. See documentation for more details on P3
+	P3 = 7,
+	/// Similar to sRGB but with deeper greens using D65 white point
+	Adobe_RGB = 8,
+};
+
+UENUM(BlueprintType)
+enum class EHandTrackingSupport : uint8
+{
+	ControllersOnly,
+	ControllersAndHands,
+	HandsOnly,
+};
+
+UENUM(BlueprintType)
+enum class EOculusDeviceType : uint8
+{
+	//mobile HMDs 
+	OculusGo = 0,
+	OculusQuest,
+	//OculusMobile_Placeholder9,
+	//OculusMobile_Placeholder10,
+
+	//PC HMDs
+	Rift = 100,
+	Rift_S,
+	Quest_Link,
+	//OculusPC_Placeholder4102,
+	//OculusPC_Placeholder4103,
+
+	//default
+	OculusUnknown = 200,
+};
+
 /*
 * Information about relationships between a triggered boundary (EBoundaryType::Boundary_Outer or
 * EBoundaryType::Boundary_PlayArea) and a device or point in the world.
@@ -250,7 +301,7 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	/**
 	 * Adds loading splash screen with parameters
 	 *
-	 * @param Texture			(in) A texture asset to be used for the splash. Gear VR uses it as a path for loading icon; all other params are currently ignored by Gear VR.
+	 * @param Texture			(in) A texture asset to be used for the splash.
 	 * @param TranslationInMeters (in) Initial translation of the center of the splash screen (in meters).
 	 * @param Rotation			(in) Initial rotation of the splash screen, with the origin at the center of the splash screen.
 	 * @param SizeInMeters		(in) Size, in meters, of the quad with the splash screen.
@@ -322,7 +373,7 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	/**
 	 * Sets loading splash screen parameters.
 	 *
-	 * @param TexturePath		(in) A path to the texture asset to be used for the splash. Gear VR uses it as a path for loading icon; all other params are currently ignored by Gear VR.
+	 * @param TexturePath		(in) A path to the texture asset to be used for the splash.
 	 * @param DistanceInMeters	(in) Distance, in meters, to the center of the splash screen.
 	 * @param SizeInMeters		(in) Size, in meters, of the quad with the splash screen.
 	 * @param RotationAxes		(in) A vector that specifies the axis of the splash screen rotation (if RotationDelta is specified).
@@ -335,7 +386,7 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	/**
 	 * Returns loading splash screen parameters.
 	 *
-	 * @param TexturePath		(out) A path to the texture asset to be used for the splash. Gear VR uses it as a path for loading icon; all other params are currently ignored by Gear VR.
+	 * @param TexturePath		(out) A path to the texture asset to be used for the splash.
 	 * @param DistanceInMeters	(out) Distance, in meters, to the center of the splash screen.
 	 * @param SizeInMeters		(out) Size, in meters, of the quad with the splash screen.
 	 * @param RotationAxes		(out) A vector that specifies the axis of the splash screen rotation (if RotationDelta is specified).
@@ -376,16 +427,20 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	static EFixedFoveatedRenderingLevel GetFixedFoveatedRenderingLevel();
 
 	/**
-	* Set the requested multiresolution level for the next frame
+	* Set the requested multiresolution level for the next frame, and whether FFR's level is now dynamic or not.
 	*/
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
-	static void SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel level);
+	static void SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel level, bool isDynamic);
 
 	/**
 	* Returns the current device's name
 	*/
-	UFUNCTION(BlueprintPure, Category = "OculusLibrary")
+	UE_DEPRECATED(4.22, "UOculusFunctionLibrary::GetDeviceName has been deprecated and no longer functions as before. Please use the enum-based GetDeviceType instead.")
+	UFUNCTION(BlueprintPure, Category = "OculusLibrary", meta = (DeprecatedFunction, DeprecationMessage = "UOculusFunctionLibrary::GetDeviceName has been deprecated and no longer functions as before. Please use the enum-based GetDeviceType instead."))
 	static FString GetDeviceName();
+
+	UFUNCTION(BlueprintPure, Category = "OculusLibrary")
+	static EOculusDeviceType GetDeviceType();
 
 	/**
 	* Returns the current available frequencies
@@ -422,6 +477,24 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	*/
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
 	static void SetColorScaleAndOffset(FLinearColor ColorScale, FLinearColor ColorOffset, bool bApplyToAllLayers = false);
+
+	/**
+	* Returns true if system headset is in 3dof mode 
+	*/
+	UFUNCTION(BlueprintPure, Category = "OculusLibrary")
+	static bool GetSystemHmd3DofModeEnabled();
+
+	/**
+	* Returns the color space of the target HMD
+	*/
+	UFUNCTION(BlueprintPure, Category = "OculusLibrary")
+	static EColorSpace GetHmdColorDesc();
+
+	/**
+	* Sets the target HMD to do color space correction to a specific color space
+	*/
+	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
+	static void SetClientColorDesc(EColorSpace ColorSpace);
 
 	/**
 	 * Returns IStereoLayers interface to work with overlays.

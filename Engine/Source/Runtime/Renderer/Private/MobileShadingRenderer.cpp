@@ -369,6 +369,47 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 	OnStartRender(RHICmdList);
 }
 
+#if WITH_LATE_LATCHING_CODE
+void FMobileSceneRenderer::BeginLateLatching(FRHICommandListImmediate& RHICmdList)
+{
+	SCOPED_NAMED_EVENT(BeginLateLatching, FColor::Orange);
+	uint32 FrameNumber = ViewFamily.FrameNumber;
+	Scene->UniformBuffers.ViewUniformBuffer->FlagPatchingFrameNumber(FrameNumber);
+	Scene->UniformBuffers.InstancedViewUniformBuffer->FlagPatchingFrameNumber(FrameNumber);
+	RHICmdList.BeginLateLatching(FrameNumber);
+}
+
+void FMobileSceneRenderer::EndLateLatching(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
+{
+	SCOPED_NAMED_EVENT(ApplyLateLatching, FColor::Orange);
+
+	// Flush to reduce post latelatching overhead
+	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+
+	for (int32 ViewExt = 0; ViewExt < ViewFamily.ViewExtensions.Num(); ++ViewExt)
+	{
+		ViewFamily.ViewExtensions[ViewExt]->PreLateLatchingViewFamily_RenderThread(RHICmdList, ViewFamily);
+	}
+
+	for (int32 ViewExt = 0; ViewExt < ViewFamily.ViewExtensions.Num(); ++ViewExt)
+	{
+		ViewFamily.ViewExtensions[ViewExt]->LateLatchingViewFamily_RenderThread(RHICmdList, ViewFamily);
+		for (int ViewIndex = 0; ViewIndex < ViewFamily.Views.Num(); ViewIndex++)
+		{
+			ViewFamily.ViewExtensions[ViewExt]->LateLatchingView_RenderThread(RHICmdList, ViewFamily, Views[ViewIndex]);
+		}
+	}
+
+	for (int ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+	{
+		Views[ViewIndex].UpdateLateLatchData();
+	}
+
+	Scene->UniformBuffers.CachedView = NULL;
+	Scene->UniformBuffers.UpdateViewUniformBuffer(View);
+	RHICmdList.EndLateLatching();
+}
+#endif
 /** 
 * Renders the view family. 
 */
@@ -468,7 +509,14 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 	// Find the visible primitives.
 	InitViews(RHICmdList);
-	
+
+#if WITH_LATE_LATCHING_CODE
+	if (ViewFamily.bLateLatchingEnabled)
+	{
+		BeginLateLatching(RHICmdList);
+	}
+#endif
+
 	if (GRHINeedsExtraDeletionLatency || !GRHICommandList.Bypass())
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FMobileSceneRenderer_PostInitViewsFlushDel);
@@ -545,14 +593,14 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		if (bMobileMSAA)
 		{
 			SceneColor = (View.bIsMobileMultiViewEnabled) ? SceneContext.MobileMultiViewSceneColor->GetRenderTargetItem().TargetableTexture : SceneContext.GetSceneColorSurface();
-			SceneColorResolve = GetMultiViewSceneColor(SceneContext);
+			SceneColorResolve = ViewFamily.RenderTarget->GetRenderTargetTexture();
 			ColorTargetAction = ERenderTargetActions::Clear_Resolve;
 			// Rendering to a backbuffer, make sure it's writeable
 			RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, SceneColorResolve);
 		}
 		else
 		{
-			SceneColor = GetMultiViewSceneColor(SceneContext);
+			SceneColor = ViewFamily.RenderTarget->GetRenderTargetTexture();
 			// Rendering to a backbuffer, make sure it's writeable
 			RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, SceneColor);
 		}
@@ -780,11 +828,6 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Post));
 
-	if (!View.bIsMobileMultiViewDirectEnabled)
-	{
-		CopyMobileMultiViewSceneColor(RHICmdList);
-	}
-
 	if (bUseVirtualTexturing)
 	{	
 		// No pass after this can make VT page requests
@@ -823,6 +866,13 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	}
 
 	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_SceneEnd));
+
+#if WITH_LATE_LATCHING_CODE
+	if (ViewFamily.bLateLatchingEnabled)
+	{
+		EndLateLatching(RHICmdList, View);
+	}
+#endif
 
 	RenderFinish(RHICmdList);
 

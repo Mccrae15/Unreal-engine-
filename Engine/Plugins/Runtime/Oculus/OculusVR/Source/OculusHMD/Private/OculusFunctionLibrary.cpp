@@ -382,13 +382,13 @@ float UOculusFunctionLibrary::GetGPUFrameTime()
 	return 0.0f;
 }
 
-void UOculusFunctionLibrary::SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel level)
+void UOculusFunctionLibrary::SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel level, bool isDynamic)
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
 	if (OculusHMD != nullptr)
 	{
-		OculusHMD->SetFixedFoveatedRenderingLevel(level);
+		OculusHMD->SetFixedFoveatedRenderingLevel(level, isDynamic);
 	}
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 }
@@ -423,6 +423,42 @@ FString UOculusFunctionLibrary::GetDeviceName()
 	}
 #endif
 	return FString();
+}
+
+EOculusDeviceType UOculusFunctionLibrary::GetDeviceType()
+{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS
+	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
+	if (OculusHMD != nullptr)
+	{
+		if (OculusHMD->GetSettings())
+		{
+			switch (OculusHMD->GetSettings()->SystemHeadset) {
+			case ovrpSystemHeadset_Oculus_Go:
+				return EOculusDeviceType::OculusGo;
+			case ovrpSystemHeadset_Oculus_Quest:
+				return EOculusDeviceType::OculusQuest;
+			/*case ovrpSystemHeadset_Placeholder_9:
+				return EOculusDeviceType::OculusMobile_Placeholder9;
+			case ovrpSystemHeadset_Placeholder_10:
+				return EOculusDeviceType::OculusMobile_Placeholder10;*/
+			case ovrpSystemHeadset_Rift_CV1:
+				return EOculusDeviceType::Rift;
+			case ovrpSystemHeadset_Rift_S:
+				return EOculusDeviceType::Rift_S;
+			case ovrpSystemHeadset_Oculus_Link_Quest:
+				return EOculusDeviceType::Quest_Link;
+			/*case ovrpSystemHeadset_PC_Placeholder_4102:
+				return EOculusDeviceType::OculusPC_Placeholder4102;
+			case ovrpSystemHeadset_PC_Placeholder_4103:
+				return EOculusDeviceType::OculusPC_Placeholder4103;*/
+			default:
+				break;
+			}
+		}
+	}
+#endif
+	return EOculusDeviceType::OculusUnknown;
 }
 
 TArray<float> UOculusFunctionLibrary::GetAvailableDisplayFrequencies()
@@ -717,6 +753,53 @@ void UOculusFunctionLibrary::SetGuardianVisibility(bool GuardianVisible)
 	if (OculusHMD != nullptr)
 	{
 		FOculusHMDModule::GetPluginWrapper().SetBoundaryVisible2(GuardianVisible);
+	}
+#endif
+}
+
+bool UOculusFunctionLibrary::GetSystemHmd3DofModeEnabled()
+{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS
+	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
+	if (OculusHMD != nullptr)
+	{
+		ovrpBool enabled;
+		return OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetSystemHmd3DofModeEnabled(&enabled)) && enabled;
+	}
+#endif
+	return false;
+}
+
+EColorSpace UOculusFunctionLibrary::GetHmdColorDesc()
+{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS
+	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
+	if (OculusHMD != nullptr)
+	{
+		ovrpColorSpace HmdColorSpace;
+		if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetHmdColorDesc(&HmdColorSpace)))
+		{
+			return (EColorSpace)HmdColorSpace;
+		}
+	}
+#endif
+	return EColorSpace::Unknown;
+}
+
+void UOculusFunctionLibrary::SetClientColorDesc(EColorSpace ColorSpace)
+{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS
+	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
+	if (OculusHMD != nullptr)
+	{
+		ovrpColorSpace ClientColorSpace = (ovrpColorSpace)ColorSpace;
+#if PLATFORM_ANDROID
+		if (ClientColorSpace == ovrpColorSpace_Unknown)
+		{
+			ClientColorSpace = ovrpColorSpace_Quest;
+		}
+#endif
+		FOculusHMDModule::GetPluginWrapper().SetClientColorDesc(ClientColorSpace);
 	}
 #endif
 }

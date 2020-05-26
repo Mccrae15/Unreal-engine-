@@ -166,10 +166,17 @@ public:
 		PackedUniformBuffers.SetPackedGlobalParameter(BufferIndex, ByteOffset, NumBytes, NewValue, PackedUniformBuffersDirty);
 	}
 
+#if WITH_LATE_LATCHING_CODE
+	inline void SetUniformBufferConstantData(uint32 BindingIndex, const TArray<uint8>& ConstantData, const FVulkanUniformBuffer* SrcBuffer)
+	{
+		PackedUniformBuffers.SetEmulatedUniformBufferIntoPacked(BindingIndex, ConstantData, SrcBuffer, PackedUniformBuffersDirty);
+	}
+#else
 	inline void SetUniformBufferConstantData(uint32 BindingIndex, const TArray<uint8>& ConstantData)
 	{
 		PackedUniformBuffers.SetEmulatedUniformBufferIntoPacked(BindingIndex, ConstantData, PackedUniformBuffersDirty);
 	}
+#endif
 
 	bool UpdateDescriptorSets(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer)
 	{
@@ -225,10 +232,17 @@ public:
 		PackedUniformBuffers[Stage].SetPackedGlobalParameter(BufferIndex, ByteOffset, NumBytes, NewValue, PackedUniformBuffersDirty[Stage]);
 	}
 
+#if WITH_LATE_LATCHING_CODE
+	inline void SetUniformBufferConstantData(uint8 Stage, uint32 BindingIndex, const TArray<uint8>& ConstantData, const FVulkanUniformBuffer* SrcBuffer)
+	{
+		PackedUniformBuffers[Stage].SetEmulatedUniformBufferIntoPacked(BindingIndex, ConstantData, SrcBuffer, PackedUniformBuffersDirty[Stage]);
+	}
+#else
 	inline void SetUniformBufferConstantData(uint8 Stage, uint32 BindingIndex, const TArray<uint8>& ConstantData)
 	{
 		PackedUniformBuffers[Stage].SetEmulatedUniformBufferIntoPacked(BindingIndex, ConstantData, PackedUniformBuffersDirty[Stage]);
 	}
+#endif
 
 	inline void SetDynamicUniformBuffer(uint8 DescriptorSet, uint32 BindingIndex, const FVulkanRealUniformBuffer* UniformBuffer)
 	{
@@ -307,6 +321,11 @@ static inline bool UpdatePackedUniformBuffers(VkDeviceSize UBOffsetAlignment, co
 
 			// get location in the ring buffer to use
 			FMemory::Memcpy(CPURingBufferBase + RingBufferOffset, StagedUniformBuffer.GetData(), UBSize);
+
+#if WITH_LATE_LATCHING_CODE
+			if (UniformBufferUploader->EnableUniformBufferPatching)
+				PackedUniformBuffers.RecordUniformBufferPatch(UniformBufferUploader->GetUniformBufferPatchInfo(), UniformBufferUploader->UniformBufferPatchingFrameNumber, PackedUBIndex, CPURingBufferBase + RingBufferOffset);
+#endif	
 
 			if (bIsDynamic)
 			{

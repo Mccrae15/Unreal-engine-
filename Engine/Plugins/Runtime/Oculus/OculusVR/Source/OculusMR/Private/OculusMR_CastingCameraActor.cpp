@@ -159,12 +159,10 @@ AOculusMR_CastingCameraActor::AOculusMR_CastingCameraActor(const FObjectInitiali
 	ForegroundRenderTargets.SetNum(1);
 
 	BackgroundRenderTargets[0] = NewObject<UTextureRenderTarget2D>();
-	BackgroundRenderTargets[0]->RenderTargetFormat = RTF_RGBA8;
-	BackgroundRenderTargets[0]->TargetGamma = 1.001;
+	BackgroundRenderTargets[0]->RenderTargetFormat = RTF_RGBA8_SRGB;
 
 	ForegroundRenderTargets[0] = NewObject<UTextureRenderTarget2D>();
-	ForegroundRenderTargets[0]->RenderTargetFormat = RTF_RGBA8;
-	ForegroundRenderTargets[0]->TargetGamma = 1.001;
+	ForegroundRenderTargets[0]->RenderTargetFormat = RTF_RGBA8_SRGB;
 #elif PLATFORM_ANDROID
 	BackgroundRenderTargets.SetNum(NumRTs);
 	ForegroundRenderTargets.SetNum(NumRTs);
@@ -174,10 +172,10 @@ AOculusMR_CastingCameraActor::AOculusMR_CastingCameraActor(const FObjectInitiali
 	for (unsigned int i = 0; i < NumRTs; ++i)
 	{
 		BackgroundRenderTargets[i] = NewObject<UTextureRenderTarget2D>();
-		BackgroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8;
+		BackgroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8_SRGB;
 
 		ForegroundRenderTargets[i] = NewObject<UTextureRenderTarget2D>();
-		ForegroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8;
+		ForegroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8_SRGB;
 
 		AudioTimes[i] = 0.0;
 	}
@@ -856,11 +854,10 @@ void AOculusMR_CastingCameraActor::UpdateTrackedCameraPosition()
 	FPose CameraTrackingSpacePose = FPose(MRState->TrackedCamera.CalibratedRotation.Quaternion(), MRState->TrackedCamera.CalibratedOffset);
 #if PLATFORM_ANDROID
 	ovrpPosef OvrpPose;
-	FOculusHMDModule::GetPluginWrapper().GetTrackingTransformRawPose(&OvrpPose);
-	FPose RawPose;
-	OculusHMD->ConvertPose(OvrpPose, RawPose);
-	FPose CalibrationRawPose = FPose(MRState->TrackedCamera.RawRotation.Quaternion(), MRState->TrackedCamera.RawOffset);
-	CameraTrackingSpacePose = RawPose * (CalibrationRawPose.Inverse() * CameraTrackingSpacePose);
+	FOculusHMDModule::GetPluginWrapper().GetTrackingTransformRelativePose(&OvrpPose, ovrpTrackingOrigin_Stage);
+	FPose StageToLocalPose;
+	OculusHMD->ConvertPose(OvrpPose, StageToLocalPose);
+	CameraTrackingSpacePose = StageToLocalPose * CameraTrackingSpacePose;
 #endif
 	FPose CameraPose = CameraTrackedObjectPose * CameraTrackingSpacePose;
 	CameraPose = CameraPose * FPose(MRState->TrackedCamera.UserRotation.Quaternion(), MRState->TrackedCamera.UserOffset);

@@ -33,9 +33,11 @@ class FSubmixEffectOculusReverbPlugin : public FSoundEffectSubmix
 public:
 	FSubmixEffectOculusReverbPlugin();
 
+	ovrAudioContext GetContext();
 	void ClearContext();
 
 private:
+	FSoundEffectSubmixInitData InitData;
 	ovrAudioContext Context;
 	FCriticalSection ContextLock;
 };

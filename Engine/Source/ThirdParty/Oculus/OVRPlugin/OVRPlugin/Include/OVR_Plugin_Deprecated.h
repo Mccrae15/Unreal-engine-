@@ -364,16 +364,10 @@ OVRP_EXPORT ovrpResult ovrp_EndEye2(ovrpEye eye, int frameIndex);
 // Update depth projection info, this is a replacement of ovrp_SetDepthCompositingInfo for more generic purpose
 OVRP_EXPORT ovrpResult ovrp_SetDepthProjInfo(float zNear, float zFar, ovrpBool isReverseZ);
 
-// Enable / Disable PTW
-OVRP_EXPORT ovrpResult ovrp_SetPTWEnable(ovrpBool enable);
-
-// Return current PTW status
-OVRP_EXPORT ovrpResult ovrp_GetPTWEnable(ovrpBool* enable);
-
 // Enable / Disable ASW
 OVRP_EXPORT ovrpResult ovrp_SetASWEnable(ovrpBool enable);
 
-// Return current PTW status
+// Return current ASW status
 OVRP_EXPORT ovrpResult ovrp_GetASWEnable(ovrpBool* enable);
 
 #ifdef __cplusplus
