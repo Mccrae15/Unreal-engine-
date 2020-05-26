@@ -496,6 +496,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Game|Cinematic")
 	TArray<FMovieSceneObjectBindingID> GetObjectBindings(UObject* InObject);
 
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Game|Cinematic")
+	int32 GetNumLoops() { return PlaybackSettings.LoopCount.Value; }
+
 public:
 
 	/** Update the sequence for the current time, if playing */
