@@ -10,6 +10,7 @@
 #include "MoviePipelineMasterConfig.h"
 #include "MovieRenderPipelineStyle.h"
 #include "MovieRenderPipelineSettings.h"
+#include "Sections/MovieSceneCameraCutSection.h"
 
 // Slate Includes
 #include "Widgets/Input/SComboButton.h"
@@ -58,6 +59,7 @@ struct IMoviePipelineQueueTreeItem : TSharedFromThis<IMoviePipelineQueueTreeItem
 	virtual ~IMoviePipelineQueueTreeItem() {}
 
 	virtual TSharedPtr<FMoviePipelineQueueJobTreeItem> AsJob() { return nullptr; }
+	virtual UMoviePipelineExecutorJob* GetOwningJob() { return nullptr; }
 	virtual void Delete(UMoviePipelineQueue* InOwningQueue) {}
 	virtual UMoviePipelineExecutorJob* Duplicate(UMoviePipelineQueue* InOwningQueue) { return nullptr; }
 
@@ -72,7 +74,7 @@ public:
 		SLATE_EVENT(FOnMoviePipelineEditConfig, OnEditConfigRequested)
 	SLATE_END_ARGS()
 
-	static const FName NAME_Sequence;
+	static const FName NAME_JobName;
 	static const FName NAME_Settings;
 	static const FName NAME_Output;
 	static const FName NAME_Status;
@@ -114,6 +116,11 @@ struct FMoviePipelineQueueJobTreeItem : IMoviePipelineQueueTreeItem
 		return SharedThis(this);
 	}
 
+	virtual UMoviePipelineExecutorJob* GetOwningJob() override
+	{ 
+		return WeakJob.Get();
+	}
+
 	virtual void Delete(UMoviePipelineQueue* InOwningQueue) override
 	{
 		InOwningQueue->DeleteJob(WeakJob.Get());
@@ -125,24 +132,15 @@ struct FMoviePipelineQueueJobTreeItem : IMoviePipelineQueueTreeItem
 	}
 
 public:
-	FString GetSequencePath() const
+	FText GetJobName() const
 	{
 		UMoviePipelineExecutorJob* Job = WeakJob.Get();
 		if (Job)
 		{
-			return Job->Sequence.ToString();
+			return FText::FromString(Job->JobName);
 		}
 
-		return FString();
-	}
-
-	void SetSequencePath(const FAssetData& AssetData)
-	{
-		UMoviePipelineExecutorJob* Job = WeakJob.Get();
-		if (Job)
-		{
-			Job->Sequence = AssetData.ToSoftObjectPath();
-		}
+		return FText();
 	}
 
 	FText GetMasterConfigLabel() const
@@ -304,7 +302,7 @@ void SQueueJobListRow::Construct(const FArguments& InArgs, const TSharedRef<STab
 
 TSharedRef<SWidget> SQueueJobListRow::GenerateWidgetForColumn(const FName& ColumnName)
 {
-	if (ColumnName == NAME_Sequence)
+	if (ColumnName == NAME_JobName)
 	{
 		return SNew(SBox)
 			.Padding(2.0f)
@@ -320,15 +318,8 @@ TSharedRef<SWidget> SQueueJobListRow::GenerateWidgetForColumn(const FName& Colum
 				+SHorizontalBox::Slot()
 				.FillWidth(1.f)
 				[
-					SNew(SObjectPropertyEntryBox)
-					.ObjectPath(Item.Get(), &FMoviePipelineQueueJobTreeItem::GetSequencePath)
-					.AllowedClass(ULevelSequence::StaticClass())
-					.OnObjectChanged(Item.Get(), &FMoviePipelineQueueJobTreeItem::SetSequencePath)
-					.AllowClear(false)
-					.DisplayUseSelected(false)
-					.DisplayBrowse(true)
-					.DisplayThumbnail(true)
-					.DisplayCompactSize(false)
+					SNew(STextBlock)
+					.Text(Item.Get(), &FMoviePipelineQueueJobTreeItem::GetJobName)
 				]
 			];
 	}
@@ -433,77 +424,26 @@ TSharedRef<SWidget> SQueueJobListRow::GenerateWidgetForColumn(const FName& Colum
 	return SNullWidget::NullWidget;
 }
 
-const FName SQueueJobListRow::NAME_Sequence = FName(TEXT("Sequence"));
+const FName SQueueJobListRow::NAME_JobName = FName(TEXT("Job Name"));
 const FName SQueueJobListRow::NAME_Settings = FName(TEXT("Settings"));
 const FName SQueueJobListRow::NAME_Output = FName(TEXT("Output"));
 const FName SQueueJobListRow::NAME_Status = FName(TEXT("Status"));
 
-struct FMoviePipelineMapTreeItem : IMoviePipelineQueueTreeItem
+class SQueueShotListRow : public SMultiColumnTableRow<TSharedPtr<IMoviePipelineQueueTreeItem>>
 {
-	/** The job that this tree item represents */
-	TWeakObjectPtr<UMoviePipelineExecutorJob> WeakJob;
-
-	explicit FMoviePipelineMapTreeItem(UMoviePipelineExecutorJob* InJob)
-		: WeakJob(InJob)
-	{}
-
-	virtual TSharedRef<ITableRow> ConstructWidget(TWeakPtr<SMoviePipelineQueueEditor> InQueueWidget, const TSharedRef<STableViewBase>& OwnerTable) override
-	{
-		return SNew(STableRow<TSharedPtr<IMoviePipelineQueueTreeItem>>, OwnerTable)
-			.Content()
-			[
-				SNew(SHorizontalBox)
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("MapRow_Label", "Target Map:"))
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(4, 0, 0, 0)
-				.VAlign(VAlign_Center)
-				[
-					SNew(SObjectPropertyEntryBox)
-					.ObjectPath(this, &FMoviePipelineMapTreeItem::GetMapPath)
-					.AllowedClass(UWorld::StaticClass())
-					.OnObjectChanged(this, &FMoviePipelineMapTreeItem::SetMapPath)
-					.AllowClear(false)
-					.DisplayUseSelected(false)
-					.DisplayBrowse(true)
-					.DisplayThumbnail(true)
-					.DisplayCompactSize(false)
-				]
-			];
-	}
-
 public:
-	FString GetMapPath() const
-	{
-		UMoviePipelineExecutorJob* Job = WeakJob.Get();
-		if (Job)
-		{
-			UWorld* World = Cast<UWorld>(Job->Map.TryLoad());
-			if (World)
-			{
-				return World->GetPathName();
-			}
-		}
+	SLATE_BEGIN_ARGS(SQueueShotListRow) {}
+	SLATE_ARGUMENT(TSharedPtr<FMoviePipelineShotItem>, Item)
+		SLATE_EVENT(FOnMoviePipelineEditConfig, OnEditConfigRequested)
+		SLATE_END_ARGS()
 
-		return FString();
-	}
+	TSharedPtr<FMoviePipelineShotItem> Item;
 
-	void SetMapPath(const FAssetData& AssetData)
-	{
-		UMoviePipelineExecutorJob* Job = WeakJob.Get();
-		if (Job)
-		{
-			Job->Map = CastChecked<UWorld>(AssetData.GetAsset());
-		}
-	}
+	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& OwnerTable);
+	virtual TSharedRef<SWidget> GenerateWidgetForColumn(const FName& ColumnName) override;
+
+private:
+	FOnMoviePipelineEditConfig OnEditConfigRequested;
 };
 
 struct FMoviePipelineShotItem : IMoviePipelineQueueTreeItem
@@ -511,122 +451,92 @@ struct FMoviePipelineShotItem : IMoviePipelineQueueTreeItem
 	/** The job that this tree item represents */
 	TWeakObjectPtr<UMoviePipelineExecutorJob> WeakJob;
 
-	explicit FMoviePipelineShotItem(UMoviePipelineExecutorJob* InJob)
+	/** The identifier in the job for which shot this is. */
+	FSoftObjectPath SectionPath;
+
+	explicit FMoviePipelineShotItem(UMoviePipelineExecutorJob* InJob, const FSoftObjectPath& InSectionPath)
 		: WeakJob(InJob)
+		, SectionPath(InSectionPath)
 	{}
+
+	virtual UMoviePipelineExecutorJob* GetOwningJob() override
+	{
+		return WeakJob.Get();
+	}
 
 	virtual TSharedRef<ITableRow> ConstructWidget(TWeakPtr<SMoviePipelineQueueEditor> InQueueWidget, const TSharedRef<STableViewBase>& OwnerTable) override
 	{
-		return SNew(STableRow<TSharedPtr<IMoviePipelineQueueTreeItem>>, OwnerTable)
-			.Content()
-			[
-				SNullWidget::NullWidget
-			];
+		return SNew(SQueueShotListRow, OwnerTable)
+			.Item(SharedThis(this));
 	}
 
-	/*virtual TSharedRef<SWidget> ConstructWidget(TWeakPtr<SMoviePipelineQueueEditor> InQueueWidget) override
+	FMoviePipelineJobShotInfo* GetShotInfoFromJob() const
 	{
-		return SNew(SHorizontalBox)
+		UMoviePipelineExecutorJob* Job = WeakJob.Get();
+		if (!Job)
+		{
+			return nullptr;
+		}
 
-			// Toggle Checkbox for deciding to render or not.
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(20, 4)
-			.VAlign(VAlign_Center)
-			[
-				SNew(SCheckBox)
-				// .Style(FTakeRecorderStyle::Get(), "TakeRecorder.Source.Switch")
-				.IsFocusable(false)
-				.IsChecked(this, &FMoviePipelineShotItem::GetCheckState)
-				.OnCheckStateChanged(this, &FMoviePipelineShotItem::SetCheckState, InQueueWidget)
-			]
-			
-			// Shot Name Label
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(20, 4)
-			.VAlign(VAlign_Center)
-			[
-				SNew(STextBlock)
-				.Text(this, &FMoviePipelineShotItem::GetShotLabel)
-			]
+		for (int32 Index = 0; Index < Job->ShotMaskInfo.Num(); Index++)
+		{
+			if (Job->ShotMaskInfo[Index].SectionPath == SectionPath)
+			{
+				return &Job->ShotMaskInfo[Index];
+			}
+		}
 
-			// Preset Label
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			.Padding(8, 0)
-			[
-				SNew(STextBlock)
-				.Text(this, &FMoviePipelineShotItem::GetPresetLabel)
-			]
+		return nullptr;
+	}
 
-			// Spacer
-			+ SHorizontalBox::Slot()
-			.FillWidth(1)
-			[
-				SNew(SBox)
-			]
-
-			// Status 
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			.Padding(8, 0, 24, 0)
-			[
-				SNew(SWidgetSwitcher)
-				.WidgetIndex(this, &FMoviePipelineShotItem::GetStatusIndex)
-
-				// Ready Label
-				+ SWidgetSwitcher::Slot()
-				.VAlign(VAlign_Center)
-				.HAlign(HAlign_Center)
-				[
-					SNew(STextBlock)
-					// .Style(FTakeRecorderStyle::Get(), "TakeRecorder.Source.Switch")
-					.Text(LOCTEXT("PendingJobStatus_Label", "Ready"))
-				]
-
-				// Progress Bar
-				+ SWidgetSwitcher::Slot()
-				.VAlign(VAlign_Center)
-				.HAlign(HAlign_Center)
-				[
-					SNew(SProgressBar)
-					// .Style(FTakeRecorderStyle::Get(), "TakeRecorder.Source.Switch")
-					.Percent(this, &FMoviePipelineShotItem::GetProgressPercent)
-				]
-
-				// Completed
-				+ SWidgetSwitcher::Slot()
-				.VAlign(VAlign_Center)
-				.HAlign(HAlign_Center)
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("PendingJobStatus_Label", "Completed!"))
-				]
-			]
-			;
-	}*/
 
 	ECheckBoxState GetCheckState() const
 	{
-		return ECheckBoxState::Checked;
+		if (FMoviePipelineJobShotInfo* ShotInfo = GetShotInfoFromJob())
+		{
+			return ShotInfo->bEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		}
+		
+		return ECheckBoxState::Unchecked;
 	}
 
-	void SetCheckState(ECheckBoxState InNewState, TWeakPtr<SMoviePipelineQueueEditor> InQueueWidget)
+	void SetCheckState(ECheckBoxState InNewState)
 	{
-
+		if (FMoviePipelineJobShotInfo* ShotInfo = GetShotInfoFromJob())
+		{
+			ShotInfo->bEnabled = InNewState == ECheckBoxState::Checked;
+		}
 	}
 
 	FText GetShotLabel() const
 	{
-		return LOCTEXT("ExampleShotName", "ShotName_001");
+		if (FMoviePipelineJobShotInfo* ShotInfo = GetShotInfoFromJob())
+		{
+			UMovieSceneCameraCutSection* CameraCutSection = Cast<UMovieSceneCameraCutSection>(ShotInfo->SectionPath.TryLoad());
+			if (CameraCutSection)
+			{
+				const FMovieSceneObjectBindingID& CameraObjectBindingId = CameraCutSection->GetCameraBindingID();
+				if (CameraObjectBindingId.IsValid())
+				{
+					UMovieScene* OwningMovieScene = CameraCutSection->GetTypedOuter<UMovieScene>();
+					if (OwningMovieScene)
+					{
+						FMovieSceneBinding* Binding = OwningMovieScene->FindBinding(CameraObjectBindingId.GetGuid());
+						if (Binding)
+						{
+							return FText::FromString(Binding->GetName());
+						}
+					}
+				}
+			}
+		}
+
+		return FText();
 	}
 
 	FText GetPresetLabel() const
 	{
-		return LOCTEXT("ExampleShotName2", "Use Master");
+		return FText();
 	}
 
 	int32 GetStatusIndex() const
@@ -636,9 +546,150 @@ struct FMoviePipelineShotItem : IMoviePipelineQueueTreeItem
 
 	TOptional<float> GetProgressPercent() const
 	{
-		return .1f;
+		if (FMoviePipelineJobShotInfo* ShotInfo = GetShotInfoFromJob())
+		{
+			return ShotInfo->Progress;
+		}
+
+		return TOptional<float>();
 	}
 };
+
+void SQueueShotListRow::Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& OwnerTable)
+{
+	Item = InArgs._Item;
+	OnEditConfigRequested = InArgs._OnEditConfigRequested;
+
+	FSuperRowType::FArguments SuperArgs = FSuperRowType::FArguments();
+	FSuperRowType::Construct(SuperArgs, OwnerTable);
+}
+
+TSharedRef<SWidget> SQueueShotListRow::GenerateWidgetForColumn(const FName& ColumnName)
+{
+	if (ColumnName == SQueueJobListRow::NAME_JobName)
+	{
+		return SNew(SBox)
+		.Padding(2.0f)
+		[
+			SNew(SHorizontalBox)
+
+			// Toggle Checkbox for deciding to render or not.
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(4, 4)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SCheckBox)
+				.Style(FMovieRenderPipelineStyle::Get(), "MovieRenderPipeline.Setting.Switch")
+				.IsFocusable(false)
+				.IsChecked(Item.Get(), &FMoviePipelineShotItem::GetCheckState)
+				.OnCheckStateChanged(Item.Get(), &FMoviePipelineShotItem::SetCheckState)
+			]
+
+			// Shot Name Label
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(Item.Get(), &FMoviePipelineShotItem::GetShotLabel)
+			]
+		];
+	}
+	else if (ColumnName == SQueueJobListRow::NAME_Settings)
+	{
+		return SNullWidget::NullWidget;
+		/*return SNew(SHorizontalBox)
+
+			// Preset Label
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(2, 0)
+			[
+				SNew(SHyperlink)
+				.Text(Item.Get(), &FMoviePipelineQueueJobTreeItem::GetMasterConfigLabel)
+				.OnNavigate(Item.Get(), &FMoviePipelineQueueJobTreeItem::OnEditMasterConfigForJob)
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("ModifiedConfigIndicator", "*"))
+				.Visibility(Item.Get(), &FMoviePipelineQueueJobTreeItem::GetMasterConfigModifiedVisibility)
+			]
+
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.f)
+			[
+				SNullWidget::NullWidget
+			]
+
+			// Dropdown Arrow
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.HAlign(HAlign_Right)
+			.Padding(4, 0, 4, 0)
+			[
+				SNew(SComboButton)
+				.ContentPadding(1)
+				.OnGetMenuContent(Item.Get(), &FMoviePipelineQueueJobTreeItem::OnGenerateConfigPresetPickerMenu)
+				.HasDownArrow(false)
+				.ButtonContent()
+				[
+					SNew(SBox)
+					.Padding(FMargin(2, 0))
+					[
+						SNew(STextBlock)
+						.TextStyle(FEditorStyle::Get(), "NormalText.Important")
+						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+						.Text(FEditorFontGlyphs::Caret_Down)
+					]
+				]
+			];*/
+	}
+	else if (ColumnName == SQueueJobListRow::NAME_Output)
+	{
+		return SNullWidget::NullWidget;
+	}
+	else if (ColumnName == SQueueJobListRow::NAME_Status)
+	{
+		return SNew(SWidgetSwitcher)
+			.WidgetIndex(Item.Get(), &FMoviePipelineShotItem::GetStatusIndex)
+			
+			// Ready Label
+			+ SWidgetSwitcher::Slot()
+			.VAlign(VAlign_Center)
+			.HAlign(HAlign_Fill)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("PendingJobStatusReady_Label", "Ready"))
+			]
+
+			// Progress Bar
+			+ SWidgetSwitcher::Slot()
+			.VAlign(VAlign_Center)
+			.HAlign(HAlign_Fill)
+			[
+				SNew(SProgressBar)
+				.Percent(Item.Get(), &FMoviePipelineShotItem::GetProgressPercent)
+			]
+
+			// Completed
+			+ SWidgetSwitcher::Slot()
+			.VAlign(VAlign_Center)
+			.HAlign(HAlign_Fill)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("PendingJobStatusCompleted_Label", "Completed!"))
+			];
+	}
+
+	return SNullWidget::NullWidget;
+}
+
 
 PRAGMA_DISABLE_OPTIMIZATION
 void SMoviePipelineQueueEditor::Construct(const FArguments& InArgs)
@@ -646,10 +697,11 @@ void SMoviePipelineQueueEditor::Construct(const FArguments& InArgs)
 	CachedQueueSerialNumber = uint32(-1);
 	OnEditConfigRequested = InArgs._OnEditConfigRequested;
 	OnPresetChosen = InArgs._OnPresetChosen;
+	OnJobSelectionChanged = InArgs._OnJobSelectionChanged;
 
 	TreeView = SNew(STreeView<TSharedPtr<IMoviePipelineQueueTreeItem>>)
 		.TreeItemsSource(&RootNodes)
-		// .OnSelectionChanged(InArgs._OnSelectionChanged)
+		.OnSelectionChanged(this, &SMoviePipelineQueueEditor::OnJobSelectionChanged_Impl)
 		.OnGenerateRow(this, &SMoviePipelineQueueEditor::OnGenerateRow)
 		.OnGetChildren(this, &SMoviePipelineQueueEditor::OnGetChildren)
 		.OnContextMenuOpening(this, &SMoviePipelineQueueEditor::GetContextMenuContent)
@@ -657,16 +709,16 @@ void SMoviePipelineQueueEditor::Construct(const FArguments& InArgs)
 		(
 			SNew(SHeaderRow)
 
-			+ SHeaderRow::Column(SQueueJobListRow::NAME_Sequence)
-			.FillWidth(0.3f)
-			.DefaultLabel(LOCTEXT("QueueHeaderSequence_Text", "Sequence"))
+			+ SHeaderRow::Column(SQueueJobListRow::NAME_JobName)
+			.FillWidth(0.25f)
+			.DefaultLabel(LOCTEXT("QueueHeaderJobName_Text", "Job"))
 
 			+ SHeaderRow::Column(SQueueJobListRow::NAME_Settings)
-			.FillWidth(0.3)
+			.FillWidth(0.25f)
 			.DefaultLabel(LOCTEXT("QueueHeaderSettings_Text", "Settings"))
 
 			+ SHeaderRow::Column(SQueueJobListRow::NAME_Output)
-			.FillWidth(0.4)
+			.FillWidth(0.5f)
 			.DefaultLabel(LOCTEXT("QueueHeaderOutput_Text", "Output"))
 
 			+ SHeaderRow::Column(SQueueJobListRow::NAME_Status)
@@ -828,27 +880,31 @@ void SMoviePipelineQueueEditor::OnCreateJobFromAsset(const FAssetData& InAsset)
 	if (LevelSequence)
 	{
 		FScopedTransaction Transaction(FText::Format(LOCTEXT("CreateJob_Transaction", "Add {0}|plural(one=Job, other=Jobs)"), 1));
-		
+		const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
+
 		UMoviePipelineQueue* ActiveQueue = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>()->GetQueue();
 		check(ActiveQueue);
 		ActiveQueue->Modify();
 
-		UMoviePipelineExecutorJob* NewJob = ActiveQueue->AllocateNewJob();
+		UMoviePipelineExecutorJob* NewJob = ActiveQueue->AllocateNewJob(ProjectSettings->DefaultExecutorJob);
+		if (!ensureAlwaysMsgf(NewJob, TEXT("Failed to allocate new job! Check the DefaultExecutorJob is not null in Project Settings!")))
+		{
+			return;
+		}
+
 		NewJob->Modify();
 
 		PendingJobsToSelect.Add(NewJob);
 
-		{
-			// We'll assume they went to render from the current world - they can always override it later.
-			FSoftObjectPath CurrentWorld = FSoftObjectPath(GEditor->GetEditorWorldContext().World());
-			FSoftObjectPath Sequence = InAsset.ToSoftObjectPath();
+		// We'll assume they went to render from the current world - they can always override it later.
+		FSoftObjectPath CurrentWorld = FSoftObjectPath(GEditor->GetEditorWorldContext().World());
+		FSoftObjectPath Sequence = InAsset.ToSoftObjectPath();
+		NewJob->Map = CurrentWorld;
+		NewJob->Author = FPlatformProcess::UserName(false);
+		NewJob->SetSequence(Sequence);
+		NewJob->JobName = NewJob->Sequence.GetAssetName();
+		
 
-			NewJob->Sequence = Sequence;
-			NewJob->Map = CurrentWorld;
-			NewJob->Author = FText::FromString(FPlatformProcess::UserName(false));
-		}
-
-		const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
 		{
 			// The job configuration is already set up with an empty configuration, but we'll try and use their last used preset 
 			// (or a engine supplied default) for better user experience. 
@@ -946,8 +1002,14 @@ void SMoviePipelineQueueEditor::ReconstructTree()
 		}
 
 		TSharedPtr<FMoviePipelineQueueJobTreeItem> JobTreeItem = MakeShared<FMoviePipelineQueueJobTreeItem>(Job, OnEditConfigRequested, OnPresetChosen);
-		TSharedPtr<FMoviePipelineMapTreeItem> MapTreeItem = MakeShared<FMoviePipelineMapTreeItem>(Job);
-		JobTreeItem->Children.Add(MapTreeItem);
+
+		// Add Shots
+		for (const FMoviePipelineJobShotInfo& ShotInfo : Job->ShotMaskInfo)
+		{
+			TSharedPtr<FMoviePipelineShotItem> Shot = MakeShared<FMoviePipelineShotItem>(Job, ShotInfo.SectionPath);
+			JobTreeItem->Children.Add(Shot);
+		}
+
 		RootNodes.Add(JobTreeItem);
 	}
 
@@ -1115,6 +1177,26 @@ void SMoviePipelineQueueEditor::SetSelectedJobs_Impl(const TArray<UMoviePipeline
 	}
 
 	TreeView->SetItemSelection(SelectedTreeItems, true, ESelectInfo::Direct);
+}
+
+void SMoviePipelineQueueEditor::OnJobSelectionChanged_Impl(TSharedPtr<IMoviePipelineQueueTreeItem> TreeItem, ESelectInfo::Type SelectInfo)
+{
+	TArray<UMoviePipelineExecutorJob*> SelectedJobs;
+	if (TreeItem.IsValid())
+	{
+		// Iterate the tree and get all selected items.
+		TArray<TSharedPtr<IMoviePipelineQueueTreeItem>> SelectedTreeItems = TreeView->GetSelectedItems();
+		for (TSharedPtr<IMoviePipelineQueueTreeItem> Item : SelectedTreeItems)
+		{
+			UMoviePipelineExecutorJob* Job = Item->GetOwningJob();
+			if (Job)
+			{
+				SelectedJobs.AddUnique(Job);
+			}
+		}
+	}
+
+	OnJobSelectionChanged.ExecuteIfBound(SelectedJobs);
 }
 
 #undef LOCTEXT_NAMESPACE

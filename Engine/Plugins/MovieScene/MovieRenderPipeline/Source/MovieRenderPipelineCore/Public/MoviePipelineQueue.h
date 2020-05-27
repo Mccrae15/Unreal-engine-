@@ -10,15 +10,8 @@
 #include "MoviePipelineQueue.generated.h"
 
 class UMoviePipelineMasterConfig;
-
-UENUM(BlueprintType)
-enum class EMoviePipelineExecutorJobStatus : uint8
-{
-	Uninitialized = 0,
-	ReadyToStart = 1,
-	InProgress = 2,
-	Finished = 3
-};
+class ULevel;
+class ULevelSequence;
 
 /**
 * A particular job within the Queue
@@ -44,27 +37,9 @@ public:
 		return 0.2f;
 	}
 
-public:
-	ULevelSequence* TryLoadSequence()
-	{
-		if(LoadedSequence)
-		{
-			return LoadedSequence;
-		}
-		
-		LoadedSequence = Cast<ULevelSequence>(Sequence.TryLoad());
-		return LoadedSequence;
-	}
-	
+public:	
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
-	void SetPresetOrigin(UMoviePipelineMasterConfig* InPreset)
-	{
-		if (InPreset)
-		{
-			Configuration->CopyFrom(InPreset);
-			PresetOrigin = TSoftObjectPtr<UMoviePipelineMasterConfig>(InPreset);
-		}
-	}
+	void SetPresetOrigin(UMoviePipelineMasterConfig* InPreset);
 
 	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
 	UMoviePipelineMasterConfig* GetPresetOrigin() const
@@ -79,31 +54,40 @@ public:
 	}
 
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
-	void SetConfiguration(UMoviePipelineMasterConfig* InPreset)
-	{
-		if (InPreset)
-		{
-			Configuration->CopyFrom(InPreset);
-			PresetOrigin = nullptr;
-		}
-	}
-	
+	void SetConfiguration(UMoviePipelineMasterConfig* InPreset);
+
+	UFUNCTION(BlueprintSetter, Category = "Movie Render Pipeline")
+	void SetSequence(FSoftObjectPath InSequence);
+
 public:
+	// UObject Interface
+	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent);
+	// ~UObject Interface
+
+public:
+	/** (Optional) Name of the job. Shown on the default burn-in. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
+	FString JobName;
+
 	/** Which sequence should this job render? */
-	UPROPERTY(BlueprintReadWrite, Category = "Movie Render Pipeline")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, BlueprintSetter = "SetSequence", Category = "Movie Render Pipeline", meta = (AllowedClasses = "LevelSequence"))
 	FSoftObjectPath Sequence;
-	
+
 	/** Which map should this job render on */
-	UPROPERTY(BlueprintReadWrite, Category = "Movie Render Pipeline")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline", meta = (AllowedClasses = "World"))
 	FSoftObjectPath Map;
+
+	/** (Optional) Name of the person who submitted the job. Can be shown in burn in as a first point of contact about the content. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
+	FString Author;
+
+	/** (Optional) Shot specific information. If a shot is missing from this list it will assume to be enabled and will be rendered. */
+	UPROPERTY(BlueprintReadWrite, Category = "Movie Render Pipeline")
+	TArray<FMoviePipelineJobShotInfo> ShotMaskInfo;
 
 	/** What state is this particular job instance currently in? */
 	UPROPERTY(BlueprintReadOnly, Category = "Movie Render Pipeline")
 	EMoviePipelineExecutorJobStatus JobStatus;
-
-	/** (Optional) Name of the person who submitted the job. Can be shown in burn in as a first point of contact about the content. */
-	UPROPERTY(BlueprintReadWrite, Category = "Movie Render Pipeline")
-	FText Author;
 
 private:
 	/** 
@@ -115,11 +99,6 @@ private:
 	*/
 	UPROPERTY()
 	TSoftObjectPtr<UMoviePipelineMasterConfig> PresetOrigin;
-	
-private:
-	/** Cache our loaded sequence after the first time someone tries to retrieve information from this job that requires the Sequence. */
-	UPROPERTY(Transient)
-	ULevelSequence* LoadedSequence;
 };
 
 /**
@@ -142,15 +121,37 @@ public:
 		}
 	}
 	
-	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline|Queue")
-	UMoviePipelineExecutorJob* AllocateNewJob();
+	/**
+	* Allocates a new Job in this Queue. The Queue owns the jobs for memory management purposes,
+	* and this will handle that for you. 
+	*
+	* @param InJobType	Specify the specific Job type that should be created. Custom Executors can use custom Job types to allow the user to provide more information.
+	* @return	The created Executor job instance.
+	*/
+	UFUNCTION(BlueprintCallable, meta = (DeterminesOutputType = "InClass"), Category = "Movie Render Pipeline|Queue", meta=(InJobType="/Script/MovieRenderPipelineCore.MoviePipelineExecutorJob"))
+	UMoviePipelineExecutorJob* AllocateNewJob(TSubclassOf<UMoviePipelineExecutorJob> InJobType);
 
+	/**
+	* Deletes the specified job from the Queue. 
+	*
+	* @param InJob	The job to look for and delete. 
+	*/
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline|Queue")
 	void DeleteJob(UMoviePipelineExecutorJob* InJob);
 
+	/**
+	* Duplicate the specific job and return the duplicate. Configurations are duplicated and not shared.
+	*
+	* @param InJob	The job to look for to duplicate.
+	* @return The duplicated instance or nullptr if a duplicate could not be made.
+	*/
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline|Queue")
 	UMoviePipelineExecutorJob* DuplicateJob(UMoviePipelineExecutorJob* InJob);
 	
+	/**
+	* Get all of the Jobs contained in this Queue.
+	* @return The jobs contained by this queue.
+	*/
 	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline|Queue")
 	TArray<UMoviePipelineExecutorJob*> GetJobs() const
 	{

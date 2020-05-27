@@ -153,6 +153,7 @@ ULandscapeComponent::ULandscapeComponent(const FObjectInitializer& ObjectInitial
 , LayerUpdateFlagPerMode(0)
 , WeightmapsHash(0)
 , SplineHash(0)
+, PhysicalMaterialHash(0)
 #endif
 , GrassData(MakeShareable(new FLandscapeComponentGrassData()))
 , ChangeTag(0)
@@ -616,10 +617,10 @@ bool ULandscapeComponent::IsLandscapeHoleMaterialValid() const
 	UMaterialInterface* HoleMaterial = GetLandscapeHoleMaterial();
 	if (!HoleMaterial)
 	{
-		return false;
+		HoleMaterial = GetLandscapeMaterial();
 	}
 
-	return HoleMaterial->GetMaterial()->HasAnyExpressionsInMaterialAndFunctionsOfType<UMaterialExpressionLandscapeVisibilityMask>();
+	return HoleMaterial ? HoleMaterial->GetMaterial()->HasAnyExpressionsInMaterialAndFunctionsOfType<UMaterialExpressionLandscapeVisibilityMask>() : false;
 }
 
 bool ULandscapeComponent::ComponentHasVisibilityPainted() const
