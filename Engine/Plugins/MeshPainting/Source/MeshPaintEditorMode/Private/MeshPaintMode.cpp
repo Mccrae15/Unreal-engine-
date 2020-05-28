@@ -24,6 +24,7 @@
 #include "MeshPaintModeHelpers.h"
 #include "MeshSelect.h"
 #include "MeshTexturePaintingTool.h"
+#include "Modules/ModuleManager.h"
 
 
 #define LOCTEXT_NAMESPACE "MeshPaintMode"
@@ -118,6 +119,8 @@ UMeshPaintMode::UMeshPaintMode()
 	SettingsClass = UMeshPaintModeSettings::StaticClass();
 	ToolsContextClass = UMeshToolsContext::StaticClass();
 	CurrentPaletteName = MeshPaintMode_Color;
+
+	FModuleManager::Get().LoadModule("EditorStyle");
 
 	Info = FEditorModeInfo(
 		FName(TEXT("MeshPaintMode")),
