@@ -35,7 +35,7 @@ public:
 
 struct FBulkDataOrId
 {
-	using FileToken = int32;
+	using FileToken = uint64;
 
 	union
 	{
@@ -104,7 +104,7 @@ public:
 	static void				SetIoDispatcher(FIoDispatcher* InIoDispatcher) { IoDispatcher = InIoDispatcher; }
 	static FIoDispatcher*	GetIoDispatcher() { return IoDispatcher; }
 public:
-	static constexpr FBulkDataOrId::FileToken InvalidToken = INDEX_NONE;
+	static constexpr FBulkDataOrId::FileToken InvalidToken = FBulkDataOrId::FileToken(INDEX_NONE);
 
 	FBulkDataBase()
 	{
