@@ -128,7 +128,7 @@ namespace FileTokenSystem
 		class FStringTable
 		{
 		public:
-			using KeyType = int32;
+			using KeyType = uint64;
 
 			void Add(const KeyType& Key, const FString& Filename)
 			{
@@ -159,7 +159,7 @@ namespace FileTokenSystem
 				return false;
 			}
 
-			void IncRef(const int32& Key)
+			void IncRef(const KeyType& Key)
 			{
 				if (StringData* ExistingEntry = Table.Find(Key))
 				{
@@ -188,7 +188,7 @@ namespace FileTokenSystem
 
 	FBulkDataOrId::FileToken RegisterFileToken( const FName& PackageName, const FString& Filename)
 	{
-		const uint32 Token = GetTypeHash(PackageName);
+		const uint64 Token = (uint64(PackageName.GetComparisonIndex().ToUnstableInt()) << 32) | uint64(PackageName.GetNumber());
 
 		FWriteScopeLock LockForScope(TokenLock);
 		StringTable.Add(Token, Filename);
@@ -751,7 +751,7 @@ void FBulkDataBase::Serialize(FArchive& Ar, UObject* Owner, int32 /*Index*/, boo
 
 		if (!IsInlined() && bUseIoDispatcher)
 		{
-			Data.PackageID = Package->GetPackageId().ToIndex();
+			Data.PackageID = Package->GetPackageId().Value();
 			SetRuntimeBulkDataFlags(BULKDATA_UsesIoDispatcher); // Indicates that this BulkData should use the FIoChunkId rather than a filename
 		}
 		else
@@ -992,7 +992,7 @@ FIoChunkId FBulkDataBase::CreateChunkId() const
 								IsFileMemoryMapped() ? EIoChunkType::MemoryMappedBulkData :
 								EIoChunkType::BulkData;
 
-	return CreateIoChunkId((uint32)Data.PackageID, 0, Type);
+	return CreateIoChunkId(Data.PackageID, 0, Type);
 }
 
 void FBulkDataBase::SetBulkDataFlags(uint32 BulkDataFlagsToSet)
@@ -1521,7 +1521,7 @@ void FBulkDataBase::ProcessDuplicateData(FArchive& Ar, const UPackage* Package, 
 #if ALLOW_OPTIONAL_DATA
 	if (IsUsingIODispatcher())
 	{
-		const FIoChunkId OptionalChunkId = CreateIoChunkId((uint32)Data.PackageID, 0, EIoChunkType::OptionalBulkData);
+		const FIoChunkId OptionalChunkId = CreateIoChunkId(Data.PackageID, 0, EIoChunkType::OptionalBulkData);
 
 		if (IoDispatcher->DoesChunkExist(OptionalChunkId))
 		{
