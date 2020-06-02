@@ -23,7 +23,6 @@ public:
 	/** An identifier to allow removal later on. */
 	FName Identifier;
 
-	/** Delegate that generates a the widget. */
 	FGenericCreateWidget CreateWidget;
 };
 
