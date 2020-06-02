@@ -79,18 +79,6 @@ FUObjectAnnotationSparseBool GSelectedComponentAnnotation;
 /** Static var indicating activity of reregister context */
 int32 FGlobalComponentReregisterContext::ActiveGlobalReregisterContextCount = 0;
 
-#if WITH_CHAOS
-// Allows for CreatePhysicsState to be deferred, to batch work and parallelize.
-int32 GEnableDeferredPhysicsCreation = 1;
-FAutoConsoleVariableRef CVarEnableDeferredPhysicsCreation(
-	TEXT("p.EnableDeferredPhysicsCreation"), 
-	GEnableDeferredPhysicsCreation,
-	TEXT("Enables/Disables deferred physics creation.")
-);
-#else
-int32 GEnableDeferredPhysicsCreation = 0;
-#endif
-
 void FRegisterComponentContext::Process()
 {
 	FSceneInterface* Scene = World->Scene;
@@ -1411,7 +1399,7 @@ void UActorComponent::OnDestroyPhysicsState()
 }
 
 
-void UActorComponent::CreatePhysicsState(bool bAllowDeferral)
+void UActorComponent::CreatePhysicsState()
 {
 #if WITH_CHAOS
 	LLM_SCOPE(ELLMTag::Chaos);
@@ -1423,27 +1411,14 @@ void UActorComponent::CreatePhysicsState(bool bAllowDeferral)
 
 	if (!bPhysicsStateCreated && WorldPrivate->GetPhysicsScene() && ShouldCreatePhysicsState())
 	{
-		UPrimitiveComponent* Primitive = Cast<UPrimitiveComponent>(this);
-		if (GEnableDeferredPhysicsCreation && bAllowDeferral && Primitive && Primitive->GetBodySetup())
-		{
-#if WITH_CHAOS
-			WorldPrivate->GetPhysicsScene()->DeferPhysicsStateCreation(Primitive);
-#else
-			check(false);
-#endif
-		}
-		else
-		{
-			// Call virtual
-			OnCreatePhysicsState();
+		// Call virtual
+		OnCreatePhysicsState();
 
-			checkf(bPhysicsStateCreated, TEXT("Failed to route OnCreatePhysicsState (%s)"), *GetFullName());
+		checkf(bPhysicsStateCreated, TEXT("Failed to route OnCreatePhysicsState (%s)"), *GetFullName());
 
-			// Broadcast delegate
-			GlobalCreatePhysicsDelegate.Broadcast(this);
-		}
+		// Broadcast delegate
+		GlobalCreatePhysicsDelegate.Broadcast(this);
 	}
-
 }
 
 void UActorComponent::DestroyPhysicsState()
@@ -1462,19 +1437,6 @@ void UActorComponent::DestroyPhysicsState()
 
 		checkf(!bPhysicsStateCreated, TEXT("Failed to route OnDestroyPhysicsState (%s)"), *GetFullName());
 		checkf(!HasValidPhysicsState(), TEXT("Failed to destroy physics state (%s)"), *GetFullName());
-	}
-	else if(GEnableDeferredPhysicsCreation)
-	{
-#if WITH_CHAOS
-		UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(this);
-		if (PrimitiveComponent && PrimitiveComponent->DeferredCreatePhysicsStateScene != nullptr)
-		{
-			// We had to cache this scene because World ptr is null as we have unregistered already.
-			PrimitiveComponent->DeferredCreatePhysicsStateScene->RemoveDeferredPhysicsStateCreation(PrimitiveComponent);
-		}
-#else
-		check(false);
-#endif
 	}
 }
 
@@ -1495,7 +1457,7 @@ void UActorComponent::ExecuteRegisterEvents(FRegisterComponentContext* Context)
 		checkf(bRenderStateCreated, TEXT("Failed to route CreateRenderState_Concurrent (%s)"), *GetFullName());
 	}
 
-	CreatePhysicsState(/*bAllowDeferral=*/true);
+	CreatePhysicsState();
 }
 
 
