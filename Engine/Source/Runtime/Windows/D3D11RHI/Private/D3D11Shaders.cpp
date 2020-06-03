@@ -11,61 +11,11 @@
 #include "nvapi.h"
 #endif
 
-
-// 4.25.1 Patch: A bugfix for RT/UAV hazard detection needed to use some padding in FD3D11ShaderData
-//               These static_asserts ensure that it does not change binary compatibility
-#if PLATFORM_32BITS
-
-static_assert(sizeof(FD3D11ShaderData) == 0x68, "sizeof(FD3D11ShaderData) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11VertexShader) == 0xb0, "sizeof(FD3D11VertexShader) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11ComputeShader) == 0xa4, "sizeof(FD3D11ComputeShader) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11GeometryShader) == 0xa0, "sizeof(FD3D11GeometryShader) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11HullShader) == 0xa0, "sizeof(FD3D11HullShader) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11DomainShader) == 0xa0, "sizeof(FD3D11DomainShader) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11PixelShader) == 0xa0, "sizeof(FD3D11PixelShader) should not change as it will effect binary compatibility");
-
-static_assert(offsetof(FD3D11VertexShader, Resource) == 0x9c, "Offset of FD3D11VertexShader::Resource should not change as it will effect binary compatibility");
-static_assert(offsetof(FD3D11ComputeShader, Resource) == 0xa0, "Offset of FD3D11ComputeShader::Resource should not change as it will effect binary compatibility");
-static_assert(offsetof(FD3D11GeometryShader, Resource) == 0x9c, "Offset of FD3D11GeometryShader::Resource should not change as it will effect binary compatibility");
-static_assert(offsetof(FD3D11HullShader, Resource) == 0x9c, "Offset of FD3D11HullShader::Resource should not change as it will effect binary compatibility");
-static_assert(offsetof(FD3D11DomainShader, Resource) == 0x9c, "Offset of FD3D11DomainShader::Resource should not change as it will effect binary compatibility");
-static_assert(offsetof(FD3D11PixelShader, Resource) == 0x9c, "Offset of FD3D11PixelShader::Resource should not change as it will effect binary compatibility");
-
-#else
-
-static_assert(sizeof(FD3D11ShaderData) == 0x90, "sizeof(FD3D11ShaderData) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11VertexShader) == 0xf0, "sizeof(FD3D11VertexShader) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11ComputeShader) == 0xe0, "sizeof(FD3D11ComputeShader) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11GeometryShader) == 0xd8, "sizeof(FD3D11GeometryShader) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11HullShader) == 0xd8, "sizeof(FD3D11HullShader) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11DomainShader) == 0xd8, "sizeof(FD3D11DomainShader) should not change as it will effect binary compatibility");
-static_assert(sizeof(FD3D11PixelShader) == 0xd8, "sizeof(FD3D11PixelShader) should not change as it will effect binary compatibility");
-
-static_assert(offsetof(FD3D11VertexShader, Resource) == 0xd0, "Offset of FD3D11VertexShader::Resource should not change as it will effect binary compatibility");
-static_assert(offsetof(FD3D11ComputeShader, Resource) == 0xd8, "Offset of FD3D11ComputeShader::Resource should not change as it will effect binary compatibility");
-static_assert(offsetof(FD3D11GeometryShader, Resource) == 0xd0, "Offset of FD3D11GeometryShader::Resource should not change as it will effect binary compatibility");
-static_assert(offsetof(FD3D11HullShader, Resource) == 0xd0, "Offset of FD3D11HullShader::Resource should not change as it will effect binary compatibility");
-static_assert(offsetof(FD3D11DomainShader, Resource) == 0xd0, "Offset of FD3D11DomainShader::Resource should not change as it will effect binary compatibility");
-static_assert(offsetof(FD3D11PixelShader, Resource) == 0xd0, "Offset of FD3D11PixelShader::Resource should not change as it will effect binary compatibility");
-
-#endif
-
 template <typename TShaderType>
 static inline void ReadShaderOptionalData(FShaderCodeReader& InShaderCode, TShaderType& OutShader)
 {
 	auto PackedResourceCounts = InShaderCode.FindOptionalData<FShaderCodePackedResourceCounts>();
 	check(PackedResourceCounts);
-	uint32 UAVMask = 0;
-	for (uint32 UAVBinding : OutShader.ShaderResourceTable.UnorderedAccessViewMap)
-	{
-		if (UAVBinding == 0 || UAVBinding == 0xffffffff)
-		{
-			break;
-		}
-		const uint8 BindIndex = FRHIResourceTableEntry::GetBindIndex(UAVBinding);
-		UAVMask |= (1 << BindIndex);
-	}
-	OutShader.UAVMask = UAVMask;
 	OutShader.bShaderNeedsGlobalConstantBuffer = PackedResourceCounts->bGlobalUniformBufferUsed;
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	OutShader.ShaderName = InShaderCode.FindOptionalData('n');
