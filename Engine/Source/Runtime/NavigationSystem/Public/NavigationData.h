@@ -673,7 +673,9 @@ public:
 
 		return SharedPath;
 	}
-	
+
+	void RemovedObservedPath(const UObject* RemoveForThis);
+
 	void RegisterObservedPath(FNavPathSharedPtr SharedPath)
 	{
 		check(IsInGameThread());
