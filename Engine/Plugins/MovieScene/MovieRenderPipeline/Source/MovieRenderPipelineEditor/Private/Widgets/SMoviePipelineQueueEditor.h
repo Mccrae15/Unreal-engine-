@@ -6,6 +6,7 @@
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STreeView.h"
 #include "Types/SlateEnums.h"
 
 struct FAssetData;
@@ -44,6 +45,8 @@ public:
 	TSharedRef<SWidget> MakeAddSequenceJobButton();
 	TSharedRef<SWidget> RemoveSelectedJobButton();
 	TSharedRef<SWidget> OnGenerateNewJobFromAssetMenu();
+
+	TArray<TSharedPtr<IMoviePipelineQueueTreeItem>> GetSelectedItems() const { return TreeView->GetSelectedItems(); }
 
 private:
 	// SWidget Interface

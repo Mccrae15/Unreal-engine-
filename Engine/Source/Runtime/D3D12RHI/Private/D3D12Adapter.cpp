@@ -407,11 +407,21 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 	bool bRayTracingSupported = false;
 
 	{
-		D3D12_FEATURE_DATA_D3D12_OPTIONS5 Features = {};
-		if (SUCCEEDED(RootDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &Features, sizeof(Features)))
-			&& Features.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0)
+		D3D12_FEATURE_DATA_D3D12_OPTIONS5 Features5 = {};
+		if (SUCCEEDED(RootDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &Features5, sizeof(Features5))))
 		{
-			bRayTracingSupported = true;
+			bRayTracingSupported = Features5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0;
+			GRHISupportsRayTracingPSOAdditions = Features5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1;
+
+			if (Features5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1)
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("D3D12 ray tracing 1.1 is supported."));
+			}
+			else if (Features5.RaytracingTier == D3D12_RAYTRACING_TIER_1_0)
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("D3D12 ray tracing 1.0 is supported."));
+			}
+
 		}
 	}
 
@@ -423,8 +433,10 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 
  	if (bRayTracingSupported && GetRayTracingCVarValue() && !FParse::Param(FCommandLine::Get(), TEXT("noraytracing")))
 	{
-		RootDevice->QueryInterface(IID_PPV_ARGS(RootRayTracingDevice.GetInitReference()));
-		if (RootRayTracingDevice)
+		RootDevice->QueryInterface(IID_PPV_ARGS(RootDevice5.GetInitReference())); // DXR 1.0 (required)
+		RootDevice->QueryInterface(IID_PPV_ARGS(RootDevice7.GetInitReference())); // DXR 1.1 (optional)
+
+		if (RootDevice5)
 		{
 			UE_LOG(LogD3D12RHI, Log, TEXT("D3D12 ray tracing enabled."));
 
@@ -540,6 +552,10 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 
 			// Be sure to carefully comment the reason for any additions here!  Someone should be able to look at it later and get an idea of whether it is still necessary.
 			TArray<D3D12_MESSAGE_ID, TInlineAllocator<16>> DenyIds = {
+				// The Pixel Shader expects a Render Target View bound to slot 0, but the PSO indicates that none will be bound.
+				// This typically happens when a non-depth-only pixel shader is used for depth-only rendering.
+				D3D12_MESSAGE_ID_CREATEGRAPHICSPIPELINESTATE_RENDERTARGETVIEW_NOT_SET,
+
 #if PLATFORM_DESKTOP || PLATFORM_HOLOLENS
 				// OMSETRENDERTARGETS_INVALIDVIEW - d3d will complain if depth and color targets don't have the exact same dimensions, but actually
 				//	if the color target is smaller then things are ok.  So turn off this error.  There is a manual check in FD3D12DynamicRHI::SetRenderTarget
@@ -743,6 +759,15 @@ void FD3D12Adapter::InitializeDevices()
 		ResourceHeapTier = D3D12Caps.ResourceHeapTier;
 		ResourceBindingTier = D3D12Caps.ResourceBindingTier;
 
+#if D3D12_RHI_RAYTRACING
+		if (RootDevice5)
+		{
+			// Make sure we have at least tier 2 bindings - required for static samplers used by DXR root signatures
+			// See: UE-93879 for a better fix
+			check(ResourceBindingTier > D3D12_RESOURCE_BINDING_TIER_1);
+		}
+#endif
+
 #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 		D3D12_FEATURE_DATA_D3D12_OPTIONS2 D3D12Caps2 = {};
 		if (FAILED(RootDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &D3D12Caps2, sizeof(D3D12Caps2))))
@@ -824,7 +849,6 @@ void FD3D12Adapter::InitializeDevices()
 		ID3D12RootSignature* StaticGraphicsRS = (GetStaticGraphicsRootSignature()) ? GetStaticGraphicsRootSignature()->GetRootSignature() : nullptr;
 		ID3D12RootSignature* StaticComputeRS = (GetStaticComputeRootSignature()) ? GetStaticComputeRootSignature()->GetRootSignature() : nullptr;
 
-		// #dxr_todo UE-68235: verify that disk cache works correctly with DXR
 		PipelineStateCache.RebuildFromDiskCache(StaticGraphicsRS, StaticComputeRS);
 	}
 }
@@ -834,7 +858,7 @@ void FD3D12Adapter::InitializeRayTracing()
 #if D3D12_RHI_RAYTRACING
 	for (uint32 GPUIndex : FRHIGPUMask::All())
 	{
-		if (Devices[GPUIndex]->GetRayTracingDevice())
+		if (Devices[GPUIndex]->GetDevice5())
 		{
 			Devices[GPUIndex]->InitRayTracing();
 		}
