@@ -18,6 +18,7 @@
 #include "NavLinkCustomInterface.h"
 #include "NavMesh/RecastNavMeshDataChunk.h"
 #include "NavMesh/RecastQueryFilter.h"
+//#include "CoreGlobals.h"
 #include "VisualLogger/VisualLogger.h"
 
 #if WITH_EDITOR
@@ -2157,11 +2158,45 @@ FPathFindingResult ARecastNavMesh::FindPath(const FNavAgentProperties& AgentProp
 {
 	SCOPE_CYCLE_COUNTER(STAT_Navigation_RecastPathfinding);
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Pathfinding);
-
 	const ANavigationData* Self = Query.NavData.Get();
 	check(Cast<const ARecastNavMesh>(Self));
 
 	const ARecastNavMesh* RecastNavMesh = (const ARecastNavMesh*)Self;
+	int32 frameNbr = (int32)((int64)GFrameNumber - INT_MAX);
+	
+	ARecastNavMesh* NavMesh = (ARecastNavMesh*)Self;
+	if (NavMesh->CurrentFrame != frameNbr)
+	{
+		NavMesh->CurrentFrame = frameNbr;
+		NavMesh->PerFrameCallCount = 1;
+	}
+	else if (NavMesh->CurrentFrame == frameNbr)
+	{
+		NavMesh->PerFrameCallCount = NavMesh->PerFrameCallCount + 1;
+
+	}
+	if (NavMesh->PerFrameCallCount >= 30)
+	{
+		//UE_LOG(LogTemp, Log, TEXT("Limit reached ") );
+	}
+
+
+
+	const UObject* ownr = Query.Owner.Get();
+	FString QuerierName = "nullptr";
+	if (ownr)
+	{
+		QuerierName = ownr->GetName();
+	}
+	else if (!ownr)
+	{
+		//UE_LOG(LogTemp, Log, TEXT("null caught"));
+		return ENavigationQueryResult::Error;
+	}
+	//UE_LOG(LogTemp, Log, TEXT("Frame %d Finding path for %s from %s to %s"), frameNbr, *QuerierName, *Query.StartLocation.ToString(), *Query.EndLocation.ToString());
+	UE_VLOG(RecastNavMesh, LogNavigation, Warning, TEXT("Frame %d Finding path for %s from %s to %s"), frameNbr, *QuerierName, *Query.StartLocation.ToString(), *Query.EndLocation.ToString());
+
+
 	if (Self == NULL || RecastNavMesh->RecastNavMeshImpl == NULL)
 	{
 		return ENavigationQueryResult::Error;
