@@ -413,6 +413,12 @@ class NAVIGATIONSYSTEM_API ARecastNavMesh : public ANavigationData
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
 #endif
 
+	UPROPERTY()
+	int32 PerFrameCallCount = 0;
+
+	UPROPERTY()
+	int32 CurrentFrame = 0;
+
 	/** should we draw edges of every navmesh's triangle */
 	UPROPERTY(EditAnywhere, Category=Display)
 	uint32 bDrawTriangleEdges:1;

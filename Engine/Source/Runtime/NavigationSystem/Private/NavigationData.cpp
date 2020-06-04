@@ -243,7 +243,39 @@ void ANavigationData::RequestRegistration()
 		}
 	}
 }
-
+void  ANavigationData::RemovedObservedPath(const UObject* RemoveForThis)
+{
+	TArray<FNavPathWeakPtr> TempObservedPaths = ObservedPaths;
+	for (int32 PathIndex = TempObservedPaths.Num() - 1; PathIndex >= 0; --PathIndex)
+	{
+		if (TempObservedPaths[PathIndex].IsValid())
+		{
+			FNavPathSharedPtr SharedPath2 = TempObservedPaths[PathIndex].Pin();
+			FNavigationPath* Path2 = SharedPath2.Get();
+			if (Path2)
+			{
+				if (Path2->GetQuerier())
+				{
+					FString name = Path2->GetQuerier()->GetName();
+					FString LookedForName = RemoveForThis->GetName();
+					//UE_LOG(LogTemp, Log, TEXT("Comparing %s with %s"),*name,*LookedForName)
+					if (name.Equals(LookedForName))
+					{
+						ObservedPaths.RemoveAtSwap(PathIndex, 1, /*bAllowShrinking=*/false);
+					}
+				}
+			}
+			else
+			{
+				ObservedPaths.RemoveAtSwap(PathIndex, 1, /*bAllowShrinking=*/false);
+			}
+		}
+		else
+		{
+			ObservedPaths.RemoveAtSwap(PathIndex, 1, /*bAllowShrinking=*/false);
+		}
+	}
+}
 void ANavigationData::TickActor(float DeltaTime, enum ELevelTick TickType, FActorTickFunction& ThisTickFunction)
 {
 	Super::TickActor(DeltaTime, TickType, ThisTickFunction);
