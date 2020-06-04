@@ -681,6 +681,14 @@ public:
 		{
 			NextObservedPathsTickInSeconds = ObservedPathsTickInterval;
 		}
+		FNavigationPath* Path2 = SharedPath.Get();
+		if (Path2)
+		{
+			if (Path2->GetQuerier())
+			{
+				RemovedObservedPath(Path2->GetQuerier());
+			}
+		}
 		ObservedPaths.Add(SharedPath);
 	}
 

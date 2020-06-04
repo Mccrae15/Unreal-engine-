@@ -238,6 +238,9 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "AI|Navigation", meta = (WorldContext = "WorldContextObject"))
 	static UNavigationSystemV1* GetNavigationSystem(UObject* WorldContextObject);
+
+	UFUNCTION(BlueprintPure, Category = "AI|Navigation")
+	ANavigationData * GetNavData();
 	
 	/** Project a point onto the NavigationData */
 	UFUNCTION(BlueprintPure, Category = "AI|Navigation", meta = (WorldContext = "WorldContextObject", DisplayName = "ProjectPointToNavigation", ScriptName = "ProjectPointToNavigation"))
