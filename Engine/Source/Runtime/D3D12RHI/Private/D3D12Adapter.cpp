@@ -718,6 +718,15 @@ void FD3D12Adapter::InitializeDevices()
 		ResourceHeapTier = D3D12Caps.ResourceHeapTier;
 		ResourceBindingTier = D3D12Caps.ResourceBindingTier;
 
+#if D3D12_RHI_RAYTRACING
+		if (RootRayTracingDevice)
+		{
+			// Make sure we have at least tier 2 bindings - required for static samplers used by DXR root signatures
+			// See: UE-93879 for a better fix
+			check(ResourceBindingTier > D3D12_RESOURCE_BINDING_TIER_1);
+		}
+#endif
+
 #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 		D3D12_FEATURE_DATA_D3D12_OPTIONS2 D3D12Caps2 = {};
 		if (FAILED(RootDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &D3D12Caps2, sizeof(D3D12Caps2))))
