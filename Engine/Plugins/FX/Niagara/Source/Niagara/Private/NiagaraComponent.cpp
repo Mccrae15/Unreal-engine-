@@ -602,7 +602,7 @@ void UNiagaraComponent::TickComponent(float DeltaSeconds, enum ELevelTick TickTy
 
 		if (AgeUpdateMode == ENiagaraAgeUpdateMode::TickDeltaTime)
 		{
-			SystemInstance->ComponentTick(DeltaSeconds, ThisTickFunction->GetCompletionHandle());
+			SystemInstance->ComponentTick(DeltaSeconds, ThisTickFunction->IsCompletionHandleValid() ? ThisTickFunction->GetCompletionHandle() : nullptr);
 		}
 		else if(AgeUpdateMode == ENiagaraAgeUpdateMode::DesiredAge)
 		{
@@ -1567,6 +1567,15 @@ void UNiagaraComponent::OnChildDetached(USceneComponent* ChildComponent)
 FNiagaraSystemInstance* UNiagaraComponent::GetSystemInstance() const
 {
 	return SystemInstance.Get();
+}
+
+void UNiagaraComponent::SetTickBehavior(ENiagaraTickBehavior NewTickBehavior)
+{
+	TickBehavior = NewTickBehavior;
+	if (SystemInstance.IsValid())
+	{
+		SystemInstance->SetTickBehavior(TickBehavior);
+	}
 }
 
 void UNiagaraComponent::SetVariableLinearColor(FName InVariableName, const FLinearColor& InValue)

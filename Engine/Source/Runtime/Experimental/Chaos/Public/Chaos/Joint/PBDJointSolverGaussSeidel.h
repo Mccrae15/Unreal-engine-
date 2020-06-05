@@ -431,6 +431,54 @@ namespace Chaos
 			const FVec3& DP1,
 			const FVec3& DR1);
 
+		void CalculateLinearConstraintPadding(
+			const FReal Dt,
+			const FPBDJointSolverSettings& SolverSettings,
+			const FPBDJointSettings& JointSettings,
+			const FReal Restitution,
+			const int32 AxisIndex,
+			const FVec3 Axis,
+			FReal& InOutPos);
+
+		void CalculateAngularConstraintPadding(
+			const FReal Dt,
+			const FPBDJointSolverSettings& SolverSettings,
+			const FPBDJointSettings& JointSettings,
+			const FReal Restitution,
+			const EJointAngularConstraintIndex ConstraintIndex,
+			const FVec3 Axis,
+			FReal& InOutAngle);
+
+		inline bool HasLinearConstraintPadding(const int32 AxisIndex) const
+		{
+			return LinearConstraintPadding[AxisIndex] >= 0.0f;
+		}
+
+		inline FReal GetLinearConstraintPadding(const int32 AxisIndex) const
+		{
+			return FMath::Max(LinearConstraintPadding[AxisIndex], 0.0f);
+		}
+
+		inline void SetLinearConstraintPadding(const int32 AxisIndex, FReal Padding)
+		{
+			LinearConstraintPadding[AxisIndex] = Padding;
+		}
+
+
+		inline bool HasAngularConstraintPadding(const EJointAngularConstraintIndex ConstraintIndex) const
+		{
+			return AngularConstraintPadding[(int32)ConstraintIndex] >= 0.0f;
+		}
+
+		inline FReal GetAngularConstraintPadding(const EJointAngularConstraintIndex ConstraintIndex) const
+		{
+			return FMath::Max(AngularConstraintPadding[(int32)ConstraintIndex], 0.0f);
+		}
+
+		inline void SetAngularConstraintPadding(const EJointAngularConstraintIndex ConstraintIndex, FReal Padding)
+		{
+			AngularConstraintPadding[(int32)ConstraintIndex] = Padding;
+		}
 
 
 		// Local-space constraint settings
@@ -463,7 +511,11 @@ namespace Chaos
 		FReal TwistSoftLambda;
 		FReal SwingSoftLambda;
 		FReal LinearDriveLambda;
-		FReal RotationDriveLambdas[3];
+		FVec3 RotationDriveLambdas;
+
+		// Constraint padding which can act something like a velocity constraint (for restitution)
+		FVec3 LinearConstraintPadding;
+		FVec3 AngularConstraintPadding;
 
 		// Tolerances below which we stop solving
 		FReal PositionTolerance;					// Distance error below which we consider a constraint or drive solved
