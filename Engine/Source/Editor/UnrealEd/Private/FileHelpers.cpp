@@ -62,6 +62,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Engine/LevelStreaming.h"
+#include "GameFramework/WorldSettings.h"
 #include "AutoSaveUtils.h"
 #include "AssetRegistryModule.h"
 #include "Misc/BlacklistNames.h"
@@ -4133,13 +4134,17 @@ void FEditorFileUtils::GetDirtyWorldPackages(TArray<UPackage*>& OutDirtyPackages
 			// Make sure we also save the dirty HLOD packages associated with this map.
 			if (WorldIt->HierarchicalLODBuilder)
 			{
-				TSet<UPackage*> HLODPackages;
-				WorldIt->HierarchicalLODBuilder->GetMeshesPackagesToSave(WorldIt->PersistentLevel, HLODPackages);
-				for (UPackage* HLODPackage : HLODPackages)
+				const AWorldSettings* WorldSettings = WorldIt->GetWorldSettings();
+				if (WorldSettings && WorldSettings->bEnableHierarchicalLODSystem)
 				{
-					if (HLODPackage->IsDirty())
+					TSet<UPackage*> HLODPackages;
+					WorldIt->HierarchicalLODBuilder->GetMeshesPackagesToSave(WorldIt->PersistentLevel, HLODPackages);
+					for (UPackage* HLODPackage : HLODPackages)
 					{
-						OutDirtyPackages.Add(HLODPackage);
+						if (HLODPackage->IsDirty())
+						{
+							OutDirtyPackages.Add(HLODPackage);
+						}
 					}
 				}
 			}
