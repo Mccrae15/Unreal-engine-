@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.27703.2042
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "OpusLibrary", "OpusLibrary.vcxproj", "{C768A2C1-AC00-4181-BEC9-449EDC291D11}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|ORBIS = Debug|ORBIS
+		Release|ORBIS = Release|ORBIS
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C768A2C1-AC00-4181-BEC9-449EDC291D11}.Debug|ORBIS.ActiveCfg = Debug|ORBIS
+		{C768A2C1-AC00-4181-BEC9-449EDC291D11}.Debug|ORBIS.Build.0 = Debug|ORBIS
+		{C768A2C1-AC00-4181-BEC9-449EDC291D11}.Release|ORBIS.ActiveCfg = Release|ORBIS
+		{C768A2C1-AC00-4181-BEC9-449EDC291D11}.Release|ORBIS.Build.0 = Release|ORBIS
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {4A233A6D-BA91-4B93-87A2-F922C0D7D453}
+	EndGlobalSection
+EndGlobal

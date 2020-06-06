@@ -1,0 +1,89 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|ORBIS">
+      <Configuration>Debug</Configuration>
+      <Platform>ORBIS</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ORBIS">
+      <Configuration>Release</Configuration>
+      <Platform>ORBIS</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{648090CD-25DC-48BE-AA02-D6DD94227B89}</ProjectGuid>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+    <TargetName>$(ProjectName)152_d</TargetName>
+    <OutDir>..\lib\</OutDir>
+    <IntDir>$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+    <OutDir>..\lib\</OutDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+    <IntDir>$(Configuration)\</IntDir>
+    <TargetName>$(ProjectName)152</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions);</PreprocessorDefinitions>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalIncludeDirectories>..\..\..\..\..\..\..\Source\ThirdParty\zlib\zlib-1.2.5\Inc</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions);</PreprocessorDefinitions>
+      <OptimizationLevel>Level2</OptimizationLevel>
+      <AdditionalIncludeDirectories>..\..\..\..\..\..\..\Source\ThirdParty\zlib\zlib-1.2.5\Inc</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\png.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngerror.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngget.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngmem.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngpread.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngread.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngrio.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngrtran.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngrutil.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngset.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngtrans.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngwio.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngwrite.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngwtran.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngwutil.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\png.h" />
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngconf.h" />
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngdebug.h" />
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pnginfo.h" />
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pnglibconf.h" />
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngpriv.h" />
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\libPNG\libPNG-1.5.2\pngstruct.h" />
+  </ItemGroup>
+  <Import Condition="'$(ConfigurationType)' == 'Makefile' and Exists('$(VCTargetsPath)\Platforms\$(Platform)\SCE.Makefile.$(Platform).targets')" Project="$(VCTargetsPath)\Platforms\$(Platform)\SCE.Makefile.$(Platform).targets" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

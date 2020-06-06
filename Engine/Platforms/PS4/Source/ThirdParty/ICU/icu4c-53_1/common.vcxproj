@@ -1,0 +1,390 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+	<ItemGroup Label="ProjectConfigurations">
+		<ProjectConfiguration Include="Debug|ORBIS">
+			<Configuration>Debug</Configuration>
+			<Platform>ORBIS</Platform>
+		</ProjectConfiguration>
+		<ProjectConfiguration Include="Release|ORBIS">
+			<Configuration>Release</Configuration>
+			<Platform>ORBIS</Platform>
+		</ProjectConfiguration>
+	</ItemGroup>
+	<PropertyGroup Label="Globals">
+		<RootNamespace>common</RootNamespace>
+		<ProjectGuid>{73C0A65B-D1F2-4DE1-B3A6-15DAD2C23F3D}</ProjectGuid>
+		<DefaultLanguage>en-US</DefaultLanguage>
+		<Keyword>Win32Proj</Keyword>
+		<ApplicationEnvironment>title</ApplicationEnvironment>
+		<!-- - - - -->
+		<PlatformToolset>v110</PlatformToolset>
+		<MinimumVisualStudioVersion>11.0</MinimumVisualStudioVersion>
+		<TargetRuntime>Native</TargetRuntime>
+	</PropertyGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'" Label="Configuration">
+		<ConfigurationType>StaticLibrary</ConfigurationType>
+		<UseOfMfc>false</UseOfMfc>
+		<CharacterSet>MultiByte</CharacterSet>
+		<PlatformToolset>v110</PlatformToolset>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'" Label="Configuration">
+		<ConfigurationType>StaticLibrary</ConfigurationType>
+		<UseOfMfc>false</UseOfMfc>
+		<CharacterSet>MultiByte</CharacterSet>
+		<PlatformToolset>v110</PlatformToolset>
+	</PropertyGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+	<ImportGroup Label="ExtensionSettings">
+	</ImportGroup>
+	<ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'" Label="PropertySheets">
+		<Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+		<Import Project="$(VCTargetsPath)Microsoft.CPP.UpgradeFromVC71.props" />
+	</ImportGroup>
+	<ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'" Label="PropertySheets">
+		<Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+		<Import Project="$(VCTargetsPath)Microsoft.CPP.UpgradeFromVC71.props" />
+	</ImportGroup>
+	<PropertyGroup Label="UserMacros" />
+	<PropertyGroup>
+		<_ProjectFileVersion>10.0.30319.1</_ProjectFileVersion>
+		<LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">false</LinkIncremental>
+		<LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">true</LinkIncremental>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+		<TargetName>libsicuucd</TargetName>
+		<OutDir>.\lib\</OutDir>
+		<IntDir>$(Platform)_$(Configuration)\$(ProjectName)\</IntDir>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+		<TargetName>libsicuuc</TargetName>
+		<OutDir>.\lib\</OutDir>
+		<IntDir>$(Platform)_$(Configuration)\$(ProjectName)\</IntDir>
+	</PropertyGroup>
+	<ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+		<ClCompile>
+			<PreprocessorDefinitions>U_STATIC_IMPLEMENTATION; UCONFIG_NO_TRANSLITERATION=1; U_COMMON_IMPLEMENTATION; U_USING_ICU_NAMESPACE=0;U_STATIC_IMPLEMENTATION;U_NO_DEFAULT_INCLUDE_UTF_HEADERS=1;UNISTR_FROM_CHAR_EXPLICIT=explicit;UNISTR_FROM_STRING_EXPLICIT=explicit;U_ATTRIBUTE_DEPRECATED=;_DEBUG;U_COMMON_IMPLEMENTATION;U_PLATFORM_EXTERNAL=1;__BSD_VISIBLE;U_HAVE_NL_LANGINFO_CODESET=0;U_ENABLE_DYLOAD=0;ICU_NO_USER_DATA_OVERRIDE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+			<StringPooling>true</StringPooling>
+			<RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+			<FunctionLevelLinking>true</FunctionLevelLinking>
+			<DisableLanguageExtensions>false</DisableLanguageExtensions>
+			<TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
+			<WarningLevel>Level3</WarningLevel>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<AdditionalOptions>-frtti %(AdditionalOptions)</AdditionalOptions>
+			<AdditionalIncludeDirectories>include;..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+			<OptimizationLevel>Level2</OptimizationLevel>
+			<MultiProcessorCompilation>true</MultiProcessorCompilation>
+		</ClCompile>
+		<Link>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+		</Link>
+	</ItemDefinitionGroup>
+	<ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+		<ClCompile>
+			<Optimization>Disabled</Optimization>
+			<PreprocessorDefinitions>U_STATIC_IMPLEMENTATION; UCONFIG_NO_TRANSLITERATION=1; U_COMMON_IMPLEMENTATION; U_USING_ICU_NAMESPACE=0;U_STATIC_IMPLEMENTATION;U_NO_DEFAULT_INCLUDE_UTF_HEADERS=1;UNISTR_FROM_CHAR_EXPLICIT=explicit;UNISTR_FROM_STRING_EXPLICIT=explicit;U_ATTRIBUTE_DEPRECATED=;_DEBUG;U_COMMON_IMPLEMENTATION;U_PLATFORM_EXTERNAL=1;__BSD_VISIBLE;U_HAVE_NL_LANGINFO_CODESET=0;U_ENABLE_DYLOAD=0;ICU_NO_USER_DATA_OVERRIDE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+			<BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+			<RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+			<BufferSecurityCheck>true</BufferSecurityCheck>
+			<DisableLanguageExtensions>false</DisableLanguageExtensions>
+			<TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
+			<BrowseInformation>true</BrowseInformation>
+			<WarningLevel>Level3</WarningLevel>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+			<AdditionalOptions>-frtti %(AdditionalOptions)</AdditionalOptions>
+			<AdditionalIncludeDirectories>include;..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+			<MultiProcessorCompilation>true</MultiProcessorCompilation>
+		</ClCompile>
+		<Link>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<GenerateDebugInformation>true</GenerateDebugInformation>
+		</Link>
+	</ItemDefinitionGroup>
+	<ItemGroup>
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ubidi.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ubidi_props.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ubidiln.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ubidiwrt.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ushape.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\brkeng.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\brkiter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\dictbe.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbi.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbidata.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbinode.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbirb.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbiscan.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbisetb.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbistbl.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbitblb.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\dictionarydata.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ubrk.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucol_swp.cpp">
+			<AdditionalIncludeDirectories>..\source\i18n;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+		</ClCompile>
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\propsvec.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uarrsort.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uenum.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uhash.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uhash_us.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ulist.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustack.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustrenum.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utrie.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utrie2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utrie2_builder.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uvector.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uvectr32.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uvectr64.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\errorcode.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\icudataver.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\locmap.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\putil.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\umath.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\umutex.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utrace.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utypes.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\wintz.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv2022.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_bld.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_cb.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_cnv.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_ct.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_err.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_ext.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_io.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_lmb.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_set.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_u16.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_u32.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_u7.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_u8.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnvbocu.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnvdisp.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnvhz.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnvisci.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnvlat1.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnvmbcs.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnvscsu.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnvsel.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\cmemory.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucln_cmn.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucmndata.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\udata.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\udatamem.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\udataswp.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uinit.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\umapfile.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uobject.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\dtintrv.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\parsepos.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustrfmt.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\util.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\util_props.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\punycode.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uidna.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uts46.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\locavailable.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\locbased.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\locdispnames.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\locid.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\loclikely.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\locresdata.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\locutil.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\lrucache.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\resbund.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\resbund_cnv.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucat.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uloc.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uloc_tag.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ures_cnv.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uresbund.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uresdata.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\caniter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\filterednormalizer2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\normalizer2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\normalizer2impl.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\normlzr.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unorm.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unormcmp.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\bmpset.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\patternprops.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\propname.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ruleiter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucase.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uchar.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unames.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unifilt.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unifunct.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uniset.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uniset_closure.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uniset_props.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unisetspan.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uprops.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\usc_impl.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uscript.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uscript_props.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uset.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uset_props.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\usetiter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\icuplug.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\serv.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\servlk.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\servlkf.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\servls.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\servnotf.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\servrbf.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\servslkf.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\usprep.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\appendable.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\bytestream.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\bytestrie.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\bytestriebuilder.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\bytestrieiterator.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\chariter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\charstr.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\cstring.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\cwchar.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\messagepattern.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\schriter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\stringpiece.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\stringtriebuilder.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\simplepatternformatter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucasemap.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucasemap_titlecase_brkiter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucharstrie.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucharstriebuilder.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucharstrieiterator.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uchriter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uinvchar.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uiter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unistr.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unistr_case.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unistr_case_locale.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unistr_cnv.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unistr_props.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unistr_titlecase_brkiter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustr_cnv.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustr_titlecase_brkiter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustr_wcs.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustrcase.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustrcase_locale.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustring.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustrtrns.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utext.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utf_impl.c" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\listformatter.cpp">
+		</ClCompile>
+	</ItemGroup>
+	<ItemGroup>
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\localsvc.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\msvcres.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\propname_data.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ubidi_props.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ubidiimp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\brkeng.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\dictbe.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbidata.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbinode.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbirb.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbirpt.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbiscan.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbisetb.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\rbbitblb.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\dictionarydata.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ubidi_props_data.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ubrkimpl.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucase_props_data.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uchar_props_data.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucol_data.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucol_swp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\hash.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\propsvec.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uarrsort.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uelement.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uenumimp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uhash.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ulist.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustrenum.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utrie.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utrie2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utrie2_impl.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utypeinfo.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uvector.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uvectr32.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uvectr64.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\cpputils.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\locmap.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\mutex.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\putilimp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uassert.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\umutex.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uposixdefs.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\utracimp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\wintz.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_bld.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_cnv.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_ext.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_imp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnv_io.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucnvmbcs.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\cmemory.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucln.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucln_cmn.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucln_imp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucmndata.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\udatamem.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\udataswp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\umapfile.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustrfmt.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\util.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\punycode.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\locbased.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\locutil.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\lrucache.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\sharedobject.h" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\sharedobject.cpp" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\sharedptr.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\simplepatternformatter.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ulocimp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uresdata.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uresimp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ureslocs.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\normalizer2impl.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unormimp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\bmpset.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\messageimpl.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\patternprops.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\propname.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ruleiter.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ucase.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\unisetspan.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uprops.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\usc_impl.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uset_imp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\icuplugimp.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\serv.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\servloc.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\servnotf.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\sprpimpl.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\charstr.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\cstring.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\cwchar.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\uinvchar.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustr_cnv.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common\ustr_imp.h" />
+	</ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="stubdata.vcxproj">
+			<Project>{203ec78a-0531-43f0-a636-285439bde025}</Project>
+			<ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+		</ProjectReference>
+	</ItemGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+	<ImportGroup Label="ExtensionTargets">
+	</ImportGroup>
+</Project>

@@ -1,0 +1,16 @@
+{
+	"FileVersion": 3,
+	"bIsPluginExtension": true,
+	"SupportedTargetPlatforms": [
+		"PS4"
+	],
+	"Modules": [
+		{
+			"Name": "Audio3D",
+			"Type": "Runtime",
+			"WhitelistPlatforms": [
+				"PS4"
+			]
+		}
+	]
+}

@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.28307.421
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "zlib", "zlib.vcxproj", "{BCA50374-8E03-4960-8C2A-F051E9B2F562}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|ORBIS = Debug|ORBIS
+		Release|ORBIS = Release|ORBIS
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{BCA50374-8E03-4960-8C2A-F051E9B2F562}.Debug|ORBIS.ActiveCfg = Debug|ORBIS
+		{BCA50374-8E03-4960-8C2A-F051E9B2F562}.Debug|ORBIS.Build.0 = Debug|ORBIS
+		{BCA50374-8E03-4960-8C2A-F051E9B2F562}.Release|ORBIS.ActiveCfg = Release|ORBIS
+		{BCA50374-8E03-4960-8C2A-F051E9B2F562}.Release|ORBIS.Build.0 = Release|ORBIS
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {9C5DA091-AB1A-4992-8003-07F178C81B08}
+	EndGlobalSection
+EndGlobal

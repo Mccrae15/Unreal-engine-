@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.27703.2042
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libogg", "libogg.vcxproj", "{6DF001CF-7F84-416D-A416-E2E007FEBA40}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|ORBIS = Debug|ORBIS
+		Release|ORBIS = Release|ORBIS
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{6DF001CF-7F84-416D-A416-E2E007FEBA40}.Debug|ORBIS.ActiveCfg = Debug|ORBIS
+		{6DF001CF-7F84-416D-A416-E2E007FEBA40}.Debug|ORBIS.Build.0 = Debug|ORBIS
+		{6DF001CF-7F84-416D-A416-E2E007FEBA40}.Release|ORBIS.ActiveCfg = Release|ORBIS
+		{6DF001CF-7F84-416D-A416-E2E007FEBA40}.Release|ORBIS.Build.0 = Release|ORBIS
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {99A269F6-A85F-4DDD-B863-FAF5AD549FE6}
+	EndGlobalSection
+EndGlobal
