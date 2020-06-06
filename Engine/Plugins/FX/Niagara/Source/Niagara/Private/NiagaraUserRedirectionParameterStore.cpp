@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraUserRedirectionParameterStore.h"
 #include "NiagaraStats.h"
@@ -55,11 +55,18 @@ void FNiagaraUserRedirectionParameterStore::RecreateRedirections()
 
 bool FNiagaraUserRedirectionParameterStore::AddParameter(const FNiagaraVariable& Param, bool bInitialize /*= true*/, bool bTriggerRebind /*= true*/, int32* OutOffset /*= nullptr*/)
 {
+	FNiagaraVariable AddParam;
 	if (IsUserParameter(Param))
 	{
-		UserParameterRedirects.Add(GetUserRedirection(Param), Param);
+		AddParam = Param;
 	}
-	return Super::AddParameter(Param, bInitialize, bTriggerRebind, OutOffset);
+	else
+	{
+		AddParam = FNiagaraVariable(Param.GetType(), *(TEXT("User.") + Param.GetName().ToString()));
+	}
+
+	UserParameterRedirects.Add(GetUserRedirection(AddParam), AddParam);
+	return Super::AddParameter(AddParam, bInitialize, bTriggerRebind, OutOffset);
 }
 
 bool FNiagaraUserRedirectionParameterStore::RemoveParameter(const FNiagaraVariable& InVar)
@@ -99,6 +106,8 @@ bool FNiagaraUserRedirectionParameterStore::SerializeFromMismatchedTag(const FPr
 	{
 		FNiagaraParameterStore OldStore;
 		FNiagaraParameterStore::StaticStruct()->SerializeItem(Slot, &OldStore, nullptr);
+		// Call PostLoad() to convert the serialized ParameterOffsets to SortedParameterOffsets.
+		OldStore.PostLoad();
 		*this = OldStore;
 		return true;
 	}

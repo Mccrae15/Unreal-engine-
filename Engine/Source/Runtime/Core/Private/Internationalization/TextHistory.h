@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 #include "CoreTypes.h"
@@ -655,6 +655,9 @@ private:
 		/** Initialize this data, immediately starting an asset load if required and possible */
 		void Initialize(uint16* InRevisionPtr, FName InTableId, FString&& InKey, const EStringTableLoadingPolicy InLoadingPolicy);
 
+		/** Update (or clear) the revision pointer (called when moving this data to a new owner instance) */
+		void SetRevisionPtr(uint16* InRevisionPtr);
+
 		/** Get the string table ID being referenced */
 		FName GetTableId() const;
 
@@ -665,7 +668,7 @@ private:
 		void GetTableIdAndKey(FName& OutTableId, FString& OutKey) const;
 
 		/** Collect any string table asset references */
-		void CollectStringTableAssetReferences(FStructuredArchive::FRecord Record) const;
+		void CollectStringTableAssetReferences(FStructuredArchive::FRecord Record);
 
 		/** Resolve the string table pointer, potentially re-caching it if it's missing or stale */
 		FStringTableEntryConstPtr ResolveStringTableEntry();

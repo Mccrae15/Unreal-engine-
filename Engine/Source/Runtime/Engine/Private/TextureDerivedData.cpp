@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	TextureDerivedData.cpp: Derived data management for textures.
@@ -548,9 +548,10 @@ static void GetBuildSettingsPerFormat(const UTexture& Texture, const FTextureBui
  * After this returns, all bulk data from streaming (non-inline) mips will be sent separately to the DDC and the BulkData for those mips removed.
  * @param DerivedData - The data to store in the DDC.
  * @param DerivedDataKeySuffix - The key suffix at which to store derived data.
+ * @param bForceAllMipsToBeInlined - Whether to store all mips in the main DDC. Relates to how the texture resources get initialized (not supporting streaming).
  * @return number of bytes put to the DDC (total, including all mips)
  */
-uint32 PutDerivedDataInCache(FTexturePlatformData* DerivedData, const FString& DerivedDataKeySuffix)
+uint32 PutDerivedDataInCache(FTexturePlatformData* DerivedData, const FString& DerivedDataKeySuffix, const FStringView& TextureName, bool bForceAllMipsToBeInlined)
 {
 	TArray<uint8> RawDerivedData;
 	FString DerivedDataKey;
@@ -571,8 +572,7 @@ uint32 PutDerivedDataInCache(FTexturePlatformData* DerivedData, const FString& D
 
 	// Write out individual mips to the derived data cache.
 	const int32 MipCount = DerivedData->Mips.Num();
-	const bool bIsCubemap = DerivedData->IsCubemap();
-	const int32 FirstInlineMip = bIsCubemap ? 0 : FMath::Max(0, MipCount - FMath::Max((int32)NUM_INLINE_DERIVED_MIPS, (int32)DerivedData->GetNumMipsInTail()));
+	const int32 FirstInlineMip = bForceAllMipsToBeInlined ? 0 : FMath::Max(0, MipCount - FMath::Max((int32)NUM_INLINE_DERIVED_MIPS, (int32)DerivedData->GetNumMipsInTail()));
 	const int32 WritableMipCount = MipCount - ((DerivedData->GetNumMipsInTail() > 0) ? (DerivedData->GetNumMipsInTail() - 1) : 0);
 	for (int32 MipIndex = 0; MipIndex < WritableMipCount; ++MipIndex)
 	{
@@ -593,10 +593,12 @@ uint32 PutDerivedDataInCache(FTexturePlatformData* DerivedData, const FString& D
 				);
 		}
 
+		// Note that calling StoreInDerivedDataCache() also calls RemoveBulkData().
+		// This means that the resource needs to load differently inlined mips and non inlined mips.
 		if (!bInline)
 		{
 			// store in the DDC, also drop the bulk data storage.
-			TotalBytesPut += Mip.StoreInDerivedDataCache(MipDerivedDataKey);
+			TotalBytesPut += Mip.StoreInDerivedDataCache(MipDerivedDataKey, TextureName);
 		}
 	}
 
@@ -611,7 +613,7 @@ uint32 PutDerivedDataInCache(FTexturePlatformData* DerivedData, const FString& D
 				*FString::Printf(TEXT("%s_VTCHUNK%u"), *DerivedDataKeySuffix, ChunkIndex));
 
 			FVirtualTextureDataChunk& Chunk = DerivedData->VTData->Chunks[ChunkIndex];
-			TotalBytesPut += Chunk.StoreInDerivedDataCache(ChunkDerivedDataKey);
+			TotalBytesPut += Chunk.StoreInDerivedDataCache(ChunkDerivedDataKey, TextureName);
 		}
 	}
 
@@ -620,7 +622,7 @@ uint32 PutDerivedDataInCache(FTexturePlatformData* DerivedData, const FString& D
 	FMemoryWriter Ar(RawDerivedData, /*bIsPersistent=*/ true);
 	DerivedData->Serialize(Ar, NULL);
 	TotalBytesPut += RawDerivedData.Num();
-	GetDerivedDataCacheRef().Put(*DerivedDataKey, RawDerivedData, true);
+	GetDerivedDataCacheRef().Put(*DerivedDataKey, RawDerivedData, TextureName, /*bPutEvenIfExists*/ true);
 	UE_LOG(LogTexture,Verbose,TEXT("%s  Derived Data: %d bytes"),*LogString,RawDerivedData.Num());
 	return TotalBytesPut;
 }
@@ -808,7 +810,7 @@ void FTexturePlatformData::Cache(
 
 	uint32 Flags = InFlags;
 
-	static bool bForDDC = FString(FCommandLine::Get()).Contains(TEXT("DerivedDataCache"));
+	static bool bForDDC = FString(FCommandLine::Get()).Contains(TEXT("Run=DerivedDataCache"));
 	if (bForDDC)
 	{
 		Flags |= ETextureCacheFlags::ForDDCBuild;
@@ -853,6 +855,7 @@ void FTexturePlatformData::FinishCache()
 {
 	if (AsyncTask)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FTexturePlatformData::FinishCache)
 		{
 			COOK_STAT(auto Timer = TextureCookStats::UsageStats.TimeAsyncWait());
 			AsyncTask->EnsureCompletion();
@@ -874,7 +877,7 @@ typedef TArray<uint32> FAsyncVTChunkHandles;
  * @param FirstMipToLoad - Index of the first mip to retrieve.
  * @param OutHandles - Handles to the asynchronous DDC gets.
  */
-static void BeginLoadDerivedMips(TIndirectArray<FTexture2DMipMap>& Mips, int32 FirstMipToLoad, FAsyncMipHandles& OutHandles)
+static void BeginLoadDerivedMips(TIndirectArray<FTexture2DMipMap>& Mips, int32 FirstMipToLoad, UTexture* Texture, FAsyncMipHandles& OutHandles)
 {
 	FDerivedDataCacheInterface& DDC = GetDerivedDataCacheRef();
 	OutHandles.AddZeroed(Mips.Num());
@@ -883,12 +886,12 @@ static void BeginLoadDerivedMips(TIndirectArray<FTexture2DMipMap>& Mips, int32 F
 		const FTexture2DMipMap& Mip = Mips[MipIndex];
 		if (Mip.DerivedDataKey.IsEmpty() == false)
 		{
-			OutHandles[MipIndex] = DDC.GetAsynchronous(*Mip.DerivedDataKey);
+			OutHandles[MipIndex] = DDC.GetAsynchronous(*Mip.DerivedDataKey, Texture ? Texture->GetPathName() : TEXT("Unknown Texture"_SV));
 		}
 	}
 }
 
-static void BeginLoadDerivedVTChunks(const TArray<FVirtualTextureDataChunk>& Chunks, FAsyncVTChunkHandles& OutHandles)
+static void BeginLoadDerivedVTChunks(const TArray<FVirtualTextureDataChunk>& Chunks, UTexture* Texture, FAsyncVTChunkHandles& OutHandles)
 {
 	FDerivedDataCacheInterface& DDC = GetDerivedDataCacheRef();
 	OutHandles.AddZeroed(Chunks.Num());
@@ -897,7 +900,7 @@ static void BeginLoadDerivedVTChunks(const TArray<FVirtualTextureDataChunk>& Chu
 		const FVirtualTextureDataChunk& Chunk = Chunks[ChunkIndex];
 		if (Chunk.DerivedDataKey.IsEmpty() == false)
 		{
-			OutHandles[ChunkIndex] = DDC.GetAsynchronous(*Chunk.DerivedDataKey);
+			OutHandles[ChunkIndex] = DDC.GetAsynchronous(*Chunk.DerivedDataKey, Texture ? Texture->GetPathName() : TEXT("Unknown Texture"_SV));
 		}
 	}
 }
@@ -920,17 +923,17 @@ static void CheckMipSize(FTexture2DMipMap& Mip, EPixelFormat PixelFormat, int32 
 	}
 }
 
-bool FTexturePlatformData::TryInlineMipData(int32 FirstMipToLoad)
+bool FTexturePlatformData::TryInlineMipData(int32 FirstMipToLoad, UTexture* Texture)
 {
 	FAsyncMipHandles AsyncHandles;
 	FAsyncVTChunkHandles AsyncVTHandles;
 	TArray<uint8> TempData;
 	FDerivedDataCacheInterface& DDC = GetDerivedDataCacheRef();
 
-	BeginLoadDerivedMips(Mips, FirstMipToLoad, AsyncHandles);
+	BeginLoadDerivedMips(Mips, FirstMipToLoad, Texture, AsyncHandles);
 	if (VTData != nullptr)
 	{
-		BeginLoadDerivedVTChunks(VTData->Chunks, AsyncVTHandles);
+		BeginLoadDerivedVTChunks(VTData->Chunks, Texture, AsyncVTHandles);
 	}
 
 	// Process regular mips
@@ -1045,7 +1048,7 @@ bool FTexturePlatformData::IsReadyForAsyncPostLoad() const
 	return true;
 }
 
-bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData)
+bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData, UTexture* Texture)
 {
 	int32 NumMipsCached = 0;
 	const int32 LoadableMips = Mips.Num() - ((GetNumMipsInTail() > 0) ? (GetNumMipsInTail() - 1) : 0);
@@ -1054,7 +1057,7 @@ bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData)
 	TArray<uint8> TempData;
 	FAsyncMipHandles AsyncHandles;
 	FDerivedDataCacheInterface& DDC = GetDerivedDataCacheRef();
-	BeginLoadDerivedMips(Mips, FirstMipToLoad, AsyncHandles);
+	BeginLoadDerivedMips(Mips, FirstMipToLoad, Texture, AsyncHandles);
 #endif // #if WITH_EDITOR
 
 	// Handle the case where we inlined more mips than we intend to keep resident
@@ -1073,19 +1076,18 @@ bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData)
 	for (int32 MipIndex = FirstMipToLoad; MipIndex < LoadableMips; ++MipIndex)
 	{
 		FTexture2DMipMap& Mip = Mips[MipIndex];
-		if (Mip.BulkData.GetBulkDataSize() > 0)
+		const int64 BulkDataSize = Mip.BulkData.GetBulkDataSize();
+		if (BulkDataSize > 0)
 		{
-			if (OutMipData)
+			if (OutMipData != nullptr)
 			{
-				OutMipData[MipIndex - FirstMipToLoad] = FMemory::Malloc(Mip.BulkData.GetBulkDataSize());
-
 #if PLATFORM_SUPPORTS_TEXTURE_STREAMING && !TEXTURE2DMIPMAP_USE_COMPACT_BULKDATA
 				// We want to make sure that any non-streamed mips are coming from the texture asset file, and not from an external bulk file.
 				// But because "r.TextureStreaming" is driven by the project setting as well as the command line option "-NoTextureStreaming", 
 				// is it possible for streaming mips to be loaded in non streaming ways.
 				if (CVarSetTextureStreaming.GetValueOnAnyThread() != 0)
 				{
-					UE_CLOG(Mip.BulkData.GetFilename().EndsWith(TEXT(".ubulk")), LogTexture, Error, TEXT("Loading non-streamed mips from an external bulk file.  This is not desireable.  File %s"), *(Mip.BulkData.GetFilename() ) );
+					UE_CLOG(Mip.BulkData.IsInSeparateFile(), LogTexture, Error, TEXT("Loading non-streamed mips from an external bulk file.  This is not desireable.  File %s"), *(Mip.BulkData.GetFilename() ) );
 				}
 #endif
 				Mip.BulkData.GetCopy(&OutMipData[MipIndex - FirstMipToLoad], true);
@@ -1117,6 +1119,12 @@ bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData)
 					Ar.Serialize(OutMipData[MipIndex - FirstMipToLoad], MipSize);
 				}
 			}
+			else
+			{
+				UE_LOG(LogTexture, Verbose, TEXT("DDC.GetAsynchronousResults() failed for %s, MipIndex: %d"),
+					Texture ? *Texture->GetPathName() : TEXT("nullptr"),
+					MipIndex);
+			}
 			TempData.Reset();
 		}
 	}
@@ -1124,9 +1132,20 @@ bool FTexturePlatformData::TryLoadMips(int32 FirstMipToLoad, void** OutMipData)
 
 	if (NumMipsCached != (LoadableMips - FirstMipToLoad))
 	{
+		UE_LOG(LogTexture, Verbose, TEXT("TryLoadMips failed for %s, NumMipsCached: %d, LoadableMips: %d, FirstMipToLoad: %d"),
+			Texture ? *Texture->GetPathName() : TEXT("nullptr"),
+			NumMipsCached,
+			LoadableMips,
+			FirstMipToLoad);
+
 		// Unable to cache all mips. Release memory for those that were cached.
 		for (int32 MipIndex = FirstMipToLoad; MipIndex < LoadableMips; ++MipIndex)
 		{
+			FTexture2DMipMap& Mip = Mips[MipIndex];
+			UE_LOG(LogTexture, Verbose, TEXT("  Mip %d, BulkDataSize: %d"),
+				MipIndex,
+				(int32)Mip.BulkData.GetBulkDataSize());
+
 			if (OutMipData && OutMipData[MipIndex - FirstMipToLoad])
 			{
 				FMemory::Free(OutMipData[MipIndex - FirstMipToLoad]);
@@ -1148,7 +1167,7 @@ int32 FTexturePlatformData::GetNumNonStreamingMips() const
 
 		for (const FTexture2DMipMap& Mip : Mips)
 		{
-			if ( Mip.BulkData.InSeperateFile() || !Mip.BulkData.IsInlined() )
+			if ( Mip.BulkData.IsInSeparateFile() || !Mip.BulkData.IsInlined() )
 			{
 				--NumNonStreamingMips;
 			}
@@ -1471,7 +1490,7 @@ void FTexturePlatformData::SerializeCooked(FArchive& Ar, UTexture* Owner, bool b
 
 void UTexture2D::GetMipData(int32 FirstMipToLoad, void** OutMipData)
 {
-	if (PlatformData->TryLoadMips(FirstMipToLoad, OutMipData) == false)
+	if (PlatformData->TryLoadMips(FirstMipToLoad, OutMipData, this) == false)
 	{
 		// Unable to load mips from the cache. Rebuild the texture and try again.
 		UE_LOG(LogTexture,Warning,TEXT("GetMipData failed for %s (%s)"),
@@ -1480,7 +1499,7 @@ void UTexture2D::GetMipData(int32 FirstMipToLoad, void** OutMipData)
 		if (!GetOutermost()->bIsCookedForEditor)
 		{
 			ForceRebuildPlatformData();
-			if (PlatformData->TryLoadMips(FirstMipToLoad, OutMipData) == false)
+			if (PlatformData->TryLoadMips(FirstMipToLoad, OutMipData, this) == false)
 			{
 				UE_LOG(LogTexture, Error, TEXT("Failed to build texture %s."), *GetPathName());
 			}
@@ -1491,7 +1510,7 @@ void UTexture2D::GetMipData(int32 FirstMipToLoad, void** OutMipData)
 
 void UTextureCube::GetMipData(int32 FirstMipToLoad, void** OutMipData)
 {
-	if (PlatformData->TryLoadMips(FirstMipToLoad, OutMipData) == false)
+	if (PlatformData->TryLoadMips(FirstMipToLoad, OutMipData, this) == false)
 	{
 		// Unable to load mips from the cache. Rebuild the texture and try again.
 		UE_LOG(LogTexture,Warning,TEXT("GetMipData failed for %s (%s)"),
@@ -1500,7 +1519,7 @@ void UTextureCube::GetMipData(int32 FirstMipToLoad, void** OutMipData)
 		if (!GetOutermost()->bIsCookedForEditor)
 		{
 			ForceRebuildPlatformData();
-			if (PlatformData->TryLoadMips(FirstMipToLoad, OutMipData) == false)
+			if (PlatformData->TryLoadMips(FirstMipToLoad, OutMipData, this) == false)
 			{
 				UE_LOG(LogTexture, Error, TEXT("Failed to build texture %s."), *GetPathName());
 			}
@@ -1535,6 +1554,10 @@ void UTexture::CachePlatformData(bool bAsyncCache, bool bAllowAsyncBuild, bool b
 				if (PlatformDataLink)
 				{
 					ReleaseResource();
+
+					// Need to wait for any previous InitRHI() to complete before modifying PlatformData
+					// We could remove this flush if InitRHI() was modified to not access PlatformData directly
+					FlushRenderingCommands();
 				}
 				else
 				{

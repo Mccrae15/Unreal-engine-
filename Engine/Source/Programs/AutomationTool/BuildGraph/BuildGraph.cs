@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -63,6 +63,7 @@ namespace AutomationTool
 	[Help("SkipTargetsWithoutTokens", "Excludes targets which we can't acquire tokens for, rather than failing")]
 	[Help("Preprocess=<FileName>", "Writes the preprocessed graph to the given file")]
 	[Help("Export=<FileName>", "Exports a JSON file containing the preprocessed build graph, for use as part of a build system")]
+	[Help("HordeExport=<FileName>", "Exports a JSON file containing the full build graph for use by Horde.")]
 	[Help("PublicTasksOnly", "Only include built-in tasks in the schema, excluding any other UAT modules")]
 	[Help("SharedStorageDir=<DirName>", "Sets the directory to use to transfer build products between agents in a build farm")]
 	[Help("SingleNode=<Name>", "Run only the given node. Intended for use on a build system after running with -Export.")]
@@ -81,6 +82,7 @@ namespace AutomationTool
 			string SchemaFileName = ParseParamValue("Schema", null);
 			string ImportSchemaFileName = ParseParamValue("ImportSchema", null);
 			string ExportFileName = ParseParamValue("Export", null);
+			string HordeExportFileName = ParseParamValue("HordeExport", null);
 			string PreprocessedFileName = ParseParamValue("Preprocess", null);
 			string SharedStorageDir = ParseParamValue("SharedStorageDir", null);
 			string SingleNodeName = ParseParamValue("SingleNode", null);
@@ -132,6 +134,7 @@ namespace AutomationTool
 			DefaultProperties["HostPlatform"] = HostPlatform.Current.HostEditorPlatform.ToString();
 			DefaultProperties["RestrictedFolderNames"] = String.Join(";", RestrictedFolder.GetNames());
 			DefaultProperties["RestrictedFolderFilter"] = String.Join(";", RestrictedFolder.GetNames().Select(x => String.Format(".../{0}/...", x)));
+			DefaultProperties["DataDrivenPlatforms"] = String.Join(";", DataDrivenPlatformInfo.GetAllPlatformInfos().Keys);
 
 			// Prevent expansion of the root directory if we're just preprocessing the output. They may vary by machine.
 			if (PreprocessedFileName == null)
@@ -217,9 +220,15 @@ namespace AutomationTool
 
 			// Read the script from disk
 			Graph Graph;
-			if(!ScriptReader.TryRead(new FileReference(ScriptFileName), Arguments, DefaultProperties, PreprocessedFileName != null, Schema, out Graph))
+			if(!ScriptReader.TryRead(new FileReference(ScriptFileName), Arguments, DefaultProperties, PreprocessedFileName != null, Schema, out Graph, SingleNodeName))
 			{
 				return ExitCode.Error_Unknown;
+			}
+
+			// Export the graph for Horde
+			if(HordeExportFileName != null)
+			{
+				Graph.ExportForHorde(new FileReference(HordeExportFileName));
 			}
 
 			// Create the temp storage handler
@@ -247,7 +256,20 @@ namespace AutomationTool
 			}
 			else
 			{
-				foreach(string TargetName in TargetNames.Split(new char[]{ '+', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()))
+				IEnumerable<string> NodesToResolve = null;
+
+				// If we're only building a single node and using a preprocessed reference we only need to try to resolve the references
+				// for that node.
+				if (SingleNodeName != null && PreprocessedFileName != null)
+				{
+					NodesToResolve = new List<string> { SingleNodeName };
+				}
+				else
+				{
+					NodesToResolve = TargetNames.Split(new char[] { '+', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim());
+				}
+
+				foreach (string TargetName in NodesToResolve)
 				{
 					Node[] Nodes;
 					if(!Graph.TryResolveReference(TargetName, out Nodes))
@@ -650,7 +672,7 @@ namespace AutomationTool
 				if(!Storage.IsComplete(NodeToExecute.Name))
 				{
 					LogInformation("");
-					if(!BuildNode(Job, Graph, NodeToExecute, Storage, false))
+					if(!BuildNode(Job, Graph, NodeToExecute, Storage, bWithBanner: false))
 					{
 						return false;
 					} 

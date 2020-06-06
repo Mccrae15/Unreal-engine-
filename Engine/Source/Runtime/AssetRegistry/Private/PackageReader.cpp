@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PackageReader.h"
 #include "HAL/FileManager.h"
@@ -106,6 +106,8 @@ bool FPackageReader::OpenPackageFile(EOpenPackageResult* OutErrorCode)
 	Loader->SetLicenseeUE4Ver(PackageFileSummary.GetFileVersionLicenseeUE4());
 	Loader->SetEngineVer(PackageFileSummary.SavedByEngineVersion);
 
+	SetByteSwapping(Loader->ForceByteSwapping());
+
 	const FCustomVersionContainer& PackageFileSummaryVersions = PackageFileSummary.GetCustomVersionContainer();
 	SetCustomVersions(PackageFileSummaryVersions);
 	Loader->SetCustomVersions(PackageFileSummaryVersions);
@@ -115,7 +117,6 @@ bool FPackageReader::OpenPackageFile(EOpenPackageResult* OutErrorCode)
 	SetPackageErrorCode(EOpenPackageResult::Success);
 	return true;
 }
-
 bool FPackageReader::ReadAssetRegistryData (TArray<FAssetData*>& AssetDataList)
 {
 	check(Loader);
@@ -127,7 +128,7 @@ bool FPackageReader::ReadAssetRegistryData (TArray<FAssetData*>& AssetDataList)
 		return false;
 	}
 
-	// Seek the the part of the file where the asset registry tags live
+	// Seek to the part of the file where the asset registry tags live
 	Seek( PackageFileSummary.AssetRegistryDataOffset );
 
 	// Determine the package name and path
@@ -193,7 +194,7 @@ bool FPackageReader::ReadAssetRegistryData (TArray<FAssetData*>& AssetDataList)
 
 		FString AssetName = ObjectPath;
 
-		// Before world were RF_Public, other non-public assets were added to the asset data table in map packages.
+		// Before worlds were RF_Public, other non-public assets were added to the asset data table in map packages.
 		// Here we simply skip over them
 		if ( bIsMapPackage && PackageFileSummary.GetFileVersionUE4() < VER_UE4_PUBLIC_WORLDS )
 		{

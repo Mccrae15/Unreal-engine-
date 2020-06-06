@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetTypeActions/AssetTypeActions_SoundBase.h"
 #include "AudioDeviceManager.h"
@@ -334,7 +334,7 @@ void FAssetTypeActions_SoundBase::ExecuteSoloSound(TArray<TWeakObjectPtr<USoundB
 			}
 			else if (USoundWave* Wave = Cast<USoundWave>(SoundBase.Get()))
 			{
-				Debugger.SetSoloSoundCue(Wave->GetFName(), !bAnySoloed);
+				Debugger.SetSoloSoundWave(Wave->GetFName(), !bAnySoloed);
 			}
 		}
 	}

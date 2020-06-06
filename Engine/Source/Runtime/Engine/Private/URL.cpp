@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	URL.cpp: Various file-management functions.
@@ -226,6 +226,19 @@ FURL::FURL( FURL* Base, const TCHAR* TextURL, ETravelType Type )
 		} while( s );
 	}
 
+	// Don't allow double slashes/backslashes, in any combination (nor "\?")
+	if (Valid == 1 && URL != nullptr)
+	{
+		for (const TCHAR* CurChar=URL; *CurChar != '\0'; CurChar++)
+		{
+			if ((CurChar[0] == '\\' || CurChar[0] == '/') && (CurChar[1] == '\\' || CurChar[1] == '/' || CurChar[1] == '?'))
+			{
+				Valid = 0;
+				break;
+			}
+		}
+	}
+
 	if (Valid == 1)
 	{
 		// Handle pure filenames & Posix paths.
@@ -353,9 +366,9 @@ FURL::FURL( FURL* Base, const TCHAR* TextURL, ETravelType Type )
 			FString MapFullName;
 			FText MapNameError;
 			bool bFoundMap = false;
-			if (FPaths::FileExists(URL))
+			if (FPaths::FileExists(URL) && FPackageName::TryConvertFilenameToLongPackageName(URL, MapFullName))
 			{
-				Map = FPackageName::FilenameToLongPackageName(URL);
+				Map = MapFullName;
 				bFoundMap = true;
 			}
 			else if (!FPackageName::DoesPackageNameContainInvalidCharacters(URL, &MapNameError))
@@ -551,7 +564,7 @@ void FURL::AddOption( const TCHAR* Str )
 
 void FURL::RemoveOption( const TCHAR* Key, const TCHAR* Section, const FString& Filename )
 {
-	if ( !Key )
+	if ( !Key || *Key == '\0')
 		return;
 
 	for ( int32 i = Op.Num() - 1; i >= 0; i-- )

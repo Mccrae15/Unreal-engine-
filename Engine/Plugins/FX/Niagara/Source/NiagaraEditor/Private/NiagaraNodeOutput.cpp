@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraNodeOutput.h"
 #include "UObject/UnrealType.h"
@@ -13,7 +13,6 @@
 #include "ToolMenus.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/SEditableTextBoxWithVerification.h"
 #include "NiagaraEditorUtilities.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraNodeOutput"
@@ -49,7 +48,8 @@ void UNiagaraNodeOutput::RemoveOutputPin(UEdGraphPin* Pin)
 	{
 		Modify();
 		Outputs.RemoveAt(Index);
-		ReallocatePins();
+		// Remove the pin directly here instead of using the built in reallocate to prevent the old pin from being kept as orphaned.
+		RemovePin(Pin);
 		MarkNodeRequiresSynchronization(__FUNCTION__, true);
 	}
 }
@@ -94,7 +94,7 @@ void UNiagaraNodeOutput::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 				.WidthOverride(100)
 				.Padding(FMargin(5, 0, 0, 0))
 				[
-					SNew(SEditableTextBoxWithVerification)
+					SNew(SEditableTextBox)
 					.Text_UObject(this, &UNiagaraNodeOutput::GetPinNameText, Pin)
 					.OnVerifyTextChanged_UObject(this, &UNiagaraNodeOutput::VerifyPinNameTextChanged, Pin)
 					.OnTextCommitted_UObject(const_cast<UNiagaraNodeOutput*>(this), &UNiagaraNodeOutput::PinNameTextCommitted, Pin)
@@ -169,6 +169,11 @@ FText UNiagaraNodeOutput::GetNodeTitle(ENodeTitleType::Type TitleType) const
 			EventName = NSLOCTEXT("NiagaraNodeOutput", "UnknownEventName", "Unknown");
 		}
 		return FText::Format(NSLOCTEXT("NiagaraNodeOutput", "OutputEvent", "Output Event {0}"), EventName);
+	}
+	else if (ScriptType == ENiagaraScriptUsage::ParticleSimulationStageScript)
+	{
+		FText EventName = FText::FromString(ScriptTypeId.ToString());
+		return FText::Format(NSLOCTEXT("NiagaraNodeOutput", "OutputStage", "Output Stage {0}"), EventName);
 	}
 	else if (ScriptType == ENiagaraScriptUsage::Function)
 	{

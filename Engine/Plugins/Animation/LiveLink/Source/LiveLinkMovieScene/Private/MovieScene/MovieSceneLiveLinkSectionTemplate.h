@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -56,12 +56,13 @@ private:
 	virtual void TearDown(FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) const override;
 
 
-	void FillPropertyArray(int32 InKeyIndex, const FLiveLinkPropertyData& InSourceData, UArrayProperty* InSourceArray, void* InDestinationAddress);
-	void FillPropertyArrayInterpolated(const FFrameTime& InFrameTime, const FLiveLinkPropertyData& InSourceData, UArrayProperty* InSourceArray, void* InDestinationAddress);
+	void FillPropertyArray(int32 InKeyIndex, const FLiveLinkPropertyData& InSourceData, FArrayProperty* InSourceArray, void* InDestinationAddress);
+	void FillPropertyArrayInterpolated(const FFrameTime& InFrameTime, const FLiveLinkPropertyData& InSourceData, FArrayProperty* InSourceArray, void* InDestinationAddress);
 
 	void InitializePropertyHandlers();
 
 	bool AreChannelKeyCountEqual() const;
+	bool CacheIsSectionUsable() const;
 	void GetFirstTimeArray(TArrayView<const FFrameNumber>& OutKeyTimes) const;
 
 public:
@@ -76,6 +77,8 @@ public:
 	TArray<FLiveLinkSubSectionData> SubSectionsData;
 
 	bool bMustDoInterpolation;
+
+	bool bIsSectionUsable;
 
 	TArray<TSharedPtr<IMovieSceneLiveLinkPropertyHandler>> PropertyHandlers;
 

@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -15,6 +15,10 @@ public abstract class BaseWinPlatform : Platform
 	public BaseWinPlatform(UnrealTargetPlatform P)
 		: base(P)
 	{
+	}
+	protected override string GetPlatformExeExtension()
+	{
+		return ".exe";
 	}
 
 	public override void GetFilesToDeployOrStage(ProjectParams Params, DeploymentContext SC)
@@ -138,7 +142,7 @@ public abstract class BaseWinPlatform : Platform
 					if(GroupIcon != null) Update.SetIcons(IconResourceId, GroupIcon);
 
 					const int ExecFileResourceId = 201;
-					Update.SetData(ExecFileResourceId, ResourceType.RawData, Encoding.Unicode.GetBytes(StagedRelativeTargetPath + "\0"));
+					Update.SetData(ExecFileResourceId, ResourceType.RawData, Encoding.Unicode.GetBytes(StagedRelativeTargetPath.ToString().Replace('/', '\\') + "\0"));
 
 					const int ExecArgsResourceId = 202;
 					Update.SetData(ExecArgsResourceId, ResourceType.RawData, Encoding.Unicode.GetBytes(StagedArguments + "\0"));
@@ -395,6 +399,8 @@ public abstract class BaseWinPlatform : Platform
 		{
 			DateTime Start = DateTime.Now;
 			DirectoryReference TempSymStoreDir = DirectoryReference.Combine(RootDirectory, "Saved", "SymStore");
+			DirectoryReference.CreateDirectory(TempSymStoreDir);
+			DeleteDirectoryContents(TempSymStoreDir);
 
 			string TempFileName = Path.GetTempFileName();
 			try

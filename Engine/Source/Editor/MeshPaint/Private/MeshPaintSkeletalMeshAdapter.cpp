@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshPaintSkeletalMeshAdapter.h"
 #include "Engine/SkeletalMesh.h"
@@ -26,9 +26,7 @@ void PropagateVertexPaintToAsset(USkeletalMesh* SkeletalMesh, int32 LODIndex)
 		int32 SoftVerticeIndexes[3];
 	};
 
-	if (!SkeletalMesh || !SkeletalMesh->GetImportedModel() || !SkeletalMesh->GetImportedModel()->LODModels.IsValidIndex(LODIndex) 
-		|| SkeletalMesh->GetImportedModel()->LODModels[LODIndex].RawSkeletalMeshBulkData.IsEmpty() 
-		|| !SkeletalMesh->GetImportedModel()->LODModels[LODIndex].RawSkeletalMeshBulkData.IsBuildDataAvailable())
+	if (!SkeletalMesh || SkeletalMesh->IsLODImportedDataEmpty(LODIndex) || !SkeletalMesh->IsLODImportedDataBuildAvailable(LODIndex))
 	{
 		//We do not propagate vertex color for old asset
 		return;
@@ -55,7 +53,7 @@ void PropagateVertexPaintToAsset(USkeletalMesh* SkeletalMesh, int32 LODIndex)
 	LODModel.GetVertices(SrcVertices);
 	
 	FSkeletalMeshImportData ImportData;
-	LODModel.RawSkeletalMeshBulkData.LoadRawMesh(ImportData);
+	SkeletalMesh->LoadLODImportedData(LODIndex, ImportData);
 
 	TMap<FSHAHash, FMatchFaceData> MatchTriangles;
 	MatchTriangles.Reserve(ImportData.Wedges.Num());
@@ -100,7 +98,7 @@ void PropagateVertexPaintToAsset(USkeletalMesh* SkeletalMesh, int32 LODIndex)
 		}
 	}
 		
-	LODModel.RawSkeletalMeshBulkData.SaveRawMesh(ImportData);
+	SkeletalMesh->SaveLODImportedData(LODIndex, ImportData);
 }
 
 bool FMeshPaintGeometryAdapterForSkeletalMeshes::Construct(UMeshComponent* InComponent, int32 InMeshLODIndex)
@@ -314,6 +312,26 @@ void FMeshPaintGeometryAdapterForSkeletalMeshes::OnRemoved()
 	ReferencedSkeletalMesh->OnPostMeshCached().RemoveAll(this);
 }
 
+bool LegacySegmentTriangleIntersection(const FVector& StartPoint, const FVector& EndPoint, const FVector& A, const FVector& B, const FVector& C, FVector& OutIntersectPoint, FVector& OutTriangleNormal)
+{
+	const FVector BA = A - B;
+	const FVector CB = B - C;
+	const FVector TriNormal = BA ^ CB;
+
+	bool bCollide = FMath::SegmentPlaneIntersection(StartPoint, EndPoint, FPlane(A, TriNormal), OutIntersectPoint);
+	if (!bCollide)
+	{
+		return false;
+	}
+
+	FVector BaryCentric = FMath::ComputeBaryCentric2D(OutIntersectPoint, A, B, C);
+	if (BaryCentric.X > 0.0f && BaryCentric.Y > 0.0f && BaryCentric.Z > 0.0f)
+	{
+		OutTriangleNormal = TriNormal;
+		return true;
+	}
+	return false;
+}
 bool FMeshPaintGeometryAdapterForSkeletalMeshes::LineTraceComponent(struct FHitResult& OutHit, const FVector Start, const FVector End, const struct FCollisionQueryParams& Params) const
 {
 	const bool bHitBounds = FMath::LineSphereIntersection(Start, End.GetSafeNormal(), (End - Start).SizeSquared(), SkeletalMeshComponent->Bounds.Origin, SkeletalMeshComponent->Bounds.SphereRadius);
@@ -348,7 +366,7 @@ bool FMeshPaintGeometryAdapterForSkeletalMeshes::LineTraceComponent(struct FHitR
 			{
 				FVector IntersectPoint;
 				FVector HitNormal;
-				bool bHit = FMath::SegmentTriangleIntersection(LocalStart, LocalEnd, P0, P1, P2, IntersectPoint, HitNormal);
+				bool bHit = LegacySegmentTriangleIntersection(LocalStart, LocalEnd, P0, P1, P2, IntersectPoint, HitNormal);
 
 				if (bHit)
 				{

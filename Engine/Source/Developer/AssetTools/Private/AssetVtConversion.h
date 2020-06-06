@@ -1,16 +1,17 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "AssetRegistryModule.h"
+#include "UObject/GCObject.h"
 
 class UTexture2D;
 class UMaterial;
 class UMaterialFunctionInterface;
 struct FScopedSlowTask;
 
-class FVTConversionWorker
+class FVTConversionWorker : public FGCObject
 {
 public:
 	FVTConversionWorker(bool bInConvertBackward = false) : bConvertBackward(bInConvertBackward){}
@@ -42,6 +43,9 @@ public:
 
 	// Based on the filtered lists do the actual VT conversion
 	void DoConvert();
+
+	void AddReferencedObjects( FReferenceCollector& Collector ) override;
+
 private:
 	void FindAllTexturesAndMaterials_Iteration(TArray<UMaterial*>& InAffectedMaterials,
 		TArray<UMaterialFunctionInterface*>& InAffectedFunctions,

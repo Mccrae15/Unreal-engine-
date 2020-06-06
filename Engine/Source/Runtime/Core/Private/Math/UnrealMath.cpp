@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	UnMath.cpp: Unreal math routines
@@ -203,7 +203,7 @@ FRotator FVector::ToOrientationRotator() const
 	// Find roll.
 	R.Roll = 0;
 
-#if ENABLE_NAN_DIAGNOSTIC
+#if ENABLE_NAN_DIAGNOSTIC || (DO_CHECK && !UE_BUILD_SHIPPING)
 	if (R.ContainsNaN())
 	{
 		logOrEnsureNanError(TEXT("FVector::Rotation(): Rotator result %s contains NaN! Input FVector = %s"), *R.ToString(), *this->ToString());
@@ -232,7 +232,7 @@ FRotator FVector4::ToOrientationRotator() const
 	// Find roll.
 	R.Roll = 0;
 
-#if ENABLE_NAN_DIAGNOSTIC
+#if ENABLE_NAN_DIAGNOSTIC || (DO_CHECK && !UE_BUILD_SHIPPING)
 	if (R.ContainsNaN())
 	{
 		logOrEnsureNanError(TEXT("FVector4::Rotation(): Rotator result %s contains NaN! Input FVector4 = %s"), *R.ToString(), *this->ToString());
@@ -379,10 +379,33 @@ FRotator::FRotator(const FQuat& Quat)
 
 CORE_API FVector FRotator::Vector() const
 {
+	// Extremely large but valid values (or invalid values from uninitialized vars) can cause SinCos to return NaN/Inf, so catch that here. Similar to what is done in FRotator::Quaternion().
+#if ENABLE_NAN_DIAGNOSTIC || (DO_CHECK && !UE_BUILD_SHIPPING)
+	if (FMath::Abs(Pitch) > FLOAT_NON_FRACTIONAL ||
+		FMath::Abs(Yaw  ) > FLOAT_NON_FRACTIONAL ||
+		FMath::Abs(Roll ) > FLOAT_NON_FRACTIONAL)
+	{
+		logOrEnsureNanError(TEXT("FRotator::Vector() provided with unreasonably large input values (%s), possible use of uninitialized variable?"), *ToString());
+	}
+#endif
+	
+	// Remove winding and clamp to [-360, 360]
+	const float PitchNoWinding = FMath::Fmod(Pitch, 360.0f);
+	const float YawNoWinding = FMath::Fmod(Yaw, 360.0f);
+
 	float CP, SP, CY, SY;
-	FMath::SinCos( &SP, &CP, FMath::DegreesToRadians(Pitch) );
-	FMath::SinCos( &SY, &CY, FMath::DegreesToRadians(Yaw) );
+	FMath::SinCos( &SP, &CP, FMath::DegreesToRadians(PitchNoWinding) );
+	FMath::SinCos( &SY, &CY, FMath::DegreesToRadians(YawNoWinding) );
 	FVector V = FVector( CP*CY, CP*SY, SP );
+
+	// Error checking
+#if ENABLE_NAN_DIAGNOSTIC || (DO_CHECK && !UE_BUILD_SHIPPING)
+	if (V.ContainsNaN())
+	{
+		logOrEnsureNanError(TEXT("FRotator::Vector() resulted in NaN/Inf with input: %s output: %s"), *ToString(), *V.ToString());
+		V = FVector::ForwardVector;
+	}
+#endif
 
 	return V;
 }
@@ -1713,9 +1736,12 @@ bool FMath::SegmentPlaneIntersection(const FVector& StartPoint, const FVector& E
 
 bool FMath::SegmentTriangleIntersection(const FVector& StartPoint, const FVector& EndPoint, const FVector& A, const FVector& B, const FVector& C, FVector& OutIntersectPoint, FVector& OutTriangleNormal)
 {
-	const FVector BA = A - B;
-	const FVector CB = B - C;
-	const FVector TriNormal = BA ^ CB;
+	FVector Edge1(B - A);
+	Edge1.Normalize();
+	FVector Edge2(C - A);
+	Edge2.Normalize();
+	FVector TriNormal = Edge2 ^ Edge1;
+	TriNormal.Normalize();
 
 	bool bCollide = FMath::SegmentPlaneIntersection(StartPoint, EndPoint, FPlane(A, TriNormal), OutIntersectPoint);
 	if (!bCollide)
@@ -1768,8 +1794,8 @@ static bool ComputeProjectedSphereShaft(
 	int32& InOutMaxX
 	)
 {
-	float ViewX = InOutMinX;
-	float ViewSizeX = InOutMaxX - InOutMinX;
+	float ViewX = (float)InOutMinX;
+	float ViewSizeX = (float)(InOutMaxX - InOutMinX);
 
 	// Vertical planes: T = <Nx, 0, Nz, 0>
 	float Discriminant = (FMath::Square(LightX) - FMath::Square(Radius) + FMath::Square(LightZ)) * FMath::Square(LightZ);
@@ -1793,11 +1819,11 @@ static bool ComputeProjectedSphereShaft(
 			float X = (Dot3(P,Axis) / P.W + 1.0f * AxisSign) / 2.0f * AxisSign;
 			if(FMath::IsNegativeFloat(Nxa) ^ FMath::IsNegativeFloat(AxisSign))
 			{
-				InOutMaxX = FMath::Min<int64>(FMath::CeilToInt(ViewSizeX * X + ViewX),InOutMaxX);
+				InOutMaxX = FMath::Min<int32>(FMath::CeilToInt(ViewSizeX * X + ViewX),InOutMaxX);
 			}
 			else
 			{
-				InOutMinX = FMath::Max<int64>(FMath::FloorToInt(ViewSizeX * X + ViewX),InOutMinX);
+				InOutMinX = FMath::Max<int32>(FMath::FloorToInt(ViewSizeX * X + ViewX),InOutMinX);
 			}
 		}
 
@@ -1809,11 +1835,11 @@ static bool ComputeProjectedSphereShaft(
 			float X = (Dot3(P,Axis) / P.W + 1.0f * AxisSign) / 2.0f * AxisSign;
 			if(FMath::IsNegativeFloat(Nxb) ^ FMath::IsNegativeFloat(AxisSign))
 			{
-				InOutMaxX = FMath::Min<int64>(FMath::CeilToInt(ViewSizeX * X + ViewX),InOutMaxX);
+				InOutMaxX = FMath::Min<int32>(FMath::CeilToInt(ViewSizeX * X + ViewX),InOutMaxX);
 			}
 			else
 			{
-				InOutMinX = FMath::Max<int64>(FMath::FloorToInt(ViewSizeX * X + ViewX),InOutMinX);
+				InOutMinX = FMath::Max<int32>(FMath::FloorToInt(ViewSizeX * X + ViewX),InOutMinX);
 			}
 		}
 	}
@@ -2533,9 +2559,9 @@ CORE_API FQuat FMath::QInterpTo(const FQuat& Current, const FQuat& Target, float
 
 CORE_API float ClampFloatTangent( float PrevPointVal, float PrevTime, float CurPointVal, float CurTime, float NextPointVal, float NextTime )
 {
-	const float PrevToNextTimeDiff = FMath::Max< double >( KINDA_SMALL_NUMBER, NextTime - PrevTime );
-	const float PrevToCurTimeDiff = FMath::Max< double >( KINDA_SMALL_NUMBER, CurTime - PrevTime );
-	const float CurToNextTimeDiff = FMath::Max< double >( KINDA_SMALL_NUMBER, NextTime - CurTime );
+	const float PrevToNextTimeDiff = FMath::Max< float >( KINDA_SMALL_NUMBER, NextTime - PrevTime );
+	const float PrevToCurTimeDiff = FMath::Max< float >( KINDA_SMALL_NUMBER, CurTime - PrevTime );
+	const float CurToNextTimeDiff = FMath::Max< float >( KINDA_SMALL_NUMBER, NextTime - CurTime );
 
 	float OutTangentVal = 0.0f;
 
@@ -2924,7 +2950,7 @@ FString FMath::FormatIntToHumanReadable(int32 Val)
 	while (Src.Len() > 3 && Src[Src.Len() - 4] != TEXT('-'))
 	{
 		Dst = FString::Printf(TEXT(",%s%s"), *Src.Right(3), *Dst);
-		Src = Src.Left(Src.Len() - 3);
+		Src.LeftInline(Src.Len() - 3, false);
 	}
 
 	Dst = Src + Dst;
@@ -3215,7 +3241,7 @@ PrecLoop:
 				}
 				else
 				{
-					V = (int32)V % (int32)W;
+					V = (float)((int32)V % (int32)W);
 					c = GrabChar(pStr);
 					goto PrecLoop;
 				}
@@ -3464,7 +3490,7 @@ namespace FMathPerlinHelpers
 	// Curve w/ second derivative vanishing at 0 and 1, from Perlin's improved noise paper
 	FORCEINLINE float SmoothCurve(float X)
 	{
-		return X * X * X * (X * (X * 6.0 - 15.0) + 10.0);
+		return X * X * X * (X * (X * 6.0f - 15.0f) + 10.0f);
 	}
 };
 

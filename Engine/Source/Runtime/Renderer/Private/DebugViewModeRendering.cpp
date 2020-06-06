@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 DebugViewModeRendering.cpp: Contains definitions for rendering debug viewmodes.
@@ -11,6 +11,7 @@ DebugViewModeRendering.cpp: Contains definitions for rendering debug viewmodes.
 #include "MeshTexCoordSizeAccuracyRendering.h"
 #include "MaterialTexCoordScalesRendering.h"
 #include "RequiredTextureResolutionRendering.h"
+#include "ViewMode/LODColorationRendering.h"
 #include "PrimitiveSceneInfo.h"
 #include "ScenePrivate.h"
 #include "PostProcessing.h"
@@ -30,19 +31,45 @@ IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FDebugViewModePassPassUniformParameters
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
-void SetupDebugViewModePassUniformBuffer(FSceneRenderTargets& SceneContext, ERHIFeatureLevel::Type FeatureLevel, FDebugViewModePassPassUniformParameters& PassParameters)
+void SetupDebugViewModePassUniformBuffer(FSceneRenderTargets& SceneContext, const FViewInfo& ViewInfo, FDebugViewModePassPassUniformParameters& PassParameters)
 {
-	SetupSceneTextureUniformParameters(SceneContext, FeatureLevel, ESceneTextureSetupMode::None, PassParameters.SceneTextures);
+	SetupSceneTextureUniformParameters(SceneContext, ViewInfo.FeatureLevel, ESceneTextureSetupMode::None, PassParameters.SceneTextures);
 
-	const int32 NumEngineColors = FMath::Min<int32>(GEngine->StreamingAccuracyColors.Num(), NumStreamingAccuracyColors);
-	int32 ColorIndex = 0;
-	for (; ColorIndex < NumEngineColors; ++ColorIndex)
+	// Accuracy colors
 	{
-		PassParameters.AccuracyColors[ColorIndex] = GEngine->StreamingAccuracyColors[ColorIndex];
+		const int32 NumEngineColors = FMath::Min<int32>(GEngine->StreamingAccuracyColors.Num(), NumStreamingAccuracyColors);
+		int32 ColorIndex = 0;
+		for (; ColorIndex < NumEngineColors; ++ColorIndex)
+		{
+			PassParameters.AccuracyColors[ColorIndex] = GEngine->StreamingAccuracyColors[ColorIndex];
+		}
+		for (; ColorIndex < NumStreamingAccuracyColors; ++ColorIndex)
+		{
+			PassParameters.AccuracyColors[ColorIndex] = FLinearColor::Black;
+		}
 	}
-	for (; ColorIndex < NumStreamingAccuracyColors; ++ColorIndex)
+	// LOD / HLOD colors
 	{
-		PassParameters.AccuracyColors[ColorIndex] = FLinearColor::Black;
+		const TArray<FLinearColor>* Colors = nullptr;
+		if (ViewInfo.Family->EngineShowFlags.LODColoration)
+		{
+			Colors = &(GEngine->LODColorationColors);
+		}
+		else if (ViewInfo.Family->EngineShowFlags.HLODColoration)
+		{
+			Colors = &GEngine->HLODColorationColors;
+		}
+		
+		const int32 NumColors = Colors ? FMath::Min<int32>(NumLODColorationColors, Colors->Num()) : 0;
+		int32 ColorIndex = 0;
+		for (; ColorIndex < NumColors; ++ColorIndex)
+		{
+			PassParameters.LODColors[ColorIndex] = (*Colors)[ColorIndex];
+		}
+		for (; ColorIndex < NumLODColorationColors; ++ColorIndex)
+		{
+			PassParameters.LODColors[ColorIndex] = NumColors > 0 ? Colors->Last() : FLinearColor::Black;
+		}
 	}
 }
 
@@ -59,14 +86,16 @@ bool FDebugViewModeVS::ShouldCompilePermutation(const FMeshMaterialShaderPermuta
 	if (AllowDebugViewVSDSHS(Parameters.Platform))
 	{
 		// If it comes from FDebugViewModeMaterialProxy, compile it.
-		if (Parameters.Material->GetFriendlyName().Contains(TEXT("DebugViewMode")))
+		if (Parameters.MaterialParameters.bIsMaterialDebugViewMode)
 		{
 			return true;
 		}
 		// Otherwise we only cache it if this for the shader complexity.
 		else if (GCacheShaderComplexityShaders)
 		{
-			return !FDebugViewModeInterface::AllowFallbackToDefaultMaterial(Parameters.Material) || Parameters.Material->IsDefaultMaterial();
+			return !FDebugViewModeInterface::AllowFallbackToDefaultMaterial(Parameters.MaterialParameters.TessellationMode,
+				Parameters.MaterialParameters.bHasVertexPositionOffsetConnected,
+				Parameters.MaterialParameters.bHasPixelDepthOffsetConnected) || Parameters.MaterialParameters.bIsDefaultMaterial;
 		}
 	}
 	return false;
@@ -90,7 +119,7 @@ bool FDeferredShadingSceneRenderer::RenderDebugViewMode(FRHICommandListImmediate
 
 		// Some of the viewmodes use SCENE_TEXTURES_DISABLED to prevent issues when running in commandlet mode.
 		FDebugViewModePassPassUniformParameters PassParameters;
-		SetupDebugViewModePassUniformBuffer(SceneContext, View.GetFeatureLevel(), PassParameters);
+		SetupDebugViewModePassUniformBuffer(SceneContext, View, PassParameters);
 		Scene->UniformBuffers.DebugViewModePassUniformBuffer.UpdateUniformBufferImmediate(PassParameters);
 
 		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1);
@@ -104,9 +133,51 @@ bool FDeferredShadingSceneRenderer::RenderDebugViewMode(FRHICommandListImmediate
 	return bDirty;
 }
 
-FDebugViewModePS::FDebugViewModePS(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer) : FMeshMaterialShader(Initializer) 
+FDebugViewModePS::FDebugViewModePS(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer) : FMeshMaterialShader(Initializer)
 {
 	PassUniformBuffer.Bind(Initializer.ParameterMap, FDebugViewModePassPassUniformParameters::StaticStructMetadata.GetShaderVariableName());
+}
+
+void FDebugViewModePS::GetElementShaderBindings(
+	const FShaderMapPointerTable& PointerTable,
+	const FScene* Scene,
+	const FSceneView* ViewIfDynamicMeshCommand,
+	const FVertexFactory* VertexFactory,
+	const EVertexInputStreamType InputStreamType,
+	ERHIFeatureLevel::Type FeatureLevel,
+	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const FMeshBatch& MeshBatch,
+	const FMeshBatchElement& BatchElement,
+	const FDebugViewModeShaderElementData& ShaderElementData,
+	FMeshDrawSingleShaderBindings& ShaderBindings,
+	FVertexInputStreamArray& VertexStreams) const
+{
+	FMeshMaterialShader::GetElementShaderBindings(PointerTable, Scene, ViewIfDynamicMeshCommand, VertexFactory, InputStreamType, FeatureLevel, PrimitiveSceneProxy, MeshBatch, BatchElement, ShaderElementData, ShaderBindings, VertexStreams);
+
+	int8 VisualizeElementIndex = 0;
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	VisualizeElementIndex = BatchElement.VisualizeElementIndex;
+#endif
+
+	const FDebugViewModeInterface* Interface = FDebugViewModeInterface::GetInterface(ShaderElementData.DebugViewMode);
+	if (ensure(Interface))
+	{
+		Interface->GetDebugViewModeShaderBindings(
+			*this,
+			PrimitiveSceneProxy,
+			ShaderElementData.MaterialRenderProxy,
+			ShaderElementData.Material,
+			ShaderElementData.DebugViewMode,
+			ShaderElementData.ViewOrigin,
+			ShaderElementData.VisualizeLODIndex,
+			VisualizeElementIndex,
+			ShaderElementData.NumVSInstructions,
+			ShaderElementData.NumPSInstructions,
+			ShaderElementData.ViewModeParam,
+			ShaderElementData.ViewModeParamName,
+			ShaderBindings
+		);
+	}
 }
 
 FDebugViewModeMeshProcessor::FDebugViewModeMeshProcessor(
@@ -195,8 +266,9 @@ void FDebugViewModeMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBa
 	}
 	DebugViewModePassShaders.PixelShader = DebugViewModeInterface->GetPixelShader(Material, VertexFactoryType);
 
-	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *BatchMaterial);
-	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, *BatchMaterial);
+	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, *BatchMaterial, OverrideSettings);
+	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, *BatchMaterial, OverrideSettings);
 
 	FMeshPassProcessorRenderState DrawRenderState;
 	DrawRenderState.SetViewUniformBuffer(ViewUniformBuffer);
@@ -211,8 +283,8 @@ void FDebugViewModeMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBa
 		*MaterialRenderProxy,
 		*Material,
 		DebugViewMode, 
-		ViewIfDynamicMeshCommand->ViewMatrices.GetViewOrigin(), 
-		MeshBatch.VisualizeLODIndex, 
+		ViewIfDynamicMeshCommand ? ViewIfDynamicMeshCommand->ViewMatrices.GetViewOrigin() : FVector::ZeroVector, 
+		(ViewIfDynamicMeshCommand && ViewIfDynamicMeshCommand->Family->EngineShowFlags.HLODColoration) ? MeshBatch.VisualizeHLODIndex : MeshBatch.VisualizeLODIndex,
 		ViewModeParam, 
 		ViewModeParamName);
 
@@ -276,13 +348,13 @@ void FDebugViewModeMeshProcessor::UpdateInstructionCount(FDebugViewModeShaderEle
 		}
 		else // EShadingPath::Mobile
 		{
-			TMobileBasePassVSPolicyParamType<FUniformLightMapPolicy>* MobileVS = nullptr;
-			TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>* MobilePS = nullptr;
+			TShaderRef<TMobileBasePassVSPolicyParamType<FUniformLightMapPolicy>> MobileVS;
+			TShaderRef<TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>> MobilePS;
 
 			MobileBasePass::GetShaders(LMP_NO_LIGHTMAP, 0, *InBatchMaterial, InVertexFactoryType, false, MobileVS, MobilePS);
 
-			OutShaderElementData.NumVSInstructions = MobileVS ? MobileVS->GetNumInstructions() : 0;
-			OutShaderElementData.NumPSInstructions = MobilePS ? MobilePS->GetNumInstructions() : 0;
+			OutShaderElementData.NumVSInstructions = MobileVS.IsValid() ? MobileVS->GetNumInstructions() : 0;
+			OutShaderElementData.NumPSInstructions = MobilePS.IsValid() ? MobilePS->GetNumInstructions() : 0;
 		}
 	}
 }
@@ -308,6 +380,8 @@ void InitDebugViewModeInterfaces()
 	FDebugViewModeInterface::SetInterface(DVSM_MaterialTextureScaleAccuracy, new FMaterialTexCoordScaleAccuracyInterface());
 	FDebugViewModeInterface::SetInterface(DVSM_OutputMaterialTextureScales, new FOutputMaterialTexCoordScaleInterface());
 	FDebugViewModeInterface::SetInterface(DVSM_RequiredTextureResolution, new FRequiredTextureResolutionInterface());
+
+	FDebugViewModeInterface::SetInterface(DVSM_LODColoration, new FLODColorationInterface());
 }
 
 #else // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)

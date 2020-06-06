@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
 using System;
@@ -8,6 +8,7 @@ public class MeshProcessingLibrary : ModuleRules
 {
 	public MeshProcessingLibrary(ReadOnlyTargetRules Target) : base(Target)
 	{
+		OptimizeCode = CodeOptimization.InShippingBuildsOnly;
 		bLegalToDistributeObjectCode = true;
 
 		PrivateDependencyModuleNames.AddRange(
@@ -19,7 +20,6 @@ public class MeshProcessingLibrary : ModuleRules
 				"InputCore",
 				"MainFrame",
 				"MeshDescription",
-				"MeshDescriptionOperations",
 				"Slate",
 				"SlateCore",
 				"StaticMeshDescription",
@@ -50,10 +50,7 @@ public class MeshProcessingLibrary : ModuleRules
 		if (bWithMeshSimplifier)
 		{
 			PrivateIncludePaths.Add(MeshSimplifierPath + "/Include");
-
-			bool bUseMeshSimplifierVC141 = Target.WindowsPlatform.Compiler == WindowsCompiler.VisualStudio2017;
-			string libSuffix = bUseMeshSimplifierVC141 ? "_vc141" : "";
-			PublicAdditionalLibraries.Add(MeshSimplifierPath + "/lib/x64/MeshSimplifier" + libSuffix + ".lib");
+			PublicAdditionalLibraries.Add(MeshSimplifierPath + "/lib/x64/MeshSimplifier.lib");
 		}
 	}
 }

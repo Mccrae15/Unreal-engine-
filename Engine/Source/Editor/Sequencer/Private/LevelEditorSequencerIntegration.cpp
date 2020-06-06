@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelEditorSequencerIntegration.h"
 #include "SequencerEdMode.h"
@@ -102,7 +102,7 @@ public:
 				if (ObjectHandle.IsValid()) 
 				{
 					UMovieScene* MovieScene = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
-					UProperty* Property = PropertyHandle.GetProperty();
+					FProperty* Property = PropertyHandle.GetProperty();
 					TSharedRef<FPropertyPath> PropertyPath = FPropertyPath::CreateEmpty();
 					PropertyPath->AddProperty(FPropertyInfo(Property));
 					FName PropertyName(*PropertyPath->ToString(TEXT(".")));
@@ -1034,6 +1034,13 @@ void FLevelEditorSequencerIntegration::DetachOutlinerColumn()
 
 void FLevelEditorSequencerIntegration::ActivateRealtimeViewports()
 {
+	// If PIE is running, the viewport will already be rendering the scene in realtime as part of the 
+	// normal game loop. If we set it to realtime, the editor would render it a second time each frame.
+	if (GEditor->IsPlaySessionInProgress())
+	{
+		return;
+	}
+
 	for (const FSequencerAndOptions& SequencerAndOptions : BoundSequencers)
 	{
 		TSharedPtr<FSequencer> Pinned = SequencerAndOptions.Sequencer.Pin();
@@ -1053,8 +1060,8 @@ void FLevelEditorSequencerIntegration::ActivateRealtimeViewports()
 			// If there is a director group, set the perspective viewports to realtime automatically.
 			if (LevelVC->IsPerspective() && LevelVC->AllowsCinematicControl())
 			{				
-				// Ensure Realtime is turned on and store the original setting so we can restore it later.
-				LevelVC->SetRealtime(true, true);
+				const bool bShouldBeRealtime = true;
+				LevelVC->SetRealtimeOverride(bShouldBeRealtime, LOCTEXT("RealtimeOverrideMessage_Sequencer", "Sequencer"));
 			}
 		}
 	}
@@ -1072,8 +1079,7 @@ void FLevelEditorSequencerIntegration::RestoreRealtimeViewports()
 			// Turn off realtime when exiting.
 			if( LevelVC->IsPerspective() && LevelVC->AllowsCinematicControl() )
 			{				
-				// Specify true so RestoreRealtime will allow us to disable Realtime if it was original disabled
-				LevelVC->RestoreRealtime(true);
+				LevelVC->RemoveRealtimeOverride();
 			}
 		}
 	}

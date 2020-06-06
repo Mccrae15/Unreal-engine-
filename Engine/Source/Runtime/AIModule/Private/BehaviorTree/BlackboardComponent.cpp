@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BrainComponent.h"
@@ -8,7 +8,7 @@
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Rotator.h"
-#include "VisualLogger/VisualLoggerTypes.h"
+#include "VisualLogger/VisualLogger.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Class.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Float.h"
@@ -16,6 +16,8 @@
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Name.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_String.h"
 #include "Misc/RuntimeErrors.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogBlackboard, Log, All);
 
 UBlackboardComponent::UBlackboardComponent(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
 {
@@ -41,9 +43,14 @@ void UBlackboardComponent::InitializeComponent()
 		}
 	}
 
-	if (BlackboardAsset)
+	if (!BlackboardAsset && DefaultBlackboardAsset)
 	{
-		InitializeBlackboard(*BlackboardAsset);
+		InitializeBlackboard(*DefaultBlackboardAsset);
+	}
+	else
+	{
+		UE_CVLOG(BlackboardAsset, this, LogBlackboard, Log, TEXT("InitializeComponent called while BlackboardAsset is not null (set to %s). Assuming it's been set via InitializeBlackboard prior to RegisterComponent call. Ignoring DefaultBlackboardAsset %s")
+			, *GetNameSafe(BlackboardAsset), *GetNameSafe(DefaultBlackboardAsset));
 	}
 }
 
@@ -105,7 +112,7 @@ bool UBlackboardComponent::InitializeBlackboard(UBlackboardData& NewAsset)
 	// in reseting, since we'd lose all the accumulated knowledge
 	if (&NewAsset == BlackboardAsset)
 	{
-		return false;
+		return true;
 	}
 
 	UAISystem* AISystem = UAISystem::GetCurrentSafe(GetWorld());
@@ -181,7 +188,7 @@ bool UBlackboardComponent::InitializeBlackboard(UBlackboardData& NewAsset)
 	else
 	{
 		bSuccess = false;
-		UE_LOG(LogBehaviorTree, Error, TEXT("Blackboard asset (%s) has errors and can't be used!"), *GetNameSafe(BlackboardAsset));
+		UE_LOG(LogBlackboard, Error, TEXT("Blackboard asset (%s) has errors and can't be used!"), *GetNameSafe(BlackboardAsset));
 	}
 
 	return bSuccess;

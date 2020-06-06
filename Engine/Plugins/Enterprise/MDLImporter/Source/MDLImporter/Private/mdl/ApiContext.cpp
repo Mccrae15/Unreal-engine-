@@ -1,4 +1,4 @@
-// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #ifdef USE_MDLSDK
 
@@ -175,8 +175,11 @@ namespace Mdl
 		}
 		NeurayHandle = 0;
 
-		FPlatformProcess::FreeDllHandle(DsoHandle);
-		DsoHandle = nullptr;
+		if (DsoHandle)
+		{
+			FPlatformProcess::FreeDllHandle(DsoHandle);
+			DsoHandle = nullptr;
+		}
 	}
 
 	void FApiContext::AddSearchPath(const FString& ModulesPath)
