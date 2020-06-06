@@ -1,0 +1,232 @@
+﻿# PS4 Chinese (Simplified) translation.
+# Copyright Epic Games, Inc. All Rights Reserved.
+# 
+msgid ""
+msgstr ""
+"Project-Id-Version: PS4\n"
+"POT-Creation-Date: 2020-03-24 06:40\n"
+"PO-Revision-Date: 2020-03-24 06:40\n"
+"Language-Team: \n"
+"Language: zh-Hans\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#. Key:	StreamDisplayNameFormat
+#. SourceLocation:	Platforms/PS4/Plugins/Media/PS4Media/Source/PS4Media/Private/Player/PS4MediaTracks.cpp:354
+#: Platforms/PS4/Plugins/Media/PS4Media/Source/PS4Media/Private/Player/PS4MediaTracks.cpp:354
+msgctxt "FPS4MediaTracks,StreamDisplayNameFormat"
+msgid "Stream {0}"
+msgstr "流送 {0}"
+
+#. Key:	TargetSettingsDescription
+#. SourceLocation:	Platforms/PS4/Source/Developer/PS4PlatformEditor/Private/PS4PlatformEditorModule.cpp:41
+#: Platforms/PS4/Source/Developer/PS4PlatformEditor/Private/PS4PlatformEditorModule.cpp:41
+msgctxt "FPS4PlatformEditorModule,TargetSettingsDescription"
+msgid "PlayStation 4 project settings"
+msgstr "PlayStation 4 项目设置"
+
+#. Key:	TargetSettingsName
+#. SourceLocation:	Platforms/PS4/Source/Developer/PS4PlatformEditor/Private/PS4PlatformEditorModule.cpp:40
+#: Platforms/PS4/Source/Developer/PS4PlatformEditor/Private/PS4PlatformEditorModule.cpp:40
+msgctxt "FPS4PlatformEditorModule,TargetSettingsName"
+msgid "PlayStation 4"
+msgstr "PlayStation 4"
+
+#. Key:	RuntimeSettingsDescription
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/Morpheus/Source/MorpheusEditor/Private/MorpheusEditorModule.cpp:40
+#: Platforms/PS4/Plugins/Runtime/Morpheus/Source/MorpheusEditor/Private/MorpheusEditorModule.cpp:40
+msgctxt "MorpheusEditor,RuntimeSettingsDescription"
+msgid "Configure the Morpheus plugin"
+msgstr "配置Morpheus插件"
+
+#. Key:	RuntimeSettingsName
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/Morpheus/Source/MorpheusEditor/Private/MorpheusEditorModule.cpp:39
+#: Platforms/PS4/Plugins/Runtime/Morpheus/Source/MorpheusEditor/Private/MorpheusEditorModule.cpp:39
+msgctxt "MorpheusEditor,RuntimeSettingsName"
+msgid "Morpheus"
+msgstr "Morpheus"
+
+#. Key:	PSMove_Left_Circle
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:927
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:927
+msgctxt "MoveController,PSMove_Left_Circle"
+msgid "PlayStation Move (L) Circle"
+msgstr "PlayStation Move（左）圆圈键"
+
+#. Key:	PSMove_Left_Cross
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:926
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:926
+msgctxt "MoveController,PSMove_Left_Cross"
+msgid "PlayStation Move (L) Cross"
+msgstr "PlayStation Move（左）交叉键"
+
+#. Key:	PSMove_Left_Move
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:929
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:929
+msgctxt "MoveController,PSMove_Left_Move"
+msgid "PlayStation Move (L) Move Button"
+msgstr "PlayStation Move（左）Move键"
+
+#. Key:	PSMove_Left_Select
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:933
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:933
+msgctxt "MoveController,PSMove_Left_Select"
+msgid "PlayStation Move (L) Select"
+msgstr "PlayStation Move（左）选择键"
+
+#. Key:	PSMove_Left_Square
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:925
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:925
+msgctxt "MoveController,PSMove_Left_Square"
+msgid "PlayStation Move (L) Square"
+msgstr "PlayStation Move（左）正方键"
+
+#. Key:	PSMove_Left_Start
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:932
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:932
+msgctxt "MoveController,PSMove_Left_Start"
+msgid "PlayStation Move (L) Start"
+msgstr "PlayStation Move（左）开始键"
+
+#. Key:	PSMove_Left_Triangle
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:928
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:928
+msgctxt "MoveController,PSMove_Left_Triangle"
+msgid "PlayStation Move (L) Triangle"
+msgstr "PlayStation Move（左）三角键"
+
+#. Key:	PSMove_Left_Trigger
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:930
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:930
+msgctxt "MoveController,PSMove_Left_Trigger"
+msgid "PlayStation Move (L) Trigger"
+msgstr "PlayStation Move（左）扳机键"
+
+#. Key:	PSMove_Left_TriggerAxis
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:931
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:931
+msgctxt "MoveController,PSMove_Left_TriggerAxis"
+msgid "PlayStation Move (L) Trigger Axis"
+msgstr "PlayStation Move（左）扳机键轴"
+
+#. Key:	PSMove_Right_Circle
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:937
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:937
+msgctxt "MoveController,PSMove_Right_Circle"
+msgid "PlayStation Move (R) Circle"
+msgstr "PlayStation Move（右）圆圈键"
+
+#. Key:	PSMove_Right_Cross
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:936
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:936
+msgctxt "MoveController,PSMove_Right_Cross"
+msgid "PlayStation Move (R) Cross"
+msgstr "PlayStation Move（右）交叉键"
+
+#. Key:	PSMove_Right_Move
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:939
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:939
+msgctxt "MoveController,PSMove_Right_Move"
+msgid "PlayStation Move (R) Move Button"
+msgstr "PlayStation Move（右）Move键"
+
+#. Key:	PSMove_Right_Select
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:943
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:943
+msgctxt "MoveController,PSMove_Right_Select"
+msgid "PlayStation Move (R) Select"
+msgstr "PlayStation Move（右）选择键"
+
+#. Key:	PSMove_Right_Square
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:935
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:935
+msgctxt "MoveController,PSMove_Right_Square"
+msgid "PlayStation Move (R) Square"
+msgstr "PlayStation Move（右）正方键"
+
+#. Key:	PSMove_Right_Start
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:942
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:942
+msgctxt "MoveController,PSMove_Right_Start"
+msgid "PlayStation Move (R) Start"
+msgstr "PlayStation Move（右）开始键"
+
+#. Key:	PSMove_Right_Triangle
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:938
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:938
+msgctxt "MoveController,PSMove_Right_Triangle"
+msgid "PlayStation Move (R) Triangle"
+msgstr "PlayStation Move（右）三角键"
+
+#. Key:	PSMove_Right_Trigger
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:940
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:940
+msgctxt "MoveController,PSMove_Right_Trigger"
+msgid "PlayStation Move (R) Trigger"
+msgstr "PlayStation Move（右）扳机键"
+
+#. Key:	PSMove_Right_TriggerAxis
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:941
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:941
+msgctxt "MoveController,PSMove_Right_TriggerAxis"
+msgid "PlayStation Move (R) Trigger Axis"
+msgstr "PlayStation Move（右）扳机键轴"
+
+#. Key:	PSMoveSubCategory
+#. SourceLocation:	Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:923
+#: Platforms/PS4/Plugins/Runtime/MoveController/Source/MoveController/Private/MoveController.cpp:923
+msgctxt "MoveController,PSMoveSubCategory"
+msgid "PlayStation Move"
+msgstr "PlayStation Move"
+
+#. Key:	DynamicRHIFailure
+#. SourceLocation:	Platforms/PS4/Source/Runtime/RHI/Private/PS4DynamicRHI.cpp:17
+#: Platforms/PS4/Source/Runtime/RHI/Private/PS4DynamicRHI.cpp:17
+msgctxt "PS4,DynamicRHIFailure"
+msgid "PS4RHI failure?"
+msgstr "PS4RHI失败？"
+
+#. Key:	ExtensionNotSupported
+#. SourceLocation:	Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:79
+#: Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:79
+msgctxt "PS4MediaFactoryModule,ExtensionNotSupported"
+msgid "The file extension '{0}' is not supported"
+msgstr "不支持文件扩展名“{0}”"
+
+#. Key:	MediaPlayerDisplayName
+#. SourceLocation:	Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:97
+#: Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:97
+msgctxt "PS4MediaFactoryModule,MediaPlayerDisplayName"
+msgid "PS4 AvPlayer"
+msgstr "PS4 AvPlayer"
+
+#. Key:	NoSchemeFound
+#. SourceLocation:	Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:54
+#: Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:54
+msgctxt "PS4MediaFactoryModule,NoSchemeFound"
+msgid "No URI scheme found"
+msgstr "未找到URI机制"
+
+#. Key:	PS4MediaSettingsDescription
+#. SourceLocation:	Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:151
+#: Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:151
+msgctxt "PS4MediaFactoryModule,PS4MediaSettingsDescription"
+msgid "Configure the PS4 Media plug-in."
+msgstr "配置PS4媒体插件。"
+
+#. Key:	PS4MediaSettingsName
+#. SourceLocation:	Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:150
+#: Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:150
+msgctxt "PS4MediaFactoryModule,PS4MediaSettingsName"
+msgid "PS4 Media"
+msgstr "PS4媒体"
+
+#. Key:	SchemeNotSupported
+#. SourceLocation:	Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:64
+#: Platforms/PS4/Plugins/Media/PS4Media/Source/PS4MediaFactory/Private/PS4MediaFactoryModule.cpp:64
+msgctxt "PS4MediaFactoryModule,SchemeNotSupported"
+msgid "The URI scheme '{0}' is not supported"
+msgstr "不支持URI机制“{0}”"
+
