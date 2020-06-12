@@ -1,17 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "UScriptableAssetEditor.h"
+#include "UExampleAssetEditor.h"
 
 #include "ExampleAssetToolkit.h"
 #include "Engine/Level.h"
 #include "InteractiveToolsContext.h"
 
-void UScriptableAssetEditor::GetObjectsToEdit(TArray<UObject*>& InObjectsToEdit)
+void UExampleAssetEditor::GetObjectsToEdit(TArray<UObject*>& InObjectsToEdit)
 {
 	InObjectsToEdit.Add(NewObject<ULevel>(this, NAME_None, RF_Transient));
 }
 
-TSharedPtr<FBaseAssetToolkit> UScriptableAssetEditor::CreateToolkit()
+TSharedPtr<FBaseAssetToolkit> UExampleAssetEditor::CreateToolkit()
 {
 	if (!InteractiveToolsContext)
 	{

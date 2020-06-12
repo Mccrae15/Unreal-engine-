@@ -4,13 +4,13 @@
 
 #include "Tools/UAssetEditor.h"
 
-#include "UScriptableAssetEditor.generated.h"
+#include "UExampleAssetEditor.generated.h"
 
 class UInteractiveToolsContext;
 class FBaseAssetToolkit;
 
 UCLASS(Transient)
-class UScriptableAssetEditor : public UAssetEditor
+class UExampleAssetEditor : public UAssetEditor
 {
 	GENERATED_BODY()
 

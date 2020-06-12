@@ -8,7 +8,7 @@
 class FToolBarBuilder;
 class FMenuBuilder;
 
-class FScriptableAssetEditorModule : public IModuleInterface
+class FExampleAssetEditorModule : public IModuleInterface
 {
 public:
 

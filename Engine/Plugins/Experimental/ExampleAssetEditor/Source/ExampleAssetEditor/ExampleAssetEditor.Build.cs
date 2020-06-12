@@ -2,9 +2,9 @@
 
 using UnrealBuildTool;
 
-public class ScriptableAssetEditor : ModuleRules
+public class ExampleAssetEditor : ModuleRules
 {
-	public ScriptableAssetEditor(ReadOnlyTargetRules Target) : base(Target)
+	public ExampleAssetEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 		

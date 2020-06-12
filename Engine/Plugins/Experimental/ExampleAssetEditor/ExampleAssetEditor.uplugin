@@ -2,7 +2,7 @@
 	"FileVersion": 3,
 	"Version": 1,
 	"VersionName": "1.0",
-	"FriendlyName": "Scriptable Asset Editor",
+	"FriendlyName": "Example Asset Editor",
 	"Description": "Experiments with a UAssetEditor for asset editing.",
 	"Category": "Assets",
 	"CreatedBy": "Epic Games, Inc.",
@@ -16,7 +16,7 @@
 	"Installed": false,
 	"Modules": [
 		{
-			"Name": "ScriptableAssetEditor",
+			"Name": "ExampleAssetEditor",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
 		}
