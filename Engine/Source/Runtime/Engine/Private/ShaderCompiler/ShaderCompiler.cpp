@@ -3121,12 +3121,12 @@ void FShaderCompilingManager::CancelAllCompilations()
 	FScopeLock Lock(&CompileQueueSection);
 
 	const int32 TotalNumJobsRemoved = CompileQueue.Num();
-	for (FShaderCommonCompileJob* It : CompileQueue)
-	{
-		if (FShaderMapCompileResults* ShaderMapJob = ShaderMapJobs.Find(It->Id))
+	for (int i = 0; i < CompileQueue.Num(); i++) 
+		
+		if (FShaderMapCompileResults* ShaderMapJob = ShaderMapJobs.Find(CompileQueue[i]->Id))
 		{
 			int32 NumJobsRemoved = 0;
-			if (FShaderPipelineCompileJob* PipelineJob = It->GetShaderPipelineJob())
+			if (FShaderPipelineCompileJob* PipelineJob = CompileQueue[i]->GetShaderPipelineJob())
 			{
 				NumJobsRemoved += PipelineJob->StageJobs.Num();
 			}
@@ -3139,15 +3139,15 @@ void FShaderCompilingManager::CancelAllCompilations()
 			if (ShaderMapJob->NumJobsQueued == 0)
 			{
 				//We've removed all the jobs for this shader map so remove it.
-				ShaderMapJobs.Remove(It->Id);
+				ShaderMapJobs.Remove(CompileQueue[i]->Id);
 			}
 		}
-	}
 	CompileQueue.Empty();
-
 	// Using atomics to update NumOutstandingJobs since it is read outside of the critical section
 	FPlatformAtomics::InterlockedAdd(&NumOutstandingJobs, -TotalNumJobsRemoved);
 }
+
+
 
 void FShaderCompilingManager::FinishCompilation(const TCHAR* MaterialName, const TArray<int32>& ShaderMapIdsToFinishCompiling)
 {
