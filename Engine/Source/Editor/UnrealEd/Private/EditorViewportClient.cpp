@@ -570,6 +570,7 @@ void FEditorViewportClient::OnEditorModeIDChanged(const FEditorModeID& EditorMod
 	if (Viewport)
 	{
 		RequestInvalidateHitProxy(Viewport);
+		bDisableInput = !bIsEntering;
 	}
 }
 
