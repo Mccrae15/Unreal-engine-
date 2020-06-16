@@ -1230,6 +1230,18 @@ namespace Gauntlet
 				return false;
 			}
 
+			public static bool IsNetworkPath(string InPath)
+			{
+				if (InPath.StartsWith("//") || InPath.StartsWith(@"\\"))
+				{
+					return true;
+				}
+				
+				string RootPath = Path.GetPathRoot(InPath); // get drive's letter
+				DriveInfo driveInfo = new System.IO.DriveInfo(RootPath); // get info about the drive
+				return driveInfo.DriveType == DriveType.Network; // return true if a network drive
+			}
+
 			/// <summary>
 			/// Marks a directory for future cleanup
 			/// </summary>
