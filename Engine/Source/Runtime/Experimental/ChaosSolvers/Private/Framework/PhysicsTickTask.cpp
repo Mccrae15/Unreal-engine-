@@ -81,6 +81,7 @@ ESubsequentsMode::Type FPhysicsTickTask::GetSubsequentsMode()
 
 void FPhysicsTickTask::DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 {
+#if 0
 	using namespace Chaos;
 
 
@@ -117,47 +118,7 @@ void FPhysicsTickTask::DoTask(ENamedThreads::Type CurrentThread, const FGraphEve
 
 	// Drop our reference as we don't need it anymore - the completion task handles it
 	CompletionEvent = nullptr;
-}
-
-//////////////////////////////////////////////////////////////////////////
-
-FPhysicsCommandsTask::FPhysicsCommandsTask()
-{
-	Module = FChaosSolversModule::GetModule();
-	check(Module);
-
-	Dispatcher = Module->GetDispatcher();
-	check(Dispatcher->GetMode() == EChaosThreadingMode::TaskGraph);
-}
-
-TStatId FPhysicsCommandsTask::GetStatId() const
-{
-	RETURN_QUICK_DECLARE_CYCLE_STAT(FPhysicsCommandsTask, STATGROUP_TaskGraphTasks);
-}
-
-ENamedThreads::Type FPhysicsCommandsTask::GetDesiredThread()
-{
-	return CPrio_FPhysicsTickTask.Get();
-}
-
-ESubsequentsMode::Type FPhysicsCommandsTask::GetSubsequentsMode()
-{
-	return ESubsequentsMode::TrackSubsequents;
-}
-
-void FPhysicsCommandsTask::DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
-{
-	using namespace Chaos;
-
-	ensureAlways(Dispatcher == Module->GetDispatcher());
-	check(Dispatcher);
-
-	Dispatcher = Module->GetDispatcher();
-
-	//static FCriticalSection DispatcherExecutionSection;
-	//DispatcherExecutionSection.Lock();
-	Dispatcher->Execute();
-	//DispatcherExecutionSection.Unlock();
+#endif
 }
 
 //////////////////////////////////////////////////////////////////////////
