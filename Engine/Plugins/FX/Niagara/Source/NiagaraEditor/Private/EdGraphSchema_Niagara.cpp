@@ -564,8 +564,8 @@ TArray<TSharedPtr<FNiagaraSchemaAction_NewNode> > UEdGraphSchema_Niagara::GetGra
 					const TArray<FNiagaraTypeDefinition>& RegisteredTypes = FNiagaraTypeRegistry::GetRegisteredTypes();
 					for (FNiagaraTypeDefinition Type : RegisteredTypes)
 					{
-						// Data interfaces can't be made.
-						if (!UNiagaraDataInterface::IsDataInterfaceType(Type))
+						// Objects and data interfaces can't be made.
+						if (Type.IsUObject() == false)
 						{
 							MakeBreakType(Type, true);
 						}
@@ -578,8 +578,8 @@ TArray<TSharedPtr<FNiagaraSchemaAction_NewNode> > UEdGraphSchema_Niagara::GetGra
 					for (FNiagaraTypeDefinition Type : RegisteredTypes)
 					{
 						//Don't break scalars. Allow makes for now as a convenient method of getting internal script constants when dealing with numeric pins.
-						// Data interfaces can't be broken.
-						if (!FNiagaraTypeDefinition::IsScalarDefinition(Type) && !UNiagaraDataInterface::IsDataInterfaceType(Type))
+						// Object and data interfaces can't be broken.
+						if (!FNiagaraTypeDefinition::IsScalarDefinition(Type) && !Type.IsUObject())
 						{
 							MakeBreakType(Type, false);
 						}
@@ -786,6 +786,11 @@ TArray<TSharedPtr<FNiagaraSchemaAction_NewNode> > UEdGraphSchema_Niagara::GetGra
 				const TArray<FNiagaraTypeDefinition>& RegisteredTypes = FNiagaraTypeRegistry::GetRegisteredParameterTypes();
 				for (FNiagaraTypeDefinition Type : RegisteredTypes)
 				{
+					if (Type.IsUObject() && Type.IsDataInterface() == false)
+					{
+						continue;
+					}
+
 					FText MenuCat;
 					if (const UClass* Class = Type.GetClass())
 					{						
