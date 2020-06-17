@@ -9,8 +9,6 @@
 #include "Modules/ModuleManager.h"
 #include "Async/AsyncWork.h"
 #include "UObject/ObjectMacros.h"
-#include "Framework/Dispatcher.h"
-#include "Framework/PersistentTask.h"
 #include "Framework/Threading.h"
 #include "PhysicsCoreTypes.h"
 #include "Chaos/Framework/MultiBufferResource.h"
@@ -18,6 +16,7 @@
 #include "Chaos/PhysicalMaterials.h"
 #include "Chaos/Defines.h"
 #include "Chaos/EvolutionTraits.h"
+#include "Async/TaskGraphInterfaces.h"
 
 /** Classes that want to set the solver actor class can implement this. */
 class IChaosSolverActorClassProvider
@@ -32,15 +31,13 @@ class IChaosSettingsProvider
 public:
 	virtual ~IChaosSettingsProvider() {}
 
-	virtual Chaos::EThreadingMode GetDefaultThreadingMode() const = 0;
-	virtual EChaosSolverTickMode GetDedicatedThreadTickMode() const = 0;
-	virtual EChaosBufferMode GetDedicatedThreadBufferMode() const = 0;
 }; 
 
 namespace Chaos
 {
 	class FPersistentPhysicsTask;
 	class FPhysicsProxy;
+	class FPhysicsSolverBase;
 }
 
 // Default settings implementation
@@ -49,9 +46,6 @@ namespace Chaos
 	class FInternalDefaultSettings : public IChaosSettingsProvider
 	{
 	public:
-		virtual Chaos::EThreadingMode GetDefaultThreadingMode() const override;
-		virtual EChaosSolverTickMode GetDedicatedThreadTickMode() const override;
-		virtual EChaosBufferMode GetDedicatedThreadBufferMode() const override;
 	};
 
 	extern CHAOSSOLVERS_API FInternalDefaultSettings GDefaultChaosSettings;
@@ -97,40 +91,12 @@ public:
 	void Initialize();
 	void Shutdown();
 
-	void OnSettingsChanged();
-
-	void ShutdownThreadingMode();
-	void InitializeThreadingMode(Chaos::EThreadingMode InNewMode);
-	void ChangeThreadingMode(Chaos::EThreadingMode InNewMode);
-
 	/**
 	 * Queries for multithreaded configurations
 	 */
 	bool IsPersistentTaskEnabled() const;
 	bool IsPersistentTaskRunning() const;
 
-	/**
-	 * Creates and dispatches the physics thread task
-	 */
-	void StartPhysicsTask();
-
-	/**
-	 * Shuts down the physics thread task
-	 * #BG TODO cleanup running task
-	 */
-	void EndPhysicsTask();
-
-	/**
-	 * Get the dispatcher interface currently being used. when running a multi threaded
-	 * configuration this will safely marshal commands to the physics thread. in a
-	 * single threaded configuration the commands will be called immediately
-	 *
-	 * Note: This should be queried for every scope that dispatches commands. the game
-	 * thread has mechanisms to change the dispatcher implementation (CVar for threadmode)
-	 * which means the ptr could be stale
-	 * #BGallagher Make this pimpl? Swap out implementation and allow cached dispatcher?
-	 */
-	Chaos::IDispatcher* GetDispatcher() const;
 
 	/**
 	 * Gets the inner physics thread task if it has been spawned. Care must be taken when
@@ -154,68 +120,17 @@ public:
 	 * are dispatched to the physics thread automatically if it is available
 	 *
 	 * @param InOwner Ptr to some owning UObject. The module doesn't use this but allows calling code to organize solver ownership
+	 * @param ThreadingMode The desired threading mode the solver will use
 	 * @param bStandalone Whether the solver is standalone (not sent to physics thread - updating left to caller)
 	 */
 	template <typename Traits>
-	Chaos::TPBDRigidsSolver<Traits>* CreateSolver(UObject* InOwner
-#if CHAOS_CHECKED
-		, const FName& DebugName = NAME_None
-#endif
-	)
-	{
-		return CreateSolver<Traits>(InOwner,ESolverFlags::None
-#if CHAOS_CHECKED
-			,DebugName
-#endif
-		);
-	}
-	template <typename Traits>
-	Chaos::TPBDRigidsSolver<Traits>* CreateSolver(UObject* InOwner, ESolverFlags InFlags
+	Chaos::TPBDRigidsSolver<Traits>* CreateSolver(UObject* InOwner, Chaos::EThreadingMode ThreadingMode = Chaos::EThreadingMode::SingleThread
 #if CHAOS_CHECKED
 		, const FName& DebugName = NAME_None
 #endif
 	);
 
 	void MigrateSolver(Chaos::FPhysicsSolverBase* InSolver, const UObject* InNewOwner);
-
-	Chaos::EMultiBufferMode GetBufferModeFromThreadingModel(Chaos::EThreadingMode ThreadingMode) const
-	{
-		Chaos::EMultiBufferMode SolverBufferMode = Chaos::EMultiBufferMode::Single;
-		switch (ThreadingMode)
-		{
-			case Chaos::EThreadingMode::SingleThread:
-			{
-				SolverBufferMode = Chaos::EMultiBufferMode::Single;
-			}
-			break;
-
-			case Chaos::EThreadingMode::DedicatedThread:
-			case Chaos::EThreadingMode::TaskGraph:
-			{
-				switch (GetSettingsProvider().GetDedicatedThreadBufferMode())
-				{
-					case EChaosBufferMode::Triple:
-					{
-						SolverBufferMode = Chaos::EMultiBufferMode::Triple;
-					}
-					break;
-
-					case EChaosBufferMode::Double:
-					default:
-					{
-						SolverBufferMode = Chaos::EMultiBufferMode::Double;
-					}
-				}
-			}
-			break;
-
-			default:
-			{
-				checkf(false, TEXT("Unexpected Threading Mode"));
-			}
-		}
-		return SolverBufferMode;
-	}
 
 	/**
 	 * Sets the actor type which should be AChaosSolverActor::StaticClass() but that is not accessible from engine.
@@ -258,16 +173,6 @@ public:
 	 */
 	void DumpHierarchyStats(int32* OutOptMaxCellElements = nullptr);
 
-	/**
-	 * Acquires a read lock for physics object results
-	 */
-	void LockResultsRead();
-
-	/**
-	 * Unlocks an acquired physics object result lock
-	 */
-	void UnlockResultsRead();
-
 #if WITH_EDITOR
 	/**
 	 * Pause solvers. Thread safe.
@@ -308,11 +213,6 @@ public:
 	void LockSolvers() { SolverLock.Lock(); }
 	void UnlockSolvers() { SolverLock.Unlock(); }
 
-	void ChangeBufferMode(Chaos::EMultiBufferMode InBufferMode);
-
-	Chaos::EThreadingMode GetDesiredThreadingMode() const;
-	Chaos::EMultiBufferMode GetDesiredBufferingMode() const;
-
 	/** Events that the material manager will emit for us to update our threaded data */
 	void OnUpdateMaterial(Chaos::FMaterialHandle InHandle);
 	void OnCreateMaterial(Chaos::FMaterialHandle InHandle);
@@ -343,9 +243,6 @@ private:
 	FAsyncTask<Chaos::FPersistentPhysicsTask>* PhysicsAsyncTask;
 	Chaos::FPersistentPhysicsTask* PhysicsInnerTask;
 
-	// Current command dispatcher
-	Chaos::IDispatcher* Dispatcher;
-
 	// Core delegate signaling app shutdown, clean up and spin down threads before exit.
 	FDelegateHandle PreExitHandle;
 
@@ -359,9 +256,6 @@ private:
 	// Lock for the above list to ensure we don't delete solvers out from underneath other threads
 	// or mess up the solvers array during use.
 	mutable FCriticalSection SolverLock;
-
-	// Called from the sync point to retrieve stats from the physics thread and push them to profilers or the stats system
-	void UpdateStats();
 
 	/** Store the ChaosSolverActor type */
 	UClass* SolverActorClass;
@@ -378,8 +272,6 @@ private:
 	float TotalAverageUpdateTime;
 	float Fps;
 	float EffectiveFps;
-
-	Chaos::FPersistentPhysicsTaskStatistics::FPerSolverStatistics PerSolverStats;
 #endif
 
 #if WITH_EDITOR
@@ -416,10 +308,10 @@ struct CHAOSSOLVERS_API FChaosScopeSolverLock
 
 #if CHAOS_CHECKED
 #define EVOLUTION_TRAIT(Traits)\
-extern template CHAOSSOLVERS_API Chaos::TPBDRigidsSolver<Chaos::Traits>* FChaosSolversModule::CreateSolver(UObject* InOwner, ESolverFlags InFlags, const FName& DebugName);
+extern template CHAOSSOLVERS_API Chaos::TPBDRigidsSolver<Chaos::Traits>* FChaosSolversModule::CreateSolver(UObject* InOwner, Chaos::EThreadingMode ThreadingMode, const FName& DebugName);
 #else
 #define EVOLUTION_TRAIT(Traits)\
-extern template CHAOSSOLVERS_API Chaos::TPBDRigidsSolver<Chaos::Traits>* FChaosSolversModule::CreateSolver(UObject* InOwner,ESolverFlags InFlags);
+extern template CHAOSSOLVERS_API Chaos::TPBDRigidsSolver<Chaos::Traits>* FChaosSolversModule::CreateSolver(UObject* InOwner,Chaos::EThreadingMode ThreadingMode);
 #endif
 
 #include "Chaos/EvolutionTraits.inl"

@@ -2984,8 +2984,11 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 		SlowTask.EnterProgressFrame(5);
 
 #if USE_EVENT_DRIVEN_ASYNC_LOAD_AT_BOOT_TIME && !USE_PER_MODULE_UOBJECT_BOOTSTRAP
-		// If we don't do this now and the async loading thread is active, then we will attempt to load this module from a thread
-		FModuleManager::Get().LoadModule("AssetRegistry");
+		{
+		    SCOPED_BOOT_TIMING("LoadAssetRegistryModule");
+		    // If we don't do this now and the async loading thread is active, then we will attempt to load this module from a thread
+		    FModuleManager::Get().LoadModule("AssetRegistry");
+		}
 #endif
 
 		FEmbeddedCommunication::ForceTick(5);
@@ -3757,23 +3760,6 @@ bool FEngineLoop::LoadStartupCoreModules()
 		// VREditor needs to be loaded in non-server editor builds early, so engine content Blueprints can be loaded during DDC generation
 		FModuleManager::Get().LoadModule(TEXT("VREditor"));
 	}
-	// -----------------------------------------------------
-
-	// HACK: load EQS editor as early as possible for statically initialized assets (non cooked EQS assets needs it)
-	// cooking needs this module too
-	bool bEnvironmentQueryEditor = false;
-	GConfig->GetBool(TEXT("EnvironmentQueryEd"), TEXT("EnableEnvironmentQueryEd"), bEnvironmentQueryEditor, GEngineIni);
-	if (bEnvironmentQueryEditor
-#if WITH_EDITOR
-		|| GetDefault<UEditorExperimentalSettings>()->bEQSEditor
-#endif // WITH_EDITOR
-		)
-	{
-		FModuleManager::Get().LoadModule(TEXT("EnvironmentQueryEditor"));
-	}
-
-	// We need this for blueprint projects that have online functionality.
-	//FModuleManager::Get().LoadModule(TEXT("OnlineBlueprintSupport"));
 
 	if (IsRunningCommandlet())
 	{
@@ -3959,9 +3945,6 @@ int32 FEngineLoop::Init()
 	}
 
 	// Call init callbacks
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	UEngine::OnPostEngineInit.Broadcast();
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	FCoreDelegates::OnPostEngineInit.Broadcast();
 
 	SlowTask.EnterProgressFrame(30);

@@ -487,7 +487,7 @@ static bool bRequireFocusForGamepadInput = false;
 FAutoConsoleVariableRef CVarRequireFocusForGamepadInput(
 	TEXT("Slate.RequireFocusForGamepadInput"),
 	bRequireFocusForGamepadInput,
-	TEXT("")
+	TEXT("Whether gamepad input should be ignored by the engine if the application is not currently active")
 );
 
 #if PLATFORM_UI_NEEDS_TOOLTIPS
@@ -906,6 +906,17 @@ FVector2D FSlateApplication::GetLastCursorPos() const
 void FSlateApplication::SetCursorPos(const FVector2D& MouseCoordinate)
 {
 	GetCursorUser()->SetCursorPosition(MouseCoordinate);
+}
+
+void FSlateApplication::UsePlatformCursorForCursorUser(bool bUsePlatformCursor)
+{
+	if (TSharedPtr<FSlateUser> SlateUser = GetUser(CursorUserIndex))
+	{
+		if (PlatformApplication && PlatformApplication->Cursor)
+		{
+			SlateUser->OverrideCursor(bUsePlatformCursor ? PlatformApplication->Cursor : MakeShared<FFauxSlateCursor>());
+		}
+	}
 }
 
 FWidgetPath FSlateApplication::LocateWindowUnderMouse( FVector2D ScreenspaceMouseCoordinate, const TArray< TSharedRef< SWindow > >& Windows, bool bIgnoreEnabledStatus, int32 UserIndex)
@@ -5368,6 +5379,10 @@ bool FSlateApplication::OnMouseMove()
 		// Throw out the mouse move event if we're faking touch events but the mouse button isn't down.
 		return false;
 	}
+
+	// Force the cursor user index to use the platform cursor since we've been notified that the platform 
+	// cursor position has changed.
+	UsePlatformCursorForCursorUser(true);
 
 	bool Result = true;
 	const FVector2D CurrentCursorPosition = GetCursorPos();

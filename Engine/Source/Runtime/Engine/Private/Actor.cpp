@@ -304,7 +304,7 @@ void AActor::ResetOwnedComponents()
 
 			if (Component->GetIsReplicated())
 			{
-				ReplicatedComponents.AddUnique(Component);
+				ReplicatedComponents.Add(Component);
 			}
 		}
 	}, true, RF_NoFlags, EInternalObjectFlags::PendingKill);
@@ -1227,9 +1227,18 @@ bool AActor::Modify( bool bAlwaysMarkDirty/*=true*/ )
 	}
 
 	// If the root component is blueprint constructed we don't save it to the transaction buffer
-	if( RootComponent && !RootComponent->IsCreatedByConstructionScript())
+	if (RootComponent)
 	{
-		bSavedToTransactionBuffer = RootComponent->Modify( bAlwaysMarkDirty ) || bSavedToTransactionBuffer;
+		if (!RootComponent->IsCreatedByConstructionScript())
+		{
+			bSavedToTransactionBuffer = RootComponent->Modify(bAlwaysMarkDirty) || bSavedToTransactionBuffer;
+		}
+
+		USceneComponent* DefaultAttachComp = GetDefaultAttachComponent();
+		if (DefaultAttachComp && DefaultAttachComp != RootComponent && !DefaultAttachComp->IsCreatedByConstructionScript())
+		{
+			bSavedToTransactionBuffer = DefaultAttachComp->Modify(bAlwaysMarkDirty) || bSavedToTransactionBuffer;
+		}
 	}
 
 	return bSavedToTransactionBuffer;
@@ -2716,7 +2725,7 @@ void AActor::RemoveOwnedComponent(UActorComponent* Component)
 
 	if (OwnedComponents.Remove(Component) > 0)
 	{
-		ReplicatedComponents.Remove(Component);
+		ReplicatedComponents.RemoveSingleSwap(Component);
 		if (Component->IsCreatedByConstructionScript())
 		{
 			BlueprintCreatedComponents.RemoveSingleSwap(Component);
@@ -2737,14 +2746,13 @@ bool AActor::OwnsComponent(UActorComponent* Component) const
 
 void AActor::UpdateReplicatedComponent(UActorComponent* Component)
 {
-	checkf(Component->GetOwner() == this, TEXT("UE-9568: Component %s being updated for Actor %s"), *Component->GetPathName(), *GetPathName() );
 	if (Component->GetIsReplicated())
 	{
 		ReplicatedComponents.AddUnique(Component);
 	}
 	else
 	{
-		ReplicatedComponents.Remove(Component);
+		ReplicatedComponents.RemoveSingleSwap(Component);
 	}
 }
 
@@ -3050,7 +3058,7 @@ void AActor::PostSpawnInitialize(FTransform const& UserSpawnTransform, AActor* I
 	// at the native class level. In that case, if this is a Blueprint instance, we need to defer native registration until after SCS execution can establish a scene root.
 	// Note: This API will also call PostRegisterAllComponents() on the actor instance. If deferred, PostRegisterAllComponents() won't be called until the root is set by SCS.
 	bHasDeferredComponentRegistration = (SceneRootComponent == nullptr && Cast<UBlueprintGeneratedClass>(GetClass()) != nullptr);
-	if (!bHasDeferredComponentRegistration)
+	if (!bHasDeferredComponentRegistration && GetWorld())
 	{
 		RegisterAllComponents();
 	}
@@ -3264,23 +3272,30 @@ void AActor::SetReplicates(bool bInReplicates)
 		RemoteRole = bInReplicates ? ROLE_SimulatedProxy : ROLE_None;
 		bReplicates = bInReplicates;
 
-		if (bReplicates)
+		if (bActorInitialized)
 		{
-			// GetWorld will return nullptr on CDO, FYI
-			if (UWorld* MyWorld = GetWorld())
+			if (bReplicates)
 			{
-				// Only call into net driver if we just started replicating changed
-				// This actor should already be in the Network Actors List if it was already replicating.
-				if (bNewlyReplicates)
+				// GetWorld will return nullptr on CDO, FYI
+				if (UWorld* MyWorld = GetWorld())
 				{
-					MyWorld->AddNetworkActor(this);
+					// Only call into net driver if we just started replicating changed
+					// This actor should already be in the Network Actors List if it was already replicating.
+					if (bNewlyReplicates)
+					{
+						MyWorld->AddNetworkActor(this);
+					}
+
+					ForcePropertyCompare();
 				}
-
-				ForcePropertyCompare();
 			}
-		}
 
-		MARK_PROPERTY_DIRTY_FROM_NAME(AActor, RemoteRole, this);
+			MARK_PROPERTY_DIRTY_FROM_NAME(AActor, RemoteRole, this);
+		}
+		else
+		{
+			UE_LOG(LogActor, Warning, TEXT("SetReplicates called on non-initialized actor %s. Directly setting bReplicates is the correct procedure for pre-init actors."), *GetName());
+		}
 	}
 	else
 	{
@@ -3741,6 +3756,17 @@ void AActor::AddActorWorldTransform(const FTransform& DeltaTransform, bool bSwee
 	}
 }
 
+void AActor::AddActorWorldTransformKeepScale(const FTransform& DeltaTransform, bool bSweep, FHitResult* OutSweepHitResult, ETeleportType Teleport)
+{
+	if (RootComponent)
+	{
+		RootComponent->AddWorldTransformKeepScale(DeltaTransform, bSweep, OutSweepHitResult, Teleport);
+	}
+	else if (OutSweepHitResult)
+	{
+		*OutSweepHitResult = FHitResult();
+	}
+}
 
 bool AActor::SetActorTransform(const FTransform& NewTransform, bool bSweep, FHitResult* OutSweepHitResult, ETeleportType Teleport)
 {
@@ -4910,6 +4936,11 @@ void AActor::K2_AddActorWorldTransform(const FTransform& DeltaTransform, bool bS
 {
 	AddActorWorldTransform(DeltaTransform, bSweep, (bSweep ? &SweepHitResult : nullptr), TeleportFlagToEnum(bTeleport));
 }
+
+ void AActor::K2_AddActorWorldTransformKeepScale(const FTransform& DeltaTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport)
+ {
+ 	AddActorWorldTransformKeepScale(DeltaTransform, bSweep, (bSweep ? &SweepHitResult : nullptr), TeleportFlagToEnum(bTeleport));
+ }
 
 bool AActor::K2_SetActorTransform(const FTransform& NewTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport)
 {
