@@ -84,9 +84,10 @@ struct FFileIoStoreCompressedBlock
 	FFileIoStoreCompressedBlock* Next = nullptr;
 	FFileIoStoreBlockKey Key;
 	FName CompressionMethod;
-	uint64 Size;
 	uint64 RawOffset;
-	uint64 RawSize;
+	uint32 UncompressedSize;
+	uint32 CompressedSize;
+	uint32 RawSize;
 	uint32 RawBlocksCount = 0;
 	uint32 UnfinishedRawBlocksCount = 0;
 	struct FFileIoStoreRawBlock* SingleRawBlock;
@@ -150,6 +151,14 @@ class FFileIoStoreReader
 public:
 	FFileIoStoreReader(FFileIoStoreImpl& InPlatformImpl);
 	FIoStatus Initialize(const FIoStoreEnvironment& Environment);
+	void SetIndex(uint32 InIndex)
+	{
+		Index = InIndex;
+	}
+	uint32 GetIndex() const
+	{
+		return Index;
+	}
 	bool DoesChunkExist(const FIoChunkId& ChunkId) const;
 	TIoStatusOr<uint64> GetSizeForChunk(const FIoChunkId& ChunkId) const;
 	const FIoOffsetAndLength* Resolve(const FIoChunkId& ChunkId) const;
@@ -169,6 +178,7 @@ private:
 	TMap<FIoChunkId, FIoOffsetAndLength> Toc;
 	FFileIoStoreContainerFile ContainerFile;
 	FIoContainerId ContainerId;
+	uint32 Index;
 	int32 Order;
 };
 
@@ -230,7 +240,7 @@ private:
 	};
 
 	void InitCache();
-	void ReadBlocks(uint32 ReaderIndex, const FFileIoStoreResolvedRequest& ResolvedRequest);
+	void ReadBlocks(const FFileIoStoreReader& Reader, const FFileIoStoreResolvedRequest& ResolvedRequest);
 	FFileIoStoreBuffer* AllocBuffer();
 	void FreeBuffer(FFileIoStoreBuffer* Buffer);
 	FFileIoStoreCompressionContext* AllocCompressionContext();
@@ -247,7 +257,8 @@ private:
 	FRunnableThread* Thread;
 	TAtomic<bool> bStopRequested{ false };
 	mutable FRWLock IoStoreReadersLock;
-	TArray<FFileIoStoreReader*> IoStoreReaders;
+	TArray<FFileIoStoreReader*> UnorderedIoStoreReaders;
+	TArray<FFileIoStoreReader*> OrderedIoStoreReaders;
 	TMap<FFileIoStoreBlockKey, FFileIoStoreCompressedBlock*> CompressedBlocksMap;
 	TMap<FFileIoStoreBlockKey, FFileIoStoreRawBlock*> RawBlocksMap;
 	uint8* BufferMemory = nullptr;
