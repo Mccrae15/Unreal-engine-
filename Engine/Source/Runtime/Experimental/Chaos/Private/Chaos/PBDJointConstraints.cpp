@@ -93,6 +93,11 @@ namespace Chaos
 		return ConstraintContainer->GetConstraintSettings(ConstraintIndex);
 	}
 
+	FPBDJointSettings& FPBDJointConstraintHandle::GetSettings()
+	{
+		return ConstraintContainer->GetConstraintSettings(ConstraintIndex);
+	}
+
 	void FPBDJointConstraintHandle::SetSettings(const FPBDJointSettings& Settings)
 	{
 		ConstraintContainer->SetConstraintSettings(ConstraintIndex, Settings);
@@ -558,6 +563,11 @@ namespace Chaos
 
 	
 	const FPBDJointSettings& FPBDJointConstraints::GetConstraintSettings(int32 ConstraintIndex) const
+	{
+		return ConstraintSettings[ConstraintIndex];
+	}
+
+	FPBDJointSettings& FPBDJointConstraints::GetConstraintSettings(int32 ConstraintIndex)
 	{
 		return ConstraintSettings[ConstraintIndex];
 	}
@@ -1266,6 +1276,13 @@ namespace Chaos
 		GetConstrainedParticleIndices(ConstraintIndex, Index0, Index1);
 		TGenericParticleHandle<FReal, 3> Particle0 = TGenericParticleHandle<FReal, 3>(ConstraintParticles[ConstraintIndex][Index0]);
 		TGenericParticleHandle<FReal, 3> Particle1 = TGenericParticleHandle<FReal, 3>(ConstraintParticles[ConstraintIndex][Index1]);
+
+		if ((Particle0->Sleeping() && Particle1->Sleeping())
+			|| (Particle0->IsKinematic() && Particle1->Sleeping())
+			|| (Particle0->Sleeping() && Particle1->IsKinematic()))
+		{
+			return false;
+		}
 
 		const FVec3 P0 = FParticleUtilities::GetCoMWorldPosition(Particle0);
 		const FRotation3 Q0 = FParticleUtilities::GetCoMWorldRotation(Particle0);
