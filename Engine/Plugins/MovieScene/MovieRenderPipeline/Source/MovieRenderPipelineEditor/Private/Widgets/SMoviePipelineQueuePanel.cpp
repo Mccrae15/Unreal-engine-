@@ -181,7 +181,7 @@ bool SMoviePipelineQueuePanel::IsRenderLocalEnabled() const
 	const bool bNotRendering = !Subsystem->IsRendering();
 	const bool bHasJobs = Subsystem->GetQueue()->GetJobs().Num() > 0;
 
-	const bool bWorldIsActive = GEditor ? GEditor->IsPlaySessionInProgress() : false;
+	const bool bWorldIsActive = GEditor->IsPlaySessionInProgress();
 	return bHasExecutor && bNotRendering && bHasJobs && !bWorldIsActive;
 }
 
