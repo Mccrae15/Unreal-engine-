@@ -1922,6 +1922,7 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 	bool bIsWireframeRenderpass = bIsWireframe && FSceneRenderer::ShouldCompositeEditorPrimitives(Views[0]);
 	bool bRenderLightmapDensity = ViewFamily.EngineShowFlags.LightMapDensity && AllowDebugViewmodes();
+	bool bShaderComplexity = ViewFamily.EngineShowFlags.ShaderComplexity && AllowDebugViewmodes();
 	bool bRenderSkyAtmosphereEditorNotifications = ShouldRenderSkyAtmosphereEditorNotifications();
 	bool bDoParallelBasePass = GRHICommandList.UseParallelAlgorithms() && CVarParallelBasePass.GetValueOnRenderThread();
 	
@@ -1987,7 +1988,7 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 			RHICmdList.EndRenderPass();
 		}
 	}
-	else if (!bIsGBufferCurrent && (!bDoParallelBasePass || bRenderLightmapDensity))
+	else if (!bIsGBufferCurrent && (!bDoParallelBasePass || bRenderLightmapDensity || bShaderComplexity))
 	{
 		// Make sure we have began the renderpass
 		ERenderTargetLoadAction DepthLoadAction = bDepthWasCleared ? ERenderTargetLoadAction::ELoad : ERenderTargetLoadAction::EClear;
@@ -2015,7 +2016,7 @@ void FDeferredShadingSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	ServiceLocalQueue();
 
 	// If we ran parallel in the basepass there will be no renderpass at this point.
-	if (bDoParallelBasePass && !bRenderLightmapDensity)
+	if (bDoParallelBasePass && !bRenderLightmapDensity && !bShaderComplexity)
 	{
 		SceneContext.BeginRenderingGBuffer(RHICmdList, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, BasePassDepthStencilAccess, ViewFamily.EngineShowFlags.ShaderComplexity);
 	}
