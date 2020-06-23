@@ -10,6 +10,7 @@ class FScene;
 #if RHI_RAYTRACING
 
 int32 GetRayTracingReflectionsSamplesPerPixel(const FViewInfo& View);
+float GetRayTracingReflectionsMaxRoughness(const FViewInfo& View);
 
 bool ShouldRenderRayTracingReflections(const FViewInfo& View);
 bool ShouldRayTracedReflectionsUseHybridReflections();
