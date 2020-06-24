@@ -17,7 +17,7 @@
 #define LOCTEXT_NAMESPACE "ModulationSettingsEditor"
 
 
-FModCurveEditorModel::FModCurveEditorModel(FRichCurve& InRichCurve, UObject* InOwner, FName InControlName, EModSettingsOutputEditorCurveSource InSource, UCurveFloat* InSharedCurve)
+FModSettingsCurveEditorModel::FModSettingsCurveEditorModel(FRichCurve& InRichCurve, UObject* InOwner, FName InControlName, EModSettingsOutputEditorCurveSource InSource, UCurveFloat* InSharedCurve)
 	: FRichCurveEditorModelRaw(&InRichCurve, InOwner)
 	, Output(EModSettingsEditorCurveOutput::Control)
 	, Source(InSource)
@@ -26,7 +26,7 @@ FModCurveEditorModel::FModCurveEditorModel(FRichCurve& InRichCurve, UObject* InO
 	Init(&InControlName, InSharedCurve);
 }
 
-FModCurveEditorModel::FModCurveEditorModel(FRichCurve& InRichCurve, UObject* InOwner, EModSettingsEditorCurveOutput InOutput, EModSettingsOutputEditorCurveSource InSource, UCurveFloat* InSharedCurve)
+FModSettingsCurveEditorModel::FModSettingsCurveEditorModel(FRichCurve& InRichCurve, UObject* InOwner, EModSettingsEditorCurveOutput InOutput, EModSettingsOutputEditorCurveSource InSource, UCurveFloat* InSharedCurve)
 	: FRichCurveEditorModelRaw(&InRichCurve, InOwner)
 	, Settings(Cast<USoundModulationSettings>(InOwner))
 	, Output(InOutput)
@@ -36,7 +36,7 @@ FModCurveEditorModel::FModCurveEditorModel(FRichCurve& InRichCurve, UObject* InO
 	Init(nullptr /* InControlName */, InSharedCurve);
 }
 
-void FModCurveEditorModel::Init(const FName* InControlName, UCurveFloat* InSharedCurve)
+void FModSettingsCurveEditorModel::Init(const FName* InControlName, UCurveFloat* InSharedCurve)
 {
 	bKeyDrawEnabled = true;
 
@@ -126,14 +126,14 @@ void FModCurveEditorModel::Init(const FName* InControlName, UCurveFloat* InShare
 	}
 }
 
-FLinearColor FModCurveEditorModel::GetColor() const
+FLinearColor FModSettingsCurveEditorModel::GetColor() const
 {
 	return !GetIsBypassed() && (Source == EModSettingsOutputEditorCurveSource::Custom || Source == EModSettingsOutputEditorCurveSource::Expression)
 		? Color
 		: Color.Desaturate(0.45f);
 }
 
-bool FModCurveEditorModel::GetIsBypassed() const
+bool FModSettingsCurveEditorModel::GetIsBypassed() const
 {
 	if (Settings.IsValid())
 	{
@@ -175,22 +175,22 @@ bool FModCurveEditorModel::GetIsBypassed() const
 	return false;
 }
 
-EModSettingsEditorCurveOutput FModCurveEditorModel::GetOutput() const
+EModSettingsEditorCurveOutput FModSettingsCurveEditorModel::GetOutput() const
 {
 	return Output;
 }
 
-EModSettingsOutputEditorCurveSource FModCurveEditorModel::GetSource() const
+EModSettingsOutputEditorCurveSource FModSettingsCurveEditorModel::GetSource() const
 {
 	return Source;
 }
 
-bool FModCurveEditorModel::IsReadOnly() const
+bool FModSettingsCurveEditorModel::IsReadOnly() const
 {
 	return Source != EModSettingsOutputEditorCurveSource::Custom;
 }
 
-ECurveEditorViewID FModCurveEditorModel::ViewId = ECurveEditorViewID::Invalid;
+ECurveEditorViewID FModSettingsCurveEditorModel::ViewId = ECurveEditorViewID::Invalid;
 
 void SModulationSettingsEditorViewStacked::Construct(const FArguments& InArgs, TWeakPtr<FCurveEditor> InCurveEditor)
 {
@@ -277,7 +277,7 @@ void SModulationSettingsEditorViewStacked::DrawViewGrids(const FGeometry& Allott
 	const float          Height = AllottedGeometry.GetLocalSize().Y;
 	const FSlateBrush*   WhiteBrush = FEditorStyle::GetBrush("WhiteBrush");
 
-	FViewGridDrawInfo DrawInfo(&AllottedGeometry, GetViewSpace(), CurveEditor->GetPanel()->GetGridLineTint(), BaseLayerId);
+	FModSettingsViewGridDrawInfo DrawInfo(&AllottedGeometry, GetViewSpace(), CurveEditor->GetPanel()->GetGridLineTint(), BaseLayerId);
 
 	TArray<float> MajorGridLinesX, MinorGridLinesX;
 	TArray<FText> MajorGridLabelsX;
@@ -352,7 +352,7 @@ void SModulationSettingsEditorViewStacked::DrawViewGrids(const FGeometry& Allott
 	}
 }
 
-void SModulationSettingsEditorViewStacked::DrawViewGridLineX(FSlateWindowElementList& OutDrawElements, FViewGridDrawInfo& DrawInfo, ESlateDrawEffect DrawEffects, double OffsetAlpha, bool bIsMajor) const
+void SModulationSettingsEditorViewStacked::DrawViewGridLineX(FSlateWindowElementList& OutDrawElements, FModSettingsViewGridDrawInfo& DrawInfo, ESlateDrawEffect DrawEffects, double OffsetAlpha, bool bIsMajor) const
 {
 	double ValueMin;
 	double ValueMax;
@@ -400,7 +400,7 @@ void SModulationSettingsEditorViewStacked::DrawViewGridLineX(FSlateWindowElement
 	);
 }
 
-void SModulationSettingsEditorViewStacked::DrawViewGridLineY(const float VerticalLine, FSlateWindowElementList& OutDrawElements, FViewGridDrawInfo& DrawInfo, ESlateDrawEffect DrawEffects, const FText* Label, bool bIsMajor) const
+void SModulationSettingsEditorViewStacked::DrawViewGridLineY(const float VerticalLine, FSlateWindowElementList& OutDrawElements, FModSettingsViewGridDrawInfo& DrawInfo, ESlateDrawEffect DrawEffects, const FText* Label, bool bIsMajor) const
 {
 	const float Width = DrawInfo.AllottedGeometry->GetLocalSize().X;
 	if (VerticalLine >= 0 || VerticalLine <= FMath::RoundToFloat(Width))

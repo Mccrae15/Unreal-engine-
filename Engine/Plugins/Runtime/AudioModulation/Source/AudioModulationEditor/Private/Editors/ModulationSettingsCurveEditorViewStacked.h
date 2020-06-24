@@ -36,7 +36,7 @@ enum class EModSettingsOutputEditorCurveSource : uint8
 };
 
 
-struct FViewGridDrawInfo
+struct FModSettingsViewGridDrawInfo
 {
 	const FGeometry* AllottedGeometry;
 
@@ -62,7 +62,7 @@ private:
 	double PixelTop;
 
 public:
-	FViewGridDrawInfo(const FGeometry* InAllottedGeometry, const FCurveEditorScreenSpace& InScreenSpace, FLinearColor InGridColor, int32 InBaseLayerId)
+	FModSettingsViewGridDrawInfo(const FGeometry* InAllottedGeometry, const FCurveEditorScreenSpace& InScreenSpace, FLinearColor InGridColor, int32 InBaseLayerId)
 		: AllottedGeometry(InAllottedGeometry)
 		, ScreenSpace(InScreenSpace)
 		, BaseLayerId(InBaseLayerId)
@@ -141,14 +141,14 @@ public:
 };
 
 
-class FModCurveEditorModel : public FRichCurveEditorModelRaw
+class FModSettingsCurveEditorModel : public FRichCurveEditorModelRaw
 {
 public:
 
 	static ECurveEditorViewID ViewId;
 
-	FModCurveEditorModel(FRichCurve& InRichCurve, UObject* InOwner, FName InControlName, EModSettingsOutputEditorCurveSource InSource, UCurveFloat* SharedCurve);
-	FModCurveEditorModel(FRichCurve& InRichCurve, UObject* InOwner, EModSettingsEditorCurveOutput InOutput, EModSettingsOutputEditorCurveSource InSource, UCurveFloat* SharedCurve);
+	FModSettingsCurveEditorModel(FRichCurve& InRichCurve, UObject* InOwner, FName InControlName, EModSettingsOutputEditorCurveSource InSource, UCurveFloat* SharedCurve);
+	FModSettingsCurveEditorModel(FRichCurve& InRichCurve, UObject* InOwner, EModSettingsEditorCurveOutput InOutput, EModSettingsOutputEditorCurveSource InSource, UCurveFloat* SharedCurve);
 
 	bool GetIsBypassed() const;
 
@@ -187,6 +187,6 @@ protected:
 	virtual void DrawLabels(const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 BaseLayerId, ESlateDrawEffect DrawEffects) const override;
 
 private:
-	void DrawViewGridLineX(FSlateWindowElementList& OutDrawElements, FViewGridDrawInfo& DrawInfo, ESlateDrawEffect DrawEffect, double OffsetAlpha, bool bIsMajor) const;
-	void DrawViewGridLineY(const float VerticalLine, FSlateWindowElementList& OutDrawElements, FViewGridDrawInfo &DrawInfo, ESlateDrawEffect DrawEffects, const FText* Label, bool bIsMajor) const;
+	void DrawViewGridLineX(FSlateWindowElementList& OutDrawElements, FModSettingsViewGridDrawInfo& DrawInfo, ESlateDrawEffect DrawEffect, double OffsetAlpha, bool bIsMajor) const;
+	void DrawViewGridLineY(const float VerticalLine, FSlateWindowElementList& OutDrawElements, FModSettingsViewGridDrawInfo &DrawInfo, ESlateDrawEffect DrawEffects, const FText* Label, bool bIsMajor) const;
 };
