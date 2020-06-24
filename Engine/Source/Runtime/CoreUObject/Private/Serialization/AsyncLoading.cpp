@@ -3038,11 +3038,11 @@ void FAsyncPackage::MarkNewObjectForLoadIfItIsAnExport(UObject *Object)
 
 void FAsyncPackage::EventDrivenSerializeExport(int32 LocalExportIndex)
 {
+	LLM_SCOPE(ELLMTag::UObject);
 	SCOPED_LOADTIMER(Package_PreLoadObjects);
 
 	FObjectExport& Export = Linker->ExportMap[LocalExportIndex];
 
-	LLM_SCOPE(ELLMTag::UObject);
 	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(GetLinkerRoot(), ELLMTagSet::Assets);
 	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET((Export.DynamicType == FObjectExport::EDynamicType::DynamicType) ? UDynamicClass::StaticClass() :
 		CastEventDrivenIndexToObject<UClass>(Export.ClassIndex, false), ELLMTagSet::AssetClasses);
@@ -6258,8 +6258,6 @@ EAsyncPackageState::Type FAsyncPackage::FinishExternalReadDependencies()
  */
 EAsyncPackageState::Type FAsyncPackage::PostLoadObjects()
 {
-	LLM_SCOPE(ELLMTag::UObject);
-
 	SCOPE_CYCLE_COUNTER(STAT_FAsyncPackage_PostLoadObjects);
 
 	SCOPED_LOADTIMER(PostLoadObjectsTime);
