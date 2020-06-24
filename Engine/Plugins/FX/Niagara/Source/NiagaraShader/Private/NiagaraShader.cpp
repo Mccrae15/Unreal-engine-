@@ -771,7 +771,12 @@ void FNiagaraShaderMap::Compile(
 				{
 					UE_LOG(LogShaders, Display, TEXT("Skipping compilation of %s as it isn't supported on this target type."), *Script->SourceName);
 					Script->RemoveOutstandingCompileId(CompilingId);
-					Script->NotifyCompilationFinished();
+					// Can't call NotifyCompilationFinished() when post-loading. 
+					// This normally happens when compiled in-sync for which the callback is not required.
+					if (!FUObjectThreadContext::Get().IsRoutingPostLoad)
+					{
+						Script->NotifyCompilationFinished();
+					}
 				}
 			}
   
@@ -1080,7 +1085,12 @@ void FNiagaraShaderMap::RemovePendingScript(FNiagaraShaderScript* Script)
 		if (Result)
 		{
 			Script->RemoveOutstandingCompileId(It.Key()->CompilingId);
-			Script->NotifyCompilationFinished();
+			// Can't call NotifyCompilationFinished() when post-loading. 
+			// This normally happens when compiled in-sync for which the callback is not required.
+			if (!FUObjectThreadContext::Get().IsRoutingPostLoad)
+			{
+				Script->NotifyCompilationFinished();
+			}
 		}
 #if DEBUG_INFINITESHADERCOMPILE
 		if ( Result )
@@ -1102,7 +1112,12 @@ void FNiagaraShaderMap::RemovePendingMap(FNiagaraShaderMap* Map)
 		for (FNiagaraShaderScript* Script : *Scripts)
 		{
 			Script->RemoveOutstandingCompileId(Map->CompilingId);
-			Script->NotifyCompilationFinished();
+			// Can't call NotifyCompilationFinished() when post-loading. 
+			// This normally happens when compiled in-sync for which the callback is not required.
+			if (!FUObjectThreadContext::Get().IsRoutingPostLoad)
+			{
+				Script->NotifyCompilationFinished();
+			}
 		}
 	}
 
