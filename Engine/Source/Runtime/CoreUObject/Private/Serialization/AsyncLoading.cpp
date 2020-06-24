@@ -6903,22 +6903,6 @@ void FAsyncLoadingThread::FlushLoading(int32 PackageID)
 
 		FCoreDelegates::OnAsyncLoadingFlush.Broadcast();
 
-#if NO_LOGGING == 0
-		{
-			// Log the flush, but only display once per frame to avoid log spam.
-			static uint64 LastFrameNumber = -1;
-			if (LastFrameNumber != GFrameNumber)
-			{
-				UE_LOG(LogStreaming, Display, TEXT("Flushing async loaders."));
-				LastFrameNumber = GFrameNumber;
-			}
-			else
-			{
-				UE_LOG(LogStreaming, Log, TEXT("Flushing async loaders."));
-			}
-		}
-#endif
-
 		double StartTime = FPlatformTime::Seconds();
 
 		// Flush async loaders by not using a time limit. Needed for e.g. garbage collection.
