@@ -56,6 +56,8 @@ typedef enum {
     WVR_InputId_7     = 7,
     WVR_InputId_8     = 8,
     WVR_InputId_9     = 9,
+    WVR_InputId_10    = 10,
+    WVR_InputId_11    = 11,
     WVR_InputId_14    = 14,
     WVR_InputId_15    = 15,
     WVR_InputId_16    = 16,
@@ -73,6 +75,8 @@ typedef enum {
     WVR_InputId_Alias1_Volume_Up       = WVR_InputId_7,  /**< Volume_Up Button. */
     WVR_InputId_Alias1_Volume_Down     = WVR_InputId_8,  /**< Volume_Down Button. */
     WVR_InputId_Alias1_Digital_Trigger = WVR_InputId_9,  /**< Digital Trigger Button. */
+    WVR_InputId_Alias1_A               = WVR_InputId_10, /**< Button A. */
+    WVR_InputId_Alias1_B               = WVR_InputId_11, /**< Button B. */
     WVR_InputId_Alias1_Back            = WVR_InputId_14, /**< Hmd Back Button */
     WVR_InputId_Alias1_Enter           = WVR_InputId_15, /**< Hmd Enter Button */
     WVR_InputId_Alias1_Touchpad        = WVR_InputId_16, /**< Touchpad input device. */
@@ -145,6 +149,9 @@ typedef enum {
     WVR_EventType_TrackingModeChanged                = 1003,    /**< Notification of changing tracking mode (3 Dof/6 Dof); using @ref WVR_GetDegreeOfFreedom can get current tracking mode.*/
     WVR_EventType_RecommendedQuality_Lower           = 1004,    /**< Notification recommended quality to Lower from runtime. */
     WVR_EventType_RecommendedQuality_Higher          = 1005,    /**< Notification recommended quality to Higher from runtime. */
+    WVR_EventType_HandGesture_Changed                = 1006,    /**< Notification gesture changed. */
+    WVR_EventType_HandGesture_Abnormal               = 1007,    /**< Notification gesture abnormal. */
+    WVR_EventType_HandTracking_Abnormal              = 1008,    /**< Notification hand tracking abnormal. */
 
     /** Device events region */
     WVR_EventType_DeviceConnected                    = 2000,    /**< @ref WVR_DeviceType connected. */
@@ -162,6 +169,8 @@ typedef enum {
     WVR_EventType_RecenterFail                       = 2012,    /**< Notification of recenter fail for 6 DoF device*/
     WVR_EventType_RecenterSuccess3DoF                = 2013,    /**< Notification of recenter success for 3 DoF device*/
     WVR_EventType_RecenterFail3DoF                   = 2014,    /**< Notification of recenter fail for 3 DoF device*/
+    WVR_EventType_PassthroughOverlayShownBySystem    = 2100,    /**< Notification of passthrough overlay is shown by system.*/
+    WVR_EventType_PassthroughOverlayHiddenBySystem   = 2101,    /**< Notification of passthrough overlay is hidden by system. */
 
     /** Input Event region */
     WVR_EventType_ButtonPressed                      = 3000,     /**< @ref WVR_InputId status change to pressed. */
@@ -181,6 +190,26 @@ typedef enum {
     WVR_NumDoF_3DoF = 0, /**< Position (x, y, z) on 3 coordinates, which contains (1) moving up and down, (2) moving left and right, (3) moving forward and backward. */
     WVR_NumDoF_6DoF = 1, /**< Position (x, y, z) on 3 coordinates and rotation (yaw, pitch, roll) on 3 coordinates. */
 } WVR_NumDoF;
+
+
+/**
+ * @brief the returned result of a function call for providing the information of failure.
+ */
+typedef enum {
+    WVR_Success                              = 0,    /**< The result of the function call was successful. */
+    WVR_Error_SystemInvalid                  = 1,    /**< The initialization was not finished or the feature was not started yet. */
+    WVR_Error_InvalidArgument                = 2,    /**< One of the arguments was not appropriate for the function call. */
+    WVR_Error_OutOfMemory                    = 3,    /**< A memory allocation has failed. */
+    WVR_Error_FeatureNotSupport              = 4,    /**< The feature was not supported; either lack of some services or service does not support this feature. */
+    WVR_Error_RuntimeVersionNotSupport       = 5,    /**< The runtime version is too old to support the function call. */
+    WVR_Error_CameraNotAvailable             = 6,    /**< Camera was unavaliable, cannot query camera related information. */
+    WVR_Error_CameraPermissionNotGranted     = 7,    /**< The Android camera permission was not granted yet. */
+    //----- CtrlerModel API Use.(Start at 100)
+    WVR_Error_CtrlerModel_WrongDeviceType    = 100,  /**< Input wrong device type for asking controller model. */
+    WVR_Error_CtrlerModel_DeviceDisconnected = 101,  /**< The controller device you want to get its model is disconnected. */
+    WVR_Error_CtrlerModel_InvalidModel       = 102,  /**< We can't get model that can be use. */
+    WVR_Error_CtrlerModel_Unknown            = 103   /**< Unknown error. */
+} WVR_Result;
 
 /**
  * @brief The basic matrix (4x4 floats) struct to be used in pose

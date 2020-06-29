@@ -113,6 +113,7 @@ extern WVR_EXPORT WVR_ArenaVisible WVR_GetArenaVisible();
  * In auto mode, it will show virtual wall while HMD is out of bounds.
  * Force on mode will always show virtual wall.
  * Force off mode will always disable virtual wall.
+ * There are only AUTO and FORCE ON effective for general Apps. As to FORCE OFF, a Developer Mode bit must be set in Server DB in advance.
  *
  * @param config The configuration of virtual wall behavior. (refer to @ref WVR_ArenaVisible)
  * @version API Level 1
@@ -129,6 +130,18 @@ extern WVR_EXPORT void WVR_SetArenaVisible(WVR_ArenaVisible config);
  * @version API Level 1
 */
 extern WVR_EXPORT bool WVR_IsOverArenaRange();
+
+/**
+ * @brief Function to show the passthrough overlay when a player passes through the virtual wall.
+ *
+ * Use this function to also decide whether the passthrough overlay should be shown or not when a player passes through the virtual wall.
+ * This function must be called after calling @ref WVR_RenderInit().
+ *
+ * @param Enable or disable the passthrough overlay when a player passes through the virtual wall.
+ * @version API Level 5
+ * @note Supported from Runtime version 5 or higher (certain devices only). Make sure the target device supports passthrough overlay by calling @ref WVR_GetSupportedFeatures() and checking @ref WVR_SupportedFeature_PassthroughOverlay.
+*/
+extern WVR_EXPORT void WVR_EnableAutoPassthrough(bool enable);
 
 #ifdef __cplusplus
 }

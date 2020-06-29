@@ -33,8 +33,8 @@ extern "C" {
  * Describes what kind of app is being initialized.
  */
 typedef enum {
-    WVR_AppType_VRContent       = 1,
-    WVR_AppType_NonVRContent    = 2,
+    WVR_AppType_VRContent       = 1,   /**< The app type of thiis content is VR content */
+    WVR_AppType_ARContent       = 2,   /**< The app type of thiis content is AR content */
 } WVR_AppType ;
 
 /**
@@ -48,6 +48,16 @@ typedef enum {
     WVR_InitError_NotInitialized = 2,   /**< Init failed */
 } WVR_InitError ;
 
+/**
+ * @brief supported feature for id
+ */
+typedef enum {
+    WVR_SupportedFeature_PassthroughImage   = 1<<0,    /**< Passthrough image feature type */
+    WVR_SupportedFeature_PassthroughOverlay = 1<<1,    /**< Passthrough overlay feature type */
+
+    WVR_SupportedFeature_HandTracking       = 1<<4,    /**< Hand tracking feature type */
+    WVR_SupportedFeature_HandGesture        = 1<<5,    /**< Hand gesture feature type */
+} WVR_SupportedFeature;
 
 /**
  * @brief The entry function pointer of native application.
@@ -108,6 +118,15 @@ extern WVR_EXPORT uint32_t WVR_GetWaveRuntimeVersion();
  */
 extern WVR_EXPORT uint32_t WVR_GetWaveSDKVersion();
 
+
+/**
+ * @brief Function to get if feature is supportted
+ *
+ * This API can work no matter before or after invoking WVR_Init
+ * @return the bitmask of all supported features
+ * @version API Level 5
+ */
+extern WVR_EXPORT uint64_t WVR_GetSupportedFeatures();
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -77,10 +77,9 @@ typedef struct WVR_CameraInfo {
 } WVR_CameraInfo_t;
 
 /**
- * @brief Function to start camera on HMD and get the basic camera information.
+ * @brief Function to start camera and get the basic camera information.
  *
- * This API will get supporting and suitable frame size and camera information from DeviceService (HMD).
- * Currently, we define only HMD devices will have camera.
+ * This API will get supporting and suitable frame size and camera information from DeviceService.
  * This API must be called by main thread.
  *
  * @param WVR_CameraInfo_t comprised of camera image information
@@ -104,7 +103,7 @@ extern WVR_EXPORT void WVR_StopCamera();
  *
  * This API will copy the raw image from camera. The buffer size should be got from the return size
  * from WVR_StartCamera API. This API's performance will have worse performance due to memory copy.
- * This API must be called by main thread.
+ * This API should be called when WVR_StartCamera success, and stopped once WVR_StopCamera is called.
  *
  * @param uint8_t* memory that user would like to copy to
  * @param  uint32_t the buffer size that pframebuffer allocated
@@ -119,9 +118,9 @@ extern WVR_EXPORT bool WVR_GetCameraFrameBuffer(uint8_t *pframebuffer, uint32_t 
  * @brief Function to get camera intrinsic parameters. These parameters depends on camera hardware.
  *
  * This API will return the hardware related camera parameters, this should by supported by your
- * HMD device service.
+ * DeviceService.
  *
- * @param WVR_CameraPosition If you have dual camera on HMD, get the left/right camera intrinsic.
+ * @param WVR_CameraPosition If you have dual camera on DeviceService, get the left/right camera intrinsic.
  * @param WVR_CameraIntrinsic_t Return camera intrinsic.
  * @retval true The camera parameter is valid.
  * @retval false The camera parameter is not supported on your device.

@@ -25,41 +25,41 @@ typedef void* WVR_TextureQueueHandle_t;                     /**< **WVR_TextureQu
 /**
  * @brief Graphics API for render support.
  *
- * Texture type is only supported OpenGL currently.
- * There will be other types of graphics API in future release.
+ * Currently, only OpenGL texture type is supported.
+ * Other graphics APIs will be supported in future releases.
  */
 typedef enum {
-    WVR_GraphicsApiType_OpenGL                  = 1,        /**< **WVR_GraphicsApiType_OpenGL**: Specify OpenGL as graphics API during render runtime initializing. */
+    WVR_GraphicsApiType_OpenGL                  = 1,        /**< **WVR_GraphicsApiType_OpenGL**: Specify OpenGL as the graphics API during render runtime initialization. */
 } WVR_GraphicsApiType;
 
 /**
  * @brief Render runtime initialization configuration.
  *
- * Developer can determine whether render runtime use the additional method to improve the user experience after runtime initializing.
- * The render configuration is a bit mask which is able to combine with these methods.
- * This bit mask should be set to the member renderConfig of WVR_RenderInitParams_t.
- * As a necessary part of input parameter of interface WVR_RenderInit, the render configurations are passed to render runtime initializing stage.
+ * Determine whether render runtime uses the additional method to improve the user experience after runtime initialization.
+ * The render configuration is a bit mask that is able to combine with these methods.
+ * This bit mask should be set to the member renderConfig of **WVR_RenderInitParams_t**.
+ * As a necessary part of the input parameter of the @ref WVR_RenderInit interface, the render configurations are passed to the render runtime initialization stage.
  */
 typedef enum {
-    WVR_RenderConfig_Default                    = 0,             /**< **WVR_RenderConfig_Default**: Runtime initialization reflects certain properties in device service. Such as single buffer mode and reprojection mechanism, the default settings are determined by device service or runtime config file on specific platform. The default color space is set as linear domain.*/
-    WVR_RenderConfig_Disable_SingleBuffer       = ( 1 << 0 ),    /**< **WVR_RenderConfig_Disable_SingleBuffer**: Force to disable single buffer mode in runtime. */
-    WVR_RenderConfig_Disable_Reprojection       = ( 1 << 1 ),    /**< **WVR_RenderConfig_Disable_Reprojection**: Force to deactivate reprojection mechanism in runtime. */
-    WVR_RenderConfig_sRGB                       = ( 1 << 2 ),    /**< **WVR_RenderConfig_sRGB**: Determine whether the color space is set as sRGB domain. */
+    WVR_RenderConfig_Default                    = 0,             /**< **WVR_RenderConfig_Default**: Runtime initialization reflects certain properties in the device service such as the single buffer mode and reprojection mechanism. The default settings are determined by the device service or runtime config file on a specific platform. The default color space is set as the linear domain. */
+    WVR_RenderConfig_Disable_SingleBuffer       = ( 1 << 0 ),    /**< **WVR_RenderConfig_Disable_SingleBuffer**: Disable the single buffer mode in runtime. */
+    WVR_RenderConfig_Disable_Reprojection       = ( 1 << 1 ),    /**< **WVR_RenderConfig_Disable_Reprojection**: Disable the reprojection mechanism in runtime. */
+    WVR_RenderConfig_sRGB                       = ( 1 << 2 ),    /**< **WVR_RenderConfig_sRGB**: Determine whether the color space is set as a sRGB domain. */
 } WVR_RenderConfig;
 
 /**
  * @brief Error for render runtime initialization.
  *
- * The return value for the initializing interface WVR_RenderInit.
+ * The return value for the initialization interface @ref WVR_RenderInit.
  */
 typedef enum {
     WVR_RenderError_None                        = 0,        /**< **WVR_RenderError_None**: No error. */
-    WVR_RenderError_RuntimeInitFailed           = 410,      /**< **WVR_RenderError_RuntimeInitFailed**: The dependent component is failed to block render runtime initializing go on.*/
-    WVR_RenderError_ContextSetupFailed          = 411,      /**< **WVR_RenderError_ContextSetupFailed**: The necessary context for runtime is failed to accomplish.*/
-    WVR_RenderError_DisplaySetupFailed          = 412,      /**< **WVR_RenderError_DisplaySetupFailed**: The display configuration for display is failed to set up. */
-    WVR_RenderError_LibNotSupported             = 413,      /**< **WVR_RenderError_LibNotSupported**: The provided graphics api type is not supported by runtime. */
-    WVR_RenderError_NullPtr                     = 414,      /**< **WVR_RenderError_NullPtr**: Not passing Null check. */
-    WVR_RenderError_Max                         = 65535,    /**< **WVR_RenderError_Max**: Maxium value to reserve bit word among compilers . */
+    WVR_RenderError_RuntimeInitFailed           = 410,      /**< **WVR_RenderError_RuntimeInitFailed**: The dependent component failed to block the render runtime initialization.*/
+    WVR_RenderError_ContextSetupFailed          = 411,      /**< **WVR_RenderError_ContextSetupFailed**: The necessary context to set up runtime failed.*/
+    WVR_RenderError_DisplaySetupFailed          = 412,      /**< **WVR_RenderError_DisplaySetupFailed**: The display configuration for the display was not set up. */
+    WVR_RenderError_LibNotSupported             = 413,      /**< **WVR_RenderError_LibNotSupported**: The provided graphics API type is not supported by runtime. */
+    WVR_RenderError_NullPtr                     = 414,      /**< **WVR_RenderError_NullPtr**: Did not pass Null check. */
+    WVR_RenderError_Max                         = 65535,    /**< **WVR_RenderError_Max**: Maximum error code reserve. The actual value may change depending on the compiler word length. */
 } WVR_RenderError;
 
 /**
@@ -136,13 +136,23 @@ typedef enum {
 } WVR_ScreenshotMode;
 
 /**
- * @brief Render initialization parameters
+ * @brief The rendering context from the native application.
  *
- * Aggregate necessary information to initialize the render runtime.
+ * Maintain the rendering context from the native application via the render runtime initialization interface.
+ */
+typedef struct WVR_GraphicsParams {
+    void *renderContext;                                    /**< The rendering context from the native application is for binding the surface of the VR application. */
+} WVR_GraphicsParams_t;
+
+/**
+ * @brief Render initialization parameters.
+ *
+ * Aggregate the necessary information to initialize the render runtime.
  */
 typedef struct WVR_RenderInitParams {
-    WVR_GraphicsApiType graphicsApi;                        /**< Select the supported graphics api library, currently, only support OpenGL.*/
-    uint64_t renderConfig;                                  /**< The bit mask chooses combination of render initializing configuration. The corresponding enumeration is defined in WVR_RenderConfig*/
+    WVR_GraphicsApiType graphicsApi;                        /**< Select the supported graphics API library (currently only OpenGL is supportred.) */
+    uint64_t renderConfig;                                  /**< The bit mask chooses the combination of the render initialization configuration. The corresponding enumeration is defined in @ref WVR_RenderConfig */
+    WVR_GraphicsParams_t graphicsParams;                    /**< The rendering context from the native application is packed here @ref WVR_GraphicsParams. */
 } WVR_RenderInitParams_t;
 
 /**
@@ -168,7 +178,6 @@ typedef struct WVR_TextureLayout {
     WVR_Vector2f rightUpUVs;                               /**< Component 0 and 1 are right-up UV coordinates of the texture. */
 } WVR_TextureLayout_t;
 
-
 /**
  * @brief Texture parameters
  *
@@ -181,7 +190,6 @@ typedef struct WVR_TextureParams {
     WVR_TextureTarget target;                       /**< Specifies the target to which the texture is bound. The parameter corresponds to the texture targe in graphics library such as OpenGL. */
     WVR_TextureLayout_t layout;                      /**< The lower left and upper right UV coordinates pair specifies the presenting region of submitted texture. */
 } WVR_TextureParams_t;
-
 
 /**
  * @brief Peripheral Quality which using in @ref WVR_RenderFoveationParams_t.
@@ -255,20 +263,20 @@ typedef struct WVR_StereoRenderer {
 } WVR_StereoRenderer_t;
 
 /**
-* @brief The interface to initiate the render runtime.
+* @brief Use this interface to initiate the render runtime.
 *
-* Render runtime is in charge of pre-processing the rendered scene before updating to display.
-* To initiate render runtime, this interface is recommended to be invoked before the following interfaces in some platforms,
+* Render runtime is in charge of pre-processing the rendered scene before updating to the display.
+* To initiate render runtime, it is recommended to invoke this interface before the following interfaces in some platforms,
 * such as @ref WVR_RenderMask, @ref WVR_SubmitFrame, @ref WVR_ObtainTextureQueue, @ref WVR_GetTextureQueueLength, @ref WVR_GetAvailableTextureIndex,
-* @ref WVR_GetAvailableTextureIndex, @ref WVR_GetAvailableTextureIndex, @ref WVR_GetTexture, @ref WVR_ReleaseTextureQueue,
+* @ref WVR_GetTexture, @ref WVR_ReleaseTextureQueue,
 * @ref WVR_RequestScreenshot, @ref WVR_StartRenderer, @ref WVR_IsRendererRendering, and @ref WVR_GetSyncPose.
 *
-* Instead of default configuration and selecting OpenGL graphics API, the first shot of WVR_RenderInit invocation can provide
-* the customized initiating configuration and selecting supported graphics library via the argument @ref WVR_RenderInitParams_t.
-* Based on the return type WVR_RenderError, the status of render runtime initialization can be determined.
+* Instead of the default configuration and selecting the OpenGL graphics API, Invoking @ref WVR_RenderInit first can provide
+* the customized initiating configuration and select the supported graphics library via the argument **WVR_RenderInitParams_t**.
+* Based on the return type @ref WVR_RenderError, the status of the render runtime initialization can be determined.
 *
-* @param param pointer of struct `WVR_RenderInitParams_t`, to aggregate necessary information to initialize the render runtime.
-* @return WVR_RenderError, this return type enumerates all the possible error status for this interface.
+* @param param Pointer of struct **WVR_RenderInitParams_t** to aggregate the necessary information to initialize the render runtime.
+* @return WVR_RenderError, this return type enumerates all the possible error statuses for this interface.
 * @version API Level 1
 */
 extern WVR_EXPORT WVR_RenderError WVR_RenderInit(const WVR_RenderInitParams_t* param);
@@ -317,7 +325,7 @@ extern WVR_EXPORT void WVR_RenderMask(WVR_Eye eye, WVR_TextureTarget target = WV
 * The default process of handing scene fulfills all the basic requirement of updating scene to display.
 * Add-on functionalities will be appended in the future.
 *
-* The update frequency is limited by the refresh rate of the display. The checkpoints which check if the application can start to render the next frame is set to every middle of two adjacent Vsyncs. Therefore, this API will not return until the next checkpoint is coming. Moreover, the caller will be blocked for one more checkpoint if the previous frame has not completed the rendering yet.
+* The update frequency is limited by the refresh rate of the display. The checkpoints which check if the application can start to render the next frame is set to every middle of two adjacent Vsyncs. Therefore, this API will not return until the next checkpoint is coming. Moreover, the caller will be blocked for one or more checkpoints if the previous frame has not completed the rendering yet.
 *
 * @param eye WVR_Eye, eye id to specify the side of scene.
 * @param param pointer to struct WVR_TextureParams_t, to aggregate the name of scene texture.
@@ -439,7 +447,7 @@ extern WVR_EXPORT bool WVR_IsRenderFoveationSupport();
 *
 * Using to enable or disable foveation rendering.
 * And developer need to call @ref WVR_PreRenderEye to take foveation effect on texture.
-* This function is platform-depent, must call @ref WVR_IsRenderFoveationSupport to check does this platfrom support this.
+* This function is platform-depent, must call @ref WVR_IsRenderFoveationSupport to check does this platform support this.
 *
 * @param enable to enable or diable foveation.
 * @version API Level 3

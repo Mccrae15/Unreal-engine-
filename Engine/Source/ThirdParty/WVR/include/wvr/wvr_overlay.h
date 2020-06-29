@@ -53,6 +53,17 @@ typedef enum {
 } WVR_OverlayTransformType;
 
 /**
+ * @brief Overlay flags
+ *
+ */
+typedef enum {
+    WVR_OverlayFlag_EyeLeft                 = 0x00000010,   /**< Only render this overlay on left eye */
+    WVR_OverlayFlag_EyeRight                = 0x00000020,   /**< Only render this overlay on right eye */
+
+    WVR_OverlayFlag_Reprojection            = 0x00010000,   /**< This overlay does time-warp */
+} WVR_OverlayFlag;
+
+/**
  * @brief The properties of positions for overlay
  */
 typedef struct WVR_OverlayPosition {
@@ -221,13 +232,29 @@ extern WVR_EXPORT WVR_OverlayError WVR_RegisterOverlayInputEvent(WVR_OverlayInpu
 extern WVR_EXPORT WVR_OverlayError WVR_UnregisterOverlayInputEvent(WVR_OverlayInputEvent_t *callback);
 
 /**
-*  @param overlayId which overlay should be control.
+ * @param overlayId which overlay should be control.
  * @return This overlay id is valid or not
  * @brief Overlay system will release after android suspended, so check WVR_IsOverlayValid per frame in native APP.
  * If WVR_IsOverlayValid return false, re-call WVR_GenOverlay to re-generate new overlay id.
  * @version API Level 2
  */
 extern WVR_EXPORT bool WVR_IsOverlayValid(int32_t overlayId);
+
+/**
+ * @param overlayId which overlay's flags should be set.
+ * @return This overlay id is valid or not
+ * @brief Set the flags to this overlay.
+ * @version API Level 5
+ */
+extern WVR_EXPORT WVR_OverlayError WVR_SetOverlayFlags(int32_t overlayId, WVR_OverlayFlag flags);
+
+/**
+ * @param overlayId which overlay's flags should be returned.
+ * @return This overlay id is valid or not
+ * @brief Get the flags from this overlay.
+ * @version API Level 5
+ */
+extern WVR_EXPORT uint32_t WVR_GetOverlayFlags(int32_t overlayId);
 
 #ifdef __cplusplus
 } /* extern "C" */
