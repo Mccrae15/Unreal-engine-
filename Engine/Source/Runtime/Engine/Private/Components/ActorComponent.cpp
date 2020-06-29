@@ -1424,7 +1424,7 @@ void UActorComponent::CreatePhysicsState(bool bAllowDeferral)
 	if (!bPhysicsStateCreated && WorldPrivate->GetPhysicsScene() && ShouldCreatePhysicsState())
 	{
 		UPrimitiveComponent* Primitive = Cast<UPrimitiveComponent>(this);
-		if (GEnableDeferredPhysicsCreation && bAllowDeferral && Primitive && Primitive->GetBodySetup())
+		if (GEnableDeferredPhysicsCreation && bAllowDeferral && Primitive && Primitive->GetBodySetup() && !Primitive->GetGenerateOverlapEvents())
 		{
 #if WITH_CHAOS
 			WorldPrivate->GetPhysicsScene()->DeferPhysicsStateCreation(Primitive);
