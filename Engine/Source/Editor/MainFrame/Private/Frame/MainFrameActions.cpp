@@ -964,8 +964,8 @@ void FMainFrameActionCallbacks::ToggleFullscreen_Execute()
 #if !PLATFORM_MAC && !PLATFORM_LINUX // Fullscreen mode in the editor is currently unsupported on Mac or Linux
 	if ( GIsEditor && FApp::HasProjectName() )
 	{
-		static TWeakPtr<SDockTab> LevelEditorTabPtr = FGlobalTabmanager::Get()->InvokeTab(FTabId("LevelEditor"));
-		const TSharedPtr<SWindow> LevelEditorWindow = FSlateApplication::Get().FindWidgetWindow( LevelEditorTabPtr.Pin().ToSharedRef() );
+		TSharedRef<SDockTab> LevelEditorTabPtr = FGlobalTabmanager::Get()->InvokeTab(FTabId("LevelEditor"));
+		const TSharedPtr<SWindow> LevelEditorWindow = FSlateApplication::Get().FindWidgetWindow( LevelEditorTabPtr );
 
 		if (LevelEditorWindow->GetWindowMode() == EWindowMode::Windowed)
 		{
