@@ -19,7 +19,7 @@ FAutoConsoleVariableRef CVarMemoryLoggingCvar(
 	TEXT("0: Disable, >0: Enable"),
 	ECVF_Default);
 
-static int32 MotoSynthBitCrushEnabledCvar = 1;
+static int32 MotoSynthBitCrushEnabledCvar = 0;
 FAutoConsoleVariableRef CVarSetMotoSynthBitCrush(
 	TEXT("au.motosynth.enablebitcrush"),
 	MotoSynthBitCrushEnabledCvar,
@@ -56,6 +56,8 @@ FMotoSynthSourceDataManager::~FMotoSynthSourceDataManager()
 
 void FMotoSynthSourceDataManager::RegisterData(uint32 InSourceID, const FName& InSourceName, TArray<int16>&& InSourceDataPCM, int32 InSourceSampleRate, TArray<FGrainTableEntry>&& InGrainTable, const FRichCurve& InRPMCurve, bool bConvertTo8Bit)
 {
+	LLM_SCOPE(ELLMTag::AudioSynthesis);
+
 	FScopeLock ScopeLock(&DataCriticalSection);
 
 	if (SourceDataTable.Contains(InSourceID))
@@ -107,6 +109,8 @@ void FMotoSynthSourceDataManager::RegisterData(uint32 InSourceID, const FName& I
 
 void FMotoSynthSourceDataManager::UnRegisterData(uint32 InSourceID)
 {
+	LLM_SCOPE(ELLMTag::AudioSynthesis);
+
 	FScopeLock ScopeLock(&DataCriticalSection);
 
 	// Find the entry
@@ -157,8 +161,8 @@ void FMotoSynthSourceDataManager::LogMemoryUsage()
 		}
 		NumBytesGrainTable += MotoSynthData->GrainTable.Num() * sizeof(FGrainTableEntry);
 	}
-	int32 NumMBSource = NumBytesSource / (1024 * 1024);
-	int32 NumMBGrainTable = NumBytesGrainTable / (1024 * 1024);
+	float NumMBSource = (float)NumBytesSource / (1024.0f * 1024.0f);
+	float NumMBGrainTable = (float)NumBytesGrainTable / (1024.0f * 1024.0f);
 
 	UE_LOG(LogSynthesis, Display, TEXT("MotoSynthSource Data: %d Sources, %.2f MB source, %.2f MB grain table (%.2f MB total)"), NumSources, NumMBSource, NumMBGrainTable, NumMBSource + NumMBGrainTable);
 }

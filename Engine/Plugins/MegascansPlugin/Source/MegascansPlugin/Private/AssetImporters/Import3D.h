@@ -1,8 +1,10 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 #include "CoreMinimal.h"
 #include "AssetPreferencesData.h"
 
 class UMaterialInstanceConstant;
+struct FAssetTypeData;
 
 class FImport3d
 {

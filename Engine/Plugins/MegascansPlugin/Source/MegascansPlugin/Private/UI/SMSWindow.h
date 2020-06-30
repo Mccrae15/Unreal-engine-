@@ -1,10 +1,12 @@
-
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
 
 #include "CoreMinimal.h"
 
 class FTabManager;
+class SWindow;
+class UMegascansSettings;
 
 class MegascansSettingsWindow
 {

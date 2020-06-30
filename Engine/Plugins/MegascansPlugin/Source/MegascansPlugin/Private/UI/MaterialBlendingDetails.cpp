@@ -1,6 +1,10 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "MaterialBlendingDetails.h"
+#include "DetailCategoryBuilder.h"
+#include "DetailLayoutBuilder.h"
+#include "DetailWidgetRow.h"
 #include "UI/MSSettings.h"
-#include "PropertyEditing.h"
+#include "Widgets/Input/SButton.h"
 
 #include "Tools/BlendMaterials.h"
 

@@ -1,3 +1,4 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "Import3DPlant.h"
 
 
@@ -9,6 +10,7 @@
 #include "EditorAssetLibrary.h"
 #include "EditorStaticMeshLibrary.h"
 
+#include "Materials/MaterialInstanceConstant.h"
 
 #include "Utilities/MiscUtils.h"
 #include "UI/MSSettings.h"
@@ -236,17 +238,17 @@ void FImportPlant::ApplyMaterial(PlantImportType ImportType, UMaterialInstanceCo
 	{
 		UStaticMesh* ImportedPlantMesh = CastChecked<UStaticMesh>(UEditorAssetLibrary::LoadAsset(PlantPath));
 		if(MaterialInstance !=nullptr)
-			ImportedPlantMesh->SetMaterial(0, CastChecked<UMaterialInterface>(MaterialInstance));
+			ImportedPlantMesh->SetMaterial(0, MaterialInstance);
 
 		if (ImportType == PlantImportType::BLLBOARD_NORMAL && BillboardInstance != nullptr)
 		{
 
 			AssetUtils::AddStaticMaterial(ImportedPlantMesh, BillboardInstance);
-			FMeshSectionInfo MeshSectionInfo = ImportedPlantMesh->SectionInfoMap.Get(BillboardLodIndex, 0);
+			FMeshSectionInfo MeshSectionInfo = ImportedPlantMesh->GetSectionInfoMap().Get(BillboardLodIndex, 0);
 			//FMeshSectionInfo MeshSectionInfo = ImportedPlantMesh->GetSectionInfoMap().Get(BillboardLodIndex, 0);
 			
 			MeshSectionInfo.MaterialIndex = ImportedPlantMesh->StaticMaterials.Num() - 1;
-			ImportedPlantMesh->SectionInfoMap.Set(BillboardLodIndex, 0, MeshSectionInfo);
+			ImportedPlantMesh->GetSectionInfoMap().Set(BillboardLodIndex, 0, MeshSectionInfo);
 			//ImportedPlantMesh->GetSectionInfoMap().Set(BillboardLodIndex, 0, MeshSectionInfo);
 			
 			ImportedPlantMesh->Modify();

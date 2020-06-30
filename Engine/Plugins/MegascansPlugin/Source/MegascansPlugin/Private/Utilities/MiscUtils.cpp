@@ -1,3 +1,4 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
 #include "Utilities/MiscUtils.h"
 #include "AssetImportData.h"
 #include "Runtime/Core/Public/Misc/Paths.h"
@@ -442,22 +443,21 @@ FString SanitizeName(const FString& InputName)
 
 
 
-	template<typename T>
-	TArray<T*> AssetUtils::GetSelectedAssets(const FString& AssetClass)
+	TArray<UObject*> AssetUtils::GetSelectedAssets(const FString& AssetClass)
 	{
-		TArray<T*> ObjectArray;
+		TArray<UObject*> ObjectArray;
 
 		TArray<FAssetData> AssetDatas;
 		FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
 		IContentBrowserSingleton& ContentBrowserSingleton = ContentBrowserModule.Get();
 		ContentBrowserSingleton.GetSelectedAssets(AssetDatas);
 
+		FName AssetClassName(*AssetClass);
 		for (FAssetData SelectedAsset : AssetDatas)
-		{
-			
-			if (SelectedAsset.AssetClass == FName(*AssetClass))
+		{	
+			if (SelectedAsset.AssetClass == AssetClassName)
 			{
-				ObjectArray.Add(CastChecked<T>(UEditorAssetLibrary::LoadAsset(SelectedAsset.ObjectPath.ToString())));
+				ObjectArray.Add(UEditorAssetLibrary::LoadAsset(SelectedAsset.ObjectPath.ToString()));
 			}
 		}
 		return ObjectArray;

@@ -1,10 +1,15 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 #include "CoreMinimal.h"
 
 #include "AssetPreferencesData.h"
 
+class UAssetImportTask;
 class UMaterialInstanceConstant;
 class UTexture;
+struct FAssetPackedTextures;
+struct FAssetTextureData;
+struct FAssetTypeData;
 
 struct TextureData
 {

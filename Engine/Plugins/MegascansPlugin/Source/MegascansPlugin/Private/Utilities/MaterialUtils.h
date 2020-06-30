@@ -1,6 +1,10 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 #include "CoreMinimal.h"
 
+class UMaterialInstanceConstant;
+struct FAssetTypeData;
+struct FSurfacePreferences;
 
 class FMaterialUtils
 {
