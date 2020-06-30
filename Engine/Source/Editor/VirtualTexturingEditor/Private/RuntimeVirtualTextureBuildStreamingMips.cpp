@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "RuntimeVirtualTextureBuild.h"
+#include "RuntimeVirtualTextureBuildStreamingMips.h"
 
 #include "Components/RuntimeVirtualTextureComponent.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -15,10 +15,10 @@
 namespace
 {
 	/** Container for render resources needed to render the runtime virtual texture. */
-	class FRenderTileResources : public FRenderResource
+	class FTileRenderResources : public FRenderResource
 	{
 	public:
-		FRenderTileResources(int32 InTileSize, int32 InNumTilesX, int32 InNumTilesY, int32 InNumLayers, TArrayView<EPixelFormat> const& InLayerFormats)
+		FTileRenderResources(int32 InTileSize, int32 InNumTilesX, int32 InNumTilesY, int32 InNumLayers, TArrayView<EPixelFormat> const& InLayerFormats)
 			: TileSize(InTileSize)
 			, NumLayers(InNumLayers)
 			, TotalSizeBytes(0)
@@ -171,13 +171,13 @@ namespace RuntimeVirtualTexture
 		}
 
 		// Spin up slow task UI
-		const float TaskWorkRender = NumTilesX * NumTilesY;
-		const float TaskWorkBuildBulkData = NumTilesX * NumTilesY / 2;
+		const float TaskWorkRender = NumTilesY;
+		const float TaskWorkBuildBulkData = NumTilesY;
 		FScopedSlowTask Task(TaskWorkRender + TaskWorkBuildBulkData, FText::AsCultureInvariant(InComponent->GetStreamingTexture()->GetName()));
 		Task.MakeDialog(true);
 
 		// Allocate render targets for rendering out the runtime virtual texture tiles
-		FRenderTileResources RenderTileResources(TileSize, NumTilesX, NumTilesY, NumLayers, LayerFormats);
+		FTileRenderResources RenderTileResources(TileSize, NumTilesX, NumTilesY, NumLayers, LayerFormats);
 		BeginInitResource(&RenderTileResources);
 
 		// Final pixels will contain image data for each virtual texture layer in order
@@ -187,10 +187,10 @@ namespace RuntimeVirtualTexture
 		// Iterate over all tiles and render/store each one to the final image
 		for (int32 TileY = 0; TileY < NumTilesY && !Task.ShouldCancel(); TileY++)
 		{
-			for (int32 TileX = 0; TileX < NumTilesX && !Task.ShouldCancel(); TileX++)
-			{
-				Task.EnterProgressFrame();
+			Task.EnterProgressFrame();
 
+			for (int32 TileX = 0; TileX < NumTilesX; TileX++)
+			{
 				// Render tile
 				const FBox2D UVRange = FBox2D(
 					FVector2D((float)TileX / (float)NumTilesX, (float)TileY / (float)NumTilesY),
@@ -205,8 +205,7 @@ namespace RuntimeVirtualTexture
 					TileX, TileY,
 					TileSize, ImageSizeX, ImageSizeY, 
 					&FinalPixels,
-					DebugType
-				](FRHICommandListImmediate& RHICmdList)
+					DebugType](FRHICommandListImmediate& RHICmdList)
 				{
 					const FBox2D TileBox(FVector2D(0, 0), FVector2D(TileSize, TileSize));
 					const FIntRect TileRect(0, 0, TileSize, TileSize);
@@ -274,10 +273,12 @@ namespace RuntimeVirtualTexture
 					}
 				});
 			}
+
+			// (Increment FScopedSlowTask) and flush every row to keep progress UI responsive
+			FlushRenderingCommands();
 		}
 
 		BeginReleaseResource(&RenderTileResources);
-		FlushRenderingCommands();
 
 		if (Task.ShouldCancel())
 		{
