@@ -60,7 +60,8 @@ FD3D12CommandContext::FD3D12CommandContext(FD3D12Device* InParent, bool InIsDefa
 	NumSimultaneousRenderTargets(0),
 	CurrentDSVAccessType(FExclusiveDepthStencil::DepthWrite_StencilWrite),
 	bOuterOcclusionQuerySubmitted(false),
-	bDiscardSharedConstants(false),
+	bDiscardSharedGraphicsConstants(false),
+	bDiscardSharedComputeConstants(false),
 	bUsingTessellation(false),
 #if PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING
 	VRSCombiners{ D3D12_SHADING_RATE_COMBINER_PASSTHROUGH, D3D12_SHADING_RATE_COMBINER_PASSTHROUGH } ,
@@ -175,7 +176,7 @@ void FD3D12CommandContext::RHIPushEvent(const TCHAR* Name, FColor Color)
 
 #if NV_AFTERMATH
 		// Only track aftermath for default context?
-		if (IsDefaultContext() && GDX12NVAfterMathEnabled && GDX12NVAfterMathMarkers)
+		if (IsDefaultContext() && GDX12NVAfterMathEnabled)
 			GFSDK_Aftermath_SetEventMarker(CommandListHandle.AftermathCommandContext(), &GPUEventStack[0], GPUEventStack.Num() * sizeof(uint32));
 #endif // NV_AFTERMATH		
 	}
@@ -449,7 +450,8 @@ void FD3D12CommandContext::ClearState()
 {
 	StateCache.ClearState();
 
-	bDiscardSharedConstants = false;
+	bDiscardSharedGraphicsConstants = false;
+	bDiscardSharedComputeConstants = false;
 
 	FMemory::Memzero(BoundUniformBuffers, sizeof(BoundUniformBuffers));
 	FMemory::Memzero(DirtyUniformBuffers, sizeof(DirtyUniformBuffers));

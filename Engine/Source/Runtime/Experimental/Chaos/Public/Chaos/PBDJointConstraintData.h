@@ -11,10 +11,19 @@ namespace Chaos
 
 	enum class EJointConstraintFlags : uint32
 	{
-		Position = 0,
-		CollisionEnabled=1,
+		Position                    = 0,
+		CollisionEnabled            = 1 << 1,
+		ProjectionEnabled           = 1 << 2,
+		ParentInvMassScale          = 1 << 3,
+		LinearBreakForce            = 1 << 4,
+		AngularBreakTorque          = 1 << 5,
 		DummyFlag
 	};
+
+#define CONSTRAINT_JOINT_PROPERPETY_IMPL(TYPE, FNAME, ENAME, VNAME)\
+	void Set##FNAME(TYPE InValue){if (InValue != VNAME){VNAME = InValue;MDirtyFlags.MarkDirty(ENAME);SetProxy(Proxy);}}\
+	TYPE Get##FNAME() const{return VNAME;}\
+
 
 	using FJointConstraintDirtyFlags = TDirtyFlags<EJointConstraintFlags>;
 
@@ -47,8 +56,26 @@ namespace Chaos
 		const FTransformPair GetJointTransforms() const;
 		FTransformPair GetJointTransforms();
 
-		void SetCollisionEnabled(bool InValue);
-		bool GetCollisionEnabled() const;
+		CONSTRAINT_JOINT_PROPERPETY_IMPL(bool, CollisionEnabled, EJointConstraintFlags::CollisionEnabled, JointSettings.bCollisionEnabled);
+		//void SetCollisionEnabled(bool InValue);
+		//bool GetCollisionEnabled() const;
+
+		CONSTRAINT_JOINT_PROPERPETY_IMPL(bool, ProjectionEnabled, EJointConstraintFlags::ProjectionEnabled, JointSettings.bProjectionEnabled);
+		//void SetProjectionEnabled(bool bInProjectionEnabled);
+		//bool GetProjectionEnabled() const;
+
+		CONSTRAINT_JOINT_PROPERPETY_IMPL(FReal, ParentInvMassScale, EJointConstraintFlags::ParentInvMassScale, JointSettings.ParentInvMassScale);
+		//void SetParentInvMassScale(FReal InParentInvMassScale);
+		//FReal GetParentInvMassScale() const
+
+		CONSTRAINT_JOINT_PROPERPETY_IMPL(FReal, LinearBreakForce, EJointConstraintFlags::LinearBreakForce, JointSettings.LinearBreakForce);
+		//void SetLinearBreakForce(FReal InLinearBreakForce);
+		//FReal GetLinearBreakForce() const
+
+		CONSTRAINT_JOINT_PROPERPETY_IMPL(FReal, AngularBreakTorque, EJointConstraintFlags::AngularBreakTorque, JointSettings.AngularBreakTorque);
+		//void SetAngularBreakTorque(FReal InAngularBreakTorque);
+		//FReal GetAngularBreakTorque() const
+
 
 		const FData& GetJointSettings()const {return JointSettings; }
 
@@ -56,11 +83,16 @@ namespace Chaos
 		class IPhysicsProxyBase* Proxy;
 
 		FJointConstraintDirtyFlags MDirtyFlags;
-
 		FData JointSettings;
+
 		FParticlePair JointParticles;
 		FTransformPair JointTransforms;
 
 	};
+
+
+
+
+
 
 } // Chaos

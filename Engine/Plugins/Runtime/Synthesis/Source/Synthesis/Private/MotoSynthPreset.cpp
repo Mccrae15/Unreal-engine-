@@ -4,6 +4,7 @@
 #include "MotoSynthEngine.h"
 #include "MotoSynthDataManager.h"
 #include "MotoSynthSourceAsset.h"
+#include "SynthesisModule.h"
 
 void UMotoSynthPreset::BeginDestroy()
 {
@@ -29,6 +30,25 @@ void UMotoSynthPreset::StopEnginePreview()
 	EnginePreviewer.StopPreviewing();
 }
 
+void UMotoSynthPreset::DumpRuntimeMemoryUsage()
+{
+	float TotalMemMB = 0.0f;
+	float AccelRuntime = 0.0f;
+	float DecelRuntime = 0.0f;
+
+	if (Settings.AccelerationSource)
+	{
+		AccelRuntime = Settings.AccelerationSource->GetRuntimeMemoryUsageMB();
+	}
+
+	if (Settings.DecelerationSource)
+	{
+		DecelRuntime = Settings.DecelerationSource->GetRuntimeMemoryUsageMB();
+	}
+
+	UE_LOG(LogSynthesis, Display, TEXT("Moto Synth Preset Memory: %s, Accel: %.2f MB, Decel: %.2f MB, Total: %.2f MB"), *GetName(), AccelRuntime, DecelRuntime, AccelRuntime + DecelRuntime);
+}
+
 void UMotoSynthPreset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	static const FName EnginePreviewRPMCurveFName = GET_MEMBER_NAME_CHECKED(UMotoSynthPreset, EnginePreviewRPMCurve);
@@ -45,7 +65,16 @@ void UMotoSynthPreset::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 		}
 		else
 		{
-			EnginePreviewer.SetSettings(Settings);
+			// Only set the settings on the engine previewer when we have both a acceleration and deceleration source
+			if (Settings.AccelerationSource && Settings.DecelerationSource)
+			{
+				EnginePreviewer.SetSettings(Settings);
+			}
+			else
+			{
+				// Stop previewing if we've cleared out any sources (i.e. were previously previewing an accel/decel source, stop it now if one of them is null)
+				EnginePreviewer.StopPreviewing();
+			}
 		}
 	}
 }
@@ -67,14 +96,21 @@ void FMotoSynthEnginePreviewer::SetSettings(const FMotoSynthRuntimeSettings& InS
 	FScopeLock Lock(&PreviewEngineCritSect);
 
 	// Set the accel and decel data separately
-	if (Settings.AccelerationSource != InSettings.AccelerationSource || Settings.DecelerationSource != InSettings.DecelerationSource)
-	{
-		uint32 AccelDataID = InSettings.AccelerationSource->GetDataID();
-		uint32 DecelDataID = InSettings.DecelerationSource->GetDataID();
+	uint32 AccelDataID = INDEX_NONE;
+	uint32 DecelDataID = INDEX_NONE;
 
-		SynthEngine->SetSourceData(AccelDataID, DecelDataID);
-		SynthEngine->GetRPMRange(RPMRange);
+	if (InSettings.AccelerationSource)
+	{
+		AccelDataID = InSettings.AccelerationSource->GetDataID();
 	}
+
+	if (InSettings.DecelerationSource)
+	{
+		DecelDataID = InSettings.DecelerationSource->GetDataID();
+	}
+
+	SynthEngine->SetSourceData(AccelDataID, DecelDataID);
+	SynthEngine->GetRPMRange(RPMRange);
 
 	Settings = InSettings;
 	SynthEngine->SetSettings(InSettings);

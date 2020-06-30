@@ -219,7 +219,6 @@ void FSkeletalMeshObjectGPUSkin::ReleaseResources()
 
 #if RHI_RAYTRACING
 	BeginReleaseResource(&RayTracingGeometry);
-	ENQUEUE_RENDER_COMMAND(ReleaseRayTracingDynamicVertexBuffer)([&RayTracingDynamicVertexBuffer = RayTracingDynamicVertexBuffer](FRHICommandListImmediate& RHICmdList) mutable { RayTracingDynamicVertexBuffer.Release(); });
 #endif
 }
 
@@ -1230,7 +1229,7 @@ void InitGPUSkinVertexFactoryComponents(typename VertexFactoryType::FDataType* V
 		VertexFactoryData->BoneIndices = FVertexStreamComponent(WeightDataVertexBuffer, 0, Stride, bUse16BitBoneIndex ? VET_UShort4 : VET_UByte4);
 		VertexFactoryData->BoneWeights = FVertexStreamComponent(WeightDataVertexBuffer, WeightsOffset, Stride, VET_UByte4N);
 
-		if (BoneInfluenceType == GPUSkinBoneInfluenceType::ExtraBoneInfluence)
+		if (VertexFactoryData->NumBoneInfluences > MAX_INFLUENCES_PER_STREAM)
 		{
 			// Extra streams for bone indices & weights
 			VertexFactoryData->ExtraBoneIndices = FVertexStreamComponent(
@@ -1556,12 +1555,6 @@ void FSkeletalMeshObjectGPUSkin::FVertexFactoryData::InitVertexFactories(
 					CreateVertexFactory< FGPUBaseSkinVertexFactory, TGPUSkinVertexFactory<GPUSkinBoneInfluenceType::DefaultBoneInfluence> >(VertexFactories, VertexBuffers, InFeatureLevel);
 				CreatePassthroughVertexFactory<TGPUSkinVertexFactory<GPUSkinBoneInfluenceType::DefaultBoneInfluence>>(InFeatureLevel, PassthroughVertexFactories, VertexFactory);
 			}
-			else if (BoneInfluenceType == GPUSkinBoneInfluenceType::ExtraBoneInfluence)
-			{
-				TGPUSkinVertexFactory<GPUSkinBoneInfluenceType::ExtraBoneInfluence>* VertexFactory = 
-					CreateVertexFactory< FGPUBaseSkinVertexFactory, TGPUSkinVertexFactory<GPUSkinBoneInfluenceType::ExtraBoneInfluence> >(VertexFactories, VertexBuffers, InFeatureLevel);
-				CreatePassthroughVertexFactory<TGPUSkinVertexFactory<GPUSkinBoneInfluenceType::ExtraBoneInfluence>>(InFeatureLevel, PassthroughVertexFactories, VertexFactory);
-			}
 			else
 			{
 				TGPUSkinVertexFactory<GPUSkinBoneInfluenceType::UnlimitedBoneInfluence>* VertexFactory = 
@@ -1604,10 +1597,6 @@ void FSkeletalMeshObjectGPUSkin::FVertexFactoryData::InitMorphVertexFactories(
 		{
 			CreateVertexFactoryMorph<FGPUBaseSkinVertexFactory, TGPUSkinMorphVertexFactory< GPUSkinBoneInfluenceType::DefaultBoneInfluence > >(MorphVertexFactories,VertexBuffers,InFeatureLevel);
 		}
-		else if (BoneInfluenceType == GPUSkinBoneInfluenceType::ExtraBoneInfluence)
-		{
-			CreateVertexFactoryMorph<FGPUBaseSkinVertexFactory, TGPUSkinMorphVertexFactory<GPUSkinBoneInfluenceType::ExtraBoneInfluence> >(MorphVertexFactories, VertexBuffers,InFeatureLevel);
-		}
 		else
 		{
 			CreateVertexFactoryMorph<FGPUBaseSkinVertexFactory, TGPUSkinMorphVertexFactory<GPUSkinBoneInfluenceType::UnlimitedBoneInfluence> >(MorphVertexFactories, VertexBuffers, InFeatureLevel);
@@ -1642,10 +1631,6 @@ void FSkeletalMeshObjectGPUSkin::FVertexFactoryData::InitAPEXClothVertexFactorie
 			if (BoneInfluenceType == GPUSkinBoneInfluenceType::DefaultBoneInfluence)
 			{
 				CreateVertexFactoryCloth<FGPUBaseSkinAPEXClothVertexFactory, TGPUSkinAPEXClothVertexFactory<GPUSkinBoneInfluenceType::DefaultBoneInfluence> >(ClothVertexFactories, VertexBuffers, InFeatureLevel);
-			}
-			else if (BoneInfluenceType == GPUSkinBoneInfluenceType::ExtraBoneInfluence)
-			{
-				CreateVertexFactoryCloth<FGPUBaseSkinAPEXClothVertexFactory, TGPUSkinAPEXClothVertexFactory<GPUSkinBoneInfluenceType::ExtraBoneInfluence> >(ClothVertexFactories, VertexBuffers, InFeatureLevel);
 			}
 			else
 			{
@@ -1683,12 +1668,6 @@ void FSkeletalMeshObjectGPUSkin::FVertexFactoryData::UpdateVertexFactoryData(con
 		UpdateVertexFactory<FGPUBaseSkinVertexFactory, TGPUSkinVertexFactory<GPUSkinBoneInfluenceType::DefaultBoneInfluence>>(VertexFactories, VertexBuffers);
 		UpdateVertexFactoryCloth<FGPUBaseSkinAPEXClothVertexFactory, TGPUSkinAPEXClothVertexFactory<GPUSkinBoneInfluenceType::DefaultBoneInfluence>>(ClothVertexFactories, VertexBuffers);
 		UpdateVertexFactoryMorph<FGPUBaseSkinVertexFactory, TGPUSkinMorphVertexFactory<GPUSkinBoneInfluenceType::DefaultBoneInfluence>>(MorphVertexFactories, VertexBuffers);
-	}
-	else if (BoneInfluenceType == GPUSkinBoneInfluenceType::ExtraBoneInfluence)
-	{
-		UpdateVertexFactory<FGPUBaseSkinVertexFactory, TGPUSkinVertexFactory<GPUSkinBoneInfluenceType::ExtraBoneInfluence>>(VertexFactories, VertexBuffers);
-		UpdateVertexFactoryCloth<FGPUBaseSkinAPEXClothVertexFactory, TGPUSkinAPEXClothVertexFactory<GPUSkinBoneInfluenceType::ExtraBoneInfluence>>(ClothVertexFactories, VertexBuffers);
-		UpdateVertexFactoryMorph<FGPUBaseSkinVertexFactory, TGPUSkinMorphVertexFactory<GPUSkinBoneInfluenceType::ExtraBoneInfluence>>(MorphVertexFactories, VertexBuffers);
 	}
 	else
 	{
