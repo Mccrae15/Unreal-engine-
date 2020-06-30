@@ -140,8 +140,6 @@ void UMovieSceneTrackInstanceInstantiator::OnLink()
 {
 	using namespace UE::MovieScene;
 
-	Linker->Events.TagGarbage.AddUObject(this, &UMovieSceneTrackInstanceInstantiator::TagGarbage);
-
 	ChildInitializerIndex = Linker->EntityManager.DefineInstancedChildInitializer(FTrackInstanceInputComponentInitializer(this));
 }
 
@@ -150,7 +148,7 @@ void UMovieSceneTrackInstanceInstantiator::OnUnlink()
 	Linker->EntityManager.DestroyInstancedChildInitializer(ChildInitializerIndex);
 }
 
-void UMovieSceneTrackInstanceInstantiator::TagGarbage(UMovieSceneEntitySystemLinker*)
+void UMovieSceneTrackInstanceInstantiator::OnTagGarbage()
 {
 	using namespace UE::MovieScene;
 
@@ -158,9 +156,10 @@ void UMovieSceneTrackInstanceInstantiator::TagGarbage(UMovieSceneEntitySystemLin
 
 	auto FindGarbage = [this, &Garbage](FMovieSceneEntityID EntityID, FTrackInstanceInputComponent InputComponent)
 	{
-		if (!InputComponent.Section || InputComponent.Section->IsPendingKill())
+		if (FBuiltInComponentTypes::IsBoundObjectGarbage(InputComponent.Section))
 		{
 			Garbage.Add(EntityID);
+			this->InvalidatedOutputs.PadToNum(InputComponent.OutputIndex + 1, false);
 			this->InvalidatedOutputs[InputComponent.OutputIndex] = true;
 		}
 	};

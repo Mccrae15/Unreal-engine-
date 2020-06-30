@@ -60,6 +60,20 @@ struct TOverlappingEntityTracker
 		.Iterate_PerAllocation(&Linker->EntityManager, [this](const FEntityAllocation* Allocation, TRead<KeyType> ReadKeys){ this->VisitLinkedAllocation(Allocation, ReadKeys); });
 	}
 
+	/**
+	 * Update this tracker by iterating any entity that contains InKeyComponent, and matches the additional optional filter
+	 * Only entities tagged as NeedsUnlink are iterated, invalidating their outputs
+	 */
+	void UpdateUnlinkedOnly(UMovieSceneEntitySystemLinker* Linker, TComponentTypeID<KeyType> InKeyComponent, const FEntityComponentFilter& InFilter)
+	{
+		FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
+
+		// Visit unlinked entities
+		TFilteredEntityTask<>(TEntityTaskComponents<>())
+		.CombineFilter(InFilter)
+		.FilterAll({ BuiltInComponents->Tags.NeedsUnlink, InKeyComponent })
+		.Iterate_PerAllocation(&Linker->EntityManager, [this](const FEntityAllocation* Allocation){ this->VisitUnlinkedAllocation(Allocation); });
+	}
 
 
 	/**
@@ -285,7 +299,7 @@ struct TOverlappingEntityTracker_BoundObject : TOverlappingEntityTracker<UObject
 			const uint16 OutputIndex = static_cast<uint16>(Index);
 
 			FOutput& Output = this->Outputs[Index];
-			if (Output.Key == nullptr || Output.Key->IsPendingKill())
+			if (FBuiltInComponentTypes::IsBoundObjectGarbage(Output.Key))
 			{
 				this->Outputs.RemoveAt(Index, 1);
 
@@ -300,7 +314,7 @@ struct TOverlappingEntityTracker_BoundObject : TOverlappingEntityTracker<UObject
 		for (auto It = this->KeyToOutput.CreateIterator(); It; ++It)
 		{
 			UObject* Key = It.Key();
-			if (Key == nullptr || Key->IsPendingKill())
+			if (FBuiltInComponentTypes::IsBoundObjectGarbage(Key))
 			{
 				It.RemoveCurrent();
 			}
