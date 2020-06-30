@@ -595,7 +595,10 @@ void FNiagaraSystemInstance::Complete()
 
 	DestroyDataInterfaceInstanceData();
 
-	UnbindParameters(true);
+	if (!Component || Component->PoolingMethod == ENCPoolMethod::None)
+	{
+		UnbindParameters(true);
+	}
 
 	bPendingSpawn = false;
 
@@ -2034,9 +2037,14 @@ void FNiagaraSystemInstance::ProcessComponentRendererTasks()
 	{
 		return;
 	}
+	if (!Component)
+	{
+		// we can't attach the components anywhere, so just discard them
+		ComponentTasks.Empty();
+		return;
+	}
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraProcessComponentRendererTasks);
 
-	ETickingGroup ComponentTickGroup = Component ? static_cast<ETickingGroup>(FMath::Max(Component->PrimaryComponentTick.TickGroup, Component->PrimaryComponentTick.EndTickGroup) + 1) : ETickingGroup::TG_LastDemotable;
 	TMap<UClass*, TArray<FNiagaraComponentRenderPoolEntry>> NewRenderPool;
 	int32 AttachedComponentCount = 0;
 
@@ -2051,11 +2059,46 @@ void FNiagaraSystemInstance::ProcessComponentRendererTasks()
 		TArray<FNiagaraComponentRenderPoolEntry>& CurrentPool = ComponentRenderPool.PoolsByTemplate.FindOrAdd(UpdateTask.TemplateObject->StaticClass());
 		USceneComponent* SceneComponent = nullptr;
 		FNiagaraComponentRenderPoolEntry NewEntry;
-		if (CurrentPool.Num() > 0 && UpdateTask.bEnableComponentPooling)
+		if (CurrentPool.Num() > 0)
 		{
 			// grab a component from the pool if there is one available
-			NewEntry = CurrentPool.Pop(false);
-			SceneComponent = NewEntry.Component.Get();
+			int32 FreeComponentIndex = -1;
+			if (UpdateTask.ParticleID == -1)
+			{
+				FreeComponentIndex = CurrentPool.Num() - 1;
+			}
+			else
+			{
+				// if we have a particle ID we try to map it to a previously assigned component
+				for (int32 i = 0; i < CurrentPool.Num(); i++)
+				{
+					int32& PoolEntryID = CurrentPool[i].LastAssignedToParticleID;
+					if (PoolEntryID > -1 && PoolEntryID < UpdateTask.SmallestID)
+					{
+						// there is no particle alive any more with this ID, mark component for reuse
+						PoolEntryID = -1;
+					}
+
+					// search for a previously assigned component for this particle
+					if (PoolEntryID == UpdateTask.ParticleID)
+					{
+						FreeComponentIndex = i;
+						break;
+					}
+					else if (PoolEntryID == -1)
+					{
+						// if we don't find one we can maybe reuse one that's free anyways
+						FreeComponentIndex = i;
+					}
+				}
+			}
+
+			if (FreeComponentIndex != -1)
+			{
+				NewEntry = CurrentPool[FreeComponentIndex];
+				CurrentPool.RemoveAtSwap(FreeComponentIndex, 1, false);
+				SceneComponent = NewEntry.Component.Get();
+			}
 		}
 
 		if (!SceneComponent || SceneComponent->HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed))
@@ -2074,17 +2117,23 @@ void FNiagaraSystemInstance::ProcessComponentRendererTasks()
 			{
 				SceneComponent->RegisterComponent();
 			}
+			SceneComponent->AddTickPrerequisiteComponent(Component);
 			NewEntry = FNiagaraComponentRenderPoolEntry();
 			NewEntry.Component = SceneComponent;
 		}
 		
 		// call the update task which sets the values from the particle bindings
 		UpdateTask.UpdateCallback(SceneComponent, NewEntry);
-		SceneComponent->SetTickGroup(ComponentTickGroup);
-		SceneComponent->SetVisibility(true);
-		SceneComponent->Activate(false);
+		
+		// activate the component
+		if (!SceneComponent->IsActive())
+		{
+			SceneComponent->SetVisibility(true);
+			SceneComponent->Activate(false);
+		}
 
-		NewEntry.InactiveTimeLeft = UpdateTask.bEnableComponentPooling ? GNiagaraComponentRenderPoolInactiveTimeLimit : 0;
+		NewEntry.LastAssignedToParticleID = UpdateTask.ParticleID;
+		NewEntry.InactiveTimeLeft = GNiagaraComponentRenderPoolInactiveTimeLimit;
 		NewRenderPool.FindOrAdd(UpdateTask.TemplateObject->StaticClass()).Add(NewEntry);
 		AttachedComponentCount++;
 	}
@@ -2110,8 +2159,11 @@ void FNiagaraSystemInstance::ProcessComponentRendererTasks()
 			}
 			else
 			{
-				PoolEntry.Component->Deactivate();
-				PoolEntry.Component->SetVisibility(false);
+				if (PoolEntry.Component->IsActive())
+				{
+					PoolEntry.Component->Deactivate();
+					PoolEntry.Component->SetVisibility(false);
+				}
 				NewRenderPool.FindOrAdd(Pair.Key).Add(PoolEntry);
 			}
 		}
