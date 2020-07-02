@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/UMGSequenceTickManager.h"
+#include "Animation/UMGSequencePlayer.h"
 #include "Blueprint/UserWidget.h"
 #include "Engine/World.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
@@ -31,6 +32,18 @@ UUMGSequenceTickManager::UUMGSequenceTickManager(const FObjectInitializer& Init)
 {
 }
 
+void UUMGSequenceTickManager::AddWidget(UUserWidget* InWidget)
+{
+	TWeakObjectPtr<UUserWidget> WeakWidget = InWidget;
+	WeakUserWidgets.Add(WeakWidget);
+}
+
+void UUMGSequenceTickManager::RemoveWidget(UUserWidget* InWidget)
+{
+	TWeakObjectPtr<UUserWidget> WeakWidget = InWidget;
+	WeakUserWidgets.Remove(WeakWidget);
+}
+
 void UUMGSequenceTickManager::BeginDestroy()
 {
 	if (SlateApplicationPreTickHandle.IsValid())
@@ -40,6 +53,9 @@ void UUMGSequenceTickManager::BeginDestroy()
 			FSlateApplication& SlateApp = FSlateApplication::Get();
 			SlateApp.OnPreTick().Remove(SlateApplicationPreTickHandle);
 			SlateApplicationPreTickHandle.Reset();
+
+			SlateApp.OnPostTick().Remove(SlateApplicationPostTickHandle);
+			SlateApplicationPostTickHandle.Reset();
 		}
 	}
 
@@ -66,9 +82,22 @@ void UUMGSequenceTickManager::TickWidgetAnimations(float DeltaSeconds)
 	// will queue evaluations on the global sequencer ECS linker. In some specific cases, though (pausing,
 	// stopping, etc.), we might see some blocking (immediate) evaluations running here.
 	//
-	for (int32 i = UserWidgets.Num() - 1; i >= 0; --i)
+
+	for (auto WidgetIter = WeakUserWidgets.CreateIterator(); WidgetIter; ++WidgetIter)
 	{
-		if (UUserWidget* UserWidget = UserWidgets[i])
+		UUserWidget* UserWidget = WidgetIter->Get();
+		if (!UserWidget)
+		{
+			WidgetIter.RemoveCurrent();
+		}
+		else if (!UserWidget->IsConstructed())
+		{
+			UserWidget->TearDownAnimations();
+			UserWidget->AnimationTickManager = nullptr;
+
+			WidgetIter.RemoveCurrent();
+		}
+		else
 		{
 #if WITH_EDITOR
 			const bool bTickAnimations = !UserWidget->IsDesignTime();
@@ -80,18 +109,16 @@ void UUMGSequenceTickManager::TickWidgetAnimations(float DeltaSeconds)
 				UserWidget->TickActionsAndAnimation(DeltaSeconds);
 			}
 		}
-		else
-		{
-			checkf(false, TEXT("Found null widget in UUMGSequenceTickManager!"));
-			UserWidgets.RemoveAt(i);
-		}
 	}
 
 	ForceFlush();
 
-	for (int32 i = UserWidgets.Num() - 1; i >= 0; --i)
+	for (auto WidgetIter = WeakUserWidgets.CreateIterator(); WidgetIter; ++WidgetIter)
 	{
-		if (UUserWidget* UserWidget = UserWidgets[i])
+		UUserWidget* UserWidget = WidgetIter->Get();
+		ensureMsgf(UserWidget, TEXT("Widget became null during animation tick!"));
+
+		if (UserWidget)
 		{
 			UserWidget->PostTickActionsAndAnimation(DeltaSeconds);
 
@@ -99,25 +126,18 @@ void UUMGSequenceTickManager::TickWidgetAnimations(float DeltaSeconds)
 			if (UserWidget->ActiveSequencePlayers.Num() == 0)
 			{
 				UserWidget->AnimationTickManager = nullptr;
-				UserWidgets.RemoveAtSwap(i);
+				WidgetIter.RemoveCurrent();
 			}
+		}
+		else
+		{
+			WidgetIter.RemoveCurrent();
 		}
 	}
 }
 
 void UUMGSequenceTickManager::ForceFlush()
 {
-	// Cache a pointer to the global linker if we don't have one yet.
-	if (Linker == nullptr)
-	{
-		UWorld* World = GetTypedOuter<UWorld>();
-		check(World);
-
-		Linker = UGlobalEntitySystemLinker::Get(World);
-		check(Linker);
-		Runner.AttachToLinker(Linker);
-	}
-
 	if (Runner.IsAttachedToLinker())
 	{
 		Runner.Flush();
@@ -162,6 +182,10 @@ UUMGSequenceTickManager* UUMGSequenceTickManager::Get(UObject* PlaybackContext)
 	if (!TickManager)
 	{
 		TickManager = NewObject<UUMGSequenceTickManager>(World, TickManagerName);
+
+		TickManager->Linker = UMovieSceneEntitySystemLinker::FindOrCreateLinker(World, TEXT("UMGAnimationEntitySystemLinker"));
+		check(TickManager->Linker);
+		TickManager->Runner.AttachToLinker(TickManager->Linker);
 
 		FSlateApplication& SlateApp = FSlateApplication::Get();
 		FDelegateHandle PreTickHandle = SlateApp.OnPreTick().AddUObject(TickManager, &UUMGSequenceTickManager::TickWidgetAnimations);
