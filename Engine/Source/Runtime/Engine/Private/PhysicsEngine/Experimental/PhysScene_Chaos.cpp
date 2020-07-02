@@ -414,7 +414,6 @@ FPhysScene_Chaos::FPhysScene_Chaos(AActor* InSolverActor
 
 	// Create replication manager
 	PhysicsReplication = PhysicsReplicationFactory.IsValid() ? PhysicsReplicationFactory->Create(this) : new FPhysicsReplication(this);
-	SceneSolver->PhysSceneHack = this;
 	SceneSolver->GetEvolution()->SetCollisionModifierCallback(CollisionModifierCallback);
 
 	FPhysicsDelegates::OnPhysSceneInit.Broadcast(this);
@@ -963,30 +962,6 @@ UWorld* FPhysScene_Chaos::GetOwningWorld()
 const UWorld* FPhysScene_Chaos::GetOwningWorld() const
 {
 	return MOwningWorld;
-}
-
-void FPhysScene_Chaos::Flush_AssumesLocked()
-{
-	check(IsInGameThread());
-
-	Chaos::FPBDRigidsSolver* Solver = GetSolver();
-
-	if(Solver)
-	{
-		//Make sure any dirty proxy data is pushed
-		Solver->AdvanceAndDispatch_External(0);	//force commands through
-		Solver->WaitOnPendingTasks_External();
-		
-		// Populate the spacial acceleration
-		Chaos::FPBDRigidsSolver::FPBDRigidsEvolution* Evolution = Solver->GetEvolution();
-
-		if(Evolution)
-		{
-			Evolution->FlushSpatialAcceleration();
-		}
-	}
-
-	CopySolverAccelerationStructure();
 }
 
 void FPhysScene_Chaos::RemoveBodyInstanceFromPendingLists_AssumesLocked(FBodyInstance* BodyInstance, int32 SceneType)
