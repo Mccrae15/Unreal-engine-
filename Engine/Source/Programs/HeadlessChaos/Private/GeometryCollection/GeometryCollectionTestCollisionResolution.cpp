@@ -157,7 +157,7 @@ namespace GeometryCollectionTest
 
 			const FVector& CurrX = SimplicialSphereCollection->DynamicCollection->Transform[0].GetTranslation();
 			EXPECT_NE(CurrX.Z, FirstX.Z); // moved since init
-			EXPECT_LE(CurrX.Z, PrevX.Z); // falling in -Z, or stopped
+			EXPECT_GE(PrevX.Z - CurrX.Z, -KINDA_SMALL_NUMBER); // falling in -Z, or stopped
 			EXPECT_LE(FMath::Abs(CurrX.X), KINDA_SMALL_NUMBER); // straight down
 			EXPECT_LE(FMath::Abs(CurrX.Y), KINDA_SMALL_NUMBER); // straight down
 			PrevX = CurrX;
@@ -395,7 +395,7 @@ namespace GeometryCollectionTest
 			// We expect the simplical sphere to drop by 0.1 in Z and come to rest
 			// on top of the implicit sphere.
 			const FVector& CurrX = SimplicialSphereCollection->DynamicCollection->Transform[0].GetTranslation();
-			EXPECT_LE(CurrX.Z - 1.0, 0.1);
+			EXPECT_LE(FMath::Abs(CurrX.Z - 2.0f), 0.1);
 		}
 	}
 
