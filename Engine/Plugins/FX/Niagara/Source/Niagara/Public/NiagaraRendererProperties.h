@@ -27,6 +27,7 @@ class FNiagaraEmitterInstance;
 class SWidget;
 class FAssetThumbnailPool;
 struct FNiagaraDataSetCompiledData;
+struct FSlateBrush;
 
 UCLASS(ABSTRACT)
 class NIAGARA_API UNiagaraRendererProperties : public UNiagaraMergeable
@@ -70,6 +71,9 @@ public:
 	virtual void GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const PURE_VIRTUAL(UNiagaraRendererProperties::GetRendererWidgets, );
 	virtual void GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const PURE_VIRTUAL(UNiagaraRendererProperties::GetRendererTooltipWidgets, );
 	virtual void GetRendererFeedback(const UNiagaraEmitter* InEmitter, TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const {};
+	
+	// The icon to display in the niagara stack widget under the renderer section
+	virtual const FSlateBrush* GetStackIcon() const;
 
 #endif // WITH_EDITORONLY_DATA
 
