@@ -462,14 +462,6 @@ namespace UnrealBuildTool
 				OculusMobileDevices = new List<string>();
 			}
 
-			// Handle bPackageForGearVR for backwards compatibility
-			bool bPackageForGearVR = false;
-			Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bPackageForGearVR", out bPackageForGearVR);
-			if (bPackageForGearVR && !OculusMobileDevices.Contains("GearGo"))
-			{
-				OculusMobileDevices.Add("GearGo");
-			}
-
 			return OculusMobileDevices;
 		}
 
@@ -479,6 +471,14 @@ namespace UnrealBuildTool
 			bool bTargetOculusDevices = (TargetOculusDevices != null && TargetOculusDevices.Count() > 0);
 
 			return bTargetOculusDevices;
+		}
+
+		public bool IsPackagingForOculusGo(ConfigHierarchy Ini = null)
+		{
+			List<string> TargetOculusDevices = GetTargetOculusMobileDevices(Ini);
+			bool bTargetOculusGo = (TargetOculusDevices != null && TargetOculusDevices.Contains("Go"));
+
+			return bTargetOculusGo;
 		}
 
 		public bool DisableVerifyOBBOnStartUp(ConfigHierarchy Ini = null)
@@ -2357,6 +2357,10 @@ namespace UnrealBuildTool
 			{
 				Text.AppendLine(string.Format("\t\t<meta-data android:name=\"com.epicgames.ue4.GameActivity.bDaydream\" android:value=\"true\"/>"));
 			}
+			if (bPackageForOculusMobile && !bIsForDistribution)
+			{
+				Text.AppendLine("\t\t\t<meta-data android:name=\"com.oculus.extlib\" android:value=\"true\"/>");
+			}
 			Text.AppendLine("\t\t<meta-data android:name=\"com.google.android.gms.games.APP_ID\"");
 			Text.AppendLine("\t\t           android:value=\"@string/app_id\" />");
 			Text.AppendLine("\t\t<meta-data android:name=\"com.google.android.gms.version\"");
@@ -2648,6 +2652,22 @@ namespace UnrealBuildTool
 				}
 
 				File.WriteAllText(Filename, XML_HEADER + "\n<resources>\n\t<string name=\"app_id\">" + NewAppId + "</string>\n</resources>\n");
+			}
+		}
+
+		void ValidateOculus()
+		{
+			ConfigHierarchy Ini = GetConfigCacheIni(ConfigHierarchyType.Engine);
+
+			bool bSupportsVulkan = false;
+			Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bSupportsVulkan", out bSupportsVulkan);
+
+			bool bPackagingForOculusGo = IsPackagingForOculusGo(Ini);
+
+			if (bSupportsVulkan && bPackagingForOculusGo)
+			{
+				Log.TraceInformation("Vulkan is not supported on Oculus Go. Please uncheck \"Support Vulkan\" in Project Settings");
+				throw new BuildException("Vulkan is not supported on Oculus Go");
 			}
 		}
 
@@ -3011,10 +3031,10 @@ namespace UnrealBuildTool
 			{
 				bool bDisableV2Signing = false;
 
-				if (GetTargetOculusMobileDevices().Contains("GearGo"))
+				if (GetTargetOculusMobileDevices().Contains("Go"))
 				{
 					bDisableV2Signing = true;
-					Log.TraceInformation("Disabling v2Signing for Oculus Go / Gear VR APK");
+					Log.TraceInformation("Disabling v2Signing for Oculus Go");
 				}
 
 				string KeyAlias, KeyStore, KeyStorePassword, KeyPassword;
@@ -3588,6 +3608,9 @@ namespace UnrealBuildTool
 
 				//Now validate GooglePlay app_id if enabled
 				ValidateGooglePlay(UE4BuildPath);
+
+				//Now validate settings for Oculus devices
+				ValidateOculus();
 
 				//determine which orientation requirements this app has
 				bool bNeedLandscape = false;

@@ -159,27 +159,27 @@ AOculusMR_CastingCameraActor::AOculusMR_CastingCameraActor(const FObjectInitiali
 	ForegroundRenderTargets.SetNum(1);
 
 	BackgroundRenderTargets[0] = NewObject<UTextureRenderTarget2D>();
-	BackgroundRenderTargets[0]->RenderTargetFormat = RTF_RGBA8;
-	BackgroundRenderTargets[0]->TargetGamma = 1.001;
+	BackgroundRenderTargets[0]->RenderTargetFormat = RTF_RGBA8_SRGB;
 
 	ForegroundRenderTargets[0] = NewObject<UTextureRenderTarget2D>();
-	ForegroundRenderTargets[0]->RenderTargetFormat = RTF_RGBA8;
-	ForegroundRenderTargets[0]->TargetGamma = 1.001;
+	ForegroundRenderTargets[0]->RenderTargetFormat = RTF_RGBA8_SRGB;
 #elif PLATFORM_ANDROID
 	BackgroundRenderTargets.SetNum(NumRTs);
 	ForegroundRenderTargets.SetNum(NumRTs);
 	AudioBuffers.SetNum(NumRTs);
 	AudioTimes.SetNum(NumRTs);
+	PoseTimes.SetNum(NumRTs);
 
 	for (unsigned int i = 0; i < NumRTs; ++i)
 	{
 		BackgroundRenderTargets[i] = NewObject<UTextureRenderTarget2D>();
-		BackgroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8;
+		BackgroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8_SRGB;
 
 		ForegroundRenderTargets[i] = NewObject<UTextureRenderTarget2D>();
-		ForegroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8;
+		ForegroundRenderTargets[i]->RenderTargetFormat = RTF_RGBA8_SRGB;
 
 		AudioTimes[i] = 0.0;
+		PoseTimes[i] = 0.0;
 	}
 
 	SyncId = -1;
@@ -228,6 +228,7 @@ bool AOculusMR_CastingCameraActor::RefreshExternalCamera()
 		OculusHMD->ConvertPose(cameraExtrinsics.RelativePose, Pose);
 		MRState->TrackedCamera.CalibratedRotation = Pose.Orientation.Rotator();
 		MRState->TrackedCamera.CalibratedOffset = Pose.Position;
+		MRState->TrackedCamera.UpdateTime = cameraExtrinsics.LastChangedTimeSeconds;
 	}
 
 	return true;
@@ -440,6 +441,33 @@ void AOculusMR_CastingCameraActor::Tick(float DeltaTime)
 	UpdateRenderTargetSize();
 
 #if PLATFORM_ANDROID
+	OculusHMD::FOculusHMD* OculusHMD = GEngine->XRSystem.IsValid() ? (OculusHMD::FOculusHMD*)(GEngine->XRSystem->GetHMDDevice()) : nullptr;
+	if (OculusHMD)
+	{
+		ovrpPosef OvrpPose, OvrpHeadPose, OvrpLeftHandPose, OvrpRightHandPose;
+		FOculusHMDModule::GetPluginWrapper().GetTrackingTransformRelativePose(&OvrpPose, ovrpTrackingOrigin_Stage);
+		OculusHMD::FPose StageToLocalPose;
+		OculusHMD->ConvertPose(OvrpPose, StageToLocalPose);
+		OculusHMD::FPose LocalToStagePose = StageToLocalPose.Inverse();
+
+		OculusHMD::FPose HeadPose;
+		OculusHMD->GetCurrentPose(OculusHMD::ToExternalDeviceId(ovrpNode_Head), HeadPose.Orientation, HeadPose.Position);
+		HeadPose = LocalToStagePose * HeadPose;
+		OculusHMD->ConvertPose(HeadPose, OvrpHeadPose);
+
+		OculusHMD::FPose LeftHandPose;
+		OculusHMD->GetCurrentPose(OculusHMD::ToExternalDeviceId(ovrpNode_HandLeft), HeadPose.Orientation, HeadPose.Position);
+		LeftHandPose = LocalToStagePose * LeftHandPose;
+		OculusHMD->ConvertPose(LeftHandPose, OvrpLeftHandPose);
+
+		OculusHMD::FPose RightHandPose;
+		OculusHMD->GetCurrentPose(OculusHMD::ToExternalDeviceId(ovrpNode_HandRight), HeadPose.Orientation, HeadPose.Position);
+		RightHandPose = LocalToStagePose * RightHandPose;
+		OculusHMD->ConvertPose(RightHandPose, OvrpRightHandPose);
+
+		FOculusHMDModule::GetPluginWrapper().Media_SetHeadsetControllerPose(OvrpHeadPose, OvrpLeftHandPose, OvrpRightHandPose);
+	}
+
 	// Alternate foreground and background captures by nulling the capture component texture target
 	if (GetCaptureComponent2D()->IsVisible())
 	{
@@ -482,7 +510,7 @@ void AOculusMR_CastingCameraActor::Tick(float DeltaTime)
 					});
 				});
 			}
-			FOculusHMDModule::GetPluginWrapper().Media_EncodeMrcFrameWithDualTextures(BackgroundTexture, ForegroundTexture, AudioBuffers[EncodeIndex].GetData(), AudioBuffers[EncodeIndex].Num() * sizeof(float), NumChannels, AudioTime, &SyncId);
+			FOculusHMDModule::GetPluginWrapper().Media_EncodeMrcFrameDualTexturesWithPoseTime(BackgroundTexture, ForegroundTexture, AudioBuffers[EncodeIndex].GetData(), AudioBuffers[EncodeIndex].Num() * sizeof(float), NumChannels, AudioTime, PoseTimes[CaptureIndex], &SyncId);
 		}
 		ForegroundCaptureActor->GetCaptureComponent2D()->SetVisibility(true);
 	}
@@ -504,6 +532,8 @@ void AOculusMR_CastingCameraActor::Tick(float DeltaTime)
 		AudioTimes[CaptureIndex] = AudioDevice->GetAudioTime();
 		//UE_LOG(LogMR, Error, TEXT("SampleRate: %f, NumChannels: %f, Time: %f, Buffer Length: %d, Buffer: %p"), SampleRate, NumChannels, AudioDevice->GetAudioTime(), AudioBuffers[EncodeIndex].Num(), AudioBuffers[EncodeIndex].GetData());
 		AudioDevice->StartRecording(nullptr, 0.1);
+
+		//PoseTimes[CaptureIndex] = MRState->TrackedCamera.UpdateTime;
 
 		// Increment this counter for the initial cycle through "swapchain"
 		if (RenderedRTs < NumRTs)
@@ -856,11 +886,10 @@ void AOculusMR_CastingCameraActor::UpdateTrackedCameraPosition()
 	FPose CameraTrackingSpacePose = FPose(MRState->TrackedCamera.CalibratedRotation.Quaternion(), MRState->TrackedCamera.CalibratedOffset);
 #if PLATFORM_ANDROID
 	ovrpPosef OvrpPose;
-	FOculusHMDModule::GetPluginWrapper().GetTrackingTransformRawPose(&OvrpPose);
-	FPose RawPose;
-	OculusHMD->ConvertPose(OvrpPose, RawPose);
-	FPose CalibrationRawPose = FPose(MRState->TrackedCamera.RawRotation.Quaternion(), MRState->TrackedCamera.RawOffset);
-	CameraTrackingSpacePose = RawPose * (CalibrationRawPose.Inverse() * CameraTrackingSpacePose);
+	FOculusHMDModule::GetPluginWrapper().GetTrackingTransformRelativePose(&OvrpPose, ovrpTrackingOrigin_Stage);
+	FPose StageToLocalPose;
+	OculusHMD->ConvertPose(OvrpPose, StageToLocalPose);
+	CameraTrackingSpacePose = StageToLocalPose * CameraTrackingSpacePose;
 #endif
 	FPose CameraPose = CameraTrackedObjectPose * CameraTrackingSpacePose;
 	CameraPose = CameraPose * FPose(MRState->TrackedCamera.UserRotation.Quaternion(), MRState->TrackedCamera.UserOffset);

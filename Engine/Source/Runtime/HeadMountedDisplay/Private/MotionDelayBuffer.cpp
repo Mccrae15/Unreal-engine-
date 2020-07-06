@@ -520,7 +520,11 @@ void FMotionDelayClient::Apply_RenderThread(FSceneInterface* Scene)
 {
 	for (const FTargetTransform& Transform : TargetTransforms_RenderThread)
 	{
+#if WITH_LATE_LATCHING_CODE
+		Transform.DelayTarget->LateUpdate.Apply_RenderThread(Scene, -1, Transform.RestoreTransform, Transform.DelayTransform);
+#else
 		Transform.DelayTarget->LateUpdate.Apply_RenderThread(Scene, Transform.RestoreTransform, Transform.DelayTransform);
+#endif
 	}
 }
 
@@ -529,7 +533,11 @@ void FMotionDelayClient::Restore_RenderThread(FSceneInterface* Scene)
 {
 	for (const FTargetTransform& Transform : TargetTransforms_RenderThread)
 	{
+#if WITH_LATE_LATCHING_CODE
+		Transform.DelayTarget->LateUpdate.Apply_RenderThread(Scene, -1, Transform.DelayTransform, Transform.RestoreTransform);
+#else
 		Transform.DelayTarget->LateUpdate.Apply_RenderThread(Scene, Transform.DelayTransform, Transform.RestoreTransform);
+#endif
 	}
 }
 

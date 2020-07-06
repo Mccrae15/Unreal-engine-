@@ -139,6 +139,9 @@ private:
 	TArray<UTextureRenderTarget2D*> ForegroundRenderTargets;
 
 	UPROPERTY()
+	TArray<double> PoseTimes;
+
+	UPROPERTY()
 	UOculusMR_Settings* MRSettings;
 
 	UPROPERTY()

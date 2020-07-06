@@ -1243,6 +1243,10 @@ public:
 			ViewUniformShaderParameters);
 	}
 
+#if WITH_LATE_LATCHING_CODE
+	void UpdateLateLatchData();
+#endif
+
 	void SetupDefaultGlobalDistanceFieldUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters) const;
 	void SetupGlobalDistanceFieldUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters) const;
 	void SetupVolumetricFogUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters) const;
@@ -1781,9 +1785,6 @@ protected:
 	/** Renders the scene's distortion */
 	void RenderDistortion(FRHICommandListImmediate& RHICmdList);
 
-	/** Returns the scene color texture multi-view is targeting. */	
-	FRHITexture* GetMultiViewSceneColor(const FSceneRenderTargets& SceneContext) const;
-
 	void UpdatePrimitiveIndirectLightingCacheBuffers();
 
 	void RenderPlanarReflection(class FPlanarReflectionSceneProxy* ReflectionSceneProxy);
@@ -1874,9 +1875,6 @@ protected:
 	/** Creates uniform buffers with the mobile directional light parameters, for each lighting channel. Called by InitViews */
 	void CreateDirectionalLightUniformBuffers(FViewInfo& View);
 
-	/** Copy scene color from the mobile multi-view render target array to side by side stereo scene color */
-	void CopyMobileMultiViewSceneColor(FRHICommandListImmediate& RHICmdList);
-
 	/** On chip pre-tonemap before scene color MSAA resolve (iOS only) */
 	void PreTonemapMSAA(FRHICommandListImmediate& RHICmdList);
 
@@ -1888,6 +1886,11 @@ protected:
 	void UpdateDirectionalLightUniformBuffers(FRHICommandListImmediate& RHICmdList, const FViewInfo& View);
 	void UpdateSkyReflectionUniformBuffer();
 	void UpdateDepthPrepassUniformBuffer(FRHICommandListImmediate& RHICmdList, const FViewInfo& View);
+
+#if	WITH_LATE_LATCHING_CODE
+	void BeginLateLatching(FRHICommandListImmediate& RHICmdList);
+	void EndLateLatching(FRHICommandListImmediate& RHICmdList, const FViewInfo& View);
+#endif
 	
 private:
 	bool bModulatedShadowsInUse;

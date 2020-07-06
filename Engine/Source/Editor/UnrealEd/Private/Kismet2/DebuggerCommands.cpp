@@ -1238,6 +1238,41 @@ TSharedRef< SWidget > FPlayWorldCommands::GenerateLaunchMenuContent(TSharedRef<F
 
 	MenuBuilder.EndSection();
 
+	{
+		TArray<FString> packageForOculusMobile;
+		GConfig->GetArray(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("PackageForOculusMobile"), packageForOculusMobile, GEngineIni);
+
+		if (packageForOculusMobile.Num() > 0)
+		{
+			MenuBuilder.BeginSection("OculusSettings");
+
+			UEditorExperimentalSettings* EditorExperimentalSettings = GetMutableDefault<UEditorExperimentalSettings>();
+
+			FUIAction UIAction;
+			UIAction.ExecuteAction = FExecuteAction::CreateLambda([EditorExperimentalSettings]
+			{
+				EditorExperimentalSettings->bLaunchOnOculusDeploySo = !EditorExperimentalSettings->bLaunchOnOculusDeploySo;
+				EditorExperimentalSettings->Modify(true);
+			});
+
+			UIAction.GetActionCheckState = FGetActionCheckState::CreateLambda([EditorExperimentalSettings]
+			{
+				return EditorExperimentalSettings->bLaunchOnOculusDeploySo ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			});
+
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("OculusDeploySoOnLaunch", "Deploy compiled .so directly to device (Oculus)"),
+				LOCTEXT("OculusDeploySoOnLaunchDescription", "On supported Oculus mobile platforms, copy compiled .so directly to device. Allows updating compiled code without rebuilding and installing an APK."),
+				FSlateIcon(),
+				UIAction,
+				NAME_None,
+				EUserInterfaceActionType::ToggleButton
+			);
+
+			MenuBuilder.EndSection();
+		}
+	}
+
 	if (PlatformsWithNoDevices.Num() > 0)
 	{
 		MenuBuilder.BeginSection("NoDevices");

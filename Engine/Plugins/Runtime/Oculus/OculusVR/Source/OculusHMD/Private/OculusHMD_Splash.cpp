@@ -147,7 +147,7 @@ void FSplash::Startup()
 
 		LoadSettings();
 
-
+		OculusHMD->InitDevice();
 
 		bInitialized = true;
 	}
@@ -441,8 +441,6 @@ IStereoLayers::FLayerDesc FSplash::StereoLayerDescFromOculusSplashDesc(FOculusSp
 void FSplash::DoShow()
 {
 	CheckInGameThread();
-
-	OculusHMD->InitDevice();
 
 	OculusHMD->SetSplashRotationToForward();
 

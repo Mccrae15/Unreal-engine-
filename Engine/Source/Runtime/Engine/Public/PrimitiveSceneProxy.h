@@ -553,6 +553,9 @@ public:
 	inline bool IsComponentLevelVisible() const { return bIsComponentLevelVisible; }
 	inline bool IsStaticPathAvailable() const { return !bHasMobileMovablePointLightInteraction; }
 	inline bool ShouldReceiveMobileCSMShadows() const { return bReceiveMobileCSMShadows; }
+#if WITH_LATE_LATCHING_CODE
+	inline void FlagPatchingFrameNumber(int32 frameNumber) { if (GetUniformBuffer()!= nullptr) UniformBuffer->FlagPatchingFrameNumber(frameNumber); }
+#endif
 
 	/** Returns whether draws velocity in base pass. */
 	inline bool DrawsVelocity() const {

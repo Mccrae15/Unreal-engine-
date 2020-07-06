@@ -139,6 +139,10 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = "Content Browser", meta = (DisplayName = "Enable support for long paths (> 260 characters)"))
 	bool bEnableLongPathsSupport;
 
+	/**  On supported Oculus mobile platforms, copy compiled .so directly to device. Allows updating compiled code without rebuilding and installing an APK. */
+	UPROPERTY(EditAnywhere, config, Category = "Launch On", meta = (DisplayName = "Deploy compiled .so directly to device (Oculus)"))
+	bool bLaunchOnOculusDeploySo;
+
 	/**
 	 * Returns an event delegate that is executed when a setting has changed.
 	 *

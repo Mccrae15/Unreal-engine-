@@ -10,6 +10,7 @@
 #include "Misc/CoreMisc.h"
 #include "GameProjectGenerationModule.h"
 #include "CookerSettings.h"
+#include "Settings/EditorExperimentalSettings.h"
 #include "UnrealEdMisc.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Settings/ProjectPackagingSettings.h"
@@ -252,6 +253,11 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 	for (const FString& MapName : MapNames)
 	{
 		LauncherProfile->AddCookedMap(MapName);
+	}
+
+	if (GetDefault<UEditorExperimentalSettings>()->bLaunchOnOculusDeploySo)
+	{
+		LauncherProfile->SetOculusDeploySo(true);
 	}
 
 	if (LauncherProfile->GetCookMode() == ELauncherProfileCookModes::ByTheBookInEditor)

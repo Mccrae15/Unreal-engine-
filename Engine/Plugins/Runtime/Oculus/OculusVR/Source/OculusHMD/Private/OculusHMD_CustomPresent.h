@@ -58,7 +58,7 @@ public:
 	EPixelFormat GetPixelFormat(EPixelFormat InFormat) const;
 	EPixelFormat GetPixelFormat(ovrpTextureFormat InFormat) const;
 	EPixelFormat GetDefaultPixelFormat() const { return DefaultPixelFormat; }
-	ovrpTextureFormat GetOvrpTextureFormat(EPixelFormat InFormat) const;
+	ovrpTextureFormat GetOvrpTextureFormat(EPixelFormat InFormat, bool usesRGB = true) const;
 	ovrpTextureFormat GetDefaultOvrpTextureFormat() const { return DefaultOvrpTextureFormat; }
 	ovrpTextureFormat GetDefaultDepthOvrpTextureFormat() const { return DefaultDepthOvrpTextureFormat; }
 	static bool IsSRGB(ovrpTextureFormat InFormat);

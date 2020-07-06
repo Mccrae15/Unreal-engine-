@@ -38,8 +38,6 @@ namespace
 			return ovrpCameraDevice_WebCamera0;
 		else if (device == EOculusMR_CameraDeviceEnum::CD_WebCamera1)
 			return ovrpCameraDevice_WebCamera1;
-		else if (device == EOculusMR_CameraDeviceEnum::CD_ZEDCamera)
-			return ovrpCameraDevice_ZEDStereoCamera;
 		checkNoEntry();
 		return ovrpCameraDevice_None;
 	}
@@ -95,9 +93,23 @@ void FOculusMRModule::StartupModule()
 	const TCHAR* CmdLine = FCommandLine::Get();
 	const bool bAutoOpenFromParams = FParse::Param(CmdLine, TEXT("mixedreality"));
 
-	if (bAutoOpenFromParams && FOculusHMDModule::Get().PreInit() && OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().InitializeMixedReality()))
+	if (bAutoOpenFromParams && FOculusHMDModule::Get().PreInit())
 	{
-		InitMixedRealityCapture();
+		if (FOculusHMDModule::GetPluginWrapper().GetInitialized())
+		{
+			if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().InitializeMixedReality()))
+			{
+				InitMixedRealityCapture();
+			}
+			else
+			{
+				UE_LOG(LogMR, Error, TEXT("ovrp_InitializeMixedReality() failed"));
+			}
+		}
+		else
+		{
+			UE_LOG(LogMR, Error, TEXT("OVRPlugin has not been initialized"));
+		}
 	}
 #elif PLATFORM_ANDROID
 	// On Android, FOculusHMDModule::GetPluginWrapper().Media_Initialize() needs OVRPlugin to be initialized first, so we should handle that when the world is created
@@ -461,63 +473,77 @@ void FOculusMRModule::OnInitialWorldCreated(UWorld* NewWorld)
 	}
 
 	// Initialize and check if MRC is enabled
-	if (FOculusHMDModule::Get().PreInit() && OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().InitializeMixedReality()))
+	if (FOculusHMDModule::Get().PreInit())
 	{
-		ovrpBool mrcEnabled;
-
-		if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().Media_Initialize()))
+		if (FOculusHMDModule::GetPluginWrapper().GetInitialized())
 		{
-			UE_LOG(LogMR, Log, TEXT("MRC Initialized"));
-
-			if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().Media_IsMrcEnabled(&mrcEnabled)) && mrcEnabled == ovrpBool_True)
+			if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().InitializeMixedReality()))
 			{
-				UE_LOG(LogMR, Log, TEXT("MRC Enabled"));
+				ovrpBool mrcEnabled;
 
-				// Find a free queue index for vulkan
-				if (IsVulkanPlatform(GMaxRHIShaderPlatform))
+				if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().Media_Initialize()))
 				{
-					unsigned int queueIndex = 0;
-					ExecuteOnRenderThread([&queueIndex]()
+					UE_LOG(LogMR, Log, TEXT("MRC Initialized"));
+
+					if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().Media_IsMrcEnabled(&mrcEnabled)) && mrcEnabled == ovrpBool_True)
 					{
-						ExecuteOnRHIThread([&queueIndex]()
+						UE_LOG(LogMR, Log, TEXT("MRC Enabled"));
+
+						// Find a free queue index for vulkan
+						if (IsVulkanPlatform(GMaxRHIShaderPlatform))
 						{
-							FVulkanDevice* VulkanDevice = VulkanRHIBridge::GetDevice((FVulkanDynamicRHI*)GDynamicRHI);
-							int gfxIndex = VulkanDevice->GetGraphicsQueue() ? VulkanDevice->GetGraphicsQueue()->GetQueueIndex() : -1;
-							if (gfxIndex == queueIndex) {
-								++queueIndex;
-							}
-						});
-					});
-					FOculusHMDModule::GetPluginWrapper().Media_SetAvailableQueueIndexVulkan(queueIndex);
-				}
+							unsigned int queueIndex = 0;
+							ExecuteOnRenderThread([&queueIndex]()
+							{
+								ExecuteOnRHIThread([&queueIndex]()
+								{
+									FVulkanDevice* VulkanDevice = VulkanRHIBridge::GetDevice((FVulkanDynamicRHI*)GDynamicRHI);
+									int gfxIndex = VulkanDevice->GetGraphicsQueue() ? VulkanDevice->GetGraphicsQueue()->GetQueueIndex() : -1;
+									if (gfxIndex == queueIndex) {
+										++queueIndex;
+									}
+								});
+							});
+							FOculusHMDModule::GetPluginWrapper().Media_SetAvailableQueueIndexVulkan(queueIndex);
+						}
 
-				// We use the upside down scenecapture in GLES for performance (one less copy)
-				if (IsOpenGLPlatform(GMaxRHIShaderPlatform))
+						// We use the upside down scenecapture in GLES for performance (one less copy)
+						if (IsOpenGLPlatform(GMaxRHIShaderPlatform))
+						{
+							FOculusHMDModule::GetPluginWrapper().Media_SetMrcFrameImageFlipped(ovrpBool_True);
+						}
+
+						FOculusHMDModule::GetPluginWrapper().Media_SetMrcInputVideoBufferType(ovrpMediaInputVideoBufferType_TextureHandle);
+						FOculusHMDModule::GetPluginWrapper().Media_SetMrcFrameInverseAlpha(ovrpBool_True);
+
+						FAudioDeviceHandle AudioDevice = FAudioDevice::GetMainAudioDevice();
+						float SampleRate = AudioDevice->GetSampleRate();
+						FOculusHMDModule::GetPluginWrapper().Media_SetMrcAudioSampleRate((int)SampleRate);
+
+						InitMixedRealityCapture();
+						OnWorldCreated(NewWorld);
+					}
+					else
+					{
+						// Shut down if MRC not enabled or the media couldn't be enabled
+						FOculusHMDModule::GetPluginWrapper().Media_Shutdown();
+						FOculusHMDModule::GetPluginWrapper().ShutdownMixedReality();
+					}
+				}
+				else
 				{
-					FOculusHMDModule::GetPluginWrapper().Media_SetMrcFrameImageFlipped(ovrpBool_True);
+					// Shut down if MRC not enabled or the media couldn't be enabled
+					FOculusHMDModule::GetPluginWrapper().ShutdownMixedReality();
 				}
-
-				FOculusHMDModule::GetPluginWrapper().Media_SetMrcInputVideoBufferType(ovrpMediaInputVideoBufferType_TextureHandle);
-				FOculusHMDModule::GetPluginWrapper().Media_SetMrcFrameInverseAlpha(ovrpBool_True);
-
-				FAudioDeviceHandle AudioDevice = FAudioDevice::GetMainAudioDevice();
-				float SampleRate = AudioDevice->GetSampleRate();
-				FOculusHMDModule::GetPluginWrapper().Media_SetMrcAudioSampleRate((int)SampleRate);
-
-				InitMixedRealityCapture();
-				OnWorldCreated(NewWorld);
 			}
 			else
 			{
-				// Shut down if MRC not enabled or the media couldn't be enabled
-				FOculusHMDModule::GetPluginWrapper().Media_Shutdown();
-				FOculusHMDModule::GetPluginWrapper().ShutdownMixedReality();
+				UE_LOG(LogMR, Error, TEXT("ovrp_InitializeMixedReality() failed"));
 			}
 		}
 		else
 		{
-			// Shut down if MRC not enabled or the media couldn't be enabled
-			FOculusHMDModule::GetPluginWrapper().ShutdownMixedReality();
+			UE_LOG(LogMR, Error, TEXT("OVRPlugin has not been initialized"));
 		}
 	}
 }

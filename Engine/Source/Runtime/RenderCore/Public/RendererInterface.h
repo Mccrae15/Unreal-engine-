@@ -73,6 +73,7 @@ public:
 		, AutoWritable(true)
 		, bCreateRenderTargetWriteMask(false)
 		, bCreateRenderTargetFmask(false)
+		, bDisableShaderResourceTexCreation(false)
 	{
 		check(!IsValid());
 	}
@@ -113,6 +114,7 @@ public:
 		NewDesc.AutoWritable = InAutowritable;
 		NewDesc.bCreateRenderTargetWriteMask = InCreateRTWriteMask;
 		NewDesc.bCreateRenderTargetFmask = InCreateFmask;
+		NewDesc.bDisableShaderResourceTexCreation = false;
 		check(NewDesc.Is2DTexture());
 		return NewDesc;
 	}
@@ -255,7 +257,8 @@ public:
 			&& bForceSeparateTargetAndShaderResource == rhs.bForceSeparateTargetAndShaderResource
 			&& bForceSharedTargetAndShaderResource == rhs.bForceSharedTargetAndShaderResource
 			&& ClearValue == rhs.ClearValue
-			&& AutoWritable == rhs.AutoWritable;
+			&& AutoWritable == rhs.AutoWritable
+			&& bDisableShaderResourceTexCreation == rhs.bDisableShaderResourceTexCreation;
 	}
 
 	bool IsCubemap() const
@@ -419,6 +422,8 @@ public:
 	bool bCreateRenderTargetWriteMask;
 	/** create render target fmask (supported only on specific platforms) */
 	bool bCreateRenderTargetFmask;
+	/** disables creation of the shaderresource texture in an MSAA case */
+	bool bDisableShaderResourceTexCreation;
 };
 
 

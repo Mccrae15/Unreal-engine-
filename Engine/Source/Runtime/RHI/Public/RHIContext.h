@@ -662,6 +662,16 @@ public:
 		}
 	}
 	
+#if WITH_LATE_LATCHING_CODE
+	virtual void RHIBeginLateLatching(class FRHICommandListImmediate* RHICmdList, int32 FrameNumber)
+	{
+	}
+
+	virtual void RHIEndLateLatching()
+	{
+	}
+#endif
+
 	virtual void RHINextSubpass()
 	{
 	}

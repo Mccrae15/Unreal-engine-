@@ -363,6 +363,7 @@ Done:
 						Desc.TargetableFlags,
 						Desc.bForceSeparateTargetAndShaderResource,
 						Desc.bForceSharedTargetAndShaderResource,
+						Desc.bDisableShaderResourceTexCreation,
 						CreateInfo,
 						(FTexture2DRHIRef&)Found->RenderTargetItem.TargetableTexture,
 						(FTexture2DRHIRef&)Found->RenderTargetItem.ShaderResourceTexture,
@@ -381,6 +382,7 @@ Done:
 						Desc.TargetableFlags,
 						Desc.bForceSeparateTargetAndShaderResource,
 						Desc.bForceSharedTargetAndShaderResource,
+						Desc.bDisableShaderResourceTexCreation,
 						CreateInfo,
 						(FTexture2DArrayRHIRef&)Found->RenderTargetItem.TargetableTexture,
 						(FTexture2DArrayRHIRef&)Found->RenderTargetItem.ShaderResourceTexture,
@@ -452,15 +454,31 @@ Done:
 			// Only create resources if we're not asked to defer creation.
 			if (Desc.Is2DTexture())
 			{
-				// this is useful to get a CPU lockable texture through the same interface
-				Found->RenderTargetItem.ShaderResourceTexture = RHICreateTexture2D(
-					Desc.Extent.X,
-					Desc.Extent.Y,
-					Desc.Format,
-					Desc.NumMips,
-					Desc.NumSamples,
-					Desc.Flags,
-					CreateInfo);
+				if (!Desc.IsArray())
+				{
+					// this is useful to get a CPU lockable texture through the same interface
+					Found->RenderTargetItem.ShaderResourceTexture = RHICreateTexture2D(
+						Desc.Extent.X,
+						Desc.Extent.Y,
+						Desc.Format,
+						Desc.NumMips,
+						Desc.NumSamples,
+						Desc.Flags,
+						CreateInfo);
+				}
+				else
+				{
+					// this is useful to get a CPU lockable texture through the same interface
+					Found->RenderTargetItem.ShaderResourceTexture = RHICreateTexture2DArray(
+						Desc.Extent.X,
+						Desc.Extent.Y,
+						Desc.ArraySize,
+						Desc.Format,
+						Desc.NumMips,
+						Desc.NumSamples,
+						Desc.Flags,
+						CreateInfo);
+				}
 			}
 			else if (Desc.Is3DTexture())
 			{

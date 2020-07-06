@@ -9,6 +9,7 @@
 //#include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/SceneRenderTargets.h"
 #include "HeadMountedDisplayTypes.h" // for LogHMD
+#include "OculusHMD.h"
 #include "XRThreadUtils.h"
 #include "Engine/Texture2D.h"
 #include "UObject/ConstructorHelpers.h"
@@ -35,7 +36,17 @@ FOvrpLayer::FOvrpLayer(uint32 InOvrpLayerId) :
 
 FOvrpLayer::~FOvrpLayer()
 {
-	if (!IsInGameThread())
+	if (IsInGameThread())
+	{
+		ExecuteOnRenderThread([this]()
+		{
+			ExecuteOnRHIThread_DoNotWait([this]()
+			{
+				FOculusHMDModule::GetPluginWrapper().DestroyLayer(OvrpLayerId);
+			});
+		});
+	}
+	else
 	{
 		ExecuteOnRHIThread_DoNotWait([this]()
 		{
@@ -148,11 +159,10 @@ void FLayer::HandlePokeAHoleComponent()
 			BuildPokeAHoleMesh(Vertices, Triangles, UV0);
 			PokeAHoleComponentPtr->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UV0, VertexColors, Tangents, false);
 
-			UMaterial *PokeAHoleMaterial = Cast<UMaterial>(StaticLoadObject(UMaterial::StaticClass(), NULL, TEXT("/OculusVR/Materials/PokeAHoleMaterial")));
+			FOculusHMD* OculusHMD = static_cast<FOculusHMD*>(GEngine->XRSystem->GetHMDDevice());
+			UMaterial* PokeAHoleMaterial = OculusHMD->GetResourceHolder()->PokeAHoleMaterial;
 			UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(PokeAHoleMaterial, NULL);
-
 			PokeAHoleComponentPtr->SetMaterial(0, DynamicMaterial);
-
 		}
 		PokeAHoleComponentPtr->SetWorldTransform(Desc.Transform);
 
@@ -556,7 +566,9 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 				ResourceType = RRT_Texture2D;
 			}
 
-			uint32 ColorTexCreateFlags = TexCreate_ShaderResource | TexCreate_RenderTargetable | (bNeedsTexSrgbCreate ? TexCreate_SRGB : 0);
+			const bool bNeedsSRGBFlag = bNeedsTexSrgbCreate || CustomPresent->IsSRGB(OvrpLayerDesc.Format);
+
+			uint32 ColorTexCreateFlags = TexCreate_ShaderResource | TexCreate_RenderTargetable | (bNeedsSRGBFlag ? TexCreate_SRGB : 0);
 			uint32 DepthTexCreateFlags = TexCreate_ShaderResource | TexCreate_DepthStencilTargetable;
 
 			if (Desc.Texture.IsValid())
@@ -787,6 +799,9 @@ const ovrpLayerSubmit* FLayer::UpdateLayer_RHIThread(const FSettings* Settings, 
 		{
 			OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_InverseAlpha;
 		}
+#endif
+#if PLATFORM_WINDOWS
+		OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_IgnoreSourceAlpha;
 #endif
 	}
 
