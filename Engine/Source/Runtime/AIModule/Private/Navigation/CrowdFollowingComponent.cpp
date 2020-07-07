@@ -31,16 +31,16 @@ UCrowdFollowingComponent::UCrowdFollowingComponent(const FObjectInitializer& Obj
 
 	bEnableAnticipateTurns = false;
 	bEnableObstacleAvoidance = true;
-	bEnableSeparation = false;
+	bEnableSeparation = true;	//changed from false
 	bEnableOptimizeVisibility = true;
 	bEnableOptimizeTopology = true;
-	bEnablePathOffset = false;
+	bEnablePathOffset = false;	//changed from false
 	bEnableSlowdownAtGoal = true;
 
-	SeparationWeight = 2.0f;
-	CollisionQueryRange = 400.0f;		// approx: radius * 12.0f
-	PathOptimizationRange = 1000.0f;	// approx: radius * 30.0f
-	AvoidanceQuality = ECrowdAvoidanceQuality::Low;
+	SeparationWeight = 200.0f;	//changed from 2
+	CollisionQueryRange = 400.0f;		// approx: radius * 12.0f	//changed from 400
+	PathOptimizationRange = 1000.0f;	// approx: radius * 30.0f	//changed from 1000
+	AvoidanceQuality = ECrowdAvoidanceQuality::High;	//changed from low
 	AvoidanceRangeMultiplier = 1.0f;
 }
 

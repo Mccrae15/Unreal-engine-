@@ -39,7 +39,7 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("Num Agents"), STAT_AI_Crowd_NumAgents, STATGROU
 namespace FCrowdDebug
 {
 	/** if set, debug information will be displayed for agent selected in editor */
-	int32 DebugSelectedActors = 0;
+	int32 DebugSelectedActors = 1; //changed to 1
 	FAutoConsoleVariableRef CVarDebugSelectedActors(TEXT("ai.crowd.DebugSelectedActors"), DebugSelectedActors,
 		TEXT("Enable debug drawing for selected crowd agent.\n0: Disable, 1: Enable"), ECVF_Default);
 
