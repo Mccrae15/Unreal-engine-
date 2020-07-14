@@ -59,6 +59,7 @@
 #include "NiagaraSimulationStageBase.h"
 #include "NiagaraEditorSettings.h"
 #include "Widgets/SNiagaraParameterName.h"
+#include "ViewModels/NiagaraScratchPadUtilities.h"
 
 #define LOCTEXT_NAMESPACE "FNiagaraEditorUtilities"
 
@@ -1817,6 +1818,8 @@ void FNiagaraEditorUtilities::CreateAssetFromEmitter(TSharedRef<FNiagaraEmitterH
 		CreatedAsset->SetFlags(RF_Standalone | RF_Public);
 
 		CreatedAsset->SetUniqueEmitterName(CreatedAsset->GetName());
+
+		FNiagaraScratchPadUtilities::FixExternalScratchPadScriptsForEmitter(SystemViewModel->GetSystem(), *CreatedAsset);
 
 		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(CreatedAsset);
 
