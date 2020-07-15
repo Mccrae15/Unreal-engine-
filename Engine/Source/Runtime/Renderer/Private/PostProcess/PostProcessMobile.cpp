@@ -1009,7 +1009,7 @@ FPooledRenderTargetDesc FRCPassPostProcessSunMaskES2::ComputeOutputDesc(EPassOut
 	Ret.TargetableFlags = TexCreate_RenderTargetable | TexCreate_ShaderResource;
 	Ret.bForceSeparateTargetAndShaderResource = false;
 	// Keep the depth in alpha channel for Depth Of Field Gaussian
-	Ret.Format = InPassOutputId == ePId_Output1 ? ((!bUseDof || bUseMobileDof) ? PF_FloatR11G11B10 : PF_FloatRGBA) : PF_R16F;
+	Ret.Format = InPassOutputId == ePId_Output1 ? PF_FloatR11G11B10 : PF_R16F;
 	Ret.NumSamples = 1;
 	Ret.Extent.X = FMath::Max(1, PrePostSourceViewportSize.X);
 	Ret.Extent.Y = FMath::Max(1, PrePostSourceViewportSize.Y);

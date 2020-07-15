@@ -1097,10 +1097,10 @@ static bool IsGaussianActive(FPostprocessContext& Context)
 	return true;
 }
 
-static bool AddPostProcessDepthOfFieldGaussian(FPostprocessContext& Context, FRenderingCompositeOutputRef& VelocityInput, FRenderingCompositeOutputRef& SeparateTranslucencyRef)
+static bool AddPostProcessDepthOfFieldGaussian(FPostprocessContext& Context, FRenderingCompositeOutputRef& VelocityInput, FRenderingCompositeOutputRef& SeparateTranslucencyRef, FRenderingCompositeOutputRef& SunShaftAndDof)
 {
 	// GaussianDOFPass performs Gaussian setup, blur and recombine.
-	auto GaussianDOFPass = [&Context, &VelocityInput](FRenderingCompositeOutputRef& SeparateTranslucency, float FarSize, float NearSize)
+	auto GaussianDOFPass = [&Context, &VelocityInput, &SunShaftAndDof](FRenderingCompositeOutputRef& SeparateTranslucency, float FarSize, float NearSize)
 	{
 		// GenerateGaussianDOFBlur produces a blurred image from setup or potentially from taa result.
 		auto GenerateGaussianDOFBlur = [&Context, &VelocityInput](FRenderingCompositeOutputRef& DOFSetup, bool bFarPass, float BlurSize)
@@ -1116,19 +1116,13 @@ static bool AddPostProcessDepthOfFieldGaussian(FPostprocessContext& Context, FRe
 		const bool bFar = FarSize > 0.0f;
 		const bool bNear = NearSize > 0.0f;
 		const bool bCombinedNearFarPass = bFar && bNear;
-		const bool bMobileQuality = Context.View.FeatureLevel < ERHIFeatureLevel::SM5;
 
 		FRenderingCompositeOutputRef SetupInput(Context.FinalOutput);
-		if (bMobileQuality)
-		{
-			const uint32 SetupInputDownsampleFactor = 1;
-
-			SetupInput = AddDownsamplePass(Context.Graph, TEXT("GaussianSetupHalfRes"), SetupInput, SetupInputDownsampleFactor, EDownsampleQuality::High, EDownsampleFlags::ForceRaster, PF_FloatRGBA);
-		}
 
 		FRenderingCompositePass* DOFSetupPass = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessDOFSetup(bFar, bNear));
 		DOFSetupPass->SetInput(ePId_Input0, FRenderingCompositeOutputRef(SetupInput));
 		DOFSetupPass->SetInput(ePId_Input1, FRenderingCompositeOutputRef(Context.SceneDepth));
+		DOFSetupPass->SetInput(ePId_Input2, SunShaftAndDof);
 		FRenderingCompositeOutputRef DOFSetupFar(DOFSetupPass);
 		FRenderingCompositeOutputRef DOFSetupNear(DOFSetupPass, bCombinedNearFarPass ? ePId_Output1 : ePId_Output0);
 
@@ -1148,6 +1142,7 @@ static bool AddPostProcessDepthOfFieldGaussian(FPostprocessContext& Context, FRe
 		GaussianDOFRecombined->SetInput(ePId_Input1, DOFFarBlur);
 		GaussianDOFRecombined->SetInput(ePId_Input2, DOFNearBlur);
 		GaussianDOFRecombined->SetInput(ePId_Input3, SeparateTranslucency);
+		GaussianDOFRecombined->SetInput(ePId_Input4, SunShaftAndDof);
 
 		Context.FinalOutput = FRenderingCompositeOutputRef(GaussianDOFRecombined);
 	};
@@ -1388,7 +1383,7 @@ void FPostProcessing::ProcessES2(FRHICommandListImmediate& RHICmdList, FScene* S
 					bool bUseDepthTexture = Context.FinalOutput.GetOutput()->RenderTargetDesc.Format == PF_FloatR11G11B10;
 					// Convert depth to {circle of confusion, sun shaft intensity}
 				//	FRenderingCompositePass* PostProcessSunMask = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessSunMaskES2(PrePostSourceViewportSize, false));
-					FRenderingCompositePass* PostProcessSunMask = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessSunMaskES2(SceneColorSize, bUseSun, bUseDof, bUseMobileDof, bUseDepthTexture, bMetalMSAAHDRDecode));
+					FRenderingCompositePass* PostProcessSunMask = Context.Graph.RegisterPass(new(FMemStack::Get()) FRCPassPostProcessSunMaskES2(SceneColorSize, bUseSun, bUseDof, bUseDepthTexture, bMetalMSAAHDRDecode));
 					PostProcessSunMask->SetInput(ePId_Input0, Context.FinalOutput);
 					PostProcessSunShaftAndDof = FRenderingCompositeOutputRef(PostProcessSunMask, ePId_Output0);
 					if (!bUseDepthTexture)
@@ -1502,7 +1497,7 @@ void FPostProcessing::ProcessES2(FRHICommandListImmediate& RHICmdList, FScene* S
 						if(bDepthOfField)
 						{
 							FRenderingCompositeOutputRef DummySeparateTranslucency;
-							AddPostProcessDepthOfFieldGaussian(Context, NoVelocityRef, DummySeparateTranslucency);
+							AddPostProcessDepthOfFieldGaussian(Context, NoVelocityRef, DummySeparateTranslucency, PostProcessSunShaftAndDof);
 						}
 					}
 				}
