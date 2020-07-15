@@ -484,7 +484,7 @@ namespace UnrealBuildTool
 				throw new BuildException("Expecting to find a type to be declared in a target rules named '{0}'.  This type must derive from the 'TargetRules' type defined by Unreal Build Tool.", TypeName);
 			}
 
-			// Look for platform/group rules that we will use instead of the basic rules
+			// Look for platform/group rules that we will use instead of the base rules
 			string PlatformRulesName = TargetInfo.Name + "_" + TargetInfo.Platform.ToString();
 			Type PlatformRulesType = CompiledAssembly.GetType(TypeName + "_" + TargetInfo.Platform.ToString());
 			if (PlatformRulesType == null)
@@ -539,7 +539,7 @@ namespace UnrealBuildTool
 				throw new BuildException(Ex, "Unable to instantiate instance of '{0}' object type from compiled assembly '{1}'.  Unreal Build Tool creates an instance of your module's 'Rules' object in order to find out about your module's requirements.  The CLR exception details may provide more information:  {2}", TypeName, Path.GetFileNameWithoutExtension(CompiledAssembly.Location), Ex.ToString());
 			}
 
-			// Return the target file name to the caller
+			// Return the base target file name to the caller. This affects where the resulting build product is created so the platform/group is not desired in this case.
 			string TargetInfoName = (PlatformRulesType != null) ? PlatformRulesName : TargetInfo.Name;
 			Rules.File = TargetNameToTargetFile[TargetInfoName];
 
