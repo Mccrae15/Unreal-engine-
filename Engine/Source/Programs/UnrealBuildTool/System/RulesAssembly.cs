@@ -540,8 +540,7 @@ namespace UnrealBuildTool
 			}
 
 			// Return the base target file name to the caller. This affects where the resulting build product is created so the platform/group is not desired in this case.
-			string TargetInfoName = (PlatformRulesType != null) ? PlatformRulesName : TargetInfo.Name;
-			Rules.File = TargetNameToTargetFile[TargetInfoName];
+			Rules.File = TargetNameToTargetFile[TargetInfo.Name];
 
 			// Set the default overriddes for the configured target type
 			Rules.SetOverridesForTargetType();
