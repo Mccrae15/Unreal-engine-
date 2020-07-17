@@ -34,8 +34,11 @@ public:
 	/** Adds a static mesh and the key used to generate it */
 	void AddMesh(ALODActor* InLODActor, UStaticMesh* InStaticMesh, const FName& InKey);
 
-	/** Clean out invalid proxy mesh entries */
-	void Clean();
+	/**
+	 * Clean out invalid proxy mesh entries 
+	 * @return true if proxy is now invalid and it's package deleted.
+	 **/
+	bool Clean();
 
 	/** Spawn LODActors from the HLODProxyDescs found in this proxy. */
  	void SpawnLODActors(ULevel* InLevel);
@@ -75,6 +78,14 @@ public:
 #endif
 
 private:
+#if WITH_EDITOR
+	// Remove all assets associated with the given proxy mesh
+	void RemoveAssets(const FHLODProxyMesh& ProxyMesh);
+
+	// Clear object flags to ensure it can be properly GC'd and removed from its package.
+	void DestroyObject(UObject* Obj);
+#endif
+
 #if WITH_EDITORONLY_DATA
 	/** Keep hold of the level in the editor to allow for package cleaning etc. */
 	UPROPERTY(VisibleAnywhere, Category = "Proxy Mesh")

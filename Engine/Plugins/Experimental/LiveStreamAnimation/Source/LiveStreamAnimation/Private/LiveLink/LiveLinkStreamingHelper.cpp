@@ -4,6 +4,7 @@
 
 #include "LiveStreamAnimationLog.h"
 #include "LiveStreamAnimationSubsystem.h"
+#include "LiveStreamAnimationSettings.h"
 #include "LiveStreamAnimationPacket.h"
 #include "LiveLink/LiveLinkPacket.h"
 #include "LiveLink/LiveStreamAnimationLiveLinkSource.h"
@@ -32,7 +33,7 @@ namespace LiveStreamAnimation
 	FLiveLinkStreamingHelper::FLiveLinkStreamingHelper(ULiveStreamAnimationSubsystem& InSubsystem)
 		: Subsystem(InSubsystem)
 		, OnRoleChangedHandle(Subsystem.GetOnRoleChanged().AddRaw(this, &FLiveLinkStreamingHelper::OnRoleChanged))
-		, OnFrameTranslatorChangedHandle(Subsystem.GetOnLiveLinkFrameTranslatorChanged().AddRaw(this, &FLiveLinkStreamingHelper::OnFrameTranslatorChanged))
+		, OnFrameTranslatorChangedHandle(ULiveStreamAnimationSettings::AddFrameTranslatorChangedCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FLiveLinkStreamingHelper::OnFrameTranslatorChanged)))
 	{
 		if (ELiveStreamAnimationRole::Processor == Subsystem.GetRole())
 		{
@@ -57,7 +58,7 @@ namespace LiveStreamAnimation
 		}
 
 		Subsystem.GetOnRoleChanged().Remove(OnRoleChangedHandle);
-		Subsystem.GetOnLiveLinkFrameTranslatorChanged().Remove(OnFrameTranslatorChangedHandle);
+		ULiveStreamAnimationSettings::RemoveFrameTranslatorChangedCallback(OnFrameTranslatorChangedHandle);
 	}
 
 	void FLiveLinkStreamingHelper::HandleLiveLinkPacket(const TSharedRef<const FLiveStreamAnimationPacket>& Packet)
@@ -130,7 +131,7 @@ namespace LiveStreamAnimation
 		{
 			if (ILiveLinkClient* LiveLinkClient = GetLiveLinkClient())
 			{
-				LiveLinkSource = MakeShared<FLiveStreamAnimationLiveLinkSource>(Subsystem.GetLiveLinkFrameTranslator());
+				LiveLinkSource = MakeShared<FLiveStreamAnimationLiveLinkSource>(ULiveStreamAnimationSettings::GetFrameTranslator());
 				LiveLinkClient->AddSource(StaticCastSharedPtr<ILiveLinkSource>(LiveLinkSource));
 
 				// If we've already received data, go ahead and get our Source back up to date.
@@ -235,10 +236,18 @@ namespace LiveStreamAnimation
 
 			if (bWasRegistered)
 			{
-				if (ULiveLinkAnimationRole::StaticClass() != SubjectRole)
+				if (!SubjectRole->IsChildOf(ULiveLinkAnimationRole::StaticClass()))
 				{
 					UE_LOG(LogLiveStreamAnimation, Warning, TEXT("FLiveLinkStreamingHelper::StartTrackingSubject: Subject had invalid role, subject won't be sent. Subject = (%s), Role = %s"),
 						*TrackedSubject.ToString(), *GetPathNameSafe(SubjectRole.Get()));
+				}
+				else if (!StaticData.IsValid())
+				{
+					UE_LOG(LogLiveStreamAnimation, Warning, TEXT("FLiveLinkStreamingHelper::StartTrackingSubject: Subject didn't have static data. Subject will be sent later, when static data is received. Subject = (%s)"),
+						*TrackedSubject.ToString());
+
+					bSuccess = true;
+					TrackedSubjects.Add(SubjectHandle, TrackedSubject);
 				}
 				else
 				{
@@ -459,7 +468,7 @@ namespace LiveStreamAnimation
 	{
 		if (FLiveStreamAnimationLiveLinkSource* LocalSource = LiveLinkSource.Get())
 		{
-			LocalSource->SetFrameTranslator(Subsystem.GetLiveLinkFrameTranslator());
+			LocalSource->SetFrameTranslator(ULiveStreamAnimationSettings::GetFrameTranslator());
 		}
 	}
 

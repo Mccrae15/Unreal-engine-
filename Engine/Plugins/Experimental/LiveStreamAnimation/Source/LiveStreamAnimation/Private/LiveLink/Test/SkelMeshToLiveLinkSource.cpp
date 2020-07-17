@@ -3,10 +3,12 @@
 #include "LiveLink/Test/SkelMeshToLiveLinkSource.h"
 #include "LiveLink/LiveStreamAnimationLiveLinkFrameTranslator.h"
 #include "LiveStreamAnimationSubsystem.h"
+#include "LiveStreamAnimationSettings.h"
 
 #include "Roles/LiveLinkAnimationRole.h"
 #include "Roles/LiveLinkAnimationTypes.h"
 #include "ILiveLinkClient.h"
+#include "LiveLinkPresetTypes.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "ReferenceSkeleton.h"
 #include "Engine/SkeletalMesh.h"
@@ -45,8 +47,19 @@ void ULiveLinkTestSkelMeshTrackerComponent::StartTrackingSkelMesh(FName InLiveLi
 		{
 			if (const FReferenceSkeleton* RefSkel = LocalSkelMeshComp->SkeletalMesh ? &LocalSkelMeshComp->SkeletalMesh->RefSkeleton : nullptr)
 			{
-				if (ILiveLinkClient * LiveLinkClient = PinnedSource->GetLiveLinkClient())
+				if (ILiveLinkClient* LiveLinkClient = PinnedSource->GetLiveLinkClient())
 				{
+					FLiveLinkSubjectPreset SubjectPresets;
+					SubjectPresets.Key = FLiveLinkSubjectKey(PinnedSource->GetGuid(), InLiveLinkSubjectName);
+					SubjectPresets.Role = ULiveLinkAnimationRole::StaticClass();
+					SubjectPresets.bEnabled = true;
+
+					const bool bCreatedSubjectSuccessfully = LiveLinkClient->CreateSubject(SubjectPresets);
+					if (!bCreatedSubjectSuccessfully)
+					{
+						return;
+					}
+
 					SubjectName = InLiveLinkSubjectName;
 	
 					TArray<TTuple<int32, int32>> BoneAndParentIndices;
@@ -204,7 +217,7 @@ class USkeleton* ULiveLinkTestSkelMeshTrackerComponent::GetSkeleton(bool& bInval
 	// If this happens, it's likely because we're in a Blueprint.
 	if (Skeleton == nullptr)
 	{
-		if (ULiveStreamAnimationLiveLinkFrameTranslator* LocalTranslator = Translator.LoadSynchronous())
+		if (const ULiveStreamAnimationLiveLinkFrameTranslator* LocalTranslator = ULiveStreamAnimationSettings::GetFrameTranslator())
 		{
 			if (const FLiveStreamAnimationLiveLinkTranslationProfile* Profile = LocalTranslator->GetTranslationProfile(TranslationProfile))
 			{
