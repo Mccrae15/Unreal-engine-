@@ -895,6 +895,7 @@ bool UMaterialInstance::GetTextureParameterValue(const FHashedMaterialParameterI
 
 	if (GetReentrantFlag())
 	{
+		OutValue = nullptr;
 		return false;
 	}
 
@@ -925,6 +926,7 @@ bool UMaterialInstance::GetTextureParameterValue(const FHashedMaterialParameterI
 		return Parent->GetTextureParameterValue(ParameterInfo,OutValue,bOveriddenOnly);
 	}
 	
+	OutValue = nullptr;
 	return false;
 }
 
@@ -934,6 +936,7 @@ bool UMaterialInstance::GetRuntimeVirtualTextureParameterValue(const FHashedMate
 
 	if (GetReentrantFlag())
 	{
+		OutValue = nullptr;
 		return false;
 	}
 
@@ -964,6 +967,7 @@ bool UMaterialInstance::GetRuntimeVirtualTextureParameterValue(const FHashedMate
 		return Parent->GetRuntimeVirtualTextureParameterValue(ParameterInfo, OutValue, bOveriddenOnly);
 	}
 
+	OutValue = nullptr;
 	return false;
 }
 
@@ -1006,6 +1010,8 @@ bool UMaterialInstance::GetFontParameterValue(const FHashedMaterialParameterInfo
 
 	if (GetReentrantFlag())
 	{
+		OutFontValue = nullptr;
+		OutFontPage = INDEX_NONE;
 		return false;
 	}
 
@@ -1038,6 +1044,8 @@ bool UMaterialInstance::GetFontParameterValue(const FHashedMaterialParameterInfo
 		return Parent->GetFontParameterValue(ParameterInfo, OutFontValue, OutFontPage, bOveriddenOnly);
 	}
 	
+	OutFontValue = nullptr;
+	OutFontPage = INDEX_NONE;
 	return false;
 }
 
