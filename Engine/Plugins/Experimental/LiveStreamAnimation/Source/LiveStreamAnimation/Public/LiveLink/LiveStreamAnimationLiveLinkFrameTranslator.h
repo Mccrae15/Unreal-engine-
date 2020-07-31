@@ -52,6 +52,16 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Live Stream Animation|Live Link|Translation")
 	TArray<FName> BonesToUse;
 
+	/**
+	 * When this is true, before we stream any Live Link Data, we will strip it down to just the
+	 * bones specified in BonesToUse.
+	 *
+	 * This is mainly useful when there are large Live Link Rigs that only need to replicate a
+	 * subset of their bones for proper Animation Streaming.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Live Stream Animation|Live Link|Translation")
+	bool bStripLiveLinkSkeletonToBonesToUse = false;
+
 	const TMap<FName, FTransform>& GetBoneTransformsByName() const
 	{
 		return BoneTransformsByName;
@@ -110,9 +120,19 @@ public:
 	//~ End UObject Interface
 #endif
 
-	const FLiveStreamAnimationLiveLinkTranslationProfile* GetTranslationProfile(FName TranslationProfileName) const
+	const FLiveStreamAnimationLiveLinkTranslationProfile* GetTranslationProfile(FLiveStreamAnimationHandle TranslationProfileHandle) const
 	{
-		return TranslationProfiles.Find(TranslationProfileName);
+		return GetTranslationProfile(FLiveStreamAnimationHandleWrapper(TranslationProfileHandle));
+	}
+
+	const FLiveStreamAnimationLiveLinkTranslationProfile* GetTranslationProfile(FName TranslationProfileHandleName) const
+	{
+		return GetTranslationProfile(FLiveStreamAnimationHandleWrapper(TranslationProfileHandleName));
+	}
+
+	const FLiveStreamAnimationLiveLinkTranslationProfile* GetTranslationProfile(FLiveStreamAnimationHandleWrapper TranslationProfileHandle) const
+	{
+		return TranslationProfiles.Find(TranslationProfileHandle);
 	}
 
 private:
@@ -125,7 +145,7 @@ private:
 	 * See @ULiveStreamAnimationSubsystem::HandleNames.
 	 */
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Live Stream Animation|Live Link|Translation")
-	TMap<FName, FLiveStreamAnimationLiveLinkTranslationProfile> TranslationProfiles;
+	TMap<FLiveStreamAnimationHandleWrapper, FLiveStreamAnimationLiveLinkTranslationProfile> TranslationProfiles;
 
 	FWorkerSharedPtr Worker;
 };

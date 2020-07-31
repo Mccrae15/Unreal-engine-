@@ -300,27 +300,31 @@ void UBehaviorTreeComponent::StopTree(EBTStopMode::Type StopMode)
 			FBehaviorTreeInstance& InstanceInfo = InstanceStack[InstanceIndex];
 
 			// notify active aux nodes
-			for (int32 AuxIndex = 0; AuxIndex < InstanceInfo.ActiveAuxNodes.Num(); AuxIndex++)
-			{
-				const UBTAuxiliaryNode* AuxNode = InstanceInfo.ActiveAuxNodes[AuxIndex];
-				check(AuxNode != NULL);
-				uint8* NodeMemory = AuxNode->GetNodeMemory<uint8>(InstanceInfo);
-				AuxNode->WrappedOnCeaseRelevant(*this, NodeMemory);
-			}
-			InstanceInfo.ActiveAuxNodes.Reset();
+			InstanceInfo.ExecuteOnEachAuxNode([&InstanceInfo, this](const UBTAuxiliaryNode& AuxNode)
+				{
+					uint8* NodeMemory = AuxNode.GetNodeMemory<uint8>(InstanceInfo);
+					AuxNode.WrappedOnCeaseRelevant(*this, NodeMemory);
+				});
+			InstanceInfo.ResetActiveAuxNodes();
 
 			// notify active parallel tasks
 			//
 			// calling OnTaskFinished with result other than InProgress will unregister parallel task,
 			// modifying array we're iterating on - iterator needs to be moved one step back in that case
 			//
-			for (int32 ParallelIndex = 0; ParallelIndex < InstanceInfo.ParallelTasks.Num(); ParallelIndex++)
-			{
-				FBehaviorTreeParallelTask& ParallelTaskInfo = InstanceInfo.ParallelTasks[ParallelIndex];
-				const UBTTaskNode* CachedTaskNode = ParallelTaskInfo.TaskNode;
-
-				if (CachedTaskNode && (ParallelTaskInfo.Status == EBTTaskStatus::Active) && !CachedTaskNode->IsPendingKill())
+			InstanceInfo.ExecuteOnEachParallelTask([&InstanceInfo, this](const FBehaviorTreeParallelTask& ParallelTaskInfo, const int32 ParallelIndex)
 				{
+					if (ParallelTaskInfo.Status != EBTTaskStatus::Active)
+					{
+						return;
+					}
+
+					const UBTTaskNode* CachedTaskNode = ParallelTaskInfo.TaskNode;
+					if (IsValid(CachedTaskNode) == false)
+					{
+						return;
+					}
+
 					// remove all message observers added by task execution, so they won't interfere with Abort call
 					UnregisterMessageObserversFrom(CachedTaskNode);
 
@@ -334,10 +338,10 @@ void UBehaviorTreeComponent::StopTree(EBTStopMode::Type StopMode)
 					// mark as pending abort
 					if (NodeResult == EBTNodeResult::InProgress)
 					{
-						const bool bIsValidForStatus = InstanceInfo.ParallelTasks.IsValidIndex(ParallelIndex) && (ParallelTaskInfo.TaskNode == CachedTaskNode);
+						const bool bIsValidForStatus = InstanceInfo.IsValidParallelTaskIndex(ParallelIndex) && (ParallelTaskInfo.TaskNode == CachedTaskNode);
 						if (bIsValidForStatus)
 						{
-							ParallelTaskInfo.Status = EBTTaskStatus::Aborting;
+							InstanceInfo.MarkParallelTaskAsAbortingAt(ParallelIndex);
 							bWaitingForAbortingTasks = true;
 						}
 						else
@@ -348,15 +352,7 @@ void UBehaviorTreeComponent::StopTree(EBTStopMode::Type StopMode)
 					}
 
 					OnTaskFinished(CachedTaskNode, NodeResult);
-
-					const bool bIsValidAfterFinishing = InstanceInfo.ParallelTasks.IsValidIndex(ParallelIndex) && (ParallelTaskInfo.TaskNode == CachedTaskNode);
-					if (!bIsValidAfterFinishing)
-					{
-						// move iterator back if current task was unregistered
-						ParallelIndex--;
-					}
-				}
-			}
+				});
 
 			// notify active task
 			if (InstanceInfo.ActiveNodeType == EBTActiveNode::ActiveTask)
@@ -627,10 +623,8 @@ bool UBehaviorTreeComponent::IsAuxNodeActive(const UBTAuxiliaryNode* AuxNode) co
 	for (int32 InstanceIndex = 0; InstanceIndex < InstanceStack.Num(); InstanceIndex++)
 	{
 		const FBehaviorTreeInstance& InstanceInfo = InstanceStack[InstanceIndex];
-		for (int32 AuxIndex = 0; AuxIndex < InstanceInfo.ActiveAuxNodes.Num(); AuxIndex++)
+		for (const UBTAuxiliaryNode* TestAuxNode : InstanceInfo.GetActiveAuxNodes())
 		{
-			const UBTAuxiliaryNode* TestAuxNode = InstanceInfo.ActiveAuxNodes[AuxIndex];
-
 			// check template version
 			if (TestAuxNode == AuxNode)
 			{
@@ -657,7 +651,7 @@ bool UBehaviorTreeComponent::IsAuxNodeActive(const UBTAuxiliaryNode* AuxNode) co
 
 bool UBehaviorTreeComponent::IsAuxNodeActive(const UBTAuxiliaryNode* AuxNodeTemplate, int32 InstanceIdx) const
 {
-	return InstanceStack.IsValidIndex(InstanceIdx) && InstanceStack[InstanceIdx].ActiveAuxNodes.Contains(AuxNodeTemplate);
+	return InstanceStack.IsValidIndex(InstanceIdx) && InstanceStack[InstanceIdx].GetActiveAuxNodes().Contains(AuxNodeTemplate);
 }
 
 EBTTaskStatus::Type UBehaviorTreeComponent::GetTaskStatus(const UBTTaskNode* TaskNode) const
@@ -671,9 +665,8 @@ EBTTaskStatus::Type UBehaviorTreeComponent::GetTaskStatus(const UBTTaskNode* Tas
 		const FBehaviorTreeInstance& InstanceInfo = InstanceStack[InstanceIdx];
 
 		// always check parallel execution first, it takes priority over ActiveNodeType
-		for (int32 TaskIndex = 0; TaskIndex < InstanceInfo.ParallelTasks.Num(); TaskIndex++)
+		for (const FBehaviorTreeParallelTask& ParallelInfo : InstanceInfo.GetParallelTasks())
 		{
-			const FBehaviorTreeParallelTask& ParallelInfo = InstanceInfo.ParallelTasks[TaskIndex];
 			if (ParallelInfo.TaskNode == TaskNode ||
 				(TaskNode->IsInstanced() && ParallelInfo.TaskNode && ParallelInfo.TaskNode->GetExecutionIndex() == ExecutionIndex))
 			{
@@ -696,6 +689,19 @@ EBTTaskStatus::Type UBehaviorTreeComponent::GetTaskStatus(const UBTTaskNode* Tas
 	}
 
 	return Status;
+}
+
+void UBehaviorTreeComponent::RequestUnregisterAuxNodesInBranch(const UBTCompositeNode* Node)
+{
+	const int32 InstanceIdx = FindInstanceContainingNode(Node);
+	if (InstanceIdx != INDEX_NONE)
+	{
+		PendingUnregisterAuxNodesRequests.Ranges.Emplace(
+			FBTNodeIndex(InstanceIdx, Node->GetExecutionIndex()),
+			FBTNodeIndex(InstanceIdx, Node->GetLastExecutionIndex()));
+
+		ScheduleNextTick(0.0f);
+	}
 }
 
 void UBehaviorTreeComponent::RequestExecution(const UBTDecorator* RequestedBy)
@@ -884,6 +890,16 @@ void UBehaviorTreeComponent::RequestExecution(UBTCompositeNode* RequestedOn, int
 	ExecutionIdx.InstanceIndex = InstanceIdx;
 	ExecutionIdx.ExecutionIndex = RequestedBy->GetExecutionIndex();
 	uint16 LastExecutionIndex = MAX_uint16;
+
+	// make sure that the request is not coming from a node that has pending unregistration since it won't be accessible anymore
+	for (const FBTNodeIndexRange& Range : PendingUnregisterAuxNodesRequests.Ranges)
+	{
+		if (Range.Contains(ExecutionIdx))
+		{
+			UE_VLOG(GetOwner(), LogBehaviorTree, Log, TEXT("> skip: request by %s that is in pending unregister aux nodes range %s"), *ExecutionIdx.Describe(), *Range.Describe());
+			return;
+		}
+	}
 
 	if (bSwitchToHigherPriority && RequestedByChildIndex >= 0)
 	{
@@ -1109,12 +1125,12 @@ void UBehaviorTreeComponent::ApplySearchUpdates(const TArray<FBehaviorTreeSearch
 
 		if (UpdateInfo.AuxNode)
 		{
-			bIsComponentActive = UpdateInstance.ActiveAuxNodes.Contains(UpdateInfo.AuxNode);
+			bIsComponentActive = UpdateInstance.GetActiveAuxNodes().Contains(UpdateInfo.AuxNode);
 		}
 		else if (UpdateInfo.TaskNode)
 		{
-			ParallelTaskIdx = UpdateInstance.ParallelTasks.IndexOfByKey(UpdateInfo.TaskNode);
-			bIsComponentActive = (ParallelTaskIdx != INDEX_NONE && UpdateInstance.ParallelTasks[ParallelTaskIdx].Status == EBTTaskStatus::Active);
+			ParallelTaskIdx = UpdateInstance.GetParallelTasks().IndexOfByKey(UpdateInfo.TaskNode);
+			bIsComponentActive = (ParallelTaskIdx != INDEX_NONE && UpdateInstance.GetParallelTasks()[ParallelTaskIdx].Status == EBTTaskStatus::Active);
 		}
 
 		const UBTNode* UpdateNode = UpdateInfo.AuxNode ? (const UBTNode*)UpdateInfo.AuxNode : (const UBTNode*)UpdateInfo.TaskNode;
@@ -1140,7 +1156,7 @@ void UBehaviorTreeComponent::ApplySearchUpdates(const TArray<FBehaviorTreeSearch
 				UpdateInfo.AuxNode->IsA(UBTService::StaticClass()))
 			{
 				if (UpdateInfo.Mode == EBTNodeUpdateMode::Remove ||
-					InstanceStack[0].ActiveAuxNodes.Contains(UpdateInfo.AuxNode))
+					InstanceStack[0].GetActiveAuxNodes().Contains(UpdateInfo.AuxNode))
 				{
 					UE_VLOG(GetOwner(), LogBehaviorTree, Verbose, TEXT("> skip [looped execution]"));
 					continue;
@@ -1150,12 +1166,12 @@ void UBehaviorTreeComponent::ApplySearchUpdates(const TArray<FBehaviorTreeSearch
 			uint8* NodeMemory = (uint8*)UpdateNode->GetNodeMemory<uint8>(UpdateInstance);
 			if (UpdateInfo.Mode == EBTNodeUpdateMode::Remove)
 			{
-				UpdateInstance.ActiveAuxNodes.RemoveSingleSwap(UpdateInfo.AuxNode);
+				UpdateInstance.RemoveFromActiveAuxNodes(UpdateInfo.AuxNode);
 				UpdateInfo.AuxNode->WrappedOnCeaseRelevant(*this, NodeMemory);
 			}
 			else
 			{
-				UpdateInstance.ActiveAuxNodes.Add(UpdateInfo.AuxNode);
+				UpdateInstance.AddToActiveAuxNodes(UpdateInfo.AuxNode);
 				UpdateInfo.AuxNode->WrappedOnBecomeRelevant(*this, NodeMemory);
 			}
 		}
@@ -1175,15 +1191,15 @@ void UBehaviorTreeComponent::ApplySearchUpdates(const TArray<FBehaviorTreeSearch
 
 				// check if task node is still valid, could've received LatentAbortFinished during AbortTask call
 				const bool bStillValid = InstanceStack.IsValidIndex(UpdateInfo.InstanceIndex) &&
-					InstanceStack[UpdateInfo.InstanceIndex].ParallelTasks.IsValidIndex(ParallelTaskIdx) &&
-					InstanceStack[UpdateInfo.InstanceIndex].ParallelTasks[ParallelTaskIdx] == UpdateInfo.TaskNode;
+					InstanceStack[UpdateInfo.InstanceIndex].GetParallelTasks().IsValidIndex(ParallelTaskIdx) &&
+					InstanceStack[UpdateInfo.InstanceIndex].GetParallelTasks()[ParallelTaskIdx] == UpdateInfo.TaskNode;
 				
 				if (bStillValid)
 				{
 					// mark as pending abort
 					if (NodeResult == EBTNodeResult::InProgress)
 					{
-						UpdateInstance.ParallelTasks[ParallelTaskIdx].Status = EBTTaskStatus::Aborting;
+						UpdateInstance.MarkParallelTaskAsAbortingAt(ParallelTaskIdx);
 						bWaitingForAbortingTasks = true;
 					}
 
@@ -1195,7 +1211,7 @@ void UBehaviorTreeComponent::ApplySearchUpdates(const TArray<FBehaviorTreeSearch
 				UE_VLOG(GetOwner(), LogBehaviorTree, Verbose, TEXT("Parallel task: %s added to active list"),
 					*UBehaviorTreeTypes::DescribeNodeHelper(UpdateInfo.TaskNode));
 
-				UpdateInstance.ParallelTasks.Add(FBehaviorTreeParallelTask(UpdateInfo.TaskNode, EBTTaskStatus::Active));
+				UpdateInstance.AddToParallelTasks(FBehaviorTreeParallelTask(UpdateInfo.TaskNode, EBTTaskStatus::Active));
 			}
 		}
 	}
@@ -1327,19 +1343,21 @@ void UBehaviorTreeComponent::TickComponent(float DeltaTime, enum ELevelTick Tick
 	check(this != nullptr && this->IsPendingKill() == false);
 	float NextNeededDeltaTime = FLT_MAX;
 
+	// process all auxiliary nodes unregister requests
+	bDoneSomething |= ProcessPendingUnregister();
+
 	// tick active auxiliary nodes (in execution order, before task)
 	// do it before processing execution request to give BP driven logic chance to accumulate execution requests
 	// newly added aux nodes are ticked as part of SearchData application
 	for (int32 InstanceIndex = 0; InstanceIndex < InstanceStack.Num(); InstanceIndex++)
 	{
 		FBehaviorTreeInstance& InstanceInfo = InstanceStack[InstanceIndex];
-		for (int32 AuxIndex = 0; AuxIndex < InstanceInfo.ActiveAuxNodes.Num(); AuxIndex++)
-		{
-			const UBTAuxiliaryNode* AuxNode = InstanceInfo.ActiveAuxNodes[AuxIndex];
-			uint8* NodeMemory = AuxNode->GetNodeMemory<uint8>(InstanceInfo);
-			SCOPE_CYCLE_UOBJECT(AuxNode, AuxNode);
-			bDoneSomething |= AuxNode->WrappedTickNode(*this, NodeMemory, DeltaTime, NextNeededDeltaTime);
-		}
+		InstanceInfo.ExecuteOnEachAuxNode([&InstanceInfo, this, &bDoneSomething, DeltaTime, &NextNeededDeltaTime](const UBTAuxiliaryNode& AuxNode)
+			{
+				uint8* NodeMemory = AuxNode.GetNodeMemory<uint8>(InstanceInfo);
+				SCOPE_CYCLE_UOBJECT(AuxNode, &AuxNode);
+				bDoneSomething |= AuxNode.WrappedTickNode(*this, NodeMemory, DeltaTime, NextNeededDeltaTime);
+			});
 	}
 
 	bool bActiveAuxiliaryNodeDTDirty = false;
@@ -1362,13 +1380,13 @@ void UBehaviorTreeComponent::TickComponent(float DeltaTime, enum ELevelTick Tick
 			for (int32 InstanceIndex = 0; InstanceIndex < InstanceStack.Num(); InstanceIndex++)
 			{
 				FBehaviorTreeInstance& InstanceInfo = InstanceStack[InstanceIndex];
-				for (int32 TaskIndex = 0; TaskIndex < InstanceInfo.ParallelTasks.Num(); TaskIndex++)
-				{
-					const UBTTaskNode* ParallelTask = InstanceInfo.ParallelTasks[TaskIndex].TaskNode;
-					uint8* NodeMemory = ParallelTask->GetNodeMemory<uint8>(InstanceInfo);
-					SCOPE_CYCLE_UOBJECT(ParallelTask, ParallelTask);
-					bDoneSomething |= ParallelTask->WrappedTickTask(*this, NodeMemory, DeltaTime, NextNeededDeltaTime);
-				}
+				InstanceInfo.ExecuteOnEachParallelTask([&InstanceInfo, &bDoneSomething, this, DeltaTime, &NextNeededDeltaTime](const FBehaviorTreeParallelTask& ParallelTaskInfo, const int32 Index)
+					{
+						const UBTTaskNode* ParallelTask = ParallelTaskInfo.TaskNode;
+						SCOPE_CYCLE_UOBJECT(ParallelTask, ParallelTask);
+						uint8* NodeMemory = ParallelTask->GetNodeMemory<uint8>(InstanceInfo);
+						bDoneSomething |= ParallelTask->WrappedTickTask(*this, NodeMemory, DeltaTime, NextNeededDeltaTime);
+					});
 			}
 
 			// tick active task
@@ -1412,7 +1430,7 @@ void UBehaviorTreeComponent::TickComponent(float DeltaTime, enum ELevelTick Tick
 		for (int32 InstanceIndex = 0; InstanceIndex < InstanceStack.Num() && NextNeededDeltaTime > 0.0f; InstanceIndex++)
 		{
 			FBehaviorTreeInstance& InstanceInfo = InstanceStack[InstanceIndex];
-			for (const UBTAuxiliaryNode* AuxNode : InstanceInfo.ActiveAuxNodes)
+			for (const UBTAuxiliaryNode* AuxNode : InstanceInfo.GetActiveAuxNodes())
 			{
 				uint8* NodeMemory = AuxNode->GetNodeMemory<uint8>(InstanceInfo);
 				const float NextNodeNeededDeltaTime = AuxNode->GetNextNeededDeltaTime(*this, NodeMemory);
@@ -1439,7 +1457,7 @@ void UBehaviorTreeComponent::ScheduleNextTick(const float NextNeededDeltaTime)
 		NextTickDeltaTime = 0.0f;
 	}
 
-	UE_VLOG(GetOwner(), LogBehaviorTree, Verbose, TEXT("BT(%i) schedule next tick %f, asked %f."), GFrameCounter, NextTickDeltaTime, NextNeededDeltaTime);
+	UE_VLOG(GetOwner(), LogBehaviorTree, VeryVerbose, TEXT("BT(%i) schedule next tick %f, asked %f."), GFrameCounter, NextTickDeltaTime, NextNeededDeltaTime);
 	if (NextTickDeltaTime == FLT_MAX)
 	{
 		if (IsComponentTickEnabled())
@@ -1568,6 +1586,14 @@ void UBehaviorTreeComponent::ProcessExecutionRequest()
 		}
 		else
 		{
+			// mark all decorators less important than current search start node for removal
+			// (keep aux nodes for requesting node since it is higher priority)
+			if (ExecutionRequest.ContinueWithResult == EBTNodeResult::Failed)
+			{
+				BT_SEARCHLOG(SearchData, Verbose, TEXT("Unregistering aux nodes up to %s"), *ExecutionRequest.SearchStart.Describe());
+				UnregisterAuxNodesUpTo(ExecutionRequest.SearchStart);
+			}
+
 			// make sure it's reset before starting new search
 			SearchData.SearchStart = FBTNodeIndex();
 			SearchData.SearchEnd = FBTNodeIndex();
@@ -1777,7 +1803,7 @@ void UBehaviorTreeComponent::RollbackSearchChanges()
 					FMemory::Memcpy(DestMemory, NodeMemory, NodeMemorySize);
 				}
 
-				InstanceData.InstanceMemory = InstanceInfo.InstanceMemory;
+				InstanceData.SetInstanceMemory(InstanceInfo.InstanceMemory);
 			}
 		}
 		else
@@ -1860,12 +1886,12 @@ void UBehaviorTreeComponent::UnregisterAuxNodesUpTo(const FBTNodeIndex& Index)
 	for (int32 InstanceIndex = 0; InstanceIndex < InstanceStack.Num(); InstanceIndex++)
 	{
 		FBehaviorTreeInstance& InstanceInfo = InstanceStack[InstanceIndex];
-		for (int32 AuxIndex = 0; AuxIndex < InstanceInfo.ActiveAuxNodes.Num(); AuxIndex++)
+		for (const UBTAuxiliaryNode* AuxNode : InstanceInfo.GetActiveAuxNodes())
 		{
-			FBTNodeIndex AuxIdx(InstanceIndex, InstanceInfo.ActiveAuxNodes[AuxIndex]->GetExecutionIndex());
+			FBTNodeIndex AuxIdx(InstanceIndex, AuxNode->GetExecutionIndex());
 			if (Index.TakesPriorityOver(AuxIdx))
 			{
-				SearchData.AddUniqueUpdate(FBehaviorTreeSearchUpdate(InstanceInfo.ActiveAuxNodes[AuxIndex], InstanceIndex, EBTNodeUpdateMode::Remove));
+				SearchData.AddUniqueUpdate(FBehaviorTreeSearchUpdate(AuxNode, InstanceIndex, EBTNodeUpdateMode::Remove));
 			}
 		}
 	}
@@ -1876,12 +1902,12 @@ void UBehaviorTreeComponent::UnregisterAuxNodesInRange(const FBTNodeIndex& FromI
 	for (int32 InstanceIndex = 0; InstanceIndex < InstanceStack.Num(); InstanceIndex++)
 	{
 		FBehaviorTreeInstance& InstanceInfo = InstanceStack[InstanceIndex];
-		for (int32 AuxIndex = 0; AuxIndex < InstanceInfo.ActiveAuxNodes.Num(); AuxIndex++)
+		for (const UBTAuxiliaryNode* AuxNode : InstanceInfo.GetActiveAuxNodes())
 		{
-			FBTNodeIndex AuxIdx(InstanceIndex, InstanceInfo.ActiveAuxNodes[AuxIndex]->GetExecutionIndex());
+			FBTNodeIndex AuxIdx(InstanceIndex, AuxNode->GetExecutionIndex());
 			if (FromIndex.TakesPriorityOver(AuxIdx) && AuxIdx.TakesPriorityOver(ToIndex))
 			{
-				SearchData.AddUniqueUpdate(FBehaviorTreeSearchUpdate(InstanceInfo.ActiveAuxNodes[AuxIndex], InstanceIndex, EBTNodeUpdateMode::Remove));
+				SearchData.AddUniqueUpdate(FBehaviorTreeSearchUpdate(AuxNode, InstanceIndex, EBTNodeUpdateMode::Remove));
 			}
 		}
 	}
@@ -1913,6 +1939,28 @@ void UBehaviorTreeComponent::UnregisterAuxNodesInBranch(const UBTCompositeNode* 
 	}
 }
 
+bool UBehaviorTreeComponent::ProcessPendingUnregister()
+{
+	if (PendingUnregisterAuxNodesRequests.Ranges.Num() == 0)
+	{
+		// no work done
+		return false;
+	}
+
+	TGuardValue<TArray<FBehaviorTreeSearchUpdate>> ScopedList(SearchData.PendingUpdates, {});
+
+	for (const FBTNodeIndexRange& Range : PendingUnregisterAuxNodesRequests.Ranges)
+	{
+		UnregisterAuxNodesInRange(Range.FromIndex, Range.ToIndex);
+	}
+	PendingUnregisterAuxNodesRequests = {};
+
+	ApplySearchUpdates(SearchData.PendingUpdates, 0);
+
+	// has done work
+	return true;
+}
+
 void UBehaviorTreeComponent::ExecuteTask(UBTTaskNode* TaskNode)
 {
 	SCOPE_CYCLE_COUNTER(STAT_AI_BehaviorTree_ExecutionTime);
@@ -1931,7 +1979,7 @@ void UBehaviorTreeComponent::ExecuteTask(UBTTaskNode* TaskNode)
 		UBTService* ServiceNode = TaskNode->Services[ServiceIndex];
 		uint8* NodeMemory = (uint8*)ServiceNode->GetNodeMemory<uint8>(ActiveInstance);
 
-		ActiveInstance.ActiveAuxNodes.Add(ServiceNode);
+		ActiveInstance.AddToActiveAuxNodes(ServiceNode);
 
 		UE_VLOG(GetOwner(), LogBehaviorTree, Log, TEXT("Activating task service: %s"), *UBehaviorTreeTypes::DescribeNodeHelper(ServiceNode));
 		ServiceNode->WrappedOnBecomeRelevant(*this, NodeMemory);
@@ -2055,22 +2103,12 @@ void UBehaviorTreeComponent::UnregisterMessageObserversFrom(const UBTTaskNode* T
 	}
 }
 
-#if STATS
-#define AUX_NODE_WRAPPER(cmd) \
-	DEC_MEMORY_STAT_BY(STAT_AI_BehaviorTree_InstanceMemory, InstanceInfo.GetAllocatedSize()); \
-	cmd; \
-	INC_MEMORY_STAT_BY(STAT_AI_BehaviorTree_InstanceMemory, InstanceInfo.GetAllocatedSize());
-
-#else
-#define AUX_NODE_WRAPPER(cmd) cmd;
-#endif // STATS
-
 void UBehaviorTreeComponent::RegisterParallelTask(const UBTTaskNode* TaskNode)
 {
 	if (InstanceStack.IsValidIndex(ActiveInstanceIdx))
 	{
 		FBehaviorTreeInstance& InstanceInfo = InstanceStack[ActiveInstanceIdx];
-		AUX_NODE_WRAPPER(InstanceInfo.ParallelTasks.Add(FBehaviorTreeParallelTask(TaskNode, EBTTaskStatus::Active)));
+		InstanceInfo.AddToParallelTasks(FBehaviorTreeParallelTask(TaskNode, EBTTaskStatus::Active));
 
 		UE_VLOG(GetOwner(), LogBehaviorTree, Verbose, TEXT("Parallel task: %s added to active list"),
 			*UBehaviorTreeTypes::DescribeNodeHelper(TaskNode));
@@ -2089,15 +2127,15 @@ void UBehaviorTreeComponent::UnregisterParallelTask(const UBTTaskNode* TaskNode,
 	if (InstanceStack.IsValidIndex(InstanceIdx))
 	{
 		FBehaviorTreeInstance& InstanceInfo = InstanceStack[InstanceIdx];
-		for (int32 TaskIndex = InstanceInfo.ParallelTasks.Num() - 1; TaskIndex >= 0; TaskIndex--)
+		for (int32 TaskIndex = InstanceInfo.GetParallelTasks().Num() - 1; TaskIndex >= 0; TaskIndex--)
 		{
-			FBehaviorTreeParallelTask& ParallelInfo = InstanceInfo.ParallelTasks[TaskIndex];
+			const FBehaviorTreeParallelTask& ParallelInfo = InstanceInfo.GetParallelTasks()[TaskIndex];
 			if (ParallelInfo.TaskNode == TaskNode)
 			{
 				UE_VLOG(GetOwner(), LogBehaviorTree, Verbose, TEXT("Parallel task: %s removed from active list"),
 					*UBehaviorTreeTypes::DescribeNodeHelper(TaskNode));
 
-				InstanceInfo.ParallelTasks.RemoveAt(TaskIndex, /*Count=*/1, /*bAllowShrinking=*/false);
+				InstanceInfo.RemoveParallelTaskAt(TaskIndex);
 				bShouldUpdate = true;
 				break;
 			}
@@ -2110,8 +2148,6 @@ void UBehaviorTreeComponent::UnregisterParallelTask(const UBTTaskNode* TaskNode,
 	}
 }
 
-#undef AUX_NODE_WRAPPER
-
 void UBehaviorTreeComponent::UpdateAbortingTasks()
 {
 	bWaitingForAbortingTasks = InstanceStack.Num() ? (InstanceStack.Last().ActiveNodeType == EBTActiveNode::AbortingTask) : false;
@@ -2119,9 +2155,8 @@ void UBehaviorTreeComponent::UpdateAbortingTasks()
 	for (int32 InstanceIndex = 0; InstanceIndex < InstanceStack.Num() && !bWaitingForAbortingTasks; InstanceIndex++)
 	{
 		FBehaviorTreeInstance& InstanceInfo = InstanceStack[InstanceIndex];
-		for (int32 TaskIndex = InstanceInfo.ParallelTasks.Num() - 1; TaskIndex >= 0; TaskIndex--)
+		for (const FBehaviorTreeParallelTask& ParallelInfo : InstanceInfo.GetParallelTasks())
 		{
-			FBehaviorTreeParallelTask& ParallelInfo = InstanceInfo.ParallelTasks[TaskIndex];
 			if (ParallelInfo.Status == EBTTaskStatus::Aborting)
 			{
 				bWaitingForAbortingTasks = true;
@@ -2188,10 +2223,9 @@ bool UBehaviorTreeComponent::PushInstance(UBehaviorTree& TreeAsset)
 			InstanceInfo.RootNode = RootNode;
 		}
 
-		NewInstance.InstanceMemory = InstanceInfo.InstanceMemory;
+		NewInstance.SetInstanceMemory(InstanceInfo.InstanceMemory);
 		NewInstance.Initialize(*this, *RootNode, NodeInstanceIndex, bFirstTime ? EBTMemoryInit::Initialize : EBTMemoryInit::RestoreSubtree);
 
-		INC_DWORD_STAT(STAT_AI_BehaviorTree_NumInstances);
 		InstanceStack.Push(NewInstance);
 		ActiveInstanceIdx = InstanceStack.Num() - 1;
 
@@ -2204,7 +2238,7 @@ bool UBehaviorTreeComponent::PushInstance(UBehaviorTree& TreeAsset)
 			// send initial on search start events in case someone is using them for init logic
 			ServiceNode->NotifyParentActivation(SearchData);
 
-			InstanceStack[ActiveInstanceIdx].ActiveAuxNodes.Add(ServiceNode);
+			InstanceStack[ActiveInstanceIdx].AddToActiveAuxNodes(ServiceNode);
 			ServiceNode->WrappedOnBecomeRelevant(*this, NodeMemory);
 		}
 
@@ -2353,7 +2387,7 @@ void UBehaviorTreeComponent::RemoveAllInstances()
 		{
 			// instance memory will be removed on Cleanup in EBTMemoryClear::Destroy mode
 			// prevent from calling it multiple times - StopTree does it for current InstanceStack
-			DummyInstance.InstanceMemory = Info.InstanceMemory;
+			DummyInstance.SetInstanceMemory(Info.InstanceMemory);
 			DummyInstance.InstanceIdIndex = Idx;
 			DummyInstance.RootNode = Info.RootNode;
 
@@ -2372,7 +2406,7 @@ void UBehaviorTreeComponent::CopyInstanceMemoryToPersistent()
 		const FBehaviorTreeInstance& InstanceData = InstanceStack[InstanceIndex];
 		FBehaviorTreeInstanceId& InstanceInfo = KnownInstances[InstanceData.InstanceIdIndex];
 
-		InstanceInfo.InstanceMemory = InstanceData.InstanceMemory;
+		InstanceInfo.InstanceMemory = InstanceData.GetInstanceMemory();
 	}
 }
 
@@ -2383,7 +2417,7 @@ void UBehaviorTreeComponent::CopyInstanceMemoryFromPersistent()
 		FBehaviorTreeInstance& InstanceData = InstanceStack[InstanceIndex];
 		const FBehaviorTreeInstanceId& InstanceInfo = KnownInstances[InstanceData.InstanceIdIndex];
 
-		InstanceData.InstanceMemory = InstanceInfo.InstanceMemory;
+		InstanceData.SetInstanceMemory(InstanceInfo.InstanceMemory);
 	}
 }
 
@@ -2428,9 +2462,8 @@ FString UBehaviorTreeComponent::DescribeActiveTasks() const
 	for (int32 InstanceIndex = 0; InstanceIndex < InstanceStack.Num(); InstanceIndex++)
 	{
 		const FBehaviorTreeInstance& InstanceInfo = InstanceStack[InstanceIndex];
-		for (int32 ParallelNodeIndex = 0; ParallelNodeIndex < InstanceInfo.ParallelTasks.Num(); ParallelNodeIndex++)
+		for (const FBehaviorTreeParallelTask& ParallelInfo : InstanceInfo.GetParallelTasks())
 		{
-			const FBehaviorTreeParallelTask& ParallelInfo = InstanceInfo.ParallelTasks[ParallelNodeIndex];
 			if (ParallelInfo.Status == EBTTaskStatus::Active)
 			{
 				ParallelTasks += UBehaviorTreeTypes::DescribeNodeHelper(ParallelInfo.TaskNode);
@@ -2577,10 +2610,10 @@ void UBehaviorTreeComponent::DescribeSelfToVisLog(FVisualLogEntry* Snapshot) con
 		FVisualLogStatusCategory StatusCategory;
 		StatusCategory.Category = FString::Printf(TEXT("BehaviorTree %d (asset: %s)"), InstanceIndex, *GetNameSafe(InstanceId.TreeAsset));
 
-		if (InstanceInfo.ActiveAuxNodes.Num() > 0)
+		if (InstanceInfo.GetActiveAuxNodes().Num() > 0)
 		{
 			FString ObserversDesc;
-			for (auto AuxNode : InstanceInfo.ActiveAuxNodes)
+			for (const UBTAuxiliaryNode* AuxNode : InstanceInfo.GetActiveAuxNodes())
 			{
 				ObserversDesc += FString::Printf(TEXT("%d. %s\n"), AuxNode->GetExecutionIndex(), *AuxNode->GetNodeName(), *AuxNode->GetStaticDescription());
 			}
@@ -2635,6 +2668,7 @@ void UBehaviorTreeComponent::DescribeSelfToVisLog(FVisualLogEntry* Snapshot) con
 		Snapshot->Status.Add(StatusCategory);
 	}
 }
+
 #endif // ENABLE_VISUAL_LOG
 
 void UBehaviorTreeComponent::StoreDebuggerExecutionStep(EBTExecutionSnap::Type SnapType)
@@ -2701,15 +2735,14 @@ void UBehaviorTreeComponent::StoreDebuggerInstance(FBehaviorTreeDebuggerInstance
 		}
 
 		// add aux nodes
-		for (int32 NodeIndex = 0; NodeIndex < ActiveInstance.ActiveAuxNodes.Num(); NodeIndex++)
+		for (const UBTAuxiliaryNode* AuxNode : ActiveInstance.GetActiveAuxNodes())
 		{
-			InstanceInfo.AdditionalActiveNodes.Add(ActiveInstance.ActiveAuxNodes[NodeIndex]->GetExecutionIndex());
+			InstanceInfo.AdditionalActiveNodes.Add(AuxNode->GetExecutionIndex());
 		}
 
 		// add active parallels
-		for (int32 TaskIndex = 0; TaskIndex < ActiveInstance.ParallelTasks.Num(); TaskIndex++)
+		for (const FBehaviorTreeParallelTask& TaskInfo : ActiveInstance.GetParallelTasks())
 		{
-			const FBehaviorTreeParallelTask& TaskInfo = ActiveInstance.ParallelTasks[TaskIndex];
 			InstanceInfo.AdditionalActiveNodes.Add(TaskInfo.TaskNode->GetExecutionIndex());
 		}
 

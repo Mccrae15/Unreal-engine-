@@ -141,6 +141,7 @@ FNiagaraVariable INiagaraModule::Particles_RibbonLinkOrder;
 FNiagaraVariable INiagaraModule::Particles_VisibilityTag;
 FNiagaraVariable INiagaraModule::Particles_ComponentsEnabled;
 FNiagaraVariable INiagaraModule::ScriptUsage;
+FNiagaraVariable INiagaraModule::ScriptContext;
 FNiagaraVariable INiagaraModule::DataInstance_Alive;
 FNiagaraVariable INiagaraModule::Translator_BeginDefaults;
 
@@ -246,6 +247,7 @@ void INiagaraModule::StartupModule()
 	Particles_ComponentsEnabled = FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Particles.ComponentsEnabled"));
 
 	ScriptUsage = FNiagaraVariable(FNiagaraTypeDefinition::GetScriptUsageEnum(), TEXT("Script.Usage"));
+	ScriptContext = FNiagaraVariable(FNiagaraTypeDefinition::GetScriptContextEnum(), TEXT("Script.Context"));
 	DataInstance_Alive = FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("DataInstance.Alive"));
 
 	Translator_BeginDefaults = FNiagaraVariable(FNiagaraTypeDefinition::GetParameterMapDef(), TEXT("Begin Defaults"));
@@ -422,6 +424,7 @@ UEnum* FNiagaraTypeDefinition::ExecutionStateEnum;
 UEnum* FNiagaraTypeDefinition::SimulationTargetEnum;
 UEnum* FNiagaraTypeDefinition::ExecutionStateSourceEnum;
 UEnum* FNiagaraTypeDefinition::ScriptUsageEnum;
+UEnum* FNiagaraTypeDefinition::ScriptContextEnum;
 
 UEnum* FNiagaraTypeDefinition::ParameterScopeEnum;
 UEnum* FNiagaraTypeDefinition::ParameterPanelCategoryEnum;
@@ -557,7 +560,8 @@ void FNiagaraTypeDefinition::Init()
 	ExecutionStateEnum = StaticEnum<ENiagaraExecutionState>();
 	ExecutionStateSourceEnum = StaticEnum<ENiagaraExecutionStateSource>();
 	SimulationTargetEnum = StaticEnum<ENiagaraSimTarget>();
-	ScriptUsageEnum = StaticEnum<ENiagaraScriptUsage>();
+	ScriptUsageEnum = StaticEnum<ENiagaraCompileUsageStaticSwitch>();
+	ScriptContextEnum = StaticEnum<ENiagaraScriptContextStaticSwitch>();
 
 	ParameterScopeEnum = StaticEnum<ENiagaraParameterScope>();
 	ParameterPanelCategoryEnum = StaticEnum<ENiagaraParameterPanelCategory>();

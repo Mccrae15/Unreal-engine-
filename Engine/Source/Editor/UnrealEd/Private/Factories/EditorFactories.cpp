@@ -116,6 +116,7 @@
 #include "Factories/TextureFactory.h"
 #include "Factories/ReimportTextureFactory.h"
 #include "Factories/TextureRenderTargetCubeFactoryNew.h"
+#include "Factories/TextureRenderTargetVolumeFactoryNew.h"
 #include "Factories/TextureRenderTargetFactoryNew.h"
 #include "Factories/TouchInterfaceFactory.h"
 #include "Factories/FbxAssetImportData.h"
@@ -163,12 +164,14 @@
 #include "Sound/SoundCue.h"
 #include "Sound/SoundMix.h"
 #include "Engine/TextureCube.h"
+#include "Engine/VolumeTexture.h"
 #include "Engine/Texture2DArray.h"
 #include "Engine/VolumeTexture.h"
 #include "Engine/TextureRenderTarget.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/CanvasRenderTarget2D.h"
 #include "Engine/TextureRenderTargetCube.h"
+#include "Engine/TextureRenderTargetVolume.h"
 #include "GameFramework/TouchInterface.h"
 #include "Engine/UserDefinedEnum.h"
 #include "Engine/UserDefinedStruct.h"
@@ -2261,6 +2264,34 @@ UObject* UTextureRenderTargetCubeFactoryNew::FactoryCreateNew(UClass* Class, UOb
 	return (Result);
 }
 
+/*-----------------------------------------------------------------------------
+	UTextureRenderTargetVolumeFactoryNew
+-----------------------------------------------------------------------------*/
+UTextureRenderTargetVolumeFactoryNew::UTextureRenderTargetVolumeFactoryNew(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+
+	SupportedClass = UTextureRenderTargetVolume::StaticClass();
+	bCreateNew = true;
+	bEditAfterNew = true;
+	bEditorImport = false;
+
+	Width = 64;
+	Height = 64;
+	Depth = 64;
+	Format = 0;
+}
+
+UObject* UTextureRenderTargetVolumeFactoryNew::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
+{
+	// create the new object
+	UTextureRenderTargetVolume* Result = NewObject<UTextureRenderTargetVolume>(InParent, Class, Name, Flags);
+
+	// initialize the resource
+	Result->InitAutoFormat(Width, Height, Depth);
+
+	return Result;
+}
 
 /*-----------------------------------------------------------------------------
 	UTextureFactory.
@@ -6471,8 +6502,24 @@ EReimportResult::Type UReimportFbxSkeletalMeshFactory::Reimport( UObject* Obj, i
 		ImportOptions->bCreatePhysicsAsset = false;
 		ImportOptions->PhysicsAsset = SkeletalMesh->PhysicsAsset;
 		
-
+		EFBXImportContentType BeforeUIContentType = ReimportUI->SkeletalMeshImportData->ImportContentType;
 		ImportOptions = GetImportOptions( FFbxImporter, ReimportUI, bShowOptionDialog, bIsAutomated, Obj->GetPathName(), bOperationCanceled, bOutImportAll, bIsObjFormat, Filename, bForceImportType, FBXIT_SkeletalMesh);
+		
+		//If the import type has change from the UI, assign the filename to the file source index
+		if (bShowOptionDialog && ReimportUI->SkeletalMeshImportData->ImportContentType != BeforeUIContentType && ReimportUI->SkeletalMeshImportData->ImportContentType != EFBXImportContentType::FBXICT_All)
+		{
+			TArray<FString> ExtractedFilenames;
+			SkeletalMesh->AssetImportData->ExtractFilenames(ExtractedFilenames);
+			//By default add the original file
+			if (!ExtractedFilenames.IsValidIndex(1))
+			{
+				SkeletalMesh->AssetImportData->AddFileName(ExtractedFilenames[0], 1, NSSkeletalMeshSourceFileLabels::GeometryText().ToString());
+			}
+			if (!ExtractedFilenames.IsValidIndex(2))
+			{
+				SkeletalMesh->AssetImportData->AddFileName(ExtractedFilenames[0], 2, NSSkeletalMeshSourceFileLabels::SkinningText().ToString());
+			}
+		}
 
 		if (!GetSourceFileName(ImportData, Filename, false))
 		{

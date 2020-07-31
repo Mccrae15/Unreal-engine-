@@ -84,8 +84,13 @@ USoundWave* DeriveSoundWave(UMovieSceneAudioSection* AudioSection)
 
 float DeriveUnloopedDuration(UMovieSceneAudioSection* AudioSection)
 {
-	USoundWave* SoundWave = DeriveSoundWave(AudioSection);
+	USoundBase* Sound = AudioSection->GetSound();
+	if (Sound && Sound->GetDuration() != INDEFINITELY_LOOPING_DURATION)
+	{
+		return Sound->GetDuration();
+	}
 
+	USoundWave* SoundWave = DeriveSoundWave(AudioSection);
 	const float Duration = (SoundWave ? SoundWave->GetDuration() : 0.f);
 	return Duration == INDEFINITELY_LOOPING_DURATION ? SoundWave->Duration : Duration;
 }
@@ -998,7 +1003,11 @@ FReply FAudioTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, UMovieScen
 		return FReply::Unhandled();
 	}
 	
+	const FScopedTransaction Transaction(LOCTEXT("DropAssets", "Drop Assets"));
+
 	TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>( Operation );
+
+	FMovieSceneTrackEditor::BeginKeying();
 
 	bool bAnyDropped = false;
 	for (const FAssetData& AssetData : DragDropOp->GetAssets())
@@ -1025,6 +1034,8 @@ FReply FAudioTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, UMovieScen
 			bAnyDropped = true;
 		}
 	}
+
+	FMovieSceneTrackEditor::EndKeying();
 
 	return bAnyDropped ? FReply::Handled() : FReply::Unhandled();
 }
@@ -1109,6 +1120,7 @@ FKeyPropertyResult FAudioTrackEditor::AddNewMasterSound( FFrameNumber KeyTime, U
 	}
 
 	KeyPropertyResult.bTrackModified = true;
+	KeyPropertyResult.SectionsCreated.Add(NewSection);
 	return KeyPropertyResult;
 }
 
@@ -1138,6 +1150,7 @@ FKeyPropertyResult FAudioTrackEditor::AddNewAttachedSound( FFrameNumber KeyTime,
 				UMovieSceneSection* NewSection = AudioTrack->AddNewSound(Sound, KeyTime);
 				AudioTrack->SetDisplayName(LOCTEXT("AudioTrackName", "Audio"));				
 				KeyPropertyResult.bTrackModified = true;
+				KeyPropertyResult.SectionsCreated.Add(NewSection);
 
 				GetSequencer()->EmptySelection();
 				GetSequencer()->SelectSection(NewSection);

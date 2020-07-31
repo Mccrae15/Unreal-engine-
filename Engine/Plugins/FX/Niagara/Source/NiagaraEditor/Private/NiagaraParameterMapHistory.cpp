@@ -1498,6 +1498,20 @@ bool FCompileConstantResolver::ResolveConstant(FNiagaraVariable& OutConstant) co
 		OutConstant.SetValue(EnumValue);
 		return true;
 	}
+	if (Emitter && OutConstant == FNiagaraVariable(FNiagaraTypeDefinition::GetScriptUsageEnum(), TEXT("Script.Usage")))
+	{
+		FNiagaraInt32 EnumValue;
+		EnumValue.Value = (uint8)ENiagaraCompileUsageStaticSwitch::Default;
+		OutConstant.SetValue(EnumValue);
+		return true;
+	}
+	if (Emitter && OutConstant == FNiagaraVariable(FNiagaraTypeDefinition::GetScriptContextEnum(), TEXT("Script.Context")))
+	{
+		FNiagaraInt32 EnumValue;
+		EnumValue.Value = (uint8)ENiagaraScriptContextStaticSwitch::Particle;
+		OutConstant.SetValue(EnumValue);
+		return true;
+	}
 	return false;
 }
 
