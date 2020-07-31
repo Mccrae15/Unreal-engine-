@@ -80,7 +80,6 @@ struct CHAOSVEHICLESCORE_API FSimpleWheelConfig
 		, CheatLateralFrictionMultiplier(1.0f)
 		, CheatLongitudinalFrictionMultiplier(1.0f)
 		, CheatSkidFactor(1.0f)
-		, SideSlipModifier(1.0f)
 	{
 
 	}
@@ -113,7 +112,6 @@ struct CHAOSVEHICLESCORE_API FSimpleWheelConfig
 	float CheatLateralFrictionMultiplier;
 	float CheatLongitudinalFrictionMultiplier;
 	float CheatSkidFactor;
-	float SideSlipModifier;
 
 	// #todo: simulated Damage
 	//EWheelDamageStatus DamageStatus;
@@ -334,6 +332,7 @@ public:
 	{
 		MassPerWheel = VehicleMassPerWheel;
 	}
+
 
 public:
 

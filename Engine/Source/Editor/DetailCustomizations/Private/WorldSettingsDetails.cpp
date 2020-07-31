@@ -16,7 +16,6 @@
 #include "ScopedTransaction.h"
 #include "Editor.h"
 #include "Engine/Texture2D.h"
-#include "Misc/MessageDialog.h"
 
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
@@ -24,7 +23,6 @@
 #include "GameModeInfoCustomizer.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "GameFramework/WorldSettings.h"
-#include "ScopedTransaction.h"
 
 #define LOCTEXT_NAMESPACE "WorldSettingsDetails"
 

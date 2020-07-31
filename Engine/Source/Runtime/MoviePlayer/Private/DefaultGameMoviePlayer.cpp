@@ -8,7 +8,6 @@
 #include "Widgets/SViewport.h"
 #include "Engine/GameEngine.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Input/HittestGrid.h"
 #include "Widgets/Layout/SBox.h"
 #include "GlobalShader.h"
 #include "MoviePlayerThreading.h"

@@ -64,12 +64,8 @@ static bool AreInstancedObjectsIdentical( UObject* ObjectA, UObject* ObjectB, ui
 		{
 			// only the properties that could have been modified in the editor should be compared
 			// (skipping the name and archetype properties, since name will almost always be different)
-			bool bConsiderProperty;
-			if ( (PortFlags&PPF_Copy) == 0 )
-			{
-				bConsiderProperty = Prop->ShouldDuplicateValue();
-			}
-			else
+			bool bConsiderProperty = Prop->ShouldDuplicateValue();
+			if ( (PortFlags&PPF_Copy) != 0 )
 			{
 				bConsiderProperty = (Prop->PropertyFlags&CPF_Edit) != 0;
 			}

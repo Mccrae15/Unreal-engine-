@@ -3127,9 +3127,6 @@ void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 					Scene->UniformBuffers.CustomDepthPassUniformBuffer.UpdateUniformBufferImmediate(SceneTextureParameters);
 					PassUniformBuffer = Scene->UniformBuffers.CustomDepthPassUniformBuffer;
 				}
-
-				FUniformBufferStaticBindings GlobalUniformBuffers(PassUniformBuffer);
-				SCOPED_UNIFORM_BUFFER_GLOBAL_BINDINGS(RHICmdList, GlobalUniformBuffers);
 				
 				static const auto MobileCustomDepthDownSampleLocalCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.CustomDepthDownSample"));
 
@@ -4281,7 +4278,8 @@ void FSceneRenderer::UpdateSkyIrradianceGpuBuffer(FRHICommandListImmediate& RHIC
 	// Make sure there's no padding since we're going to cast to FVector4*
 	checkSlow(sizeof(OutSkyIrradianceEnvironmentMap) == sizeof(FVector4) * 7);
 
-	const bool bUploadIrradiance = Scene->SkyLight
+	const bool bUploadIrradiance = Scene
+		&& Scene->SkyLight
 		// Skylights with static lighting already had their diffuse contribution baked into lightmaps
 		&& !Scene->SkyLight->bHasStaticLighting
 		&& ViewFamily.EngineShowFlags.SkyLighting
@@ -4301,7 +4299,7 @@ void FSceneRenderer::UpdateSkyIrradianceGpuBuffer(FRHICommandListImmediate& RHIC
 		FPlatformMemory::Memcpy(DataPtr, &OutSkyIrradianceEnvironmentMap, sizeof(OutSkyIrradianceEnvironmentMap));
 		FRHICommandListExecutor::GetImmediateCommandList().UnlockStructuredBuffer(Scene->SkyIrradianceEnvironmentMap.Buffer);
 	}
-	else if (Scene->SkyIrradianceEnvironmentMap.NumBytes == 0)
+	else if(Scene->SkyIrradianceEnvironmentMap.NumBytes == 0)
 	{
 		Scene->SkyIrradianceEnvironmentMap.Initialize(sizeof(FVector4), 7, 0, TEXT("SkyIrradianceEnvironmentMap"));
 	}

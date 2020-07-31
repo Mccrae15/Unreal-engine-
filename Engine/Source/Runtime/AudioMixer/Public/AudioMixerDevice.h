@@ -136,10 +136,6 @@ namespace Audio
 		virtual void UnregisterSubmixBufferListener(ISubmixBufferListener* InSubmixBufferListener, USoundSubmix* InSubmix = nullptr) override;
 
 		virtual void FlushAudioRenderingCommands(bool bPumpSynchronously = false) override;
-
-		// Audio Device Properties
-		virtual bool IsNonRealtime() const override;
-
 		//~ End FAudioDevice
 
 		//~ Begin IAudioMixer

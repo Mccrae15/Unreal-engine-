@@ -13,7 +13,6 @@ public class MovieRenderPipelineRenderPasses : ModuleRules
 				"Engine",
 				"ImageWriteQueue",
                 "SignalProcessing", // Needed for wave writer.
-				"AudioMixer",
 			}
 		);
 
@@ -22,7 +21,7 @@ public class MovieRenderPipelineRenderPasses : ModuleRules
 				"MovieRenderPipelineCore",
 				"RenderCore",
                 "RHI",
-			}
-		);
+            }
+        );
 	}
 }

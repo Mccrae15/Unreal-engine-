@@ -814,14 +814,13 @@ void FModelingToolsEditorMode::ConfigureRealTimeViewportsOverride(bool bEnable)
 			if (ViewportWindow.IsValid())
 			{
 				FEditorViewportClient& Viewport = ViewportWindow->GetAssetViewportClient();
-				const FText SystemDisplayName = LOCTEXT("RealtimeOverrideMessage_ModelingMode", "Modeling Mode");
 				if (bEnable)
 				{
-					Viewport.AddRealtimeOverride(bEnable, SystemDisplayName);
+					Viewport.SetRealtimeOverride(bEnable, LOCTEXT("RealtimeOverrideMessage_ModelingMode", "Modeling Mode"));
 				}
 				else
 				{
-					Viewport.RemoveRealtimeOverride(SystemDisplayName);
+					Viewport.RemoveRealtimeOverride();
 				}
 			}
 		}

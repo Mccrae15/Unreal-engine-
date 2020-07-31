@@ -1561,29 +1561,10 @@ bool FIOSPlatformMisc::DeleteStoredValue(const FString& InStoreId, const FString
 {
 	NSUserDefaults* UserSettings = [NSUserDefaults standardUserDefaults];
 	
-	// Remove it
+	// store it
 	[UserSettings removeObjectForKey:MakeStoredValueKeyName(InSectionName, InKeyName)];
 
 	return true;
-}
-
-bool FIOSPlatformMisc::DeleteStoredSection(const FString& InStoreId, const FString& InSectionName)
-{
-	bool bRemoved = false;
-	NSUserDefaults* UserSettings = [NSUserDefaults standardUserDefaults];
-	NSDictionary<NSString*,id>* KeyValues = [UserSettings dictionaryRepresentation];
-	NSString* SectionName = [NSString stringWithFString:InSectionName];
-
-	for (id Key in KeyValues)
-	{
-		if ([Key hasPrefix:SectionName])
-		{
-			[UserSettings removeObjectForKey:Key];
-			bRemoved = true;
-		}
-	}
-
-	return bRemoved;
 }
 
 void FIOSPlatformMisc::SetGracefulTerminationHandler()

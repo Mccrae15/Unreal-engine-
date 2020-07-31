@@ -62,14 +62,12 @@ void FIndexerUtilities::IterateIndexableProperties(const UStruct* InStruct, cons
 		if (const FNameProperty* NameProperty = CastField<FNameProperty>(Property))
 		{
 			const FName Value = NameProperty->GetPropertyValue(ValuePtr);
-			if (!Value.IsNone())
-			{
-				Text = Value.ToString();
-			}
+			Text = Value.ToString();
 		}
 		else if (const FStrProperty* StringProperty = CastField<FStrProperty>(Property))
 		{
-			Text = StringProperty->GetPropertyValue(ValuePtr);
+			const FString Value = StringProperty->GetPropertyValue(ValuePtr);
+			Text = Value;
 		}
 		else if (const FTextProperty* TextProperty = CastField<FTextProperty>(Property))
 		{

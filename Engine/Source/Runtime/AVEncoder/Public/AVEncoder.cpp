@@ -3,15 +3,13 @@
 #include "AVEncoder.h"
 #include "AVEncoderCommon.h"
 
-#if AVENCODER_SUPPORTED_MICROSOFT_PLATFORM
 #if PLATFORM_WINDOWS
 	#include "Microsoft/Windows/NvVideoEncoder.h"
 	#include "Microsoft/Windows/AmfVideoEncoder.h"
 	#include "Microsoft/WmfAudioEncoder.h"
-#elif (PLATFORM_XBOXONE && WITH_LEGACY_XDK)
+#elif PLATFORM_XBOXONE
 	#include "Microsoft/WmfAudioEncoder.h"
 	#include "XboxOneVideoEncoder.h"
-#endif
 #endif
 
 namespace AVEncoder
@@ -166,7 +164,6 @@ void RegisterDefaultFactories()
 	// We need to set this at the top, otherwise RegisterFactory will call this recursively
 	GDefaultFactoriesRegistered = true;
 
-#if AVENCODER_SUPPORTED_MICROSOFT_PLATFORM
 #if PLATFORM_WINDOWS
 	// Nvidia NvEnc
 	static FNvVideoEncoderFactory NvVideoEncoderFactory;
@@ -176,19 +173,18 @@ void RegisterDefaultFactories()
 	static FAmfVideoEncoderFactory AmfVideoEncoderFactory;
 	FAmfVideoEncoderFactory::RegisterFactory(AmfVideoEncoderFactory);
 
-#elif (PLATFORM_XBOXONE && WITH_LEGACY_XDK)
+#elif PLATFORM_XBOXONE
 
 	static FXboxOneVideoEncoderFactory XboxOneVideoEncoderFactory;
 	FVideoEncoderFactory::RegisterFactory(XboxOneVideoEncoderFactory);
 
 #endif
 
-#if PLATFORM_WINDOWS || (PLATFORM_XBOXONE && WITH_LEGACY_XDK)
+#if PLATFORM_WINDOWS || PLATFORM_XBOXONE
 	// Generic Windows/XBox Wmf encoder
 	static FWmfAudioEncoderFactory WmfAudioEncoderFactory;
 	FAudioEncoderFactory::RegisterFactory(WmfAudioEncoderFactory);
 #endif
-#endif //AVENCODER_SUPPORTED_MICROSOFT_PLATFORM
 
 	// Log all available encoders
 	{

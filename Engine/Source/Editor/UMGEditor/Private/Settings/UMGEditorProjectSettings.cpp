@@ -5,8 +5,6 @@
 #include "WidgetCompilerRule.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
-
-#include "Blueprint/UserWidget.h"
 #include "Components/CanvasPanel.h"
 
 UUMGEditorProjectSettings::UUMGEditorProjectSettings()
@@ -18,7 +16,6 @@ UUMGEditorProjectSettings::UUMGEditorProjectSettings()
 
 	bUseWidgetTemplateSelector = false;
 	DefaultRootWidget = UCanvasPanel::StaticClass();
-	DefaultWidgetParentClass = UUserWidget::StaticClass();
 }
 
 #if WITH_EDITOR

@@ -201,11 +201,6 @@ protected:
 	FSceneRenderTargets(const FViewInfo& InView, const FSceneRenderTargets& SnapshotSource);
 public:
 
-	bool IsShadingPathValid() const
-	{
-		return CurrentShadingPath < EShadingPath::Num;
-	}
-
 	/**
 	 * Checks that scene render targets are ready for rendering a view family of the given dimensions.
 	 * If the allocated render targets are too small, they are reallocated.

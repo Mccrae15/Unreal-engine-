@@ -1159,14 +1159,13 @@ void MeshPaintHelpers::SetRealtimeViewport(bool bRealtime)
 		FEditorViewportClient &Viewport = ViewportWindow->GetAssetViewportClient();
 		if (Viewport.IsPerspective())
 		{
-			const FText SystemDisplayName = NSLOCTEXT("MeshPaint", "RealtimeOverrideMessage_MeshPaint", "Mesh Paint");
 			if (bRealtime)
 			{
-				Viewport.AddRealtimeOverride(bRealtime, SystemDisplayName);
+				Viewport.SetRealtimeOverride(bRealtime, NSLOCTEXT("MeshPaint", "RealtimeOverrideMessage_MeshPaint", "Mesh Paint"));
 			}
 			else
 			{
-				Viewport.RemoveRealtimeOverride(SystemDisplayName);
+				Viewport.RemoveRealtimeOverride();
 			}
 		}
 	}

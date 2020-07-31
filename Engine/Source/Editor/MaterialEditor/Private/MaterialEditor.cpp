@@ -138,7 +138,6 @@
 #include "ToolMenus.h"
 #include "MaterialEditorContext.h"
 #include "UObject/MetaData.h"
-#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "MaterialEditor"
 
@@ -1519,24 +1518,6 @@ bool FMaterialEditor::OnRequestClose()
 	return true;
 }
 
-void FMaterialEditor::AddGraphEditorPinActionsToContextMenu(FToolMenuSection& InSection) const
-{
-	// Promote To Parameter
-	{
-		FToolUIAction PromoteToParameterAction;
-		PromoteToParameterAction.ExecuteAction = FToolMenuExecuteAction::CreateSP(this, &FMaterialEditor::OnPromoteToParameter);
-		PromoteToParameterAction.IsActionVisibleDelegate = FToolMenuIsActionButtonVisible::CreateSP(this, &FMaterialEditor::OnCanPromoteToParameter);
-
-		TSharedPtr<FUICommandInfo> PromoteToParameterCommand = FMaterialEditorCommands::Get().PromoteToParameter;
-		InSection.AddMenuEntry(
-			PromoteToParameterCommand->GetCommandName(),
-			PromoteToParameterCommand->GetLabel(),
-			PromoteToParameterCommand->GetDescription(),
-			PromoteToParameterCommand->GetIcon(),
-			PromoteToParameterAction
-		);
-	}
-}
 
 void FMaterialEditor::DrawMaterialInfoStrings(
 	FCanvas* Canvas, 
@@ -3448,7 +3429,7 @@ void FMaterialEditor::OnFindInMaterial()
 	FindResults->FocusForUse();
 }
 
-UClass* FMaterialEditor::GetOnPromoteToParameterClass(const UEdGraphPin* TargetPin) const
+UClass* FMaterialEditor::GetOnPromoteToParameterClass(UEdGraphPin* TargetPin)
 {
 	UMaterialGraphNode_Root* RootPinNode = Cast<UMaterialGraphNode_Root>(TargetPin->GetOwningNode());
 	UMaterialGraphNode* OtherPinNode = Cast<UMaterialGraphNode>(TargetPin->GetOwningNode());
@@ -3523,10 +3504,9 @@ UClass* FMaterialEditor::GetOnPromoteToParameterClass(const UEdGraphPin* TargetP
 	return nullptr;
 }
 
-void FMaterialEditor::OnPromoteToParameter(const FToolMenuContext& InMenuContext) const
+void FMaterialEditor::OnPromoteToParameter()
 {
-	UGraphNodeContextMenuContext* NodeContext = InMenuContext.FindContext<UGraphNodeContextMenuContext>();
-	const UEdGraphPin* TargetPin = NodeContext->Pin;
+	UEdGraphPin* TargetPin = GraphEditor->GetGraphPinForMenu();
 	UMaterialGraphNode_Base* PinNode = Cast<UMaterialGraphNode_Base>(TargetPin->GetOwningNode());
 
 	FMaterialGraphSchemaAction_NewNode Action;	
@@ -3546,7 +3526,7 @@ void FMaterialEditor::OnPromoteToParameter(const FToolMenuContext& InMenuContext
 		NewNodePos.X = PinNode->NodePosX - 100;
 		NewNodePos.Y = PinNode->NodePosY;
 
-		UMaterialGraphNode* MaterialNode = Cast<UMaterialGraphNode>(Action.PerformAction(GraphObj, const_cast<UEdGraphPin*>(TargetPin), NewNodePos));
+		UMaterialGraphNode* MaterialNode = Cast<UMaterialGraphNode>(Action.PerformAction(GraphObj, TargetPin, NewNodePos));
 
 		if (MaterialNode->MaterialExpression->HasAParameterName())
 		{
@@ -3560,16 +3540,11 @@ void FMaterialEditor::OnPromoteToParameter(const FToolMenuContext& InMenuContext
 	}
 }
 
-bool FMaterialEditor::OnCanPromoteToParameter(const FToolMenuContext& InMenuContext) const
+bool FMaterialEditor::OnCanPromoteToParameter()
 {
-	UGraphNodeContextMenuContext* NodeContext = InMenuContext.FindContext<UGraphNodeContextMenuContext>();
-	if (!NodeContext)
-	{
-		return false;
-	}
+	UEdGraphPin* TargetPin = GraphEditor->GetGraphPinForMenu();
 
-	const UEdGraphPin* TargetPin = NodeContext->Pin;
-	if (TargetPin && (TargetPin->Direction == EEdGraphPinDirection::EGPD_Input) && (TargetPin->LinkedTo.Num() == 0))
+	if (ensure(TargetPin) && TargetPin->LinkedTo.Num() == 0)
 	{
 		return GetOnPromoteToParameterClass(TargetPin) != nullptr;
 	}
@@ -5070,7 +5045,13 @@ TSharedRef<SGraphEditor> FMaterialEditor::CreateGraphEditorWidget()
 		GraphEditorCommands->MapAction(FGraphEditorCommands::Get().GoToDocumentation,
 			FExecuteAction::CreateSP(this, &FMaterialEditor::OnGoToDocumentation),
 			FCanExecuteAction::CreateSP(this, &FMaterialEditor::CanGoToDocumentation)
-		);
+			);
+
+
+		GraphEditorCommands->MapAction(FMaterialEditorCommands::Get().PromoteToParameter,
+			FExecuteAction::CreateSP(this, &FMaterialEditor::OnPromoteToParameter),
+			FCanExecuteAction::CreateSP(this, &FMaterialEditor::OnCanPromoteToParameter)
+			);
 
 		// Alignment Commands
 		GraphEditorCommands->MapAction(FGraphEditorCommands::Get().AlignNodesTop,
@@ -5131,8 +5112,7 @@ TSharedRef<SGraphEditor> FMaterialEditor::CreateGraphEditorWidget()
 		.Appearance(this, &FMaterialEditor::GetGraphAppearance)
 		.GraphToEdit(Material->MaterialGraph)
 		.GraphEvents(InEvents)
-		.ShowGraphStateOverlay(false)
-		.AssetEditorToolkit(this->AsShared());
+		.ShowGraphStateOverlay(false);
 }
 
 FGraphAppearanceInfo FMaterialEditor::GetGraphAppearance() const

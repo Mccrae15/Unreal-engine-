@@ -37,7 +37,6 @@ class SWindow;
 class USequencerSettings;
 class FSequencerTrackFilter;
 class SSequencerGroupManager;
-class SSequencerTreeFilterStatusBar;
 struct FPaintPlaybackRangeArgs;
 struct FSequencerCustomizationInfo;
 struct FSequencerSelectionCurveFilter;
@@ -454,7 +453,7 @@ private:
 	void FillLevelFilterMenu(FMenuBuilder& InMenuBarBuilder);
 	void FillNodeGroupsFilterMenu(FMenuBuilder& InMenuBarBuilder);
 
-	void OnEnableAllNodeGroupFilters(bool bEnableAll);
+	void OnResetNodeGroupFilters();
 	void OnNodeGroupFilterClicked(UMovieSceneNodeGroup* NodeGroup);
 
 	/**
@@ -604,9 +603,6 @@ private:
 	/** Main Sequencer Area*/
 	TSharedPtr<SVerticalBox> MainSequencerArea;
 
-	/** Filter Status Bar */
-	TSharedPtr<SSequencerTreeFilterStatusBar> SequencerTreeFilterStatusBar;
-	
 	/** Section area widget */
 	TSharedPtr<SSequencerTrackArea> TrackArea;
 

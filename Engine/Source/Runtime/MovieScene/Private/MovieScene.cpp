@@ -558,16 +558,12 @@ void FMovieSceneSectionGroup::Clean()
 
 void UMovieSceneNodeGroup::AddNode(const FString& Path)
 {
-	Modify();
-
 	Nodes.AddUnique(Path);
 	OnNodeGroupChangedEvent.Broadcast();
 }
 
 void UMovieSceneNodeGroup::RemoveNode(const FString& Path)
 {
-	Modify();
-
 	Nodes.Remove(Path);
 	OnNodeGroupChangedEvent.Broadcast();
 }
@@ -615,8 +611,6 @@ void UMovieSceneNodeGroup::UpdateNodePath(const FString& OldPath, const FString&
 
 void UMovieSceneNodeGroup::SetName(const FName& InName)
 {
-	Modify();
-
 	Name = InName;
 	OnNodeGroupChangedEvent.Broadcast();
 }
@@ -648,8 +642,6 @@ void UMovieSceneNodeGroupCollection::PostLoad()
 
 void UMovieSceneNodeGroupCollection::AddNodeGroup(UMovieSceneNodeGroup* NodeGroup)
 {
-	Modify();
-
 	if (!NodeGroups.Contains(NodeGroup))
 	{
 		NodeGroups.Add(NodeGroup);
@@ -661,8 +653,6 @@ void UMovieSceneNodeGroupCollection::AddNodeGroup(UMovieSceneNodeGroup* NodeGrou
 
 void UMovieSceneNodeGroupCollection::RemoveNodeGroup(UMovieSceneNodeGroup* NodeGroup)
 {
-	Modify();
-
 	NodeGroup->OnNodeGroupChanged().RemoveAll(this);
 
 	if (NodeGroups.RemoveSingle(NodeGroup))

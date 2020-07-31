@@ -26,8 +26,10 @@ void SCustomToolbarPreviewWidget::BuildMultiBlockWidget(const ISlateStyle* Style
 	];
 
 	// Add this widget to the search list of the multibox and hide it
-	OwnerMultiBoxWidget.Pin()->AddElement(this->AsWidget(), FText::GetEmpty(), MultiBlock->GetSearchable());
-
+	if (MultiBlock->GetSearchable())
+	{
+		OwnerMultiBoxWidget.Pin()->AddSearchElement(this->AsWidget(), FText::GetEmpty());
+	}
 }
 
 TSharedRef< class IMultiBlockBaseWidget > FDropPreviewBlock::ConstructWidget() const

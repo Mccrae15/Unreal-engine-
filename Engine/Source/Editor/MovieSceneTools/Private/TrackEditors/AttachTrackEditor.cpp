@@ -1186,11 +1186,8 @@ FKeyPropertyResult F3DAttachTrackEditor::AddKeyInternal( FFrameNumber KeyTime, c
 		if (PreserveType == ETransformPreserveType::None)
 		{
 			Track->Modify();
-			UMovieSceneSection* NewSection = Cast<UMovieScene3DAttachTrack>(Track)->AddConstraint(KeyTime, Duration, SocketName, ComponentName, ConstraintBindingID);
-			
 			KeyPropertyResult.bTrackModified = true;
-			KeyPropertyResult.SectionsCreated.Add(NewSection);
-
+			Cast<UMovieScene3DAttachTrack>(Track)->AddConstraint(KeyTime, Duration, SocketName, ComponentName, ConstraintBindingID);
 			continue;
 		}
 
@@ -1305,17 +1302,16 @@ FKeyPropertyResult F3DAttachTrackEditor::AddKeyInternal( FFrameNumber KeyTime, c
 			FLocalTransformEvaluator LocalChildTransformEval(GetSequencer(), Object, EvalTrack);
 
 			// Add the new attach section to the track
-			UMovieSceneSection* NewSection = Cast<UMovieScene3DAttachTrack>(Track)->AddConstraint(KeyTime, Duration, SocketName, ComponentName, ConstraintBindingID);
-			KeyPropertyResult.SectionsCreated.Add(NewSection);
+			Cast<UMovieScene3DAttachTrack>(Track)->AddConstraint(KeyTime, Duration, SocketName, ComponentName, ConstraintBindingID);
 
 			// Compensate
 			CompensateChildTrack(AttachRange, Channels, ParentChannels, ParentTransformEval, LocalChildTransformEval, PreserveType, RevertModifier.GetValue());
 		}
 		else
 		{
+
 			// Add the new attach section to the track
-			UMovieSceneSection* NewSection = Cast<UMovieScene3DAttachTrack>(Track)->AddConstraint(KeyTime, Duration, SocketName, ComponentName, ConstraintBindingID);
-			KeyPropertyResult.SectionsCreated.Add(NewSection);
+			Cast<UMovieScene3DAttachTrack>(Track)->AddConstraint(KeyTime, Duration, SocketName, ComponentName, ConstraintBindingID);
 
 			// Compensate
 			CompensateChildTrack(AttachRange, Channels, ParentChannels, ParentTransformEval, WorldChildTransformEval, PreserveType, [&](const FTransform& InTransform, const FFrameNumber& InTime) { return InTransform; });

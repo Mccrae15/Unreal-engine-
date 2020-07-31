@@ -550,14 +550,7 @@ bool FWidgetBlueprintEditor::CanDuplicateSelectedWidgets()
 void FWidgetBlueprintEditor::DuplicateSelectedWidgets()
 {
 	TSet<FWidgetReference> Widgets = GetSelectedWidgets();
-	TArray<UWidget*> DuplicatedWidgets = FWidgetBlueprintEditorUtils::DuplicateWidgets(SharedThis(this), GetWidgetBlueprintObj(), Widgets);
-
-	TSet<FWidgetReference> DuplicatedWidgetRefs;
-	for (UWidget* Widget : DuplicatedWidgets)
-	{
-		DuplicatedWidgetRefs.Add(GetReferenceFromPreview(Widget));
-	}
-	SelectWidgets(DuplicatedWidgetRefs, false);
+	FWidgetBlueprintEditorUtils::DuplicateWidgets(SharedThis(this), GetWidgetBlueprintObj(), Widgets);
 }
 
 void FWidgetBlueprintEditor::Tick(float DeltaTime)

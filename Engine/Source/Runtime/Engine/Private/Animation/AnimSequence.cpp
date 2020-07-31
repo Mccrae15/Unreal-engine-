@@ -4880,7 +4880,7 @@ void UAnimSequence::AdvanceMarkerPhaseAsLeader(bool bLooping, float MoveDelta, c
 				}
 			}
 
-			const float TimeToMarker = PrevMarker.TimeToMarker;
+			const float TimeToMarker = NextMarker.TimeToMarker;
 
 			if (CurrentMoveDelta < TimeToMarker)
 			{

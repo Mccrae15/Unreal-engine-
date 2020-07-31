@@ -374,7 +374,7 @@ void FD3D12CommandContext::RHISetScissorRect(bool bEnable, uint32 MinX, uint32 M
 	}
 }
 
-void FD3D12CommandContext::RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState, bool bApplyAdditionalState)
+void FD3D12CommandContext::RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState)
 {
 	FD3D12GraphicsPipelineState* GraphicsPipelineState = FD3D12DynamicRHI::ResourceCast(GraphicsState);
 
@@ -404,14 +404,11 @@ void FD3D12CommandContext::RHISetGraphicsPipelineState(FRHIGraphicsPipelineState
 	StateCache.SetGraphicsPipelineState(GraphicsPipelineState, bUsingTessellation != bWasUsingTessellation);
 	StateCache.SetStencilRef(0);
 
-	if (bApplyAdditionalState)
-	{
-		ApplyGlobalUniformBuffers(GraphicsPipelineState->GetVertexShader());
-		ApplyGlobalUniformBuffers(GraphicsPipelineState->GetHullShader());
-		ApplyGlobalUniformBuffers(GraphicsPipelineState->GetDomainShader());
-		ApplyGlobalUniformBuffers(GraphicsPipelineState->GetGeometryShader());
-		ApplyGlobalUniformBuffers(GraphicsPipelineState->GetPixelShader());
-	}
+	ApplyGlobalUniformBuffers(GraphicsPipelineState->GetVertexShader());
+	ApplyGlobalUniformBuffers(GraphicsPipelineState->GetHullShader());
+	ApplyGlobalUniformBuffers(GraphicsPipelineState->GetDomainShader());
+	ApplyGlobalUniformBuffers(GraphicsPipelineState->GetGeometryShader());
+	ApplyGlobalUniformBuffers(GraphicsPipelineState->GetPixelShader());
 }
 
 void FD3D12CommandContext::RHISetComputePipelineState(FRHIComputePipelineState* ComputeState)

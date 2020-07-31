@@ -288,10 +288,6 @@ private:
 	 */
 	bool KeyAreaHasCurves(const FSequencerSectionKeyAreaNode& KeyAreaNode) const;
 
-public:
-	int32 GetTotalDisplayNodeCount() const { return DisplayNodeCount; }
-	int32 GetFilteredDisplayNodeCount() const { return FilteredNodes.Num(); }
-
 private:
 
 	/** Symbolic root node that contains the actual displayed root nodes as children */
@@ -329,9 +325,6 @@ private:
 	
 	/** Level based track filtering */
 	TSharedPtr<FSequencerTrackFilter_LevelFilter> TrackFilterLevelFilter;
-
-	/** The total number of DisplayNodes in the tree, both displayed and hidden */
-	uint32 DisplayNodeCount;
 
 	bool bFilterUpdateRequested;
 	bool bFilteringOnNodeGroups;

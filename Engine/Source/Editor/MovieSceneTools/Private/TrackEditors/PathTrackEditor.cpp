@@ -268,9 +268,8 @@ FKeyPropertyResult F3DPathTrackEditor::AddKeyInternal( FFrameNumber KeyTime, con
 				}
 
 				int32 Duration = FMath::Max(0, (PathEndTime - KeyTime).Value);
-				UMovieSceneSection* NewSection = Cast<UMovieScene3DPathTrack>(Track)->AddConstraint( KeyTime, Duration, NAME_None, NAME_None, ConstraintBindingID );
+				Cast<UMovieScene3DPathTrack>(Track)->AddConstraint( KeyTime, Duration, NAME_None, NAME_None, ConstraintBindingID );
 				KeyPropertyResult.bTrackModified = true;
-				KeyPropertyResult.SectionsCreated.Add(NewSection);
 			}
 		}
 	}

@@ -895,67 +895,79 @@ bool IsMappingType(PyTypeObject* InType)
 
 bool IsModuleAvailableForImport(const TCHAR* InModuleName, FString* OutResolvedFile)
 {
-	// Check the sys.modules table first since it avoids hitting the filesystem
-	if (PyObject* PyModulesDict = PySys_GetObject(PyCStrCast("modules")))
+	FPyObjectPtr PySysModule = FPyObjectPtr::StealReference(PyImport_ImportModule("sys"));
+	if (PySysModule)
 	{
-		PyObject* PyModuleKey = nullptr;
-		PyObject* PyModuleValue = nullptr;
-		Py_ssize_t ModuleDictIndex = 0;
-		while (PyDict_Next(PyModulesDict, &ModuleDictIndex, &PyModuleKey, &PyModuleValue))
+		PyObject* PySysDict = PyModule_GetDict(PySysModule);
+
+		// Check the sys.modules table first since it avoids hitting the filesystem
 		{
-			if (PyModuleKey)
+			PyObject* PyModulesDict = PyDict_GetItemString(PySysDict, "modules");
+			if (PyModulesDict)
 			{
-				const FString CurModuleName = PyObjectToUEString(PyModuleKey);
-				if (FCString::Strcmp(InModuleName, *CurModuleName) == 0)
+				PyObject* PyModuleKey = nullptr;
+				PyObject* PyModuleValue = nullptr;
+				Py_ssize_t ModuleDictIndex = 0;
+				while (PyDict_Next(PyModulesDict, &ModuleDictIndex, &PyModuleKey, &PyModuleValue))
 				{
-					if (OutResolvedFile && PyModuleValue)
+					if (PyModuleKey)
 					{
-						PyObject* PyModuleDict = PyModule_GetDict(PyModuleValue);
-						PyObject* PyModuleFile = PyDict_GetItemString(PyModuleDict, "__file__");
-						if (PyModuleFile)
+						const FString CurModuleName = PyObjectToUEString(PyModuleKey);
+						if (FCString::Strcmp(InModuleName, *CurModuleName) == 0)
 						{
-							*OutResolvedFile = PyObjectToUEString(PyModuleFile);
+							if (OutResolvedFile && PyModuleValue)
+							{
+								PyObject* PyModuleDict = PyModule_GetDict(PyModuleValue);
+								PyObject* PyModuleFile = PyDict_GetItemString(PyModuleDict, "__file__");
+								if (PyModuleFile)
+								{
+									*OutResolvedFile = PyObjectToUEString(PyModuleFile);
+								}
+							}
+
+							return true;
 						}
 					}
-
-					return true;
 				}
 			}
 		}
-	}
 
-	// Check the sys.path list looking for bla.py or bla/__init__.py
-	if (PyObject* PyPathList = PySys_GetObject(PyCStrCast("path")))
-	{
-		const FString ModuleSingleFile = FString::Printf(TEXT("%s.py"), InModuleName);
-		const FString ModuleFolderName = FString::Printf(TEXT("%s/__init__.py"), InModuleName);
-
-		const Py_ssize_t PathListSize = PyList_Size(PyPathList);
-		for (Py_ssize_t PathListIndex = 0; PathListIndex < PathListSize; ++PathListIndex)
+		// Check the sys.path list looking for bla.py or bla/__init__.py
 		{
-			PyObject* PyPathItem = PyList_GetItem(PyPathList, PathListIndex);
-			if (PyPathItem)
+			const FString ModuleSingleFile = FString::Printf(TEXT("%s.py"), InModuleName);
+			const FString ModuleFolderName = FString::Printf(TEXT("%s/__init__.py"), InModuleName);
+
+			PyObject* PyPathList = PyDict_GetItemString(PySysDict, "path");
+			if (PyPathList)
 			{
-				const FString CurPath = PyObjectToUEString(PyPathItem);
-
-				if (FPaths::FileExists(CurPath / ModuleSingleFile))
+				const Py_ssize_t PathListSize = PyList_Size(PyPathList);
+				for (Py_ssize_t PathListIndex = 0; PathListIndex < PathListSize; ++PathListIndex)
 				{
-					if (OutResolvedFile)
+					PyObject* PyPathItem = PyList_GetItem(PyPathList, PathListIndex);
+					if (PyPathItem)
 					{
-						*OutResolvedFile = CurPath / ModuleSingleFile;
+						const FString CurPath = PyObjectToUEString(PyPathItem);
+
+						if (FPaths::FileExists(CurPath / ModuleSingleFile))
+						{
+							if (OutResolvedFile)
+							{
+								*OutResolvedFile = CurPath / ModuleSingleFile;
+							}
+
+							return true;
+						}
+
+						if (FPaths::FileExists(CurPath / ModuleFolderName))
+						{
+							if (OutResolvedFile)
+							{
+								*OutResolvedFile = CurPath / ModuleFolderName;
+							}
+
+							return true;
+						}
 					}
-
-					return true;
-				}
-
-				if (FPaths::FileExists(CurPath / ModuleFolderName))
-				{
-					if (OutResolvedFile)
-					{
-						*OutResolvedFile = CurPath / ModuleFolderName;
-					}
-
-					return true;
 				}
 			}
 		}
@@ -966,23 +978,30 @@ bool IsModuleAvailableForImport(const TCHAR* InModuleName, FString* OutResolvedF
 
 bool IsModuleImported(const TCHAR* InModuleName, PyObject** OutPyModule)
 {
-	if (PyObject* PyModulesDict = PySys_GetObject(PyCStrCast("modules")))
+	FPyObjectPtr PySysModule = FPyObjectPtr::StealReference(PyImport_ImportModule("sys"));
+	if (PySysModule)
 	{
-		PyObject* PyModuleKey = nullptr;
-		PyObject* PyModuleValue = nullptr;
-		Py_ssize_t ModuleDictIndex = 0;
-		while (PyDict_Next(PyModulesDict, &ModuleDictIndex, &PyModuleKey, &PyModuleValue))
+		PyObject* PySysDict = PyModule_GetDict(PySysModule);
+
+		PyObject* PyModulesDict = PyDict_GetItemString(PySysDict, "modules");
+		if (PyModulesDict)
 		{
-			if (PyModuleKey)
+			PyObject* PyModuleKey = nullptr;
+			PyObject* PyModuleValue = nullptr;
+			Py_ssize_t ModuleDictIndex = 0;
+			while (PyDict_Next(PyModulesDict, &ModuleDictIndex, &PyModuleKey, &PyModuleValue))
 			{
-				const FString CurModuleName = PyObjectToUEString(PyModuleKey);
-				if (FCString::Strcmp(InModuleName, *CurModuleName) == 0)
+				if (PyModuleKey)
 				{
-					if (OutPyModule)
+					const FString CurModuleName = PyObjectToUEString(PyModuleKey);
+					if (FCString::Strcmp(InModuleName, *CurModuleName) == 0)
 					{
-						*OutPyModule = PyModuleValue;
+						if (OutPyModule)
+						{
+							*OutPyModule = PyModuleValue;
+						}
+						return true;
 					}
-					return true;
 				}
 			}
 		}
@@ -993,30 +1012,43 @@ bool IsModuleImported(const TCHAR* InModuleName, PyObject** OutPyModule)
 
 void AddSystemPath(const FString& InPath)
 {
-	if (PyObject* PyPathList = PySys_GetObject(PyCStrCast("path")))
+	FPyObjectPtr PySysModule = FPyObjectPtr::StealReference(PyImport_ImportModule("sys"));
+	if (PySysModule)
 	{
-		FPyObjectPtr PyPath;
-		if (PyConversion::Pythonize(InPath, PyPath.Get(), PyConversion::ESetErrorState::No))
+		PyObject* PySysDict = PyModule_GetDict(PySysModule);
+
+		PyObject* PyPathList = PyDict_GetItemString(PySysDict, "path");
+		if (PyPathList)
 		{
-			if (PySequence_Contains(PyPathList, PyPath) != 1)
+			FPyObjectPtr PyPath;
+			if (PyConversion::Pythonize(InPath, PyPath.Get(), PyConversion::ESetErrorState::No))
 			{
-				PyList_Append(PyPathList, PyPath);
+				if (PySequence_Contains(PyPathList, PyPath) != 1)
+				{
+					PyList_Append(PyPathList, PyPath);
+				}
 			}
 		}
-
 	}
 }
 
 void RemoveSystemPath(const FString& InPath)
 {
-	if (PyObject* PyPathList = PySys_GetObject(PyCStrCast("path")))
+	FPyObjectPtr PySysModule = FPyObjectPtr::StealReference(PyImport_ImportModule("sys"));
+	if (PySysModule)
 	{
-		FPyObjectPtr PyPath;
-		if (PyConversion::Pythonize(InPath, PyPath.Get(), PyConversion::ESetErrorState::No))
+		PyObject* PySysDict = PyModule_GetDict(PySysModule);
+
+		PyObject* PyPathList = PyDict_GetItemString(PySysDict, "path");
+		if (PyPathList)
 		{
-			if (PySequence_Contains(PyPathList, PyPath) == 1)
+			FPyObjectPtr PyPath;
+			if (PyConversion::Pythonize(InPath, PyPath.Get(), PyConversion::ESetErrorState::No))
 			{
-				PySequence_DelItem(PyPathList, PySequence_Index(PyPathList, PyPath));
+				if (PySequence_Contains(PyPathList, PyPath) == 1)
+				{
+					PySequence_DelItem(PyPathList, PySequence_Index(PyPathList, PyPath));
+				}
 			}
 		}
 	}
@@ -1026,13 +1058,20 @@ TArray<FString> GetSystemPaths()
 {
 	TArray<FString> Paths;
 
-	if (PyObject* PyPathList = PySys_GetObject(PyCStrCast("path")))
+	FPyObjectPtr PySysModule = FPyObjectPtr::StealReference(PyImport_ImportModule("sys"));
+	if (PySysModule)
 	{
-		const Py_ssize_t PyPathLen = PyList_Size(PyPathList);
-		for (Py_ssize_t PyPathIndex = 0; PyPathIndex < PyPathLen; ++PyPathIndex)
+		PyObject* PySysDict = PyModule_GetDict(PySysModule);
+
+		PyObject* PyPathList = PyDict_GetItemString(PySysDict, "path");
+		if (PyPathList)
 		{
-			PyObject* PyPathItem = PyList_GetItem(PyPathList, PyPathIndex);
-			Paths.Add(PyObjectToUEString(PyPathItem));
+			const Py_ssize_t PyPathLen = PyList_Size(PyPathList);
+			for (Py_ssize_t PyPathIndex = 0; PyPathIndex < PyPathLen; ++PyPathIndex)
+			{
+				PyObject* PyPathItem = PyList_GetItem(PyPathList, PyPathIndex);
+				Paths.Add(PyObjectToUEString(PyPathItem));
+			}
 		}
 	}
 
@@ -1253,7 +1292,7 @@ bool EnableDeveloperWarnings()
 }
 
 FString BuildPythonError()
-{
+	{
 	FString PythonErrorString;
 
 	// This doesn't just call PyErr_Print as it also needs to work before stderr redirection has been set-up in Python
@@ -1317,16 +1356,6 @@ FString BuildPythonError()
 	}
 
 	PyErr_Clear();
-
-	// Raise the excepthook (if set)
-	// We set this to None after enabling our stderr redirection
-	{
-		PyObject* PyExceptHook = PySys_GetObject(PyCStrCast("excepthook"));
-		if (PyExceptHook && PyExceptHook != Py_None)
-		{
-			FPyObjectPtr PyExceptHookResult = FPyObjectPtr::StealReference(PyObject_CallFunctionObjArgs(PyExceptHook, PyExceptionType.Get(), PyExceptionValue.Get(), PyExceptionTraceback.Get(), nullptr));
-		}
-	}
 
 	return PythonErrorString;
 }

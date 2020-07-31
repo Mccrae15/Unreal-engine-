@@ -2865,13 +2865,6 @@ void UEditorEngine::ApplyDeltaToComponent(USceneComponent* InComponent,
 	// Update the actor before leaving.
 	InComponent->MarkPackageDirty();
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	if (!GetDefault<ULevelEditorViewportSettings>()->bUseLegacyPostEditBehavior)
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	{
-		InComponent->PostEditComponentMove(false);
-	}
-
 	// Fire callbacks
 	FEditorSupportDelegates::RefreshPropertyWindows.Broadcast();
 	FEditorSupportDelegates::UpdateUI.Broadcast();
@@ -5238,11 +5231,6 @@ void UEditorEngine::ReplaceActors(UActorFactory* Factory, const FAssetData& Asse
 				{
 					NewActorRootComponent->SetRelativeScale3D( OldActor->GetRootComponent()->GetRelativeScale3D() );
 				}
-
-				if (OldActor->GetRootComponent() != NULL)
-				{
-					NewActorRootComponent->SetMobility(OldActor->GetRootComponent()->Mobility);
-				}
 			}
 
 			NewActor->Layers.Empty();
@@ -6200,22 +6188,7 @@ void UEditorEngine::SetViewportsRealtimeOverride(bool bShouldBeRealtime, FText S
 	{
 		if (VC)
 		{
-			VC->AddRealtimeOverride(bShouldBeRealtime, SystemDisplayName);
-		}
-	}
-
-	RedrawAllViewports();
-
-	FEditorSupportDelegates::UpdateUI.Broadcast();
-}
-
-void UEditorEngine::RemoveViewportsRealtimeOverride(FText SystemDisplayName)
-{
-	for (FEditorViewportClient* VC : AllViewportClients)
-	{
-		if (VC)
-		{
-			VC->RemoveRealtimeOverride(SystemDisplayName);
+			VC->SetRealtimeOverride(bShouldBeRealtime, SystemDisplayName);
 		}
 	}
 
@@ -6230,7 +6203,7 @@ void UEditorEngine::RemoveViewportsRealtimeOverride()
 	{
 		if (VC)
 		{
-			VC->PopRealtimeOverride();
+			VC->RemoveRealtimeOverride();
 		}
 	}
 
@@ -6340,10 +6313,6 @@ bool UEditorEngine::ShouldThrottleCPUUsage() const
 
 bool UEditorEngine::AreAllWindowsHidden() const
 {
-	if (!FSlateApplication::IsInitialized())
-	{
-		return true;
-	}
 	const TArray< TSharedRef<SWindow> > AllWindows = FSlateApplication::Get().GetInteractiveTopLevelWindows();
 
 	bool bAllHidden = true;
@@ -7238,11 +7207,11 @@ FWorldContext& UEditorEngine::GetEditorWorldContext(bool bEnsureIsGWorld)
 	return CreateNewWorldContext(EWorldType::Editor);
 }
 
-FWorldContext* UEditorEngine::GetPIEWorldContext(int32 WorldPIEInstance)
+FWorldContext* UEditorEngine::GetPIEWorldContext()
 {
-	for (FWorldContext& WorldContext : WorldList)
+	for(auto& WorldContext : WorldList)
 	{
-		if (WorldContext.WorldType == EWorldType::PIE && WorldContext.PIEInstance == WorldPIEInstance)
+		if(WorldContext.WorldType == EWorldType::PIE)
 		{
 			return &WorldContext;
 		}

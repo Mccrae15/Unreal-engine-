@@ -75,10 +75,7 @@ FReply FUniformGridSlotExtension::HandleShiftRow(int32 ShiftAmount)
 
 	EndTransaction();
 
-	if (UWidgetBlueprint* BlueprintPtr = Blueprint.Get())
-	{
-		FBlueprintEditorUtils::MarkBlueprintAsModified(BlueprintPtr);
-	}
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
 	return FReply::Handled();
 }
@@ -95,10 +92,7 @@ FReply FUniformGridSlotExtension::HandleShiftColumn(int32 ShiftAmount)
 
 	EndTransaction();
 
-	if (UWidgetBlueprint* BlueprintPtr = Blueprint.Get())
-	{
-		FBlueprintEditorUtils::MarkBlueprintAsModified(BlueprintPtr);
-	}
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
 	return FReply::Handled();
 }

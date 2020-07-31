@@ -27,9 +27,8 @@ public:
 	 * @param SocketName The socket name for the constraint.
 	 * @param ComponentName The name of the component the socket resides in.
 	 * @param FMovieSceneObjectBindingID The object binding id to the constraint.
-	 * @return The newly created constraint section
 	 */
-	virtual UMovieSceneSection* AddConstraint(FFrameNumber Time, int32 Duration, const FName SocketName, const FName ComponentName, const FMovieSceneObjectBindingID& ConstraintBindingID) { return nullptr; }
+	virtual void AddConstraint(FFrameNumber Time, int32 Duration, const FName SocketName, const FName ComponentName, const FMovieSceneObjectBindingID& ConstraintBindingID) { }
 
 public:
 

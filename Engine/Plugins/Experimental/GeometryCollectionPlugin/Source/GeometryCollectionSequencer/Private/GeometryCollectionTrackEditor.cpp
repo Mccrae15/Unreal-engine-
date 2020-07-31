@@ -337,7 +337,6 @@ FKeyPropertyResult FGeometryCollectionTrackEditor::AddKeyInternal( FFrameNumber 
 
 			UMovieSceneSection* NewSection = Cast<UMovieSceneGeometryCollectionTrack>(Track)->AddNewAnimation( KeyTime, GeometryCollectionComponent );
 			KeyPropertyResult.bTrackModified = true;
-			KeyPropertyResult.SectionsCreated.Add(NewSection);
 
 			GetSequencer()->EmptySelection();
 			GetSequencer()->SelectSection(NewSection);

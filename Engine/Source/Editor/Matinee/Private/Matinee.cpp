@@ -958,7 +958,7 @@ void FMatinee::InitMatinee(const EToolkitMode::Type Mode, const TSharedPtr< clas
 			{				
 				//Ensure Realtime is turned on temporarily
 				const bool bShouldBeRealtime = true;
-				LevelVC->AddRealtimeOverride(bShouldBeRealtime, LOCTEXT("RealtimeOverrideMessage_Matinee", "Matinee"));
+				LevelVC->SetRealtimeOverride(bShouldBeRealtime, LOCTEXT("RealtimeOverrideMessage_Matinee", "Matinee"));
 			}
 		}
 	}
@@ -2085,7 +2085,7 @@ void FMatinee::OnClose()
 			// Turn off realtime when exiting.
 			if( LevelVC->IsPerspective() && LevelVC->AllowsCinematicControl() )
 			{				
-				LevelVC->RemoveRealtimeOverride(LOCTEXT("RealtimeOverrideMessage_Matinee", "Matinee"));
+				LevelVC->RemoveRealtimeOverride();
 			}
 		}
 	}

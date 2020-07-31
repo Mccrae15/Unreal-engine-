@@ -2,7 +2,6 @@
 
 #include "Slate/WidgetRenderer.h"
 #include "TextureResource.h"
-#include "Input/HittestGrid.h"
 #include "Layout/ArrangedChildren.h"
 #include "Misc/App.h"
 #include "Modules/ModuleManager.h"

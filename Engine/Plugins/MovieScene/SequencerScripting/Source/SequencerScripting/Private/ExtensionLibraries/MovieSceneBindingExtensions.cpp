@@ -34,15 +34,6 @@ FText UMovieSceneBindingExtensions::GetDisplayName(const FSequencerBindingProxy&
 	return FText();
 }
 
-void UMovieSceneBindingExtensions::SetDisplayName(const FSequencerBindingProxy& InBinding, const FText& InName)
-{
-	UMovieScene* MovieScene = InBinding.Sequence ? InBinding.Sequence->GetMovieScene() : nullptr;
-	if (MovieScene && InBinding.BindingID.IsValid())
-	{
-		MovieScene->SetObjectDisplayName(InBinding.BindingID, InName);
-	}
-}
-
 FString UMovieSceneBindingExtensions::GetName(const FSequencerBindingProxy& InBinding)
 {
 	UMovieScene* MovieScene = InBinding.Sequence ? InBinding.Sequence->GetMovieScene() : nullptr;
@@ -62,25 +53,6 @@ FString UMovieSceneBindingExtensions::GetName(const FSequencerBindingProxy& InBi
 	}
 
 	return FString();
-}
-
-void UMovieSceneBindingExtensions::SetName(const FSequencerBindingProxy& InBinding, const FString& InName)
-{
-	UMovieScene* MovieScene = InBinding.Sequence ? InBinding.Sequence->GetMovieScene() : nullptr;
-	if (MovieScene && InBinding.BindingID.IsValid())
-	{
-		FMovieSceneSpawnable* Spawnable = MovieScene->FindSpawnable(InBinding.BindingID);
-		if (Spawnable)
-		{
-			Spawnable->SetName(InName);
-		}
-
-		FMovieScenePossessable* Possessable = MovieScene->FindPossessable(InBinding.BindingID);
-		if (Possessable)
-		{
-			Possessable->SetName(InName);
-		}
-	}
 }
 
 TArray<UMovieSceneTrack*> UMovieSceneBindingExtensions::GetTracks(const FSequencerBindingProxy& InBinding)

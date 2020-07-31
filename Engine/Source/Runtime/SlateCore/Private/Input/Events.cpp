@@ -33,11 +33,6 @@ bool FInputEvent::IsPointerEvent() const
 	return false;
 }
 
-bool FInputEvent::IsKeyEvent() const
-{
-	return false;
-}
-
 FText FCharacterEvent::ToText() const
 {
 	return FText::Format( NSLOCTEXT("Events", "Char", "Char({0})"), FText::FromString(FString(1, &Character)) );
@@ -46,11 +41,6 @@ FText FCharacterEvent::ToText() const
 FText FKeyEvent::ToText() const
 {
 	return FText::Format( NSLOCTEXT("Events", "Key", "Key({0})"), Key.GetDisplayName() );
-}
-
-bool FKeyEvent::IsKeyEvent() const
-{
-	return true;
 }
 
 FText FAnalogInputEvent::ToText() const

@@ -33,7 +33,6 @@
 #include "UObject/PurgingReferenceCollector.h"
 #include "AssetRegistryModule.h"
 #include "EditorUtilityCommon.h"
-#include "EditorUtilityToolMenu.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 

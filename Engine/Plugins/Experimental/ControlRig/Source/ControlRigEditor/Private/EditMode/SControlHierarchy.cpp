@@ -270,7 +270,7 @@ void SControlHierarchy::OnSelectionChanged(TSharedPtr<FControlTreeElement> Selec
 {
 	if (!bSelecting)
 	{
-		TGuardValue<bool> Guard(bSelecting, true);
+		TGuardValue<bool>(bSelecting, true);
 		FRigHierarchyContainer* Hierarchy = GetHierarchyContainer();
 
 		if (Hierarchy)
@@ -327,7 +327,7 @@ void SControlHierarchy::OnRigElementSelected(IControlRigManipulatable* ControlRi
 {
 	if (!bSelecting)
 	{
-		TGuardValue<bool> Guard(bSelecting, true);
+		TGuardValue<bool>(bSelecting, true);
 		FRigElementKey Key;
 		Key.Name = Control.Name;
 		Key.Type = ERigElementType::Control;

@@ -446,7 +446,7 @@ protected:
 	void LockAllLevels_Executed();
 
 	/** Unlocks all levels */
-	void UnlockAllLevels_Executed();
+	void UnockAllLevels_Executed();
 
 	/** Toggle all read-only levels */
 	void ToggleReadOnlyLevels_Executed();

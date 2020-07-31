@@ -180,7 +180,6 @@ void SAssetView::Construct( const FArguments& InArgs )
 	bShowTypeInColumnView = InArgs._ShowTypeInColumnView;
 	bSortByPathInColumnView = bShowPathInColumnView & InArgs._SortByPathInColumnView;
 	bForceShowEngineContent = InArgs._ForceShowEngineContent;
-	bForceShowPluginContent = InArgs._ForceShowPluginContent;
 
 	bPendingUpdateThumbnails = false;
 	bShouldNotifyNextAssetSync = true;
@@ -2389,7 +2388,7 @@ void SAssetView::PopulateViewButtonMenu(UToolMenu* Menu)
 			FSlateIcon(),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &SAssetView::ToggleShowPluginContent ),
-				FCanExecuteAction::CreateSP(this, &SAssetView::IsToggleShowPluginContentAllowed),
+				FCanExecuteAction(),
 				FIsActionChecked::CreateSP( this, &SAssetView::IsShowingPluginContent )
 			),
 			EUserInterfaceActionType::ToggleButton
@@ -2597,7 +2596,7 @@ void SAssetView::ToggleShowPluginContent()
 
 bool SAssetView::IsShowingPluginContent() const
 {
-	return bForceShowPluginContent || GetDefault<UContentBrowserSettings>()->GetDisplayPluginFolders();
+	return GetDefault<UContentBrowserSettings>()->GetDisplayPluginFolders();
 }
 
 void SAssetView::ToggleShowEngineContent()
@@ -2649,11 +2648,6 @@ bool SAssetView::IsToggleShowDevelopersContentAllowed() const
 bool SAssetView::IsToggleShowEngineContentAllowed() const
 {
 	return !bForceShowEngineContent;
-}
-
-bool SAssetView::IsToggleShowPluginContentAllowed() const
-{
-	return !bForceShowPluginContent;
 }
 
 bool SAssetView::IsShowingDevelopersContent() const
@@ -2945,7 +2939,7 @@ void SAssetView::OnPreviewAssets()
 void SAssetView::ClearSelection(bool bForceSilent)
 {
 	const bool bTempBulkSelectingValue = bForceSilent ? true : bBulkSelecting;
-	TGuardValue<bool> Guard(bBulkSelecting, bTempBulkSelectingValue);
+	TGuardValue<bool>(bBulkSelecting, bTempBulkSelectingValue);
 	switch ( GetCurrentViewType() )
 	{
 		case EAssetViewType::List: ListView->ClearSelection(); break;

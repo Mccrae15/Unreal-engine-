@@ -129,6 +129,7 @@ struct FUObjectItem
 				break;
 			}
 			int32 NewValue = StartValue & ~int32(FlagToClear);
+			checkSlow(NewValue != StartValue);
 			if ((int32)FPlatformAtomics::InterlockedCompareExchange((int32*)&Flags, NewValue, StartValue) == StartValue)
 			{
 				bIChangedIt = true;
@@ -150,6 +151,7 @@ struct FUObjectItem
 				break;
 			}
 			int32 NewValue = StartValue | int32(FlagToSet);
+			checkSlow(NewValue != StartValue);
 			if ((int32)FPlatformAtomics::InterlockedCompareExchange((int32*)&Flags, NewValue, StartValue) == StartValue)
 			{
 				bIChangedIt = true;

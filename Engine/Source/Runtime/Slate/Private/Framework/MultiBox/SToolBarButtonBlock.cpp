@@ -146,7 +146,8 @@ void SToolBarButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, con
 	}
 
 	// Add this widget to the search list of the multibox
-	OwnerMultiBoxWidget.Pin()->AddElement(this->AsWidget(), ActualLabel.Get(), MultiBlock->GetSearchable());
+	if (MultiBlock->GetSearchable())
+		OwnerMultiBoxWidget.Pin()->AddSearchElement(this->AsWidget(), ActualLabel.Get());
 
 	TAttribute<FText> ActualToolTip;
 	if (ToolBarButtonBlock->ToolTipOverride.IsSet())

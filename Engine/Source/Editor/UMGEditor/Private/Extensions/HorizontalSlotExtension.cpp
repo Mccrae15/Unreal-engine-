@@ -71,11 +71,7 @@ FReply FHorizontalSlotExtension::HandleShift(int32 ShiftAmount)
 	EndTransaction();
 
 	//TODO UMG Reorder the live slot without rebuilding the structure
-
-	if (UWidgetBlueprint* BlueprintPtr = Blueprint.Get())
-	{
-		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BlueprintPtr);
-	}
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 
 	return FReply::Handled();
 }

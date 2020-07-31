@@ -61,10 +61,12 @@ ns::AutoReleased<FMetalTexture> FMetalShaderResourceView::GetLinearTexture(bool 
 		if (IsValidRef(SourceVertexBuffer))
 		{
 			NewLinearTexture = SourceVertexBuffer->GetLinearTexture((EPixelFormat)Format, LinearTextureDesc);
+			check(NewLinearTexture);
 		}
 		else if (IsValidRef(SourceIndexBuffer))
 		{
 			NewLinearTexture = SourceIndexBuffer->GetLinearTexture((EPixelFormat)Format, LinearTextureDesc);
+			check(NewLinearTexture);
 		}
 	}
 	return NewLinearTexture;

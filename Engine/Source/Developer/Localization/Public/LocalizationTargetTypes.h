@@ -285,19 +285,14 @@ struct FLocalizationExportingSettings
 
 	FLocalizationExportingSettings()
 		: CollapseMode(ELocalizedTextCollapseMode::IdenticalTextIdAndSource)
-		, POFormat(EPortableObjectFormat::Unreal)
 		, ShouldPersistCommentsOnExport(false)
 		, ShouldAddSourceLocationsAsComments(true)
 	{
 	}
 
 	/* How should we collapse down text when exporting to PO? */
-	UPROPERTY(config, EditAnywhere, Category = "Collapsing", AdvancedDisplay)
+	UPROPERTY(config, EditAnywhere, Category = "Collapsing")
 	ELocalizedTextCollapseMode CollapseMode;
-
-	/* Which format of PO file should we use? */
-	UPROPERTY(config, EditAnywhere, Category = "Format", AdvancedDisplay)
-	EPortableObjectFormat POFormat;
 
 	/* Should user comments in existing PO files be persisted after export? Useful if using a third party service that stores editor/translator notes in the PO format's comment fields. */
 	UPROPERTY(config, EditAnywhere, Category = "Comments")

@@ -13,7 +13,7 @@ UMovieScene3DAttachTrack::UMovieScene3DAttachTrack( const FObjectInitializer& Ob
 	: Super( ObjectInitializer )
 { }
 
-UMovieSceneSection* UMovieScene3DAttachTrack::AddConstraint(FFrameNumber KeyTime, int32 Duration, const FName SocketName, const FName ComponentName, const FMovieSceneObjectBindingID& ConstraintBindingID)
+void UMovieScene3DAttachTrack::AddConstraint(FFrameNumber KeyTime, int32 Duration, const FName SocketName, const FName ComponentName, const FMovieSceneObjectBindingID& ConstraintBindingID)
 {
 	// add the section
 	UMovieScene3DAttachSection* NewSection = NewObject<UMovieScene3DAttachSection>(this, NAME_None, RF_Transactional);
@@ -23,8 +23,6 @@ UMovieSceneSection* UMovieScene3DAttachTrack::AddConstraint(FFrameNumber KeyTime
 	NewSection->AttachComponentName = ComponentName;
 
 	ConstraintSections.Add(NewSection);
-
-	return NewSection;
 }
 
 bool UMovieScene3DAttachTrack::SupportsType(TSubclassOf<UMovieSceneSection> SectionClass) const

@@ -199,7 +199,7 @@ void UMoviePipelineImageSequenceOutputBase::OnRecieveImageDataImpl(FMoviePipelin
 		}
 
 		TileImageTask->PixelData = MoveTemp(QuantizedPixelData);
-		GetPipeline()->AddOutputFuture(ImageWriteQueue->Enqueue(MoveTemp(TileImageTask)));
+		ImageWriteQueue->Enqueue(MoveTemp(TileImageTask));
 	}
 }
 

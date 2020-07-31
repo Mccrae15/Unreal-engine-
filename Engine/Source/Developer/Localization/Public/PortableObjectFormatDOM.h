@@ -340,12 +340,6 @@ public:
 	void CreateNewHeader();
 
 	/**
-	 * Sets a header entry value.
-	 * @note Must be called after CreateNewHeader.
-	 */
-	void SetHeaderValue(const FString& EntryKey, const FString& EntryValue);
-
-	/**
 	 * Sets the language.
 	 *
 	 * @param LanguageCode	String representing a Portable Object language code.

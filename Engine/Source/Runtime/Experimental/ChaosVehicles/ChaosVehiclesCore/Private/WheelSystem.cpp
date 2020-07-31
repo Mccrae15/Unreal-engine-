@@ -45,7 +45,6 @@ namespace Chaos
 		// #todo: currently just letting the brake override the throttle
 		bool Braking = BrakeTorque > FMath::Abs(DriveTorque);
 		float BrakeFactor = 1.0f;
-		static float fHACK = 0.25f;
 		
 		// are we actually touching the ground
 		if (ForceIntoSurface > SMALL_NUMBER)
@@ -58,7 +57,7 @@ namespace Chaos
 
 				// whether the velocity is +ve or -ve when we brake we are slowing the vehicle down
 				// so force is opposing current direction of travel.
-				float ForceRequiredToBringToStop = MassPerWheel * fHACK * (GroundVelocityVector.X) / DeltaTime;
+				float ForceRequiredToBringToStop = MassPerWheel * 0.4f * (GroundVelocityVector.X) / DeltaTime;
 				FinalLongitudinalForce = AppliedLinearBrakeForce;
 
 				// check we are not applying more force than required so we end up overshooting 
@@ -81,7 +80,7 @@ namespace Chaos
 			}
 
 			// lateral grip
-			float FinalLateralForce = -(MassPerWheel * fHACK * GroundVelocityVector.Y) / DeltaTime;
+			float FinalLateralForce = -(MassPerWheel * 0.4f * GroundVelocityVector.Y) / DeltaTime;
 
 			ForceFromFriction.X = FinalLongitudinalForce;
 
@@ -133,10 +132,10 @@ namespace Chaos
 
 			SideSlipModifier = 1.0f- (FMath::Abs(SlipAngle)/10.0f);
 			SideSlipModifier = FMath::Clamp(SideSlipModifier, 0.25f, 1.0f);
-			static float DynamicFrictionLateralScaling = 0.75f;
+			float DynamicFrictionLateralScaling = 0.75f;
 			if (Locked || Spinning)
 			{
-				SideSlipModifier *= Setup().SideSlipModifier;
+				SideSlipModifier *= 0.45f;
 			}
 
 			// Lateral needs more grip to feel right!

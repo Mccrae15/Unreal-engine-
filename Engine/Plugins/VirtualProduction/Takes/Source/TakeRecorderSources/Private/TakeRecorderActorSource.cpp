@@ -171,7 +171,6 @@ UTakeRecorderActorSource::UTakeRecorderActorSource(const FObjectInitializer& Obj
 {
 	RecordType = ETakeRecorderActorRecordType::ProjectDefault;
 	bReduceKeys = true;
-	bRecordParentHierarchy = true;
 
 	// Build the property map on initialization so that sources created at runtime have a default map
 	RebuildRecordedPropertyMap();
@@ -295,11 +294,6 @@ TArray<UTakeRecorderSource*> UTakeRecorderActorSource::PreRecording(class ULevel
 
 void UTakeRecorderActorSource::EnsureParentHierarchyIsReferenced()
 {
-	if (!bRecordParentHierarchy)
-	{
-		return;
-	}
-
 	if (!Target.IsValid())
 	{
 		return;

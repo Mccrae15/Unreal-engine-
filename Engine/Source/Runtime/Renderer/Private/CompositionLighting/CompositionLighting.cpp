@@ -680,9 +680,6 @@ void FCompositionLighting::ProcessAsyncSSAO(FRHICommandListImmediate& RHICmdList
 	{
 		PrepareAsyncSSAO(RHICmdList, Views);
 
-		FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
-		FUniformBufferRHIRef PassUniformBuffer = CreateSceneTextureUniformBufferDependentOnShadingPath(SceneContext, SceneContext.GetCurrentFeatureLevel(), ESceneTextureSetupMode::All, UniformBuffer_SingleFrame);
-
 		// so that the passes can register themselves to the graph
 		for (int32 i = 0; i < Views.Num(); ++i)
 		{
@@ -695,12 +692,7 @@ void FCompositionLighting::ProcessAsyncSSAO(FRHICommandListImmediate& RHICmdList
 			if (FSSAOHelper::IsAmbientOcclusionAsyncCompute(View, Levels))
 			{
 				SCOPED_GPU_MASK(RHICmdList, View.GPUMask);
-
-				FRHIAsyncComputeCommandListImmediate& RHICmdListComputeImmediate = FRHICommandListExecutor::GetImmediateAsyncComputeCommandList();
-				SCOPED_GPU_MASK(RHICmdListComputeImmediate, View.GPUMask);
-
-				FUniformBufferStaticBindings GlobalUniformBuffers(PassUniformBuffer);
-				SCOPED_UNIFORM_BUFFER_GLOBAL_BINDINGS(RHICmdListComputeImmediate, GlobalUniformBuffers);
+				SCOPED_GPU_MASK(FRHICommandListExecutor::GetImmediateAsyncComputeCommandList(), View.GPUMask);
 
 				FPostprocessContext Context(RHICmdList, CompositeContext.Graph, View);
 

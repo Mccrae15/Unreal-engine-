@@ -373,6 +373,10 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 			{
 				ParameterValue.SortPriority = SortPriority;
 			}
+			else
+			{
+				ParameterValue.SortPriority = 0;
+			}
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
 		}
 
@@ -399,6 +403,10 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 			{
 				ParameterValue.SortPriority = SortPriority;
 			}
+			else
+			{
+				ParameterValue.SortPriority = 0;
+			}
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
 		}
 
@@ -424,6 +432,10 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 			{
 				ParameterValue.SortPriority = SortPriority;
 			}
+			else
+			{
+				ParameterValue.SortPriority = 0;
+			}
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
 		}
 
@@ -447,6 +459,10 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 			if (ParentMaterial->GetParameterSortPriority(ParameterName, SortPriority))
 			{
 				ParameterValue.SortPriority = SortPriority;
+			}
+			else
+			{
+				ParameterValue.SortPriority = 0;
 			}
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
 		}
@@ -473,6 +489,10 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 			if (ParentMaterial->GetParameterSortPriority(ParameterName, SortPriority))
 			{
 				ParameterValue.SortPriority = SortPriority;
+			}
+			else
+			{
+				ParameterValue.SortPriority = 0;
 			}
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
 		}
@@ -562,6 +582,10 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 			{
 				ParameterValue.SortPriority = SortPriority;
 			}
+			else
+			{
+				ParameterValue.SortPriority = 0;
+			}
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
 		}
 
@@ -579,6 +603,10 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 			if (ParentMaterial->GetParameterSortPriority(StaticSwitchParameterValue.ParameterInfo, SortPriority))
 			{
 				ParameterValue.SortPriority = SortPriority;
+			}
+			else
+			{
+				ParameterValue.SortPriority = 0;
 			}
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
 		}
@@ -600,6 +628,10 @@ void UMaterialEditorPreviewParameters::RegenerateArrays()
 			if (ParentMaterial->GetParameterSortPriority(StaticComponentMaskParameterValue.ParameterInfo, SortPriority))
 			{
 				ParameterValue.SortPriority = SortPriority;
+			}
+			else
+			{
+				ParameterValue.SortPriority = 0;
 			}
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
 		}
@@ -992,6 +1024,8 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 			ParameterValue.ParameterInfo = MaterialLayersParameterParameterValue.ParameterInfo;
 			ParameterValue.ExpressionId = MaterialLayersParameterParameterValue.ExpressionGUID;
 
+			ParameterValue.SortPriority = 0; // Has custom interface so not a supported feature
+
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
 		}
 
@@ -1024,6 +1058,7 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 				}
 			}
 			
+			ParameterValue.SortPriority = 0;
 			SourceInstance->GetParameterSortPriority(ParameterInfo, ParameterValue.SortPriority);
 			
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
@@ -1056,6 +1091,7 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 				}
 			}
 			
+			ParameterValue.SortPriority = 0;
 			SourceInstance->GetParameterSortPriority(ParameterInfo, ParameterValue.SortPriority);
 
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
@@ -1093,6 +1129,7 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 				}
 			}
 			
+			ParameterValue.SortPriority = 0;
 			SourceInstance->GetParameterSortPriority(ParameterInfo, ParameterValue.SortPriority);
 
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
@@ -1129,6 +1166,7 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 				}
 			}
 
+			ParameterValue.SortPriority = 0;
 			SourceInstance->GetParameterSortPriority(ParameterInfo, ParameterValue.SortPriority);
 
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
@@ -1162,6 +1200,7 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 				}
 			}
 			
+			ParameterValue.SortPriority = 0;
 			SourceInstance->GetParameterSortPriority(ParameterInfo, ParameterValue.SortPriority);
 			
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
@@ -1180,6 +1219,7 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 			ParameterValue.ParameterInfo = StaticSwitchParameterValue.ParameterInfo;
 			ParameterValue.ExpressionId = StaticSwitchParameterValue.ExpressionGUID;
 
+			ParameterValue.SortPriority = 0;
 			SourceInstance->GetParameterSortPriority(StaticSwitchParameterValue.ParameterInfo, ParameterValue.SortPriority);
 
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);
@@ -1200,6 +1240,7 @@ void UMaterialEditorInstanceConstant::RegenerateArrays()
 			ParameterValue.ParameterInfo = StaticComponentMaskParameterValue.ParameterInfo;
 			ParameterValue.ExpressionId = StaticComponentMaskParameterValue.ExpressionGUID;
 
+			ParameterValue.SortPriority = 0;
 			SourceInstance->GetParameterSortPriority(StaticComponentMaskParameterValue.ParameterInfo, ParameterValue.SortPriority);
 
 			AssignParameterToGroup(ParentMaterial, &ParameterValue);

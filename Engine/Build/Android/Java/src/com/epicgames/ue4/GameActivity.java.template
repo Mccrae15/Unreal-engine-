@@ -67,6 +67,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.StringWriter;
+import java.security.NoSuchAlgorithmException;
 
 import android.annotation.TargetApi;
 
@@ -4591,7 +4592,10 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				return;
 			}
 		}
-//$${gameActivityOnActivityResultIapStoreHelperHandler}$$
+		else if( IapStoreHelper != null )
+		{
+				super.onActivityResult(requestCode, resultCode, data);
+		}
 		else
 		{
 			super.onActivityResult(requestCode, resultCode, data);
@@ -4605,7 +4609,20 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 		}
 	}
 	
-//$${gameActivityAndroidThunkJavaIapBeginPurchase}$$
+	public boolean AndroidThunkJava_IapBeginPurchase(String ProductId)
+	{
+		Log.debug("[JAVA] - AndroidThunkJava_IapBeginPurchase");
+		boolean bTriggeredPurchase = false;
+		if( IapStoreHelper != null )
+		{
+			bTriggeredPurchase = IapStoreHelper.BeginPurchase(ProductId);
+		}
+		else
+		{
+			Log.debug("[JAVA] - Store Helper is invalid");
+		}
+		return bTriggeredPurchase;
+	}
 
 	public boolean AndroidThunkJava_IapIsAllowedToMakePurchases()
 	{

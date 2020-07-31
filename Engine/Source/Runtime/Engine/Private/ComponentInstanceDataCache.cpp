@@ -27,9 +27,6 @@ public:
 		// Include properties that would normally skip tagged serialization (e.g. bulk serialization of array properties).
 		ArPortFlags |= PPF_ForceTaggedSerialization;
 
-		// Nested subobjects should be recursed in to
-		ArPortFlags |= PPF_DeepCompareInstances;
-
 		if (Component)
 		{
 			UClass* ComponentClass = Component->GetClass();
@@ -71,6 +68,7 @@ public:
 			);
 	}
 
+
 	UObject* GetDuplicatedObject(UObject* Object)
 	{
 		UObject* Result = Object;
@@ -84,7 +82,7 @@ public:
 			}
 			else if (Object->GetOuter() == Component)
 			{
-				Result = DuplicateObject(Object, ActorInstanceData.GetUniqueTransientPackage());
+				Result = DuplicateObject(Object, GetTransientPackage());
 				ActorInstanceData.DuplicatedObjects.Emplace(Result);
 			}
 			else
@@ -375,10 +373,6 @@ void FActorComponentInstanceData::ApplyToComponent(UActorComponent* Component, c
 		{
 			if (DuplicatedObjectData.DuplicatedObject)
 			{
-				if (UObject* OtherObject = StaticFindObjectFast(nullptr, Component, DuplicatedObjectData.DuplicatedObject->GetFName()))
-				{
-					OtherObject->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
-				}
 				DuplicatedObjectData.DuplicatedObject->Rename(nullptr, Component, REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
 			}
 		}
@@ -390,15 +384,6 @@ void FActorComponentInstanceData::ApplyToComponent(UActorComponent* Component, c
 			Component->ReregisterComponent();
 		}
 	}
-}
-
-UObject* FActorComponentInstanceData::GetUniqueTransientPackage()
-{
-	if (UniqueTransientPackage.DuplicatedObject == nullptr)
-	{
-		UniqueTransientPackage = FActorComponentDuplicatedObjectData(NewObject<UActorComponentInstanceDataTransientOuter>(GetTransientPackage()));
-	}
-	return UniqueTransientPackage.DuplicatedObject;
 }
 
 void FActorComponentInstanceData::AddReferencedObjects(FReferenceCollector& Collector)

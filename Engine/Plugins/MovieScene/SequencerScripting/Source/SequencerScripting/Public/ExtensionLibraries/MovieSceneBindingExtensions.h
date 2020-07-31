@@ -45,15 +45,6 @@ public:
 	static FText GetDisplayName(const FSequencerBindingProxy& InBinding);
 
 	/**
-	 * Set this binding's name
-	 *
-	 * @param InBinding     The binding to get the name of
-	 * @param InName The display name of the binding
-	 */
-	UFUNCTION(BlueprintCallable, Category=Sequence, meta=(ScriptMethod))
-	static void SetDisplayName(const FSequencerBindingProxy& InBinding, const FText& InName);
-
-	/**
 	 * Get this binding's object non-display name
 	 *
 	 * @param InBinding     The binding to get the name of
@@ -61,15 +52,6 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category=Sequence, meta=(ScriptMethod))
 	static FString GetName(const FSequencerBindingProxy& InBinding);
-
-	/**
-	 * Set this binding's object non-display name
-	 *
-	 * @param InBinding     The binding to get the name of
-	 * @param InName The name of the binding
-	 */
-	UFUNCTION(BlueprintCallable, Category=Sequence, meta=(ScriptMethod))
-	static void SetName(const FSequencerBindingProxy& InBinding, const FString& InName);
 
 	/**
 	 * Get all the tracks stored within this binding

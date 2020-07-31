@@ -58,9 +58,9 @@ void FPropertyValueImpl::EnumerateObjectsToModify( FPropertyNode* InPropertyNode
 		const int32 NumInstances = ComplexNode->GetInstancesNum();
 		for (int32 Index = 0; Index < NumInstances; ++Index)
 		{
-			uint8* ObjectOrStruct = ComplexNode->GetMemoryOfInstance(Index);
-			uint8* Addr = InPropertyNode->GetValueBaseAddress(ObjectOrStruct, false);
-			if (!InObjectsToModifyCallback(FObjectBaseAddress(ObjectOrStruct, Addr, bIsStruct), Index, NumInstances))
+			UObject*	Object = ComplexNode->GetInstanceAsUObject(Index).Get();
+			uint8* Addr = Object ? InPropertyNode->GetValueBaseAddressFromObject(Object) : InPropertyNode->GetValueBaseAddress(ComplexNode->GetMemoryOfInstance(Index), false);
+			if (!InObjectsToModifyCallback(FObjectBaseAddress(Object, Addr, bIsStruct), Index, NumInstances))
 			{
 				break;
 			}
@@ -196,21 +196,21 @@ void FPropertyValueImpl::GenerateArrayIndexMapToObjectNode( TMap<FString,int32>&
 FPropertyAccess::Result FPropertyValueImpl::ImportText( const FString& InValue, FPropertyNode* InPropertyNode, EPropertyValueSetFlags::Type Flags )
 {
 	TArray<FObjectBaseAddress> ObjectsToModify;
-	GetObjectsToModify(ObjectsToModify, InPropertyNode);
+	GetObjectsToModify( ObjectsToModify, InPropertyNode );
 
 	TArray<FString> Values;
-	for (const FObjectBaseAddress& BaseAddress : ObjectsToModify)
+	for( int32 ObjectIndex = 0 ; ObjectIndex < ObjectsToModify.Num() ; ++ObjectIndex )
 	{
-		if (BaseAddress.ObjectOrStruct)
+		if (ObjectsToModify[ObjectIndex].Object != nullptr || ObjectsToModify[ObjectIndex].bIsStruct)
 		{
-			Values.Add(InValue);
+			Values.Add( InValue );
 		}
 	}
 
 	FPropertyAccess::Result Result = FPropertyAccess::Fail;
-	if (Values.Num() > 0)
+	if( Values.Num() > 0 )
 	{
-		Result = ImportText(ObjectsToModify, Values, InPropertyNode, Flags);
+		Result = ImportText( ObjectsToModify, Values, InPropertyNode, Flags );
 	}
 
 	return Result;
@@ -231,9 +231,9 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 	else if( NodeProperty->IsA<FObjectProperty>() || NodeProperty->IsA<FNameProperty>() )
 	{
 		// certain properties have requirements on the size of string values that can be imported.  Search for strings that are too large.
-		for (const FString& Value : InValues)
+		for( int32 ValueIndex = 0; ValueIndex < InValues.Num(); ++ValueIndex )
 		{
-			if (Value.Len() > NAME_SIZE)
+			if( InValues[ValueIndex].Len() > NAME_SIZE )
 			{
 				Result = FPropertyAccess::Fail;
 				break;
@@ -248,8 +248,7 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 		bool bIsGameWorld = false;
 		// If the object we are modifying is in the PIE world, than make the PIE world the active
 		// GWorld.  Assumes all objects managed by this property window belong to the same world.
-		UObject* FirstObject = InObjects[0].GetUObject();
-		if (UPackage* ObjectPackage = (FirstObject ? FirstObject->GetOutermost() : nullptr))
+		if (UPackage* ObjectPackage = (InObjects[0].Object ? InObjects[0].Object->GetOutermost() : nullptr))
 		{
 			const bool bIsPIEPackage = ObjectPackage->HasAnyPackageFlags(PKG_PlayInEditor);
 			if (GUnrealEd && GUnrealEd->PlayWorld && bIsPIEPackage && !GIsPlayInEditorWorld)
@@ -272,9 +271,9 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 		TArray<const UObject*> TopLevelObjects;
 		TopLevelObjects.Reserve(InObjects.Num());
 
-		for (int32 ObjectIndex = 0 ; ObjectIndex < InObjects.Num() ; ++ObjectIndex)
+		for ( int32 ObjectIndex = 0 ; ObjectIndex < InObjects.Num() ; ++ObjectIndex )
 		{	
-			const FObjectBaseAddress& Cur = InObjects[ObjectIndex];
+			const FObjectBaseAddress& Cur = InObjects[ ObjectIndex ];
 			if (Cur.BaseAddress == nullptr)
 			{
 				//Fully abort this procedure.  The data has changed out from under the object
@@ -282,88 +281,79 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 				break;
 			}
 
-			UObject* CurObject = Cur.GetUObject();
-
-			const FString NewValue = InValues[ObjectIndex];
-
 			// Cache the value of the property before modifying it.
 			FString PreviousValue;
 			FPropertyTextUtilities::PropertyToTextHelper(PreviousValue, InPropertyNode, NodeProperty, Cur, PPF_None);
 
 			// If this property is the inner-property of a container, cache the current value as well
 			FString PreviousContainerValue;
-			
-			FPropertyNode* ParentNode = InPropertyNode->GetParentNode();
-			FProperty* Property = ParentNode ? ParentNode->GetProperty() : nullptr;
-
-			const bool bIsSparseClassData = InPropertyNode->HasNodeFlags(EPropertyNodeFlags::IsSparseClassData) != 0;
-
-			bool bIsInContainer = false;
-
-			if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+			if (Cur.Object)
 			{
-				bIsInContainer = (ArrayProperty->Inner == NodeProperty);
-			}
-			else if (FSetProperty* SetProperty = CastField<FSetProperty>(Property))
-			{
-				// If the element is part of a set, check for duplicate elements
-				bIsInContainer = SetProperty->ElementProp == NodeProperty;
+				FPropertyNode* ParentNode = InPropertyNode->GetParentNode();
+				FProperty* Property = ParentNode ? ParentNode->GetProperty() : nullptr;
+
+				bool bIsInContainer = false;
+
+				if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+				{
+					bIsInContainer = (ArrayProperty->Inner == NodeProperty);
+				}
+				else if (FSetProperty* SetProp = CastField<FSetProperty>(Property))
+				{
+					// If the element is part of a set, check for duplicate elements
+					bIsInContainer = SetProp->ElementProp == NodeProperty;
+
+					if (bIsInContainer)
+					{
+						FScriptSetHelper SetHelper(SetProp, ParentNode->GetValueBaseAddressFromObject(Cur.Object));
+
+						if (SetHelper.HasElement(Cur.BaseAddress, InValues[ObjectIndex]) &&
+							(Flags & EPropertyValueSetFlags::InteractiveChange) == 0)
+						{
+							// Duplicate element in the set
+							ShowInvalidOperationError(LOCTEXT("DuplicateSetElement", "Duplicate elements are not allowed in Set properties."));
+
+							return FPropertyAccess::Fail;
+						}
+					}
+				}
+				else if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+				{
+					bIsInContainer = MapProperty->KeyProp == NodeProperty;
+
+					if (bIsInContainer)
+					{
+						FScriptMapHelper MapHelper(MapProperty, ParentNode->GetValueBaseAddressFromObject(Cur.Object));
+						if (MapHelper.HasKey(Cur.BaseAddress, InValues[ObjectIndex]) && 
+							(Flags & EPropertyValueSetFlags::InteractiveChange) == 0)
+						{
+							// Duplicate key in the map
+							ShowInvalidOperationError(LOCTEXT("DuplicateMapKey", "Duplicate keys are not allowed in Map properties."));
+
+							return FPropertyAccess::Fail;
+						}
+					}
+					else
+					{
+						bIsInContainer = MapProperty->ValueProp == NodeProperty;
+					}
+				}
 
 				if (bIsInContainer)
 				{
-					uint8* ValueBaseAddress = ParentNode->GetValueBaseAddress(Cur.ObjectOrStruct, bIsSparseClassData);
-					
-					FScriptSetHelper SetHelper(SetProperty, ValueBaseAddress);
-					if (SetHelper.HasElement(Cur.BaseAddress, NewValue) &&
-						(Flags & EPropertyValueSetFlags::InteractiveChange) == 0)
-					{
-						// Duplicate element in the set
-						ShowInvalidOperationError(LOCTEXT("DuplicateSetElement", "Duplicate elements are not allowed in Set properties."));
-
-						return FPropertyAccess::Fail;
-					}
+					uint8* Addr = ParentNode->GetValueBaseAddressFromObject(Cur.Object);
+					Property->ExportText_Direct(PreviousContainerValue, Addr, Addr, nullptr, 0);
 				}
-			}
-			else if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
-			{
-				bIsInContainer = MapProperty->KeyProp == NodeProperty;
-
-				if (bIsInContainer)
-				{
-					uint8* ValueBaseAddress = ParentNode->GetValueBaseAddress(Cur.ObjectOrStruct, bIsSparseClassData);
-					
-					FScriptMapHelper MapHelper(MapProperty, ValueBaseAddress);
-					if (MapHelper.HasKey(Cur.BaseAddress, NewValue) && 
-						(Flags & EPropertyValueSetFlags::InteractiveChange) == 0)
-					{
-						// Duplicate key in the map
-						ShowInvalidOperationError(LOCTEXT("DuplicateMapKey", "Duplicate keys are not allowed in Map properties."));
-
-						return FPropertyAccess::Fail;
-					}
-				}
-				else
-				{
-					bIsInContainer = MapProperty->ValueProp == NodeProperty;
-				}
-			}
-
-			if (bIsInContainer)
-			{
-				uint8* Addr = ParentNode->GetValueBaseAddress(Cur.ObjectOrStruct, bIsSparseClassData);
-				Property->ExportText_Direct(PreviousContainerValue, Addr, Addr, nullptr, 0);
 			}
 
 			// Check if we need to call PreEditChange on all objects.
 			// Remove quotes from the original value because FName properties  
 			// are wrapped in quotes before getting here. This causes the 
 			// string comparison to fail even when the name is unchanged. 
-			if (!bNotifiedPreChange && 
-				(FCString::Strcmp(*NewValue.TrimQuotes(), *PreviousValue) != 0 || 
-				(bFinished && bInteractiveChangeInProgress)))
+			if ( !bNotifiedPreChange && ( FCString::Strcmp(*InValues[ObjectIndex].TrimQuotes(), *PreviousValue) != 0 || ( bFinished && bInteractiveChangeInProgress ) ) )
 			{
 				bNotifiedPreChange = true;
-				NotifiedObj = CurObject;
+				NotifiedObj = Cur.Object;
 
 				if (!bInteractiveChangeInProgress)
 				{
@@ -382,54 +372,52 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 			}
 
 			// Set the new value.
-			FPropertyTextUtilities::TextToPropertyHelper(*NewValue, InPropertyNode, NodeProperty, Cur);
+			const TCHAR* NewValue = *InValues[ObjectIndex];
+			FPropertyTextUtilities::TextToPropertyHelper(NewValue, InPropertyNode, NodeProperty, Cur);
 
-			// Cache the value of the property after having modified it.
-			FString ValueAfterImport;
-			FPropertyTextUtilities::PropertyToTextHelper(ValueAfterImport, InPropertyNode, NodeProperty, Cur, PPF_None);
-
-			if (CurObject)
+			if (Cur.Object)
 			{
-				if ((CurObject->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject) ||
-					(CurObject->HasAnyFlags(RF_DefaultSubObject) && CurObject->GetOuter()->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))) &&
+				// Cache the value of the property after having modified it.
+				FString ValueAfterImport;
+				FPropertyTextUtilities::PropertyToTextHelper(ValueAfterImport, InPropertyNode, NodeProperty, Cur, PPF_None);
+
+				if ((Cur.Object->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject) ||
+					(Cur.Object->HasAnyFlags(RF_DefaultSubObject) && Cur.Object->GetOuter()->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))) &&
 					!bIsGameWorld)
 				{
 					// propagate the changes to instances unless we're modifying class shared data
-					if (!bIsSparseClassData)
+					if (!(InPropertyNode->HasNodeFlags(EPropertyNodeFlags::IsSparseClassData)))
 					{
-						InPropertyNode->PropagatePropertyChange(CurObject, *NewValue, PreviousContainerValue.IsEmpty() ? PreviousValue : PreviousContainerValue);
+						InPropertyNode->PropagatePropertyChange(Cur.Object, NewValue, PreviousContainerValue.IsEmpty() ? PreviousValue : PreviousContainerValue);
 					}
 				}
 
-				TopLevelObjects.Add(CurObject);
-			}
+				// If the values before and after setting the property differ, mark the object dirty.
+				if (FCString::Strcmp(*PreviousValue, *ValueAfterImport) != 0)
+				{
+					Cur.Object->MarkPackageDirty();
 
-			// If the values before and after setting the property differ, mark the object dirty.
-			if (FCString::Strcmp(*PreviousValue, *ValueAfterImport) != 0)
-			{
-				if (CurObject)
-				{
-					CurObject->MarkPackageDirty();
+					// For TMap and TSet, we need to rehash it in case a key was modified
+					if (NodeProperty->GetOwner<FMapProperty>())
+					{
+						uint8* Addr = InPropertyNode->GetParentNode()->GetValueBaseAddressFromObject(Cur.Object);
+						FScriptMapHelper MapHelper(NodeProperty->GetOwner<FMapProperty>(), Addr);
+						MapHelper.Rehash();
+					}
+					else if (NodeProperty->GetOwner<FSetProperty>())
+					{
+						uint8* Addr = InPropertyNode->GetParentNode()->GetValueBaseAddressFromObject(Cur.Object);
+						FScriptSetHelper SetHelper(NodeProperty->GetOwner<FSetProperty>(), Addr);
+						SetHelper.Rehash();
+					}
 				}
 
-				// For TMap and TSet, we need to rehash it in case a key was modified
-				if (NodeProperty->GetOwner<FMapProperty>())
-				{
-					uint8* Addr = InPropertyNode->GetParentNode()->GetValueBaseAddress(Cur.ObjectOrStruct, bIsSparseClassData);
-					FScriptMapHelper MapHelper(NodeProperty->GetOwner<FMapProperty>(), Addr);
-					MapHelper.Rehash();
-				}
-				else if (NodeProperty->GetOwner<FSetProperty>())
-				{
-					uint8* Addr = InPropertyNode->GetParentNode()->GetValueBaseAddress(Cur.ObjectOrStruct, bIsSparseClassData);
-					FScriptSetHelper SetHelper(NodeProperty->GetOwner<FSetProperty>(), Addr);
-					SetHelper.Rehash();
-				}
+				TopLevelObjects.Add(Cur.Object);
 			}
 
 			//add on array index so we can tell which entry just changed
 			ArrayIndicesPerObject.Add(TMap<FString,int32>());
-			FPropertyValueImpl::GenerateArrayIndexMapToObjectNode(ArrayIndicesPerObject[ObjectIndex], InPropertyNode);
+			FPropertyValueImpl::GenerateArrayIndexMapToObjectNode( ArrayIndicesPerObject[ObjectIndex], InPropertyNode );
 		}
 
 		FPropertyChangedEvent ChangeEvent(NodeProperty, bFinished ? EPropertyChangeType::ValueSet : EPropertyChangeType::Interactive, MakeArrayView(TopLevelObjects));
@@ -570,7 +558,7 @@ static int32 GetArrayPropertyLastValidIndex( FObjectPropertyNode* InObjectNode, 
 {
 	int32 ClampMax = MAX_int32;
 
-	check(InObjectNode->GetNumObjects() == 1);
+	check(InObjectNode->GetNumObjects()==1);
 	UObject* ParentObject = InObjectNode->GetUObject(0);
 
 	//find the associated property
@@ -4564,6 +4552,7 @@ bool FPropertyHandleSet::Supports(TSharedRef<FPropertyNode> PropertyNode)
 bool FPropertyHandleSet::HasDefaultElement()
 {
 	TSharedPtr<FPropertyNode> PropNode = Implementation->GetPropertyNode();
+	
 	if (PropNode.IsValid())
 	{
 		TArray<FObjectBaseAddress> Addresses;
@@ -4571,11 +4560,11 @@ bool FPropertyHandleSet::HasDefaultElement()
 
 		if (Addresses.Num() > 0)
 		{
-			const bool IsSparseClassData = PropNode->HasNodeFlags(EPropertyNodeFlags::IsSparseClassData) != 0;
 			FSetProperty* SetProperty = CastFieldChecked<FSetProperty>(PropNode->GetProperty());
-			FScriptSetHelper SetHelper(SetProperty, PropNode->GetValueBaseAddress(Addresses[0].ObjectOrStruct, IsSparseClassData));
+			FScriptSetHelper SetHelper(SetProperty, PropNode->GetValueBaseAddressFromObject(Addresses[0].Object));
 
 			FDefaultConstructedPropertyElement DefaultElement(SetHelper.ElementProp);
+
 			return SetHelper.FindElementIndex(DefaultElement.GetObjAddress()) != INDEX_NONE;
 		}
 	}
@@ -4662,6 +4651,7 @@ bool FPropertyHandleMap::Supports(TSharedRef<FPropertyNode> PropertyNode)
 bool FPropertyHandleMap::HasDefaultKey()
 {
 	TSharedPtr<FPropertyNode> PropNode = Implementation->GetPropertyNode();
+
 	if (PropNode.IsValid())
 	{
 		TArray<FObjectBaseAddress> Addresses;
@@ -4669,11 +4659,12 @@ bool FPropertyHandleMap::HasDefaultKey()
 
 		if (Addresses.Num() > 0)
 		{
-			const bool IsSparseClassData = PropNode->HasNodeFlags(EPropertyNodeFlags::IsSparseClassData) != 0;
 			FMapProperty* MapProperty = CastFieldChecked<FMapProperty>(PropNode->GetProperty());
-			FScriptMapHelper MapHelper(MapProperty, PropNode->GetValueBaseAddress(Addresses[0].ObjectOrStruct, IsSparseClassData));
+
+			FScriptMapHelper MapHelper(MapProperty, PropNode->GetValueBaseAddressFromObject(Addresses[0].Object));
 
 			FDefaultConstructedPropertyElement DefaultKey(MapHelper.KeyProp);
+
 			return MapHelper.FindMapIndexWithKey(DefaultKey.GetObjAddress()) != INDEX_NONE;
 		}
 	}

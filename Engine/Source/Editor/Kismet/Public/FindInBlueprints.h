@@ -233,12 +233,10 @@ public:
 	SLATE_BEGIN_ARGS( SFindInBlueprints )
 		: _bIsSearchWindow(true)
 		, _bHideSearchBar(false)
-		, _bHideFindGlobalButton(false)
 		, _ContainingTab()
 	{}
 		SLATE_ARGUMENT(bool, bIsSearchWindow)
 		SLATE_ARGUMENT(bool, bHideSearchBar)
-		SLATE_ARGUMENT(bool, bHideFindGlobalButton)
 		SLATE_ARGUMENT(TSharedPtr<SDockTab>, ContainingTab)
 	SLATE_END_ARGS()
 
@@ -283,14 +281,8 @@ public:
 		return bIsLocked;
 	}
 
-	/** Determines whether a search query is actively in progress */
-	bool IsSearchInProgress() const;
-
 	/** SWidget overrides */
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
-
-	/** Clears the currently visible results */
-	void ClearResults();
 
 private:
 	/** Processes results of the ongoing async stream search */

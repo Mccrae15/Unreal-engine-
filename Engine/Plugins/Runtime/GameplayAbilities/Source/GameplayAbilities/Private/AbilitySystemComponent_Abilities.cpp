@@ -875,7 +875,7 @@ void UAbilitySystemComponent::CancelAllAbilities(UGameplayAbility* Ignore)
 	ABILITYLIST_SCOPE_LOCK();
 	for (FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
 	{
-		if (Spec.IsActive())
+		if (Spec.Ability && Spec.Ability->IsActive())
 		{
 			CancelAbilitySpec(Spec, Ignore);
 		}

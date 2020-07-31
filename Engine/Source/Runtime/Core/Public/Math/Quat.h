@@ -229,12 +229,6 @@ public:
 	 */
 	FORCEINLINE FQuat operator/(const float Scale) const;
 
-	/**
-	 * Identical implementation for FQuat properties. 
-	 * Avoids intrinsics to remain consistent with previous per-property comparison.
-	 */
-	bool Identical(const FQuat* Q, const uint32 PortFlags) const;
-
  	/**
 	 * Checks whether two quaternions are identical.
 	 * This is an exact comparison per-component;see Equals() for a comparison
@@ -885,10 +879,6 @@ FORCEINLINE FQuat FQuat::operator/(const float Scale) const
 	return FQuat(X * Recip, Y * Recip, Z * Recip, W * Recip);
 }
 
-FORCEINLINE bool FQuat::Identical(const FQuat* Q, const uint32 PortFlags) const
-{
-	return X == Q->X && Y == Q->Y && Z == Q->Z && W == Q->W;
-}
 
 FORCEINLINE bool FQuat::operator==(const FQuat& Q) const
 {

@@ -28,8 +28,7 @@ namespace UnrealBuildTool.Rules
 					"BlueprintGraph",
                     "EditorStyle",
                     "Analytics",
-                    "VREditor",
-					"ToolMenus"
+                    "VREditor"
 				}
 			);
 

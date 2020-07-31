@@ -172,15 +172,19 @@ void SLevelEditor::Construct( const SLevelEditor::FArguments& InArgs)
 	if (GEditor != nullptr)
 	{
 		GEditor->GetEditorWorldContext(true).AddRef(World);
+	}
 
-		// Set the initial preview feature level.
-		World->ChangeFeatureLevel(GEditor->GetActiveFeatureLevelPreviewType());
+	// Set the initial preview feature level.
+	UEditorEngine* Editor = (UEditorEngine*)GEngine;
+	World->ChangeFeatureLevel(Editor->GetActiveFeatureLevelPreviewType());
 
+	if (GEditor != nullptr)
+	{
 		LevelActorOuterChangedHandle = GEditor->OnLevelActorOuterChanged().AddSP(this, &SLevelEditor::OnLevelActorOuterChanged);
 	}
 
 	// Patch into the OnPreviewFeatureLevelChanged() delegate to swap out the current feature level with a user selection.
-	PreviewFeatureLevelChangedHandle = GEditor->OnPreviewFeatureLevelChanged().AddLambda([this](ERHIFeatureLevel::Type NewFeatureLevel)
+	PreviewFeatureLevelChangedHandle = Editor->OnPreviewFeatureLevelChanged().AddLambda([this](ERHIFeatureLevel::Type NewFeatureLevel)
 		{
 			// Do one recapture if atleast one ReflectionComponent is dirty
 			// BuildReflectionCapturesOnly_Execute in LevelEditorActions relies on this happening on toggle between SM5->ES31. If you remove this, update that code!

@@ -91,8 +91,7 @@ int32 UGameplayAbility::GetFunctionCallspace(UFunction* Function, FFrame* Stack)
 {
 	if (HasAnyFlags(RF_ClassDefaultObject) || !IsSupportedForNetworking())
 	{
-		// This handles absorbing authority/cosmetic
-		return GEngine->GetGlobalFunctionCallspace(Function, this, Stack);
+		return FunctionCallspace::Local;
 	}
 	check(GetOuter() != nullptr);
 	return GetOuter()->GetFunctionCallspace(Function, Stack);

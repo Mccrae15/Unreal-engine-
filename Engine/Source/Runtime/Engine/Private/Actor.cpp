@@ -3219,10 +3219,7 @@ void AActor::FinishSpawning(const FTransform& UserTransform, bool bIsDefaultTran
 		FinalRootComponentTransform.GetLocation().DiagnosticCheckNaN(TEXT("AActor::FinishSpawning: FinalRootComponentTransform.GetLocation()"));
 		FinalRootComponentTransform.GetRotation().DiagnosticCheckNaN(TEXT("AActor::FinishSpawning: FinalRootComponentTransform.GetRotation()"));
 
-		{
-			FEditorScriptExecutionGuard ScriptGuard;
-			ExecuteConstruction(FinalRootComponentTransform, nullptr, InstanceDataCache, bIsDefaultTransform);
-		}
+		ExecuteConstruction(FinalRootComponentTransform, nullptr, InstanceDataCache, bIsDefaultTransform);
 
 		{
 			SCOPE_CYCLE_COUNTER(STAT_PostActorConstruction);
@@ -4162,19 +4159,27 @@ void AActor::SetNetDriverName(FName NewNetDriverName)
 //
 int32 AActor::GetFunctionCallspace( UFunction* Function, FFrame* Stack )
 {
-	if (GAllowActorScriptExecutionInEditor)
+	// Quick reject 1.
+	if ((Function->FunctionFlags & FUNC_Static))
 	{
-		// Call local, this global is only true when we know it's being called on an editor-placed object
-		DEBUG_CALLSPACE(TEXT("GetFunctionCallspace ScriptExecutionInEditor: %s"), *Function->GetName());
+		// Call local
+		DEBUG_CALLSPACE(TEXT("GetFunctionCallspace Local1: %s"), *Function->GetName());
 		return FunctionCallspace::Local;
 	}
 
-	if ((Function->FunctionFlags & FUNC_Static) || (GetWorld() == nullptr))
+	if (GAllowActorScriptExecutionInEditor)
 	{
-		// Use the same logic as function libraries for static/CDO called functions, will try to use the global context to check authority only/cosmetic
-		DEBUG_CALLSPACE(TEXT("GetFunctionCallspace Static: %s"), *Function->GetName());
+		// Call local
+		DEBUG_CALLSPACE(TEXT("GetFunctionCallspace Local2: %s"), *Function->GetName());
+		return FunctionCallspace::Local;
+	}
 
-		return GEngine->GetGlobalFunctionCallspace(Function, this, Stack);
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		// Call local
+		DEBUG_CALLSPACE(TEXT("GetFunctionCallspace Local3: %s"), *Function->GetName());
+		return FunctionCallspace::Local;
 	}
 
 	const ENetRole LocalRole = GetLocalRole();

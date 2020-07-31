@@ -7,8 +7,6 @@
 #include "UObject/Class.h"
 #include "Engine/Selection.h"
 
-static_assert(DO_BLUEPRINT_GUARD, "KismetDebugUtilities assumes BP exception tracking is enabled");
-
 class UBlueprint;
 class UBreakpoint;
 template<typename ElementType> class TSimpleRingBuffer;
@@ -139,7 +137,7 @@ public:
 	static void RequestStepOut();
 
 	/** Called on terminatation of the current script execution so we can reset any break conditions */
-	static void EndOfScriptExecution(const FBlueprintContextTracker& BlueprintContext);
+	static void EndOfScriptExecution();
 
 	// The maximum number of trace samples to gather before overwriting old ones
 	enum { MAX_TRACE_STACK_SAMPLES = 1024 };

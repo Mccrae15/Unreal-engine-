@@ -2,7 +2,7 @@
 
 #include "Microsoft/AVEncoderIMFSampleWrapper.h"
 
-#if AVENCODER_SUPPORTED_MICROSOFT_PLATFORM
+#if PLATFORM_WINDOWS || PLATFORM_XBOXONE
 
 #include "Microsoft/AVEncoderMicrosoftCommon.h"
 
@@ -120,5 +120,5 @@ FIMFSampleWrapper FIMFSampleWrapper::Clone() const
 
 } // namespace AVEncoder
 
-#endif // AVENCODER_SUPPORTED_MICROSOFT_PLATFORM
+#endif // PLATFORM_WINDOWS || PLATFORM_XBOXONE
 

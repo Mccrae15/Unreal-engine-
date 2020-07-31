@@ -1406,13 +1406,13 @@ void SFbxSceneOptionWindow::CopyStaticMeshOptionsToFbxOptions(UnFbx::FBXImportOp
 	ImportSettings->StaticMeshLODGroup = StaticMeshOptions->StaticMeshLODGroup;
 	switch (StaticMeshOptions->VertexColorImportOption)
 	{
-	case EFbxSceneVertexColorImportOption::Replace:
+	case EFbxSceneVertexColorImportOption::Type::Replace:
 		ImportSettings->VertexColorImportOption = EVertexColorImportOption::Type::Replace;
 		break;
-	case EFbxSceneVertexColorImportOption::Override:
+	case EFbxSceneVertexColorImportOption::Type::Override:
 		ImportSettings->VertexColorImportOption = EVertexColorImportOption::Type::Override;
 		break;
-	case EFbxSceneVertexColorImportOption::Ignore:
+	case EFbxSceneVertexColorImportOption::Type::Ignore:
 		ImportSettings->VertexColorImportOption = EVertexColorImportOption::Type::Ignore;
 		break;
 	default:
@@ -1454,16 +1454,16 @@ void SFbxSceneOptionWindow::CopyFbxOptionsToStaticMeshOptions(UnFbx::FBXImportOp
 	switch (ImportSettings->VertexColorImportOption)
 	{
 	case EVertexColorImportOption::Type::Replace:
-		StaticMeshOptions->VertexColorImportOption = EFbxSceneVertexColorImportOption::Replace;
+		StaticMeshOptions->VertexColorImportOption = EFbxSceneVertexColorImportOption::Type::Replace;
 		break;
 	case EVertexColorImportOption::Type::Override:
-		StaticMeshOptions->VertexColorImportOption = EFbxSceneVertexColorImportOption::Override;
+		StaticMeshOptions->VertexColorImportOption = EFbxSceneVertexColorImportOption::Type::Override;
 		break;
 	case EVertexColorImportOption::Type::Ignore:
-		StaticMeshOptions->VertexColorImportOption = EFbxSceneVertexColorImportOption::Ignore;
+		StaticMeshOptions->VertexColorImportOption = EFbxSceneVertexColorImportOption::Type::Ignore;
 		break;
 	default:
-		StaticMeshOptions->VertexColorImportOption = EFbxSceneVertexColorImportOption::Replace;
+		StaticMeshOptions->VertexColorImportOption = EFbxSceneVertexColorImportOption::Type::Replace;
 	}
 	StaticMeshOptions->VertexOverrideColor = ImportSettings->VertexOverrideColor;
 	switch (ImportSettings->NormalImportMethod)

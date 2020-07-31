@@ -62,11 +62,6 @@ TSharedRef< FUICommandList > FMainFrameCommands::ActionList( new FUICommandList(
 
 TWeakPtr<SNotificationItem> FMainFrameActionCallbacks::ChoosePackagesToCheckInNotification;
 
-namespace
-{
-	const FName SwitchProjectBundle = "SwitchProject";
-}
-
 FMainFrameCommands::FMainFrameCommands()
 	: TCommands<FMainFrameCommands>(
 		TEXT("MainFrame"), // Context name for fast lookup
@@ -77,15 +72,13 @@ FMainFrameCommands::FMainFrameCommands()
 		TEXT( "MainFrame.ToggleFullscreen" ),
 		TEXT( "Toggles the editor between \"full screen\" mode and \"normal\" mode.  In full screen mode, the task bar and window title area are hidden." ),
 		FConsoleCommandDelegate::CreateStatic( &FMainFrameActionCallbacks::ToggleFullscreen_Execute ) )
-{
-	AddBundle(SwitchProjectBundle, LOCTEXT("SwitchProjectBundle", "Switch Project"));
-}
+{ }
 
 
 void FMainFrameCommands::RegisterCommands()
 {
 	// Some commands cannot be processed in a commandlet or if the editor is started without a project
-	if ( !IsRunningCommandlet() && FApp::HasProjectName() && !IsRunningDedicatedServer())
+	if ( !IsRunningCommandlet() && FApp::HasProjectName() )
 	{
 		// The global action list was created at static initialization time. Create a handler for otherwise unhandled keyboard input to route key commands through this list.
 		FSlateApplication::Get().SetUnhandledKeyDownEventHandler( FOnKeyEvent::CreateStatic( &FMainFrameActionCallbacks::OnUnhandledKeyDownEvent ) );
@@ -143,8 +136,7 @@ void FMainFrameCommands::RegisterCommands()
 				this->AsShared(),
 				FName( *FString::Printf( TEXT( "SwitchProject%i" ), CurProjectIndex ) ),
 				Message,
-				LOCTEXT( "SwitchProjectToolTip", "Restarts the editor and switches to selected project" ),
-				SwitchProjectBundle)
+				LOCTEXT( "SwitchProjectToolTip", "Restarts the editor and switches to selected project" ) )
 			.UserInterfaceType( EUserInterfaceActionType::Button )
 			.DefaultChord( FInputChord() );
 		SwitchProjectCommands.Add( SwitchProject );
@@ -173,10 +165,10 @@ void FMainFrameCommands::RegisterCommands()
 												FCanExecuteAction(),
 												FIsActionChecked::CreateStatic( &FMainFrameActionCallbacks::OpenSlateApp_IsChecked, FName("SessionFrontend" ) ) );
 
-	UI_COMMAND(VisitOnlineLearning, "Online Learning...", "Learn Unreal Engine for free with easy-to-follow video courses and guided learning paths.", EUserInterfaceActionType::Button, FInputChord());
-	ActionList->MapAction(VisitOnlineLearning, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::VisitOnlineLearning));
+	UI_COMMAND(VisitWiki, "Wiki...", "Go to the Unreal Engine Wiki page to view community-created resources, or to create your own.", EUserInterfaceActionType::Button, FInputChord());
+	ActionList->MapAction(VisitWiki, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::VisitWiki));
 
-	UI_COMMAND(VisitForums, "Forums...", "Go to the Unreal Engine forums to view announcements and engage in discussions with other developers.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(VisitForums, "Forums...", "Go the the Unreal Engine forums to view announcements and engage in discussions with other developers.", EUserInterfaceActionType::Button, FInputChord());
 	ActionList->MapAction(VisitForums, FExecuteAction::CreateStatic(&FMainFrameActionCallbacks::VisitForums));
 
 	UI_COMMAND(ReportABug, "Report a Bug...", "Found a bug?  Go here to fill out a bug report", EUserInterfaceActionType::Button, FInputChord());
@@ -937,7 +929,7 @@ void FMainFrameActionCallbacks::ZipUpProject()
 			FString CommandLine = FString::Printf(TEXT("ZipProjectUp %s -project=\"%s\" -install=\"%s\""), GetUATCompilationFlags(), *ProjectPath, *FinalFileName);
 
 			IUATHelperModule::Get().CreateUatTask( CommandLine, PlatformName, LOCTEXT("ZipTaskName", "Zipping Up Project"),
-				LOCTEXT("ZipTaskShortName", "Zip Project Task"), FEditorStyle::GetBrush(TEXT("MainFrame.CookContent")), IUATHelperModule::UatTaskResultCallack(), FPaths::GetPath(FinalFileName));
+				LOCTEXT("ZipTaskShortName", "Zip Project Task"), FEditorStyle::GetBrush(TEXT("MainFrame.CookContent")));
 		}
 	}
 }
@@ -1123,10 +1115,10 @@ void FMainFrameActionCallbacks::VisitEpicGamesDotCom()
 	}
 }
 
-void FMainFrameActionCallbacks::VisitOnlineLearning()
+void FMainFrameActionCallbacks::VisitWiki()
 {
 	FString URL;
-	if (FUnrealEdMisc::Get().GetURL(TEXT("OnlineLearningURL"), URL))
+	if (FUnrealEdMisc::Get().GetURL(TEXT("WikiURL"), URL))
 	{
 		FPlatformProcess::LaunchURL(*URL, NULL, NULL);
 	}

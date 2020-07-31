@@ -3278,7 +3278,6 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 	check(Filename);
 	const bool bIsCooking = TargetPlatform != nullptr;
 
-
 #if WITH_EDITOR
 	TMap<UObject*, UObject*> ReplacedImportOuters;
 
@@ -3538,7 +3537,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 			// TODO: Require a SavePackageContext and move to EditorEngine
 			FPackageNameMapSaver NameMapSaver;
 
-			uint32 ComparisonFlags = PPF_DeepCompareInstances | PPF_DeepCompareDSOsOnly;
+			uint32 ComparisonFlags = PPF_DeepCompareInstances;
 
 			// Export objects (tags them as OBJECTMARK_TagExp).
 			FArchiveSaveTagExports ExportTaggerArchive( InOuter );

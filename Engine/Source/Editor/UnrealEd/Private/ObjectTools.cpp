@@ -1909,7 +1909,7 @@ namespace ObjectTools
 				GatherObjectReferencersForDeletion(Package, bIsReferenced, bIsReferencedByUndo);
 
 				// only ref to this object is the transaction buffer, clear the transaction buffer
-				if (!bIsReferenced && bIsReferencedByUndo && GEditor && GEditor->Trans)
+				if (!bIsReferenced && bIsReferencedByUndo)
 				{
 					GEditor->Trans->Reset(NSLOCTEXT("UnrealEd", "DeleteSelectedItem", "Delete Selected Item"));
 				}
@@ -2465,11 +2465,8 @@ namespace ObjectTools
 			return false;
 		}
 
-		if (GEditor)
-		{
-			GEditor->GetSelectedObjects()->Deselect(ObjectToDelete);
-		}
-		
+		GEditor->GetSelectedObjects()->Deselect( ObjectToDelete );
+
 		{
 			// @todo Animation temporary HACK to allow deleting of UMorphTargets. This will be removed when UMorphTargets are subobjects of USkeleton.
 			// Get the base skeleton and unregister this morphtarget
@@ -2497,7 +2494,7 @@ namespace ObjectTools
 			GatherObjectReferencersForDeletion(ObjectToDelete, bIsReferenced, bIsReferencedByUndo, &Refs, bRequireReferencedProperties);
 
 			// only ref to this object is the transaction buffer, clear the transaction buffer
-			if (!bIsReferenced && bIsReferencedByUndo && GEditor && GEditor->Trans)
+			if (!bIsReferenced && bIsReferencedByUndo)
 			{
 				GEditor->Trans->Reset( NSLOCTEXT( "UnrealEd", "DeleteSelectedItem", "Delete Selected Item" ) );
 			}
@@ -2513,10 +2510,7 @@ namespace ObjectTools
 					FText::FromString( ObjectToDelete->GetFullName() ), FText::FromString( *Ar ) ) );
 
 				// Reselect the object as it failed to be deleted
-				if (GEditor)
-				{
-					GEditor->GetSelectedObjects()->Select(ObjectToDelete);
-				}
+				GEditor->GetSelectedObjects()->Select( ObjectToDelete );
 
 				return false;
 			}

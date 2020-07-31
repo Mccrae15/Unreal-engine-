@@ -290,45 +290,23 @@ void FBlueprintWidgetCustomization::CustomizeDetails( IDetailLayoutBuilder& Deta
 	TArray< TWeakObjectPtr<UObject> > OutObjects;
 	DetailLayout.GetObjectsBeingCustomized(OutObjects);
 	
-	UClass* SlotBaseClasses = nullptr;
-	for (const TWeakObjectPtr<UObject>& Obj : OutObjects)
+	if ( OutObjects.Num() == 1 )
 	{
-		if (UWidget* Widget = Cast<UWidget>(Obj.Get()))
+		if ( UWidget* Widget = Cast<UWidget>(OutObjects[0].Get()) )
 		{
-			if (Widget->Slot)
+			if ( Widget->Slot )
 			{
 				UClass* SlotClass = Widget->Slot->GetClass();
-				if (!SlotBaseClasses)
-				{
-					SlotBaseClasses = SlotClass;
-				}
-				else if (SlotBaseClasses != SlotClass)
-				{
-					SlotBaseClasses = nullptr;
-					break;
-				}
+				FText LayoutCatName = FText::Format(LOCTEXT("SlotNameFmt", "Slot ({0})"), SlotClass->GetDisplayNameText());
+
+				DetailLayout.EditCategory(LayoutCategoryKey, LayoutCatName, ECategoryPriority::TypeSpecific);
 			}
 			else
 			{
-				SlotBaseClasses = nullptr;
-				break;
+				auto& Category = DetailLayout.EditCategory(LayoutCategoryKey);
+				// TODO UMG Hide Category
 			}
 		}
-		else
-		{
-			SlotBaseClasses = nullptr;
-			break;
-		}
-	}
-	
-	if (SlotBaseClasses)
-	{
-		FText LayoutCatName = FText::Format(LOCTEXT("SlotNameFmt", "Slot ({0})"), SlotBaseClasses->GetDisplayNameText());
-		DetailLayout.EditCategory(LayoutCategoryKey, LayoutCatName, ECategoryPriority::TypeSpecific);
-	}
-	else
-	{
-		DetailLayout.EditCategory(LayoutCategoryKey, FText(), ECategoryPriority::TypeSpecific);
 	}
 
 	PerformAccessibilityCustomization(DetailLayout);

@@ -89,7 +89,7 @@ public:
 	* Finds an array of all settings matching the specific type, including inherited classes.
 	*/
 	template<typename SettingType>
-	TArray<SettingType*> FindSettings(bool bEnabledOnly = false) const
+	TArray<SettingType*> FindSettings() const
 	{
 		TArray<SettingType*> FoundSettings;
 
@@ -98,10 +98,7 @@ public:
 		{
 			if (Setting->GetClass()->IsChildOf<SettingType>())
 			{
-				if (!bEnabledOnly || (Setting->IsEnabled() && Setting->GetIsUserCustomized()))
-				{
-					FoundSettings.Add(Cast<SettingType>(Setting));
-				}
+				FoundSettings.Add(Cast<SettingType>(Setting));
 			}
 		}
 

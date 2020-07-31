@@ -222,16 +222,6 @@ void FAudioThread::SetUseThreadedAudio(const bool bInUseThreadedAudio)
 	}
 }
 
-bool FAudioThread::IsUsingThreadedAudio()
-{
-	return bUseThreadedAudio;
-}
-
-bool FAudioThread::IsAudioThreadRunning()
-{ 
-	return bIsAudioThreadRunning; 
-}
-
 struct FAudioAsyncBatcher
 {
 	FGraphEventArray DispatchEvent;

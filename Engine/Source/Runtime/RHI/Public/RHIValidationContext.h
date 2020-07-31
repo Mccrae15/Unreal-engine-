@@ -425,12 +425,12 @@ public:
 		RHIContext->RHISetScissorRect(bEnable, MinX, MinY, MaxX, MaxY);
 	}
 
-	virtual void RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState, bool bApplyAdditionalState) override final
+	virtual void RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState) override final
 	{
 		checkf(State.bInsideBeginRenderPass, TEXT("Graphics PSOs can only be set inside a RenderPass!"));
 		State.bGfxPSOSet = true;
 		State.bComputeShaderSet = false;
-		RHIContext->RHISetGraphicsPipelineState(GraphicsState, bApplyAdditionalState);
+		RHIContext->RHISetGraphicsPipelineState(GraphicsState);
 	}
 
 	/** Set the shader resource view of a surface.  This is used for binding TextureMS parameter types that need a multi sampled view. */

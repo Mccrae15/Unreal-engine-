@@ -24,7 +24,6 @@ private:
 
 	/** Ptr back to the curve editor */
 	FCurveEditor* CurveEditor;
-	TOptional<FCurvePointHandle> CardinalPoint;
 
 private:
 

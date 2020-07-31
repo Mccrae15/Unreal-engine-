@@ -4,8 +4,6 @@
 #include "PreLoadScreenManager.h"
 #include "PreLoadMoviePlayerModule.h"
 
-#include "Framework/Application/SlateApplication.h"
-#include "Framework/SlateDelegates.h"
 #include "HAL/FileManager.h"
 #include "Misc/ConfigCacheIni.h"
 

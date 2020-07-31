@@ -51,7 +51,7 @@ public:
 	TSharedPtr< FUICommandInfo > OpenClassViewer;
 	TSharedPtr< FUICommandInfo > OpenWidgetReflector;
 
-	TSharedPtr< FUICommandInfo > VisitOnlineLearning;
+	TSharedPtr< FUICommandInfo > VisitWiki;
 	TSharedPtr< FUICommandInfo > VisitForums;
 	TSharedPtr< FUICommandInfo > VisitAskAQuestionPage;
 	TSharedPtr< FUICommandInfo > VisitSearchForAnswersPage;
@@ -158,8 +158,7 @@ public:
 	/** Visits EpicGames.com */
 	static void VisitEpicGamesDotCom();
 
-	/** Visits The Unreal Online Learning page*/
-	static void VisitOnlineLearning();
+	static void VisitWiki();
 
 	static void VisitForums();
 

@@ -113,10 +113,6 @@ bool SkipImportProperty(TSharedPtr<IPropertyHandle> Handle, const FString &MetaD
 	{
 		return true;
 	}
-	if ((bImportGeoOnly || bImportRigOnly) && Types.Contains(TEXT("RigAndGeo")))
-	{
-		return true;
-	}
 	return false;
 }
 

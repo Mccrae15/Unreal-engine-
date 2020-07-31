@@ -50,6 +50,9 @@
 #include <sys/sysctl.h>
 #include <malloc/malloc.h>
 
+// SIMD intrinsics
+#include <xmmintrin.h>
+
 struct tagRECT
 {
 	int32 left;

@@ -778,7 +778,7 @@ void FSlateUser::QueryCursor()
 					CursorReply = FCursorReply::Cursor(EMouseCursor::Default);
 					
 #if WITH_SLATE_DEBUGGING
-					FSlateDebugging::BroadcastCursorQuery(TSharedPtr<SWidget>(), CursorReply);
+					FSlateDebugging::BroadcastCursorQuery(nullptr, CursorReply);
 #endif
 				}
 			}
@@ -788,7 +788,7 @@ void FSlateUser::QueryCursor()
 				CursorReply = FCursorReply::Cursor(EMouseCursor::Default);
 
 #if WITH_SLATE_DEBUGGING
-				FSlateDebugging::BroadcastCursorQuery(TSharedPtr<SWidget>(), CursorReply);
+				FSlateDebugging::BroadcastCursorQuery(nullptr, CursorReply);
 #endif
 			}
 		}

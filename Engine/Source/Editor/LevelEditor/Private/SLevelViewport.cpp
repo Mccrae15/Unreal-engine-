@@ -75,7 +75,6 @@
 #include "Editor/WorldBrowser/Public/WorldBrowserModule.h"
 #include "Bookmarks/IBookmarkTypeTools.h"
 #include "ToolMenus.h"
-#include "Bookmarks/IBookmarkTypeTools.h"
 
 static const FName LevelEditorName("LevelEditor");
 
@@ -542,7 +541,7 @@ void SLevelViewport::ConstructLevelEditorViewportClient( const FArguments& InArg
 	if (FPlatformMisc::IsRemoteSession())
 	{
 		bool bShouldBeRealtime = false;
-		LevelViewportClient->AddRealtimeOverride(bShouldBeRealtime, LOCTEXT("RealtimeOverrideMessage_RDP", "Remote Desktop"));
+		LevelViewportClient->SetRealtimeOverride(bShouldBeRealtime, LOCTEXT("RealtimeOverrideMessage_RDP", "Remote Desktop"));
 	}
 }
 
@@ -1170,7 +1169,7 @@ void SLevelViewport::OnMapChanged( UWorld* World, EMapChangeType MapChangeType )
 		}
 		World->EditorViews[LevelViewportClient->ViewportType].CamUpdated = false;
 
-		World->ChangeFeatureLevel(GEditor->GetActiveFeatureLevelPreviewType());
+		World->ChangeFeatureLevel(GWorld->FeatureLevel);
 
 		RedrawViewport(true);
 	}

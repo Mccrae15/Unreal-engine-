@@ -37,7 +37,6 @@ void FPropertyTextUtilities::PropertyToTextHelper(FString& OutString, const FPro
 			Outer = Outer->GetOwner<FProperty>();
 		}
 	}
-
 	if (!bIsSparseProperty || bIsInContainer)
 	{
 		PropertyToTextHelper(OutString, InPropertyNode, Property, ObjectAddress.BaseAddress, PortFlags);
@@ -45,8 +44,7 @@ void FPropertyTextUtilities::PropertyToTextHelper(FString& OutString, const FPro
 	else
 	{
 		// TODO: once we're sure that these don't differ we should always use the call to PropertyToTextHelper
-		UObject* Object = (UObject*) ObjectAddress.GetUObject();
-		void* BaseAddress = Object->GetClass()->GetOrCreateSparseClassData();
+		void* BaseAddress = ObjectAddress.Object->GetClass()->GetOrCreateSparseClassData();
 		void* ValueAddress = Property->ContainerPtrToValuePtr<void>(BaseAddress);
 		Property->ExportText_Direct(OutString, ValueAddress, ValueAddress, nullptr, PortFlags);
 
@@ -70,6 +68,6 @@ void FPropertyTextUtilities::TextToPropertyHelper(const TCHAR* Buffer, const FPr
 
 void FPropertyTextUtilities::TextToPropertyHelper(const TCHAR* Buffer, const FPropertyNode* InPropertyNode, const FProperty* Property, const FObjectBaseAddress& ObjectAddress)
 {
-	uint8* BaseAddress = InPropertyNode ? InPropertyNode->GetValueBaseAddressFromObject(ObjectAddress.GetUObject()) : ObjectAddress.BaseAddress;
-	TextToPropertyHelper(Buffer, InPropertyNode, Property, ObjectAddress.BaseAddress, ObjectAddress.GetUObject());
+	uint8* BaseAddress = InPropertyNode ? InPropertyNode->GetValueBaseAddressFromObject(ObjectAddress.Object) : ObjectAddress.BaseAddress;
+	TextToPropertyHelper(Buffer, InPropertyNode, Property, BaseAddress, ObjectAddress.Object);
 }

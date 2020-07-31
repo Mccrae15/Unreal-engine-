@@ -113,5 +113,4 @@ private:
 	int32 PreviousAnimationUROEnabled;
 	int32 PreviousFoliageDitheredLOD;
 	int32 PreviousFoliageForceLOD;
-	int32 PreviousNeverMuteNonRealtimeAudio;
 };

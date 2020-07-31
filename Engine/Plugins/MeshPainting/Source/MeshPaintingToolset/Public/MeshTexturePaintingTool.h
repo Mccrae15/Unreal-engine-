@@ -71,7 +71,7 @@ public:
 	bool bWriteAlpha;
 
 	/** UV channel which should be used for paint textures */
-	UPROPERTY(EditAnywhere, Category = TexturePainting, meta = (TransientToolProperty))
+	UPROPERTY(EditAnywhere, Category = TexturePainting)
 	int32 UVChannel;
 
 	/** Seam painting flag, True if we should enable dilation to allow the painting of texture seams */
@@ -79,7 +79,7 @@ public:
 	bool bEnableSeamPainting;
 
 	/** Texture to which Painting should be Applied */
-	UPROPERTY(EditAnywhere, Category = TexturePainting, meta = (DisplayThumbnail = "true", TransientToolProperty))
+	UPROPERTY(EditAnywhere, Category = TexturePainting, meta = (DisplayThumbnail = "true"))
 	UTexture2D* PaintTexture;
 
 	/** Enables "Flow" painting where paint is continually applied from the brush every tick */
@@ -89,6 +89,11 @@ public:
 	/** Whether back-facing triangles should be ignored */
 	UPROPERTY(EditAnywhere, Category = Brush, meta = (DisplayName = "Ignore Back-Facing"))
 	bool bOnlyFrontFacingTriangles;
+
+
+	virtual void SaveProperties(UInteractiveTool* SaveFromTool) override;
+	virtual void RestoreProperties(UInteractiveTool* RestoreToTool) override;
+
 };
 
 

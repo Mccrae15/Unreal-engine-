@@ -87,7 +87,6 @@ UMovieSceneSequencePlayer::UMovieSceneSequencePlayer(const FObjectInitializer& I
 	, Sequence(nullptr)
 	, StartTime(0)
 	, DurationFrames(0)
-	, DurationSubFrames(0.f)
 	, CurrentNumLoops(0)
 {
 	PlayPosition.Reset(FFrameTime(0));
@@ -122,7 +121,6 @@ void UMovieSceneSequencePlayer::GetLifetimeReplicatedProps(TArray<FLifetimePrope
 	DOREPLIFETIME(UMovieSceneSequencePlayer, bReversePlayback);
 	DOREPLIFETIME(UMovieSceneSequencePlayer, StartTime);
 	DOREPLIFETIME(UMovieSceneSequencePlayer, DurationFrames);
-	DOREPLIFETIME(UMovieSceneSequencePlayer, DurationSubFrames);
 	DOREPLIFETIME(UMovieSceneSequencePlayer, PlaybackSettings);
 }
 
@@ -443,7 +441,7 @@ FQualifiedFrameTime UMovieSceneSequencePlayer::GetCurrentTime() const
 
 FQualifiedFrameTime UMovieSceneSequencePlayer::GetDuration() const
 {
-	return FQualifiedFrameTime(FFrameTime(DurationFrames, DurationSubFrames), PlayPosition.GetInputRate());
+	return FQualifiedFrameTime(DurationFrames, PlayPosition.GetInputRate());
 }
 
 int32 UMovieSceneSequencePlayer::GetFrameDuration() const
@@ -470,13 +468,12 @@ void UMovieSceneSequencePlayer::SetFrameRate(FFrameRate FrameRate)
 	PlayPosition.SetTimeBase(FrameRate, PlayPosition.GetOutputRate(), PlayPosition.GetEvaluationType());
 }
 
-void UMovieSceneSequencePlayer::SetFrameRange( int32 NewStartTime, int32 Duration, float SubFrames )
+void UMovieSceneSequencePlayer::SetFrameRange( int32 NewStartTime, int32 Duration )
 {
 	Duration = FMath::Max(Duration, 0);
 
 	StartTime      = NewStartTime;
 	DurationFrames = Duration;
-	DurationSubFrames = SubFrames;
 
 	TOptional<FFrameTime> CurrentTime = PlayPosition.GetCurrentPosition();
 	if (CurrentTime.IsSet())
@@ -566,21 +563,7 @@ void UMovieSceneSequencePlayer::SetPlayRate(float PlayRate)
 
 FFrameTime UMovieSceneSequencePlayer::GetLastValidTime() const
 {
-	if (DurationFrames > 0)
-	{
-		if (DurationSubFrames > 0.f)
-		{
-			return FFrameTime(StartTime + DurationFrames, DurationSubFrames);
-		}
-		else
-		{
-			return FFrameTime(StartTime + DurationFrames - 1, 0.99999994f);
-		}
-	}
-	else
-	{
-		return FFrameTime(StartTime);
-	}
+	return DurationFrames > 0 ? FFrameTime(StartTime + DurationFrames - 1, 0.99999994f) : FFrameTime(StartTime);
 }
 
 bool UMovieSceneSequencePlayer::ShouldStopOrLoop(FFrameTime NewPosition) const
@@ -590,7 +573,7 @@ bool UMovieSceneSequencePlayer::ShouldStopOrLoop(FFrameTime NewPosition) const
 	{
 		if (!bReversePlayback)
 		{
-			bShouldStopOrLoop = NewPosition >= FFrameTime(StartTime + GetFrameDuration(), DurationSubFrames);
+			bShouldStopOrLoop = NewPosition.FrameNumber >= StartTime + GetFrameDuration();
 		}
 		else
 		{
@@ -670,12 +653,10 @@ void UMovieSceneSequencePlayer::Initialize(UMovieSceneSequence* InSequence, cons
 			const FFrameNumber SrcStartFrame = UE::MovieScene::DiscreteInclusiveLower(PlaybackRange);
 			const FFrameNumber SrcEndFrame   = UE::MovieScene::DiscreteExclusiveUpper(PlaybackRange);
 
-			const FFrameTime EndingTime = ConvertFrameTime(SrcEndFrame, TickResolution, DisplayRate);
-
 			const FFrameNumber StartingFrame = ConvertFrameTime(SrcStartFrame, TickResolution, DisplayRate).FloorToFrame();
-			const FFrameNumber EndingFrame   = EndingTime.FloorToFrame();
+			const FFrameNumber EndingFrame   = ConvertFrameTime(SrcEndFrame,   TickResolution, DisplayRate).FloorToFrame();
 
-			SetFrameRange(StartingFrame.Value, (EndingFrame - StartingFrame).Value, EndingTime.GetSubFrame());
+			SetFrameRange(StartingFrame.Value, (EndingFrame - StartingFrame).Value);
 		}
 
 		// Reset the play position based on the user-specified start offset, or a random time
@@ -1338,8 +1319,7 @@ int32 UMovieSceneSequencePlayer::GetFunctionCallspace(UFunction* Function, FFram
 {
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
-		// Try to use the same logic as function libraries for static functions, will try to use the global context to check authority only/cosmetic
-		return GEngine->GetGlobalFunctionCallspace(Function, this, Stack);
+		return FunctionCallspace::Local;
 	}
 
 	check(GetOuter());

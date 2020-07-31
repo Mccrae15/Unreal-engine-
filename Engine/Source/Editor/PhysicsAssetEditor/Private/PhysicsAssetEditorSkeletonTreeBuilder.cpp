@@ -45,7 +45,7 @@ ESkeletonTreeFilterResult FPhysicsAssetEditorSkeletonTreeBuilder::FilterItem(con
 
 		if (InArgs.TextFilter.IsValid())
 		{
-			if (InArgs.TextFilter->TestTextFilter(FBasicStringFilterExpressionContext(InItem->GetRowItemName().ToString())))
+			if (InArgs.TextFilter->TestTextFilter(FSkeletonTreeFilterContext(InItem->GetRowItemName())))
 			{
 				Result = ESkeletonTreeFilterResult::ShownHighlighted;
 			}

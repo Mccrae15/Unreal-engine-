@@ -344,7 +344,6 @@ void FLevelEditorSequencerIntegration::OnPostSaveWorld(uint32 SaveFlags, class U
 		{
 			if (Options.bRequiresLevelEvents)
 			{
-				In.InvalidateCachedData();
 				In.ForceEvaluate();
 			}
 		}
@@ -606,27 +605,6 @@ void FLevelEditorSequencerIntegration::OnPreBeginPIE(bool bIsSimulating)
 
 void FLevelEditorSequencerIntegration::OnEndPlayMap()
 {
-	bool bAddRestoreCallback = false;
-	const FText SystemDisplayName = LOCTEXT("RealtimeOverrideMessage_Sequencer", "Sequencer");
-	for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
-	{
-		if (LevelVC)
-		{
-			// If the Sequencer was opened during PIE, we didn't make the viewport realtime. Now that PIE has ended,
-			// we can add our override.
-			if (LevelVC->IsPerspective() && LevelVC->AllowsCinematicControl() && !LevelVC->HasRealtimeOverride(SystemDisplayName))
-			{
-				const bool bShouldBeRealtime = true;
-				LevelVC->AddRealtimeOverride(bShouldBeRealtime, SystemDisplayName);
-				bAddRestoreCallback = true;
-			}
-		}
-	}
-	if (bAddRestoreCallback)
-	{
-		AcquiredResources.Add([=] { this->RestoreRealtimeViewports(); });
-	}
-
 	IterateAllSequencers(
 		[](FSequencer& In, const FLevelEditorSequencerIntegrationOptions& Options)
 		{
@@ -1101,7 +1079,7 @@ void FLevelEditorSequencerIntegration::ActivateRealtimeViewports()
 			if (LevelVC->IsPerspective() && LevelVC->AllowsCinematicControl())
 			{				
 				const bool bShouldBeRealtime = true;
-				LevelVC->AddRealtimeOverride(bShouldBeRealtime, LOCTEXT("RealtimeOverrideMessage_Sequencer", "Sequencer"));
+				LevelVC->SetRealtimeOverride(bShouldBeRealtime, LOCTEXT("RealtimeOverrideMessage_Sequencer", "Sequencer"));
 			}
 		}
 	}
@@ -1119,7 +1097,7 @@ void FLevelEditorSequencerIntegration::RestoreRealtimeViewports()
 			// Turn off realtime when exiting.
 			if( LevelVC->IsPerspective() && LevelVC->AllowsCinematicControl() )
 			{				
-				LevelVC->RemoveRealtimeOverride(LOCTEXT("RealtimeOverrideMessage_Sequencer", "Sequencer"));
+				LevelVC->RemoveRealtimeOverride();
 			}
 		}
 	}

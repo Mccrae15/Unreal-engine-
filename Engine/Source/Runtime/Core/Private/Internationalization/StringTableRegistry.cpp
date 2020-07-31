@@ -77,23 +77,8 @@ void FStringTableRegistry::RegisterStringTable(const FName InTableId, FStringTab
 
 void FStringTableRegistry::UnregisterStringTable(const FName InTableId)
 {
-	{
-		FScopeLock RegisteredStringTablesLock(&RegisteredStringTablesCS);
-		RegisteredStringTables.Remove(InTableId);
-	}
-
-#if WITH_EDITOR
-	{
-		FScopeLock CSVFilesToWatchLock(&CSVFilesToWatchCS);
-		for (auto It = CSVFilesToWatch.CreateIterator(); It; ++It)
-		{
-			if (It->Value == InTableId)
-			{
-				It.RemoveCurrent();
-			}
-		}
-	}
-#endif // WITH_EDITOR
+	FScopeLock RegisteredStringTablesLock(&RegisteredStringTablesCS);
+	RegisteredStringTables.Remove(InTableId);
 }
 
 FStringTablePtr FStringTableRegistry::FindMutableStringTable(const FName InTableId) const

@@ -204,7 +204,7 @@ void UListViewBase::FinishGeneratingEntry(UUserWidget& GeneratedEntry)
 		{
 			if (UWorld* World = GetWorld())
 			{
-				EntryGenAnnouncementTimerHandle = World->GetTimerManager().SetTimerForNextTick(this, &UListViewBase::HandleAnnounceGeneratedEntries);
+				World->GetTimerManager().SetTimerForNextTick(this, &UListViewBase::HandleAnnounceGeneratedEntries);
 			}
 		}
 	}

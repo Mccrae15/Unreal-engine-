@@ -393,17 +393,16 @@ void SSCSEditorViewport::ToggleIsSimulateEnabled()
 
 void SSCSEditorViewport::EnablePreview(bool bEnable)
 {
-	const FText SystemDisplayName = NSLOCTEXT("BlueprintEditor", "RealtimeOverrideMessage_Blueprints", "the active blueprint mode");
 	if(bEnable)
 	{
 		// Restore the previously-saved realtime setting
-		ViewportClient->RemoveRealtimeOverride(SystemDisplayName);
+		ViewportClient->RemoveRealtimeOverride();
 	}
 	else
 	{
 		// Disable and store the current realtime setting. This will bypass real-time rendering in the preview viewport (see UEditorEngine::UpdateSingleViewportClient).
 		const bool bShouldBeRealtime = false;
-		ViewportClient->AddRealtimeOverride(bShouldBeRealtime, SystemDisplayName);
+		ViewportClient->SetRealtimeOverride(bShouldBeRealtime, NSLOCTEXT("BlueprintEditor", "RealtimeOverrideMessage_Blueprints", "the active blueprint mode"));
 	}
 }
 

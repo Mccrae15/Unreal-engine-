@@ -312,7 +312,7 @@ void FMainMenu::RegisterHelpMenu()
 		HelpOnlineSection.AddMenuEntry(FMainFrameCommands::Get().VisitSupportWebSite);
 		HelpOnlineSection.AddMenuEntry(FMainFrameCommands::Get().VisitForums);
 		HelpOnlineSection.AddMenuEntry(FMainFrameCommands::Get().VisitSearchForAnswersPage);
-		HelpOnlineSection.AddMenuEntry(FMainFrameCommands::Get().VisitOnlineLearning);
+		HelpOnlineSection.AddMenuEntry(FMainFrameCommands::Get().VisitWiki);
 
 
 		const FText SupportWebSiteLabel = NSLOCTEXT("MainHelpMenu", "VisitUnrealEngineSupportWebSite", "Unreal Engine Support Web Site...");

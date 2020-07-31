@@ -2890,7 +2890,7 @@ static InternalSavePackageResult InternalSavePackage(UPackage* PackageToSave, bo
 	TRACE_CPUPROFILER_EVENT_SCOPE(InternalSavePackage);
 
 	// What we will be returning. Assume for now that everything will go fine
-	InternalSavePackageResult ReturnCode = InternalSavePackageResult::Error;
+	InternalSavePackageResult ReturnCode = InternalSavePackageResult::Success;
 
 	// Assume the package is locally writable in case SCC is disabled; if SCC is enabled, it will
 	// correctly set this value later
@@ -2911,15 +2911,13 @@ static InternalSavePackageResult InternalSavePackage(UPackage* PackageToSave, bo
 	FString FinalPackageFilename;
 
 	// True if we should attempt saving
-	bool bAttemptSave = false;
+	bool bAttemptSave = true;
 
 	// If the package already has a valid path to a non read-only location, use it to determine where the file should be saved
 	const bool bIncludeReadOnlyRoots = false;
 	const bool bIsValidPath = FPackageName::IsValidLongPackageName(PackageName, bIncludeReadOnlyRoots);
 	if( bIsValidPath )
 	{
-		bAttemptSave = true;
-
 		FString ExistingFilename;
 		const bool bPackageAlreadyExists = FPackageName::DoesPackageExist(PackageName, NULL, &ExistingFilename);
 		if (!bPackageAlreadyExists)
@@ -2932,7 +2930,7 @@ static InternalSavePackageResult InternalSavePackage(UPackage* PackageToSave, bo
 			FText ErrorText;
 			if (!FFileHelper::IsFilenameValidForSaving(ExistingFilename, ErrorText))
 			{
-				// Display the error (already localized) and exit gracefully.
+				// Display the error (already localized) and exit gracefuly.
 				FMessageDialog::Open(EAppMsgType::Ok, ErrorText);
 				bAttemptSave = false;
 			}
@@ -3058,7 +3056,6 @@ static InternalSavePackageResult InternalSavePackage(UPackage* PackageToSave, bo
 				{
 					FinalPackageSavePath = FinalPackageFilename;
 					// Stop looping, we successfully got a valid path and filename to save
-					bAttemptSave = true;
 					break;
 				}
 			}
@@ -3070,6 +3067,7 @@ static InternalSavePackageResult InternalSavePackage(UPackage* PackageToSave, bo
 				if( NumSkips == NumSkipsBeforeAbort )
 				{
 					// They really want to stop
+					bAttemptSave = false;
 					ReturnCode = InternalSavePackageResult::Cancel;
 				}
 			}
@@ -4420,6 +4418,7 @@ static bool InternalCheckoutAndSavePackages(const TArray<UPackage*>& PackagesToS
 			for (UPackage* Package : PackagesToSave)
 			{
 				// List unsaved packages that were not checked out
+				if (!PackagesCheckedOut.Contains(Package))
 				{
 					PackagesToMarkForAdd.Add(Package);
 				}

@@ -505,9 +505,6 @@ public:
 	/** Selects a section */
 	virtual void SelectSection(UMovieSceneSection* Section) = 0;
 
-	/** Selects a folder */
-	virtual void SelectFolder(UMovieSceneFolder* Folder) = 0;
-
 	/** Selects property tracks by property path */
 	virtual void SelectByPropertyPaths(const TArray<FString>& InPropertyPaths) = 0;
 

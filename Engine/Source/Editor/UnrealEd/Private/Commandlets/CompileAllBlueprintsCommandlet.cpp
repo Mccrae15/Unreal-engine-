@@ -22,7 +22,6 @@ UCompileAllBlueprintsCommandlet::UCompileAllBlueprintsCommandlet(const FObjectIn
 	bCookedOnly = false;
 	bDirtyOnly = false;
 	bSimpleAssetList = false;
-	BlueprintBaseClassName = UBlueprint::StaticClass()->GetFName();
 
 	TotalNumFailedLoads = 0;
 	TotalNumFatalIssues = 0;
@@ -80,11 +79,6 @@ void UCompileAllBlueprintsCommandlet::InitCommandLine(const FString& Params)
 	{
 		const FString& WhitelistFullPath = SwitchParams[TEXT("WhitelistFile")];
 		ParseWhitelist(WhitelistFullPath);
-	}
-
-	if (SwitchParams.Contains(TEXT("BlueprintBaseClass")))
-	{
-		BlueprintBaseClassName = *SwitchParams[TEXT("BlueprintBaseClass")];
 	}
 }
 
@@ -180,7 +174,7 @@ void UCompileAllBlueprintsCommandlet::BuildBlueprintAssetList()
 	UE_LOG(LogCompileAllBlueprintsCommandlet, Display, TEXT("Finished Loading Asset Registry."));
 	
 	UE_LOG(LogCompileAllBlueprintsCommandlet, Display, TEXT("Gathering All Blueprints From Asset Registry..."));
-	AssetRegistryModule.Get().GetAssetsByClass(BlueprintBaseClassName, BlueprintAssetList, true);
+	AssetRegistryModule.Get().GetAssetsByClass(UBlueprint::StaticClass()->GetFName(), BlueprintAssetList, true);
 }
 
 bool UCompileAllBlueprintsCommandlet::ShouldBuildAsset(FAssetData const& Asset) const

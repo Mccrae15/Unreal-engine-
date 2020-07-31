@@ -28,8 +28,6 @@
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
-#include "Dialogs/CustomDialog.h"
-#include "SCheckBoxList.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "EdGraphNode_Comment.h"
 #include "Editor/UnrealEdEngine.h"
@@ -617,13 +615,6 @@ bool FBlueprintEditor::OnRequestClose()
 	if (FindResultsTab.IsValid() && !IsInAScriptingMode() && GetDefault<UBlueprintEditorSettings>()->bHostFindInBlueprintsInGlobalTab)
 	{
 		FindResultsTab->RequestCloseTab();
-	}
-
-	// Close the Replace References Tab so it doesn't open the next time we do
-	TSharedPtr<SDockTab> ReplaceRefsTab = TabManager->FindExistingLiveTab(FBlueprintEditorTabs::ReplaceNodeReferencesID);
-	if (ReplaceRefsTab.IsValid())
-	{
-		ReplaceRefsTab->RequestCloseTab();
 	}
 
 	bEditorMarkedAsClosed = true;
@@ -1279,8 +1270,8 @@ TSharedRef<SGraphEditor> FBlueprintEditor::CreateGraphEditorWidget(TSharedRef<FT
 				);
 
 			GraphEditorCommands->MapAction( FGenericCommands::Get().Paste,
-				FExecuteAction::CreateSP( this, &FBlueprintEditor::PasteGeneric ),
-				FCanExecuteAction::CreateSP( this, &FBlueprintEditor::CanPasteGeneric )
+				FExecuteAction::CreateSP( this, &FBlueprintEditor::PasteNodes ),
+				FCanExecuteAction::CreateSP( this, &FBlueprintEditor::CanPasteNodes )
 				);
 
 			GraphEditorCommands->MapAction( FGenericCommands::Get().Duplicate,
@@ -2375,25 +2366,10 @@ void FBlueprintEditor::PostLayoutBlueprintEditorInitialization()
 			LogSimpleMessage( FText::Format( LOCTEXT("Blueprint Modified Long", "Blueprint \"{BlueprintName}\" was updated to fix issues detected on load. Please resave."), Args ) );
 		}
 
-		// Determine if the current "mode" supports invoking the Compiler Results tab.
-		const bool bCanInvokeCompilerResultsTab = TabManager->HasTabSpawner(FBlueprintEditorTabs::CompilerResultsID);
-
-		// If we have a warning/error, open output log if the current mode allows us to invoke it.
-		const bool bIsBlueprintInWarningOrErrorState = !Blueprint->IsUpToDate() || (Blueprint->Status == BS_UpToDateWithWarnings);
-		if (bIsBlueprintInWarningOrErrorState && bCanInvokeCompilerResultsTab)
+		// If we have a warning/error, open output log.
+		if (!Blueprint->IsUpToDate() || (Blueprint->Status == BS_UpToDateWithWarnings))
 		{
 			TabManager->TryInvokeTab(FBlueprintEditorTabs::CompilerResultsID);
-		}
-		else
-		{
-			// Toolkit modes that don't include this tab may have been incorrectly saved with layout information for restoring it
-			// as an "unrecognized" tab, due to having previously invoked it above without checking to see if the layout can open
-			// it first. To correct this, we check if the tab was restored from a saved layout here, and close it if not supported.
-			TSharedPtr<SDockTab> TabPtr = TabManager->FindExistingLiveTab(FBlueprintEditorTabs::CompilerResultsID);
-			if (TabPtr.IsValid() && !bCanInvokeCompilerResultsTab)
-			{
-				TabPtr->RequestCloseTab();
-			}
 		}
 	}
 
@@ -3677,7 +3653,8 @@ void FBlueprintEditor::DeleteUnusedVariables_OnClicked()
 	UBlueprint* BlueprintObj = GetBlueprintObj();
 	
 	bool bHasAtLeastOneVariableToCheck = false;
-	TArray<FProperty*> VariableProperties;
+	FString PropertyList;
+	TArray<FName> VariableNames;
 	for (TFieldIterator<FProperty> PropertyIt(BlueprintObj->SkeletonGeneratedClass, EFieldIteratorFlags::ExcludeSuper); PropertyIt; ++PropertyIt)
 	{
 		FProperty* Property = *PropertyIt;
@@ -3699,77 +3676,17 @@ void FBlueprintEditor::DeleteUnusedVariables_OnClicked()
 				ObjectProperty->PropertyClass->IsChildOf(UTimelineComponent::StaticClass());
 			if (!FBlueprintEditorUtils::IsVariableUsed(BlueprintObj, VarName) && !bIsTimeline && bHasVarInfo)
 			{
-				VariableProperties.Add(Property);
+				VariableNames.Add(Property->GetFName());
+				if (PropertyList.IsEmpty()) {PropertyList = UEditorEngine::GetFriendlyName(Property);}
+				else {PropertyList += FString::Printf(TEXT(", %s"), *UEditorEngine::GetFriendlyName(Property));}
 			}
 		}
 	}
 
-	if (VariableProperties.Num() > 0)
+	if (VariableNames.Num() > 0)
 	{
-		TSharedRef<SCheckBoxList> CheckBoxList = SNew(SCheckBoxList)
-			.ItemHeaderLabel(LOCTEXT("DeleteUnusedVariablesDialog_VariableLabel", "Variable"));
-		for (FProperty* Variable : VariableProperties)
-		{
-			CheckBoxList->AddItem(FText::FromString(UEditorEngine::GetFriendlyName(Variable)), true);
-		}
-
-		TSharedRef<SWidget> DialogContain = SNew(SVerticalBox)
-			+ SVerticalBox::Slot().Padding(10)
-			.AutoHeight()
-			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("VariableDialog_Message", "These variables are not used in the graph."
-					"\nThey may be used in other places."
-					"\nYou may use 'Find in Blueprint' or the 'Asset Search' to find out if they are referenced elsewhere."))
-				.AutoWrapText(true)
-			]
-			+ SVerticalBox::Slot().FillHeight(0.8)
-			[
-				CheckBoxList
-			];
-
-		TSharedRef<SCustomDialog> CustomDialog = SNew(SCustomDialog)
-			.Title(LOCTEXT("DeleteUnusedVariablesDialog_Title", "Delete Unused Variables"))
-			.IconBrush("NotificationList.DefaultMessage")
-			.DialogContent(DialogContain)
-			.Buttons(
-			{
-				SCustomDialog::FButton(LOCTEXT("DeleteUnusedVariablesDialog_ButtonDelete", "Delete")),
-				SCustomDialog::FButton(LOCTEXT("DeleteUnusedVariablesDialog_ButtonCancel", "Cancel"))
-			});
-
-		int32 Result = CustomDialog->ShowModal();
-		if (Result == 0)
-		{
-			TArray<FName> VariableNames;
-			FString PropertyList;
-			VariableNames.Reserve(VariableProperties.Num());
-			for (int32 Index = 0; Index < VariableProperties.Num(); ++Index)
-			{
-				if (CheckBoxList->IsItemChecked(Index))
-				{
-					VariableNames.Add(VariableProperties[Index]->GetFName());
-					if (PropertyList.IsEmpty())
-					{
-						PropertyList = UEditorEngine::GetFriendlyName(VariableProperties[Index]);
-					}
-					else
-					{
-						PropertyList += FString::Printf(TEXT(", %s"), *UEditorEngine::GetFriendlyName(VariableProperties[Index]));
-					}
-				}
-			}
-
-			if (VariableNames.Num() > 0)
-			{
-				FBlueprintEditorUtils::BulkRemoveMemberVariables(GetBlueprintObj(), VariableNames);
-				LogSimpleMessage(FText::Format(LOCTEXT("UnusedVariablesDeletedMessage", "The following variable(s) were deleted successfully: {0}."), FText::FromString(PropertyList)));
-			}
-			else
-			{
-				LogSimpleMessage(LOCTEXT("NoVariablesSelectedMessage", "No variables were selected for deletion."));
-			}
-		}
+		FBlueprintEditorUtils::BulkRemoveMemberVariables(GetBlueprintObj(), VariableNames);
+		LogSimpleMessage( FText::Format( LOCTEXT("UnusedVariablesDeletedMessage", "The following variable(s) were deleted successfully: {0}."), FText::FromString( PropertyList ) ) );
 	}
 	else if (bHasAtLeastOneVariableToCheck)
 	{
@@ -6871,33 +6788,6 @@ void FBlueprintEditor::PasteNodesHere(class UEdGraph* DestinationGraph, const FV
 
 	// Update UI
 	FocusedGraphEd->NotifyGraphChanged();
-}
-
-void FBlueprintEditor::PasteGeneric()
-{
-	if (CanPasteNodes())
-	{
-		PasteNodes();
-	}
-	else if (MyBlueprintWidget.IsValid())
-	{
-		if (MyBlueprintWidget->CanPasteGeneric())
-		{
-			MyBlueprintWidget->OnPasteGeneric();
-		}
-	}
-}
-
-bool FBlueprintEditor::CanPasteGeneric() const
-{
-	if (CanPasteNodes())
-	{
-		return true;
-	}
-	else
-	{
-		return MyBlueprintWidget.IsValid() && MyBlueprintWidget->CanPasteGeneric();
-	}
 }
 
 

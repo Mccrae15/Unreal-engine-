@@ -72,7 +72,6 @@ public:
 		, _ShowTypeInColumnView(true)
 		, _SortByPathInColumnView(false)
 		, _ForceShowEngineContent(false)
-		, _ForceShowPluginContent(false)
 		{}
 
 		/** Called to check if an asset should be filtered out by external code */
@@ -194,9 +193,6 @@ public:
 
 		/** Should always show engine content */
 		SLATE_ARGUMENT(bool, ForceShowEngineContent)
-
-		/** Should always show plugin content */
-		SLATE_ARGUMENT(bool, ForceShowPluginContent)
 
 		/** Called to check if an asset tag should be display in details view. */
 		SLATE_EVENT( FOnShouldDisplayAssetTag, OnAssetTagWantsToBeDisplayed )
@@ -479,9 +475,6 @@ private:
 	/** Whether or not it's possible to toggle engine content */
 	bool IsToggleShowEngineContentAllowed() const;
 
-	/** Whether or not it's possible to toggle plugin content */
-	bool IsToggleShowPluginContentAllowed() const;
-	
 	/** @return true when we are showing the developers content */
 	bool IsShowingDevelopersContent() const;
 
@@ -954,9 +947,6 @@ private:
 
 	/** If true, engine content is always shown */
 	bool bForceShowEngineContent;
-
-	/** If true, plugin content is always shown */
-	bool bForceShowPluginContent;
 
 	/** The current selection mode used by the asset view */
 	ESelectionMode::Type SelectionMode;

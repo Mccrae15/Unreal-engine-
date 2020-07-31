@@ -5,7 +5,7 @@
 #include "AVEncoder.h"
 #include "Templates/RefCounting.h"
 
-#if AVENCODER_SUPPORTED_MICROSOFT_PLATFORM
+#if PLATFORM_WINDOWS || PLATFORM_XBOXONE
 
 #if PLATFORM_WINDOWS
 
@@ -116,5 +116,5 @@ private:
 
 }
 
-#endif // AVENCODER_SUPPORTED_MICROSOFT_PLATFORM
+#endif // PLATFORM_WINDOWS || PLATFORM_XBOXONE
 

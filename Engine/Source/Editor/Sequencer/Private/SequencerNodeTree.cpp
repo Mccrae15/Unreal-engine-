@@ -21,10 +21,9 @@
 #include "SequencerNodeSortingMethods.h"
 #include "SequencerTrackFilters.h"
 #include "Channels/MovieSceneChannel.h"
-#include "ScopedTransaction.h"
 #include "SequencerUtilities.h"
 #include "SequencerLog.h"
-#include "SequencerCommonHelpers.h"
+#include "ScopedTransaction.h"
 
 FSequencerNodeTree::~FSequencerNodeTree()
 {
@@ -1311,15 +1310,6 @@ void FSequencerNodeTree::UpdateFilters()
 
 	bFilteringOnNodeGroups = Sequencer.GetFocusedMovieSceneSequence()->GetMovieScene()->GetNodeGroups().HasAnyActiveFilter();
 	bFilterUpdateRequested = false;
-
-	// Count the total number of display nodes
-	TSet<TSharedRef<FSequencerDisplayNode>> Nodes;
-	for (const TSharedRef<FSequencerDisplayNode> Node : GetRootNodes())
-	{
-		SequencerHelpers::GetDescendantNodes(RootNode, Nodes);
-	}
-
-	DisplayNodeCount = Nodes.Num();
 }
 
 void FSequencerNodeTree::FilterNodes(const FString& InFilter)

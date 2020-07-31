@@ -45,7 +45,6 @@
 #include "VRModeSettings.h"
 #include "Editor/EditorPerformanceSettings.h"
 #include "Settings/SkeletalMeshEditorSettings.h"
-#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "FEditorSettingsViewerModule"
 
@@ -101,15 +100,10 @@ public:
 			.SetDisplayName(LOCTEXT("EditorSettingsTabTitle", "Editor Preferences"))
 			.SetMenuType(ETabSpawnerMenuType::Hidden)
 			.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorPreferences.TabIcon"));
-
-		UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FEditorSettingsViewerModule::RegisterMenus));
 	}
 
 	virtual void ShutdownModule() override
 	{
-		UToolMenus::UnRegisterStartupCallback(this);
-		UToolMenus::UnregisterOwner(this);
-
 		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(EditorSettingsTabName);
 		UnregisterSettings();
 	}
@@ -120,13 +114,6 @@ public:
 	}
 
 protected:
-
-	void RegisterMenus()
-	{
-		FToolMenuOwnerScoped OwnerScoped(this);
-
-		GetMutableDefault<ULevelEditorPlaySettings>()->RegisterCommonResolutionsMenu();
-	}
 
 	/**
 	 * Registers general Editor settings.

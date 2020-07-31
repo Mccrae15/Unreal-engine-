@@ -60,17 +60,6 @@ struct FBranchModification
 	TArray<FString> CheckedOutBranches;
 };
 
-/** Checks if the name of an action corresponds to EPerforceState::OpenForAdd */
-static bool IsAddAction(const FString& Action)
-{
-	return Action == TEXT("add") || Action == TEXT("move/add");
-}
-
-/** Checks if the name of an action corresponds to EPerforceState::MarkedForDelete */
-static bool IsDeleteAction(const FString& Action)
-{
-	return Action == TEXT("delete") || Action == TEXT("move/delete");
-}
 
 /**
  * Remove redundant errors (that contain a particular string) and also
@@ -133,7 +122,7 @@ static void ParseRecordSetForState(const FP4RecordSet& InRecords, TMap<FString, 
 
 		if(Action.Len() > 0)
 		{
-			if(IsAddAction(Action))
+			if(Action == TEXT("add"))
 			{
 				OutResults.Add(FullPath, EPerforceState::OpenForAdd);
 			}
@@ -141,7 +130,7 @@ static void ParseRecordSetForState(const FP4RecordSet& InRecords, TMap<FString, 
 			{
 				OutResults.Add(FullPath, EPerforceState::CheckedOut);
 			}
-			else if(IsDeleteAction(Action))
+			else if(Action == TEXT("delete"))
 			{
 				OutResults.Add(FullPath, EPerforceState::MarkedForDelete);
 			}
@@ -152,7 +141,7 @@ static void ParseRecordSetForState(const FP4RecordSet& InRecords, TMap<FString, 
 			else if(Action == TEXT("reverted"))
 			{
 				FString OldAction = ClientRecord(TEXT("oldAction"));
-				if(IsAddAction(OldAction))
+				if(OldAction == TEXT("add"))
 				{
 					OutResults.Add(FullPath, EPerforceState::NotInDepot);
 				}
@@ -160,7 +149,7 @@ static void ParseRecordSetForState(const FP4RecordSet& InRecords, TMap<FString, 
 				{
 					OutResults.Add(FullPath, EPerforceState::ReadOnly);
 				}
-				else if(IsDeleteAction(OldAction))
+				else if(OldAction == TEXT("delete"))
 				{
 					OutResults.Add(FullPath, EPerforceState::ReadOnly);
 				}
@@ -702,7 +691,7 @@ static void ParseBranchModificationResults(const FP4RecordSet& InRecords, const 
 				}
 			}
 
-			// filter deletes if file re-added. move/delete files cannot be re-added as they're bound to an add/delete
+			// filter deletes if file re-added
 			if (HeadAction == TEXT("delete") && BranchModification.ChangeList > HeadChange)
 			{
 				continue;
@@ -827,11 +816,11 @@ static void ParseUpdateStatusResults(const FP4RecordSet& InRecords, const TArray
 		}
 
 		State.State = EPerforceState::ReadOnly;
-		if (Action.Len() > 0 && IsAddAction(Action))
+		if (Action.Len() > 0 && Action == TEXT("add"))
 		{
 			State.State = EPerforceState::OpenForAdd;
 		}
-		else if (Action.Len() > 0 && IsDeleteAction(Action))
+		else if (Action.Len() > 0 && Action == TEXT("delete"))
 		{
 			State.State = EPerforceState::MarkedForDelete;
 		}
@@ -870,7 +859,7 @@ static void ParseUpdateStatusResults(const FP4RecordSet& InRecords, const TArray
 
 			State.State = EPerforceState::CheckedOutOther;
 		}
-		//file has been previously deleted, ok to add again. move/delete is not eligible for this
+		//file has been previously deleted, ok to add again
 		else if (HeadAction.Len() > 0 && HeadAction == TEXT("delete"))
 		{
 			State.State = EPerforceState::NotInDepot;
@@ -1044,7 +1033,7 @@ static void ParseOpenedResults(const FP4RecordSet& InRecords, const FString& Cli
 
 		if (Action.Len() > 0)
 		{
-			if(IsAddAction(Action))
+			if(Action == TEXT("add"))
 			{
 				OutResults.Add(FullPath, EPerforceState::OpenForAdd);
 			}
@@ -1052,7 +1041,7 @@ static void ParseOpenedResults(const FP4RecordSet& InRecords, const FString& Cli
 			{
 				OutResults.Add(FullPath, EPerforceState::CheckedOut);
 			}
-			else if(IsDeleteAction(Action))
+			else if(Action == TEXT("delete"))
 			{
 				OutResults.Add(FullPath, EPerforceState::MarkedForDelete);
 			}
@@ -1128,7 +1117,7 @@ static void ParseHistoryResults(const FP4RecordSet& InRecords, const TArray<FPer
 				FString FileSize(TEXT("0"));
 
 				// Extract the file size
-				if(IsDeleteAction(Action)) //delete actions don't have a fileSize from PV4
+				if(Action.ToLower() != TEXT("delete") && Action.ToLower() != TEXT("move/delete")) //delete actions don't have a fileSize from PV4
 				{
 					VarName = FString::Printf(TEXT("fileSize%d"), RevisionNumbers);
 					check(ClientRecord.Contains(*VarName));

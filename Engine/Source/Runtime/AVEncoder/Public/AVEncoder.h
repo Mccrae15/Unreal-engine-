@@ -498,7 +498,3 @@ private:
 void UnregisterDefaultFactories();
 
 }
-
-#if !defined(AVENCODER_SUPPORTED_MICROSOFT_PLATFORM)
-	#define AVENCODER_SUPPORTED_MICROSOFT_PLATFORM 0
-#endif

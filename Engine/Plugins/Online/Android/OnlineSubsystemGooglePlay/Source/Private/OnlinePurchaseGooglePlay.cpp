@@ -8,6 +8,7 @@
 #include "Async/TaskGraphInterfaces.h"
 #include <jni.h>
 #include "Android/AndroidJavaEnv.h"
+#include "Async/TaskGraphInterfaces.h"
 
 #define LOCTEXT_NAMESPACE "OnlineSubsystemGooglePlay"
 #define GOOGLEPLAYUSER TEXT("GooglePlayUser")
@@ -93,13 +94,8 @@ void FOnlinePurchaseGooglePlay::Checkout(const FUniqueNetId& UserId, const FPurc
 				{
 					const FPurchaseCheckoutRequest::FPurchaseOfferEntry& Offer = CheckoutRequest.PurchaseOffers[0];
 
-					extern bool AndroidThunkCpp_Iap_BeginPurchase(const FString&, const FString&);
-					FString AccountId;
-					if (CheckoutRequest.AccountId.IsSet())
-					{
-						AccountId = CheckoutRequest.AccountId.GetValue();
-					}
-					bStarted = AndroidThunkCpp_Iap_BeginPurchase(Offer.OfferId, AccountId);
+					extern bool AndroidThunkCpp_Iap_BeginPurchase(const FString&);
+					bStarted = AndroidThunkCpp_Iap_BeginPurchase(Offer.OfferId);
 					UE_LOG_ONLINE_PURCHASE(Display, TEXT("Created Transaction? - %s"),
 						bStarted ? TEXT("Created a transaction.") : TEXT("Failed to create a transaction."));
 
@@ -236,13 +232,11 @@ void FOnlinePurchaseGooglePlay::OnTransactionCompleteResponse(EGooglePlayBilling
 		const TSharedRef<FOnlinePurchasePendingTransactionGooglePlay> UserPendingTransaction = *UserPendingTransactionPtr;
 		const FString& ErrorStr = InTransactionData.GetErrorStr();
 
-#if !OSSGOOGLEPLAY_WITH_AIDL
 		if (Result == EPurchaseTransactionState::Canceled && !InTransactionData.GetOfferId().IsEmpty())
 		{
 			// When result is cancelled, but there is a sku in the transaction data, this is a deferred transaction
 			Result = EPurchaseTransactionState::Deferred;
 		}
-#endif
 
 		if (Result == EPurchaseTransactionState::Purchased || Result == EPurchaseTransactionState::Restored)
 		{
@@ -270,12 +264,10 @@ void FOnlinePurchaseGooglePlay::OnTransactionCompleteResponse(EGooglePlayBilling
 			case EPurchaseTransactionState::Purchased:
 				FinalResult.bSucceeded = true;
 				break;
-#if !OSSGOOGLEPLAY_WITH_AIDL
 			case EPurchaseTransactionState::Deferred:
 				FinalResult.SetFromErrorCode(TEXT("com.epicgames.purchase.deferred"));
 				FinalResult.ErrorMessage = !ErrorStr.IsEmpty() ? FText::FromString(ErrorStr) : LOCTEXT("GooglePlayTransactionDeferred", "Transaction Deferred");
 				break;
-#endif
 			case EPurchaseTransactionState::Invalid:
 				FinalResult.SetFromErrorCode(TEXT("com.epicgames.purchase.invalid"));
 				FinalResult.ErrorMessage = !ErrorStr.IsEmpty() ? FText::FromString(ErrorStr) : LOCTEXT("GooglePlayInvalidState", "Invalid purchase result");
@@ -295,10 +287,8 @@ void FOnlinePurchaseGooglePlay::OnTransactionCompleteResponse(EGooglePlayBilling
 
 		PendingTransactions.Remove(UserIdStr);
 
-#if !OSSGOOGLEPLAY_WITH_AIDL
 		// If this is a deferred transaction, we will process it as an "offline" transaction, so don't complete
 		if (Result != EPurchaseTransactionState::Deferred)
-#endif
 		{
 			UserCompletedTransactions.Add(FinalReceipt);
 		}
@@ -307,9 +297,6 @@ void FOnlinePurchaseGooglePlay::OnTransactionCompleteResponse(EGooglePlayBilling
 	}
 	else
 	{
-#if OSSGOOGLEPLAY_WITH_AIDL
-		UE_LOG_ONLINE_PURCHASE(Log, TEXT("No pending transaction found associated with this purchase completion event"));
-#else
 		// Need to populate offlineTransactions here. 
 		// Transactions that come in during login or other non explicit purchase moments are added to a receipts list for later redemption
 		UE_LOG_ONLINE_PURCHASE(Log, TEXT("Pending transaction completed offline"));
@@ -329,7 +316,6 @@ void FOnlinePurchaseGooglePlay::OnTransactionCompleteResponse(EGooglePlayBilling
 				}
 			});
 		}
-#endif
 	}
 }
 
@@ -450,7 +436,6 @@ bool FOnlinePurchasePendingTransactionGooglePlay::AddCompletedOffer(EPurchaseTra
 	return false;
 }
 
-#if !OSSGOOGLEPLAY_WITH_AIDL
 JNI_METHOD void Java_com_epicgames_ue4_GooglePlayStoreHelper_nativeQueryExistingPurchasesComplete(JNIEnv* jenv, jobject thiz, jsize responseCode, jobjectArray ProductIDs, jobjectArray ProductTokens, jobjectArray ReceiptsData, jobjectArray Signatures)
 {
 	TArray<FGoogleTransactionData> ExistingPurchaseInfo;
@@ -594,6 +579,5 @@ JNI_METHOD void Java_com_epicgames_ue4_GooglePlayStoreHelper_nativePurchaseCompl
 		ENamedThreads::GameThread
 		);
 }
-#endif
 
 #undef LOCTEXT_NAMESPACE

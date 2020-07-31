@@ -417,7 +417,7 @@ public:
 	using FSoundWaveClientPtr = ISoundWaveClient*;
 
 #if WITH_EDITORONLY_DATA
-	/** Specify a sound to use for the baked analysis. Will default to this USoundWave if not set. */
+	/** Specify a sound to use for the baked analysis. Will default to this USoundWave if not sete. */
 	UPROPERTY(EditAnywhere, Category = "Analysis")
 	USoundWave* OverrideSoundToUseForAnalysis;
 

@@ -29,7 +29,6 @@
 #include "EditorSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "RHI.h"
-#include "UnrealEngine.h"
 
 #include "EditorEngine.generated.h"
 
@@ -1064,14 +1063,14 @@ public:
 	/** 
 	 * Snaps an actor in a direction.  Optionally will align with the trace normal.
 	 * @param InActor			Actor to move to the floor.
-	 * @param InAlign			Whether or not to rotate the actor to align with the trace normal.
+	 * @param InAlign			sWhether or not to rotate the actor to align with the trace normal.
 	 * @param InUseLineTrace	Whether or not to only trace with a line through the world.
 	 * @param InUseBounds		Whether or not to base the line trace off of the bounds.
 	 * @param InUsePivot		Whether or not to use the pivot position.
 	 * @param InDestination		The destination actor we want to move this actor to, NULL assumes we just want to go towards the floor
 	 * @return					Whether or not the actor was moved.
 	 */
-	bool SnapObjectTo( FActorOrComponent Object, const bool InAlign, const bool InUseLineTrace, const bool InUseBounds, const bool InUsePivot, FActorOrComponent InDestination = FActorOrComponent(), TArray<FActorOrComponent> ObjectsToIgnore = TArray<FActorOrComponent>() );
+	bool SnapObjectTo( FActorOrComponent Object, const bool InAlign, const bool InUseLineTrace, const bool InUseBounds, const bool InUsePivot, FActorOrComponent InDestination = FActorOrComponent() );
 
 	/**
 	 * Snaps the view of the camera to that of the provided actor.
@@ -1838,9 +1837,6 @@ public:
 	/**
 	 * Removes the current realtime override.  If there was another realtime override set it will restore that override
 	 */
-	void RemoveViewportsRealtimeOverride(FText SystemDisplayName);
-
-	UE_DEPRECATED(4.26, "To remove realtime overrides, please now provide a system name to make sure you remove the correct override.")
 	void RemoveViewportsRealtimeOverride();
 
 	/**
@@ -2478,11 +2474,9 @@ public:
 	 */
 	FWorldContext &GetEditorWorldContext(bool bEnsureIsGWorld = false);
 
-	/** 
-	 * Returns the WorldContext for the PIE world, by default will get the first one which will be the server or simulate instance.
-	 * You need to iterate the context list if you want all the pie world contexts.
-	 */
-	FWorldContext* GetPIEWorldContext(int32 WorldPIEInstance = 0);
+	/** Returns the WorldContext for the PIE world.
+	*/
+	FWorldContext* GetPIEWorldContext();
 
 	/** 
 	 * mostly done to check if PIE is being set up, go GWorld is going to change, and it's not really _the_G_World_
@@ -2898,15 +2892,6 @@ private:
 	/** The Timer manager for all timer delegates */
 	TSharedPtr<class FTimerManager> TimerManager;
 
-	/** Currently active function execution world switcher, will be null most of the time */
-	FScopedConditionalWorldSwitcher* FunctionStackWorldSwitcher = nullptr;
-
-	/** Stack entry where world switcher was created, and should be destroyed at */
-	int32 FunctionStackWorldSwitcherTag = -1;
-
-	/** Delegate handles for function execution */
-	FDelegateHandle ScriptExecutionStartHandle, ScriptExecutionEndHandle;
-
 	// This chunk is used for Play In New Process
 public:
 	/**
@@ -3032,30 +3017,15 @@ protected:
 	/**
 	 * Hack to switch worlds for the PIE window before and after a slate event
 	 *
-	 * @param WorldID	The id of the world to switch to where -1 is unknown, 0 is editor, and 1 is PIE
-	 * @param PIEInstance	When switching to a PIE instance, this is the specific client/server instance to use
+	 * @param WorldID	The id of the world to restore or -1 if no world
 	 * @return The ID of the world to restore later or -1 if no world to restore
 	 */
-	int32 OnSwitchWorldForSlatePieWindow(int32 WorldID, int32 WorldPIEInstance);
+	int32 OnSwitchWorldForSlatePieWindow(int32 WorldID);
 
 	/**
 	 * Called via a delegate to toggle between the editor and pie world
 	 */
 	void OnSwitchWorldsForPIE(bool bSwitchToPieWorld, UWorld* OverrideWorld = nullptr);
-
-	/**
-	 * Called to switch to a specific PIE instance, where -1 means the editor world
-	 */
-	void OnSwitchWorldsForPIEInstance(int32 WorldPIEInstance);
-
-	/** Call to enable/disable callbacks for PIE world switching when PIE starts/stops */
-	void EnableWorldSwitchCallbacks(bool bEnable);
-
-	/** Callback when script execution starts, might switch world */
-	void OnScriptExecutionStart(const struct FBlueprintContextTracker& ContextTracker, const UObject* ContextObject, const UFunction* ContextFunction);
-
-	/** Callback when script execution starts, might switch world */
-	void OnScriptExecutionEnd(const struct FBlueprintContextTracker& ContextTracker);
 
 	/**
 	 * Gives focus to the server or first PIE client viewport

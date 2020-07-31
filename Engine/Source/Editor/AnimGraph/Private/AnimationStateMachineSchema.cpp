@@ -11,7 +11,6 @@
 #include "ToolMenus.h"
 #include "EdGraph/EdGraph.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Classes/EditorStyleSettings.h"
 #include "EdGraphNode_Comment.h"
 
 #include "AnimationStateMachineGraph.h"
@@ -68,7 +67,7 @@ UEdGraphNode* FEdGraphSchemaAction_NewStateNode::PerformAction(class UEdGraph* P
 
 		NodeTemplate->NodePosX = Location.X;
 		NodeTemplate->NodePosY = Location.Y;
-		NodeTemplate->SnapToGrid(GetDefault<UEditorStyleSettings>()->GridSnapSize);
+		//@TODO: ANIM: SNAP_GRID isn't centralized or exposed - NodeTemplate->SnapToGrid(SNAP_GRID);
 
 		ResultNode = NodeTemplate;
 

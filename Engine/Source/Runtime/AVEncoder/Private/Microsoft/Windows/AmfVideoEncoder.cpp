@@ -4,8 +4,6 @@
 #include "Microsoft/AVEncoderMicrosoftCommon.h"
 #include "CommonRenderResources.h"
 
-#if AVENCODER_SUPPORTED_MICROSOFT_PLATFORM
-
 THIRD_PARTY_INCLUDES_START
 	#include "ThirdParty/AmdAmf/core/Result.h"
 	#include "ThirdParty/AmdAmf/core/Factory.h"
@@ -867,4 +865,3 @@ TUniquePtr<FVideoEncoder> FAmfVideoEncoderFactory::CreateEncoder(const FString& 
 
 } // namespace AVEncoder
 
-#endif //AVENCODER_SUPPORTED_MICROSOFT_PLATFORM

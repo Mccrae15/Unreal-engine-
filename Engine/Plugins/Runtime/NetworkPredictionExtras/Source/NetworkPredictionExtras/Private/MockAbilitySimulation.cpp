@@ -25,8 +25,6 @@ namespace MockAbilityCVars
 	NETSIM_DEVCVAR_SHIPCONST_INT(BlinkWarmupMS, 750, "mockability.BlinkWarmupMS", "Duration in MS of blink warmup period");
 
 	NETSIM_DEVCVAR_SHIPCONST_INT(DisablePhysicsGunServer, 0, "mockability.DisablePhysicsGunServer", "Disables gravity gun on server, causing mispredictions");
-	NETSIM_DEVCVAR_SHIPCONST_INT(DisablePhysicsGunClient, 0, "mockability.DisablePhysicsGubClient", "Disables gravity gun on client, causing mispredictions");
-
 	NETSIM_DEVCVAR_SHIPCONST_INT(DisablePhysicsGunCues, 0, "mockability.DisablePhysicsGunCues", "Disables gravity gun cues. Less explosions :(");
 	NETSIM_DEVCVAR_SHIPCONST_INT(PhysicsGunCooldown, 500, "mockability.PhysicsGunCooldown", "Physics gun cooldown in MS");
 	NETSIM_DEVCVAR_SHIPCONST_FLOAT(PhysicsGunImpulse, 300000, "mockability.PhysicsGunImpulse", "Physics gun impulse");
@@ -328,9 +326,7 @@ void FMockAbilitySimulation::SimulationTick(const FNetSimTimeStep& TimeStep, con
 		Output.Aux.Get()->PrimaryCooldown = NewPrimaryCooldown;
 	}
 
-	const bool bDisablePhysicsGun = UpdatedComponent->GetOwnerRole() == ROLE_Authority ? MockAbilityCVars::DisablePhysicsGunServer() > 0: MockAbilityCVars::DisablePhysicsGunClient() > 0;
-
-	if (LocalCmd.bPrimaryPressed && LocalAux.PrimaryCooldown <= 0 && !bDisablePhysicsGun)
+	if (LocalCmd.bPrimaryPressed && LocalAux.PrimaryCooldown <= 0 && !(MockAbilityCVars::DisablePhysicsGunServer() && UpdatedComponent->GetOwnerRole() == ROLE_Authority))
 	{
 		const FVector Start = Output.Sync->Location;
 		const FVector End = Start + Output.Sync->Rotation.RotateVector( FVector(5000, 0.f, 0.f) );

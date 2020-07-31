@@ -568,7 +568,6 @@ FKeyPropertyResult FCameraShakeSourceShakeTrackEditor::AddCameraShakeSectionKeyI
 			{
 				UMovieSceneSection* NewSection = Cast<UMovieSceneCameraShakeSourceShakeTrack>(Track)->AddNewCameraShake(KeyTime, CameraShake, bIsAutomaticShake);
 				KeyPropertyResult.bTrackModified = true;
-				KeyPropertyResult.SectionsCreated.Add(NewSection);
 				SectionsToSelect.Add(NewSection);
 			}
 		}

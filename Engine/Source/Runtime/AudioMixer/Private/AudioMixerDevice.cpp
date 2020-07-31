@@ -114,11 +114,6 @@ namespace Audio
 		return CurrentThreadId == AudioPlatformThreadId;
 	}
 
-	bool FMixerDevice::IsNonRealtime() const
-	{
-		return AudioMixerPlatform && AudioMixerPlatform->IsNonRealtime();
-	}
-
 	TArray<Audio::FChannelPositionInfo>* FMixerDevice::GetDefaultPositionMap(int32 NumChannels)
 	{
 		const Audio::FChannelPositionInfo* SpeakerPositions = GetDefaultChannelPositions();

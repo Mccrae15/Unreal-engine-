@@ -93,7 +93,6 @@ TSharedPtr<const SWidget> FVisualTreeSnapshot::Pick(FVector2D Point)
 }
 
 FVisualTreeCapture::FVisualTreeCapture()
-	: bIsEnabled(false)
 {
 }
 
@@ -105,35 +104,27 @@ FVisualTreeCapture::~FVisualTreeCapture()
 void FVisualTreeCapture::Enable()
 {
 #if WITH_SLATE_DEBUGGING
-	if (ensure(bIsEnabled == false))
-	{
-		FSlateApplication::Get().OnWindowBeingDestroyed().AddRaw(this, &FVisualTreeCapture::OnWindowBeingDestroyed);
-		FSlateDebugging::BeginWindow.AddRaw(this, &FVisualTreeCapture::BeginWindow);
-		FSlateDebugging::EndWindow.AddRaw(this, &FVisualTreeCapture::EndWindow);
-		FSlateDebugging::BeginWidgetPaint.AddRaw(this, &FVisualTreeCapture::BeginWidgetPaint);
-		FSlateDebugging::EndWidgetPaint.AddRaw(this, &FVisualTreeCapture::EndWidgetPaint);
-		FSlateDebugging::ElementAdded.AddRaw(this, &FVisualTreeCapture::ElementAdded);
-		bIsEnabled = true;
-	}
+	FSlateApplication::Get().OnWindowBeingDestroyed().AddRaw(this, &FVisualTreeCapture::OnWindowBeingDestroyed);
+	FSlateDebugging::BeginWindow.AddRaw(this, &FVisualTreeCapture::BeginWindow);
+	FSlateDebugging::EndWindow.AddRaw(this, &FVisualTreeCapture::EndWindow);
+	FSlateDebugging::BeginWidgetPaint.AddRaw(this, &FVisualTreeCapture::BeginWidgetPaint);
+	FSlateDebugging::EndWidgetPaint.AddRaw(this, &FVisualTreeCapture::EndWidgetPaint);
+	FSlateDebugging::ElementAdded.AddRaw(this, &FVisualTreeCapture::ElementAdded);
 #endif
 }
 
 void FVisualTreeCapture::Disable()
 {
 #if WITH_SLATE_DEBUGGING
-	if (bIsEnabled)
+	if (FSlateApplication::IsInitialized())
 	{
-		if (FSlateApplication::IsInitialized())
-		{
-			FSlateApplication::Get().OnWindowBeingDestroyed().RemoveAll(this);
-		}
-		FSlateDebugging::BeginWindow.RemoveAll(this);
-		FSlateDebugging::EndWindow.RemoveAll(this);
-		FSlateDebugging::BeginWidgetPaint.RemoveAll(this);
-		FSlateDebugging::EndWidgetPaint.RemoveAll(this);
-		FSlateDebugging::ElementAdded.RemoveAll(this);
-		bIsEnabled = false;
+		FSlateApplication::Get().OnWindowBeingDestroyed().RemoveAll(this);
 	}
+	FSlateDebugging::BeginWindow.RemoveAll(this);
+	FSlateDebugging::EndWindow.RemoveAll(this);
+	FSlateDebugging::BeginWidgetPaint.RemoveAll(this);
+	FSlateDebugging::EndWidgetPaint.RemoveAll(this);
+	FSlateDebugging::ElementAdded.RemoveAll(this);
 #endif
 }
 

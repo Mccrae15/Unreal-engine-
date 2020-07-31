@@ -18,7 +18,16 @@ class FUICommandList;
 class UNREALED_API FEditorViewportCommands : public TCommands<FEditorViewportCommands>
 {
 public:
-	FEditorViewportCommands();
+	FEditorViewportCommands() 
+		: TCommands<FEditorViewportCommands>
+		(
+			TEXT("EditorViewport"), // Context name for fast lookup
+			NSLOCTEXT("Contexts", "EditorViewportCommands", "Common Viewport Commands"), // Localized context name for displaying
+			TEXT("MainFrame"),
+			FEditorStyle::GetStyleSetName() // Icon Style Set
+		)
+	{
+	}
 	
 	/** Viewport pane configurations */
 	TSharedPtr< FUICommandInfo > ViewportConfig_OnePane;

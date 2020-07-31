@@ -118,35 +118,42 @@ public:
 //////////////////////////////////////////////////////////////////////////
 // FKismetDebugUtilities
 
-void FKismetDebugUtilities::EndOfScriptExecution(const FBlueprintContextTracker& BlueprintContext)
+void FKismetDebugUtilities::EndOfScriptExecution()
 {
-	if(BlueprintContext.GetScriptEntryTag() == 1)
+#if DO_BLUEPRINT_GUARD
+	FBlueprintExceptionTracker& BlueprintExceptionTracker = FBlueprintExceptionTracker::Get();
+	if(BlueprintExceptionTracker.ScriptEntryTag == 1)
 	{
 		// if this is our last VM frame, then clear stepping data:
 		FKismetDebugUtilitiesData& Data = FKismetDebugUtilitiesData::Get();
 
 		Data.Reset();
 	}
+#endif // DO_BLUEPRINT_GUARD
 }
 
 void FKismetDebugUtilities::RequestSingleStepIn()
 {
+#if DO_BLUEPRINT_GUARD
 	FKismetDebugUtilitiesData& Data = FKismetDebugUtilitiesData::Get();
+	FBlueprintExceptionTracker& BlueprintExceptionTracker = FBlueprintExceptionTracker::Get();
 
 	Data.bIsSingleStepping = true;
+#endif // DO_BLUEPRINT_GUARD
 }
 
 void FKismetDebugUtilities::RequestStepOver()
 {
+#if DO_BLUEPRINT_GUARD
 	FKismetDebugUtilitiesData& Data = FKismetDebugUtilitiesData::Get();
-	const TArray<const FFrame*>& ScriptStack = FBlueprintContextTracker::Get().GetScriptStack();
+	FBlueprintExceptionTracker& BlueprintExceptionTracker = FBlueprintExceptionTracker::Get();
 
-	if(ScriptStack.Num() > 0)
+	if(BlueprintExceptionTracker.ScriptStack.Num() > 0)
 	{
-		Data.TargetGraphStackDepth = ScriptStack.Num();
+		Data.TargetGraphStackDepth = BlueprintExceptionTracker.ScriptStack.Num();
 		
 		// get the current graph that we're stopped at:
-		const FFrame* CurrentFrame = ScriptStack.Last();
+		const FFrame* CurrentFrame = BlueprintExceptionTracker.ScriptStack.Last();
 		if(CurrentFrame->Object)
 		{
 			if(UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(CurrentFrame->Object->GetClass()))
@@ -180,19 +187,22 @@ void FKismetDebugUtilities::RequestStepOver()
 			}
 		}
 	}
+#endif // DO_BLUEPRINT_GUARD
 }
 
 void FKismetDebugUtilities::RequestStepOut()
 {
+#if DO_BLUEPRINT_GUARD
 	FKismetDebugUtilitiesData& Data = FKismetDebugUtilitiesData::Get();
-	const TArray<const FFrame*>& ScriptStack = FBlueprintContextTracker::Get().GetScriptStack();
+	FBlueprintExceptionTracker& BlueprintExceptionTracker = FBlueprintExceptionTracker::Get();
 
 	Data.bIsSingleStepping = false;
-	if (ScriptStack.Num() > 1)
+	if (BlueprintExceptionTracker.ScriptStack.Num() > 1)
 	{
 		Data.bIsSteppingOut = true;
-		Data.TargetGraphStackDepth = ScriptStack.Num() - 1;
+		Data.TargetGraphStackDepth = BlueprintExceptionTracker.ScriptStack.Num() - 1;
 	}
+#endif // DO_BLUEPRINT_GUARD
 }
 
 void FKismetDebugUtilities::OnScriptException(const UObject* ActiveObject, const FFrame& StackFrame, const FBlueprintExceptionInfo& Info)
@@ -528,8 +538,9 @@ UEdGraphNode* FKismetDebugUtilities::FindSourceNodeForCodeLocation(const UObject
 
 void FKismetDebugUtilities::CheckBreakConditions(UEdGraphNode* NodeStoppedAt, bool bHitBreakpoint, int32 BreakpointOffset, bool& InOutBreakExecution)
 {
+#if DO_BLUEPRINT_GUARD
 	FKismetDebugUtilitiesData& Data = FKismetDebugUtilitiesData::Get();
-	const TArray<const FFrame*>& ScriptStack = FBlueprintContextTracker::Get().GetScriptStack();
+	FBlueprintExceptionTracker& BlueprintExceptionTracker = FBlueprintExceptionTracker::Get();
 
 	if (NodeStoppedAt)
 	{
@@ -542,7 +553,7 @@ void FKismetDebugUtilities::CheckBreakConditions(UEdGraphNode* NodeStoppedAt, bo
 			// Update the TargetGraphStackDepth if we're on the same node - this handles things like
 			// event nodes in the Event Graph, which will push another frame on to the stack:
 			if(NodeStoppedAt == Data.MostRecentStoppedNode &&
-				Data.MostRecentBreakpointGraphStackDepth < ScriptStack.Num() &&
+				Data.MostRecentBreakpointGraphStackDepth < BlueprintExceptionTracker.ScriptStack.Num() &&
 				Data.TargetGraphStackDepth != INDEX_NONE)
 			{
 				// when we recurse, when a node increases stack depth itself we want to increase our 
@@ -559,7 +570,7 @@ void FKismetDebugUtilities::CheckBreakConditions(UEdGraphNode* NodeStoppedAt, bo
 			InOutBreakExecution = 
 				NodeStoppedAt != Data.MostRecentStoppedNode ||
 				(
-					Data.MostRecentBreakpointGraphStackDepth < ScriptStack.Num() &&
+					Data.MostRecentBreakpointGraphStackDepth < BlueprintExceptionTracker.ScriptStack.Num() &&
 					Data.MostRecentBreakpointInstructionOffset >= BreakpointOffset
 				);
 
@@ -567,12 +578,12 @@ void FKismetDebugUtilities::CheckBreakConditions(UEdGraphNode* NodeStoppedAt, bo
 			// in to a collapsed graph/macro instance:
 			if(InOutBreakExecution && Data.TargetGraphStackDepth != INDEX_NONE && !bHitBreakpoint)
 			{
-				InOutBreakExecution = Data.TargetGraphStackDepth >= ScriptStack.Num();
-				if(InOutBreakExecution && Data.TargetGraphStackDepth == ScriptStack.Num())
+				InOutBreakExecution = Data.TargetGraphStackDepth >= BlueprintExceptionTracker.ScriptStack.Num();
+				if(InOutBreakExecution && Data.TargetGraphStackDepth == BlueprintExceptionTracker.ScriptStack.Num())
 				{
 					// we're at the same stack depth, don't break if we've entered a different graph, but do break if we left the 
 					// graph that we were trying to step over..
-					const FFrame* CurrentFrame = ScriptStack.Last();
+					const FFrame* CurrentFrame = BlueprintExceptionTracker.ScriptStack.Last();
 					if(CurrentFrame->Object)
 					{
 						if(UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(CurrentFrame->Object->GetClass()))
@@ -604,7 +615,7 @@ void FKismetDebugUtilities::CheckBreakConditions(UEdGraphNode* NodeStoppedAt, bo
 	if (InOutBreakExecution)
 	{
 		Data.MostRecentStoppedNode = NodeStoppedAt;
-		Data.MostRecentBreakpointGraphStackDepth = ScriptStack.Num();
+		Data.MostRecentBreakpointGraphStackDepth = BlueprintExceptionTracker.ScriptStack.Num();
 		Data.MostRecentBreakpointInstructionOffset = BreakpointOffset;
 		Data.TargetGraphStackDepth = INDEX_NONE;
 		Data.TargetGraphNodes.Empty();
@@ -626,10 +637,12 @@ void FKismetDebugUtilities::CheckBreakConditions(UEdGraphNode* NodeStoppedAt, bo
 			}
 		}
 	}
+#endif // DO_BLUEPRINT_GUARD
 }
 
 void FKismetDebugUtilities::AttemptToBreakExecution(UBlueprint* BlueprintObj, const UObject* ActiveObject, const FFrame& StackFrame, const FBlueprintExceptionInfo& Info, UEdGraphNode* NodeStoppedAt, int32 DebugOpcodeOffset)
 {
+#if DO_BLUEPRINT_GUARD
 	checkSlow(BlueprintObj->GetObjectBeingDebugged() == ActiveObject);
 
 	FKismetDebugUtilitiesData& Data = FKismetDebugUtilitiesData::Get();
@@ -720,13 +733,14 @@ void FKismetDebugUtilities::AttemptToBreakExecution(UBlueprint* BlueprintObj, co
 	if (bShouldInStackDebug)
 	{
 		TGuardValue<int32> GuardDisablePIE(GPlayInEditorID, INDEX_NONE);
-		const TArray<const FFrame*>& ScriptStack = FBlueprintContextTracker::Get().GetScriptStack();
+		const TArray<const FFrame*>& ScriptStack = FBlueprintExceptionTracker::Get().ScriptStack;
 		Data.LastExceptionMessage = Info.GetDescription();
 		FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(NodeStoppedAt);
 		CallStackViewer::UpdateDisplayedCallstack(ScriptStack);
 		WatchViewer::UpdateInstancedWatchDisplay();
 		FSlateApplication::Get().EnterDebuggingMode();
 	}
+#endif // DO_BLUEPRINT_GUARD
 }
 
 UEdGraphNode* FKismetDebugUtilities::GetCurrentInstruction()

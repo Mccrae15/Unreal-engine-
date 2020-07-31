@@ -247,21 +247,9 @@ public:
 	bool bShowDebug;
 
 	/**
-	 * Determines the line thickness of the debug sphere.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Debugging", AdvancedDisplay, meta=( ClampMin = "0.001" ))
-	float DebugSphereLineThickness;
-
-	/**
-	 * Determines the thickness of the debug lines.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Debugging", AdvancedDisplay, meta=( ClampMin = "0.001", ClampMax = "50"))
-	float DebugLineThickness;
-
-	/**
 	 * Determines the color of the debug lines.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Debugging", AdvancedDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Debugging")
 	FLinearColor DebugColor;
 
 protected:

@@ -480,12 +480,6 @@ void USkeletalMesh::ValidateBoundsExtension()
 /* Return true if the reduction settings are setup to reduce a LOD*/
 bool USkeletalMesh::IsReductionActive(int32 LODIndex) const
 {
-	//Invalid LOD are not reduced
-	if(!IsValidLODIndex(LODIndex))
-	{
-		return false;
-	}
-
 	bool bReductionActive = false;
 	if (IMeshReduction* ReductionModule = FModuleManager::Get().LoadModuleChecked<IMeshReductionManagerModule>("MeshReductionInterface").GetSkeletalMeshReductionInterface())
 	{
@@ -830,12 +824,8 @@ void USkeletalMesh::ReleaseResources()
 	FSkeletalMeshRenderData* SkelMeshRenderData = GetResourceForRendering();
 	if (SkelMeshRenderData)
 	{
-
-		if(GIsEditor && !GIsPlayInEditorWorld)
-		{
-			//Flush the rendering command to be sure there is no command left that can create/modify a rendering ressource
-			FlushRenderingCommands();
-		}
+		//Flush the rendering command to be sure there is no command left that can create a rendering ressource
+		FlushRenderingCommands();
 
 		SkelMeshRenderData->ReleaseResources();
 	}
@@ -1334,7 +1324,7 @@ void USkeletalMesh::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 	//Block any re-entrant call by incrementing PostEditChangeStackCounter. It will be decrement when we will go out of scope.
 	const bool bCallPostEditChange = false;
 	const bool bReRegisterComponents = false;
-	FScopedSkeletalMeshPostEditChange BlockRecursiveCallScope(this, bCallPostEditChange, bReRegisterComponents);
+	FScopedSkeletalMeshPostEditChange(this, bCallPostEditChange, bReRegisterComponents);
 
 	bool bFullPrecisionUVsReallyChanged = false;
 
@@ -1440,8 +1430,8 @@ void USkeletalMesh::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	//The stack counter here should be 1 since the BlockRecursiveCallScope protection has the lock and it will be decrement to 0 when we get out of the function scope
-	check(PostEditChangeStackCounter == 1);
+	//The stack counter after a PostEditChange should be 0
+	check(PostEditChangeStackCounter == 0);
 }
 
 void USkeletalMesh::PostEditUndo()

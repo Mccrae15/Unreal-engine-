@@ -29,13 +29,36 @@ class SSocketChooserPopup : public SCompoundWidget
 public:
 	DECLARE_DELEGATE_OneParam( FOnSocketChosen, FName );
 
+	/** Filter utility class */
+	class FSocketFilterContext : public ITextFilterExpressionContext
+	{
+	public:
+		explicit FSocketFilterContext(FString&& InString)
+			: String(InString)
+		{
+		}
+
+		virtual bool TestBasicStringExpression(const FTextFilterString& InValue, const ETextFilterTextComparisonMode InTextComparisonMode) const override
+		{
+			return TextFilterUtils::TestBasicStringExpression(String, InValue, InTextComparisonMode);
+		}
+
+		virtual bool TestComplexExpression(const FName& InKey, const FTextFilterString& InValue, const ETextFilterComparisonOperation InComparisonOperation, const ETextFilterTextComparisonMode InTextComparisonMode) const override
+		{
+			return false;
+		}
+
+	private:
+		FString String;
+	};
+
 	/** Info about one socket */
 	struct FSocketInfo
 	{
 		FComponentSocketDescription Description;
 
 		/** Cached filter context for faster comparison */
-		FBasicStringFilterExpressionContext FilterContext;
+		FSocketFilterContext FilterContext;
 
 		static TSharedRef<FSocketInfo> Make(FComponentSocketDescription Description)
 		{

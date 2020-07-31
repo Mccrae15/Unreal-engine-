@@ -1561,7 +1561,7 @@ void SLevelViewportToolBar::OnDisableRealtimeOverride()
 {
 	if (TSharedPtr<SLevelViewport> ViewportPinned = Viewport.Pin())
 	{
-		ViewportPinned->GetLevelViewportClient().PopRealtimeOverride();
+		ViewportPinned->GetLevelViewportClient().RemoveRealtimeOverride();
 	}
 }
 

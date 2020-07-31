@@ -275,9 +275,6 @@ struct FAssetPickerConfig
 	/** Indicates if engine content should always be shown */
 	bool bForceShowEngineContent;
 
-	/** Indicates if plugin content should always be shown */
-	bool bForceShowPluginContent;
-
 	/** Indicates if the context menu is going to load the assets, and if so to preload before the context menu is shown, and warn about the pending load. */
 	bool bPreloadAssetsForContextMenu;
 
@@ -309,7 +306,6 @@ struct FAssetPickerConfig
 		, bCanShowRealTimeThumbnails(false)
 		, bCanShowDevelopersFolder(true)
 		, bForceShowEngineContent(false)
-		, bForceShowPluginContent(false)
 		, bPreloadAssetsForContextMenu(true)
 		, bAddFilterUI(false)
 		, bShowPathInColumnView(false)

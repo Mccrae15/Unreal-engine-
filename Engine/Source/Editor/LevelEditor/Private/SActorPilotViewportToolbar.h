@@ -61,7 +61,7 @@ public:
 
 		auto& ViewportCommands = FLevelViewportCommands::Get();
 
-		FToolBarBuilder ToolbarBuilder(InArgs._Viewport->GetCommandList(), FMultiBoxCustomization::None);
+		FToolBarBuilder ToolbarBuilder(InArgs._Viewport->GetCommandList(), FMultiBoxCustomization::None, nullptr/*InExtenders*/);
 
 		// Use a custom style
 		FName ToolBarStyle = "ViewportMenu";

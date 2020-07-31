@@ -551,12 +551,12 @@ void FReimportManager::ValidateAllSourceFileAndReimport(TArray<UObject*> &ToImpo
 				{
 					TArray<FString> SourceFilenames;
 					this->GetNewReimportPath(Asset, SourceFilenames, FileIndex);
-					if (SourceFilenames.Num() == 0 || SourceFilenames[FileIndex].IsEmpty())
+					if (SourceFilenames.Num() == 0 || SourceFilenames[0].IsEmpty())
 					{
 						continue;
 					}
 					bCancelAll = false;
-					this->UpdateReimportPath(Asset, SourceFilenames[FileIndex], FileIndex);
+					this->UpdateReimportPath(Asset, SourceFilenames[0], FileIndex);
 				}
 				//return if the operation is cancel and we have nothing to re-import
 				if (bCancelAll)
@@ -1351,238 +1351,186 @@ namespace EditorUtilities
 		}
 
 		// Copy component properties from source to target if they match. Note that the component lists may not be 1-1 due to context-specific components (e.g. editor-only sprites, etc.).
+		TInlineComponentArray<UActorComponent*> SourceComponents;
+		TInlineComponentArray<UActorComponent*> TargetComponents;
 
-		TArray<TPair<UActorComponent*, UActorComponent*>> SourceTargetComponentPairs;
+		SourceActor->GetComponents(SourceComponents);
+		TargetActor->GetComponents(TargetComponents);
 
-		auto BuildComponentPairs = [&SourceTargetComponentPairs, SourceActor](AActor* PrimaryActor, AActor* SecondaryActor)
+
+		int32 TargetComponentIndex = 0;
+		for( UActorComponent* SourceComponent : SourceComponents )
 		{
-			TInlineComponentArray<UActorComponent*> SecondaryComponents(SecondaryActor);
-
-			const bool bPrimaryIsSource = (PrimaryActor == SourceActor);
-			int32 SecondaryComponentIndex = 0;
-			for (UActorComponent* PrimaryComponent : PrimaryActor->GetComponents())
+			if (SourceComponent->CreationMethod == EComponentCreationMethod::UserConstructionScript)
 			{
-				if (PrimaryComponent->CreationMethod == EComponentCreationMethod::UserConstructionScript)
-				{
-					continue;
-				}
-				if (UActorComponent* SecondaryComponent = FindMatchingComponentInstance(PrimaryComponent, SecondaryActor, SecondaryComponents, SecondaryComponentIndex))
-				{
-					if (bPrimaryIsSource)
-					{
-						SourceTargetComponentPairs.Emplace(PrimaryComponent, SecondaryComponent);
-					}
-					else
-					{
-						SourceTargetComponentPairs.Emplace(SecondaryComponent, PrimaryComponent);
-					}
-				}
+				continue;
 			}
-		};
+			UActorComponent* TargetComponent = FindMatchingComponentInstance( SourceComponent, TargetActor, TargetComponents, TargetComponentIndex );
 
-		const bool bSourceActorIsCDO = SourceActor->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject);
-		const bool bTargetActorIsCDO = TargetActor->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject);
-		const bool bSourceActorIsBPCDO = bSourceActorIsCDO && ActorClass->HasAllClassFlags(CLASS_CompiledFromBlueprint);
-
-		// If the source actor is a CDO, then the target actor should drive the collection of components since FindMatchingComponentInstance
-		// does work to seek out SCS and ICH components for blueprints
-		if (bSourceActorIsCDO)
-		{
-			BuildComponentPairs(TargetActor, SourceActor);
-		}
-		else
-		{
-			BuildComponentPairs(SourceActor, TargetActor);
-		}
-
-		for (const TPair<UActorComponent*, UActorComponent*>& ComponentPair : SourceTargetComponentPairs)
-		{
-			UActorComponent* SourceComponent = ComponentPair.Key;
-			UActorComponent* TargetComponent = ComponentPair.Value;
-
-			UClass* ComponentClass = SourceComponent->GetClass();
-			check( ComponentClass == TargetComponent->GetClass() );
-
-			// Build a list of matching component archetype instances for propagation (if requested)
-			TArray<UActorComponent*> ComponentArchetypeInstances;
-			if( Options.Flags & ECopyOptions::PropagateChangesToArchetypeInstances )
+			if( TargetComponent != nullptr )
 			{
-				for( AActor* ArchetypeInstance : ArchetypeInstances )
+				UClass* ComponentClass = SourceComponent->GetClass();
+				check( ComponentClass == TargetComponent->GetClass() );
+
+				// Build a list of matching component archetype instances for propagation (if requested)
+				TArray<UActorComponent*> ComponentArchetypeInstances;
+				if( Options.Flags & ECopyOptions::PropagateChangesToArchetypeInstances )
 				{
-					if( ArchetypeInstance != nullptr )
+					for( AActor* ArchetypeInstance : ArchetypeInstances )
 					{
-						UActorComponent* ComponentArchetypeInstance = FindMatchingComponentInstance( TargetComponent, ArchetypeInstance );
-						if( ComponentArchetypeInstance != nullptr )
+						if( ArchetypeInstance != nullptr )
 						{
-							ComponentArchetypeInstances.AddUnique( ComponentArchetypeInstance );
+							UActorComponent* ComponentArchetypeInstance = FindMatchingComponentInstance( TargetComponent, ArchetypeInstance );
+							if( ComponentArchetypeInstance != nullptr )
+							{
+								ComponentArchetypeInstances.AddUnique( ComponentArchetypeInstance );
+							}
 						}
 					}
 				}
-			}
 
-			TSet<const FProperty*> SourceUCSModifiedProperties;
-			SourceComponent->GetUCSModifiedProperties(SourceUCSModifiedProperties);
+				TSet<const FProperty*> SourceUCSModifiedProperties;
+				SourceComponent->GetUCSModifiedProperties(SourceUCSModifiedProperties);
 
-			TArray<UActorComponent*> ComponentInstancesToReregister;
+				TArray<UActorComponent*> ComponentInstancesToReregister;
 
-			// Copy component properties
-			for( FProperty* Property = ComponentClass->PropertyLink; Property != nullptr; Property = Property->PropertyLinkNext )
-			{
-				const bool bIsTransient = !!( Property->PropertyFlags & CPF_Transient );
-				const bool bIsIdentical = Property->Identical_InContainer( SourceComponent, TargetComponent );
-				const bool bIsComponent = !!( Property->PropertyFlags & ( CPF_InstancedReference | CPF_ContainsInstancedReference ) );
-				const bool bIsTransform =
-					Property->GetFName() == USceneComponent::GetRelativeScale3DPropertyName() ||
-					Property->GetFName() == USceneComponent::GetRelativeLocationPropertyName() ||
-					Property->GetFName() == USceneComponent::GetRelativeRotationPropertyName();
-
-				auto SourceComponentIsRoot = [&]()
+				// Copy component properties
+				for( FProperty* Property = ComponentClass->PropertyLink; Property != nullptr; Property = Property->PropertyLinkNext )
 				{
-					USceneComponent* RootComponent = SourceActor->GetRootComponent();
-					if (SourceComponent == RootComponent)
-					{
-						return true;
-					}
-					else if (RootComponent == nullptr && bSourceActorIsBPCDO)
-					{
-						// If we're dealing with a BP CDO as source, then look at the target for whether this is the root component
-						return (TargetComponent == TargetActor->GetRootComponent());
-					}
-					return false;
-				};
+					const bool bIsTransient = !!( Property->PropertyFlags & CPF_Transient );
+					const bool bIsIdentical = Property->Identical_InContainer( SourceComponent, TargetComponent );
+					const bool bIsComponent = !!( Property->PropertyFlags & ( CPF_InstancedReference | CPF_ContainsInstancedReference ) );
+					const bool bIsTransform =
+						Property->GetFName() == USceneComponent::GetRelativeScale3DPropertyName() ||
+						Property->GetFName() == USceneComponent::GetRelativeLocationPropertyName() ||
+						Property->GetFName() == USceneComponent::GetRelativeRotationPropertyName();
 
-				if( !bIsTransient && !bIsIdentical && !bIsComponent && !SourceUCSModifiedProperties.Contains(Property)
-					&& ( !bIsTransform || (!bSourceActorIsCDO && !bTargetActorIsCDO) || !SourceComponentIsRoot() ) )
-				{
-					const bool bIsSafeToCopy = (!(Options.Flags & ECopyOptions::OnlyCopyEditOrInterpProperties) || (Property->HasAnyPropertyFlags(CPF_Edit | CPF_Interp)))
-						                    && (!(Options.Flags & ECopyOptions::SkipInstanceOnlyProperties) || (!Property->HasAllPropertyFlags(CPF_DisableEditOnTemplate)));
-					if( bIsSafeToCopy )
+					if( !bIsTransient && !bIsIdentical && !bIsComponent && !SourceUCSModifiedProperties.Contains(Property)
+						&& ( !bIsTransform || SourceComponent != SourceActor->GetRootComponent() || ( !SourceActor->HasAnyFlags( RF_ClassDefaultObject | RF_ArchetypeObject ) && !TargetActor->HasAnyFlags( RF_ClassDefaultObject | RF_ArchetypeObject ) ) ) )
 					{
-						if (!Options.CanCopyProperty(*Property, *SourceActor))
+						const bool bIsSafeToCopy = (!(Options.Flags & ECopyOptions::OnlyCopyEditOrInterpProperties) || (Property->HasAnyPropertyFlags(CPF_Edit | CPF_Interp)))
+						                        && (!(Options.Flags & ECopyOptions::SkipInstanceOnlyProperties) || (!Property->HasAllPropertyFlags(CPF_DisableEditOnTemplate)));
+						if( bIsSafeToCopy )
 						{
-							continue;
-						}
+							if (!Options.CanCopyProperty(*Property, *SourceActor))
+							{
+								continue;
+							}
 							
-						if( !bIsPreviewing )
-						{
-							if( !ModifiedObjects.Contains(TargetComponent) )
+							if( !bIsPreviewing )
 							{
-								TargetComponent->SetFlags(RF_Transactional);
-								TargetComponent->Modify();
-								ModifiedObjects.Add(TargetComponent);
-							}
-
-							if( Options.Flags & ECopyOptions::CallPostEditChangeProperty )
-							{
-								// @todo simulate: Should we be calling this on the component instead?
-								TargetActor->PreEditChange( Property );
-							}
-
-							// Determine which component archetype instances match the current property value of the target component (before it gets changed). We only want to propagate the change to those instances.
-							TArray<UActorComponent*> ComponentArchetypeInstancesToChange;
-							if( Options.Flags & ECopyOptions::PropagateChangesToArchetypeInstances )
-							{
-								for (UActorComponent* ComponentArchetypeInstance : ComponentArchetypeInstances)
+								if( !ModifiedObjects.Contains(TargetComponent) )
 								{
-									if( ComponentArchetypeInstance != nullptr && Property->Identical_InContainer( ComponentArchetypeInstance, TargetComponent ) )
+									TargetComponent->SetFlags(RF_Transactional);
+									TargetComponent->Modify();
+									ModifiedObjects.Add(TargetComponent);
+								}
+
+								if( Options.Flags & ECopyOptions::CallPostEditChangeProperty )
+								{
+									// @todo simulate: Should we be calling this on the component instead?
+									TargetActor->PreEditChange( Property );
+								}
+
+								// Determine which component archetype instances match the current property value of the target component (before it gets changed). We only want to propagate the change to those instances.
+								TArray<UActorComponent*> ComponentArchetypeInstancesToChange;
+								if( Options.Flags & ECopyOptions::PropagateChangesToArchetypeInstances )
+								{
+									for (UActorComponent* ComponentArchetypeInstance : ComponentArchetypeInstances)
 									{
-										bool bAdd = true;
-										// We also need to double check that either the direct archetype of the target is also identical
-										if (ComponentArchetypeInstance->GetArchetype() != TargetComponent)
+										if( ComponentArchetypeInstance != nullptr && Property->Identical_InContainer( ComponentArchetypeInstance, TargetComponent ) )
 										{
-											UActorComponent* CheckComponent = CastChecked<UActorComponent>(ComponentArchetypeInstance->GetArchetype());
-											while (CheckComponent != ComponentArchetypeInstance)
+											bool bAdd = true;
+											// We also need to double check that either the direct archetype of the target is also identical
+											if (ComponentArchetypeInstance->GetArchetype() != TargetComponent)
 											{
-												if (!Property->Identical_InContainer( CheckComponent, TargetComponent ))
+												UActorComponent* CheckComponent = CastChecked<UActorComponent>(ComponentArchetypeInstance->GetArchetype());
+												while (CheckComponent != ComponentArchetypeInstance)
 												{
-													bAdd = false;
-													break;
+													if (!Property->Identical_InContainer( CheckComponent, TargetComponent ))
+													{
+														bAdd = false;
+														break;
+													}
+													CheckComponent = CastChecked<UActorComponent>(CheckComponent->GetArchetype());
 												}
-												CheckComponent = CastChecked<UActorComponent>(CheckComponent->GetArchetype());
 											}
-										}
 											
-										if (bAdd)
-										{
-											ComponentArchetypeInstancesToChange.Add( ComponentArchetypeInstance );
+											if (bAdd)
+											{
+												ComponentArchetypeInstancesToChange.Add( ComponentArchetypeInstance );
+											}
 										}
 									}
 								}
-							}
 
-							CopySingleProperty(SourceComponent, TargetComponent, Property);
+								CopySingleProperty(SourceComponent, TargetComponent, Property);
 
-							if( Options.Flags & ECopyOptions::CallPostEditChangeProperty )
-							{
-								FPropertyChangedEvent PropertyChangedEvent( Property );
-								TargetActor->PostEditChangeProperty( PropertyChangedEvent );
-							}
-
-							if( Options.Flags & ECopyOptions::PropagateChangesToArchetypeInstances )
-							{
-								for( int32 InstanceIndex = 0; InstanceIndex < ComponentArchetypeInstancesToChange.Num(); ++InstanceIndex )
+								if( Options.Flags & ECopyOptions::CallPostEditChangeProperty )
 								{
-									UActorComponent* ComponentArchetypeInstance = ComponentArchetypeInstancesToChange[InstanceIndex];
-									if( ComponentArchetypeInstance != nullptr )
+									FPropertyChangedEvent PropertyChangedEvent( Property );
+									TargetActor->PostEditChangeProperty( PropertyChangedEvent );
+								}
+
+								if( Options.Flags & ECopyOptions::PropagateChangesToArchetypeInstances )
+								{
+									for( int32 InstanceIndex = 0; InstanceIndex < ComponentArchetypeInstancesToChange.Num(); ++InstanceIndex )
 									{
-										if( !ModifiedObjects.Contains(ComponentArchetypeInstance) )
+										UActorComponent* ComponentArchetypeInstance = ComponentArchetypeInstancesToChange[InstanceIndex];
+										if( ComponentArchetypeInstance != nullptr )
 										{
-											// Ensure that this instance will be included in any undo/redo operations, and record it into the transaction buffer.
-											// Note: We don't do this for components that originate from script, because they will be re-instanced from the template after an undo, so there is no need to record them.
-											if (!ComponentArchetypeInstance->IsCreatedByConstructionScript())
+											if( !ModifiedObjects.Contains(ComponentArchetypeInstance) )
 											{
-												ComponentArchetypeInstance->SetFlags(RF_Transactional);
-												ComponentArchetypeInstance->Modify();
-												ModifiedObjects.Add(ComponentArchetypeInstance);
+												// Ensure that this instance will be included in any undo/redo operations, and record it into the transaction buffer.
+												// Note: We don't do this for components that originate from script, because they will be re-instanced from the template after an undo, so there is no need to record them.
+												if (!ComponentArchetypeInstance->IsCreatedByConstructionScript())
+												{
+													ComponentArchetypeInstance->SetFlags(RF_Transactional);
+													ComponentArchetypeInstance->Modify();
+													ModifiedObjects.Add(ComponentArchetypeInstance);
+												}
+
+												// We must also modify the owner, because we'll need script components to be reconstructed as part of an undo operation.
+												AActor* Owner = ComponentArchetypeInstance->GetOwner();
+												if( Owner != nullptr && !ModifiedObjects.Contains(Owner))
+												{
+													Owner->Modify();
+													ModifiedObjects.Add(Owner);
+												}
 											}
 
-											// We must also modify the owner, because we'll need script components to be reconstructed as part of an undo operation.
-											AActor* Owner = ComponentArchetypeInstance->GetOwner();
-											if( Owner != nullptr && !ModifiedObjects.Contains(Owner))
+											if (ComponentArchetypeInstance->IsRegistered())
 											{
-												Owner->Modify();
-												ModifiedObjects.Add(Owner);
+												ComponentArchetypeInstance->UnregisterComponent();
+												ComponentInstancesToReregister.Add(ComponentArchetypeInstance);
 											}
-										}
 
-										if (ComponentArchetypeInstance->IsRegistered())
-										{
-											ComponentArchetypeInstance->UnregisterComponent();
-											ComponentInstancesToReregister.Add(ComponentArchetypeInstance);
+											CopySingleProperty( TargetComponent, ComponentArchetypeInstance, Property );
 										}
-
-										CopySingleProperty( TargetComponent, ComponentArchetypeInstance, Property );
 									}
 								}
 							}
-						}
 
-						++CopiedPropertyCount;
+							++CopiedPropertyCount;
 
-						if( bIsTransform )
-						{
-							bTransformChanged = true;
+							if( bIsTransform )
+							{
+								bTransformChanged = true;
+							}
 						}
 					}
 				}
-			}
 
-			for (UActorComponent* ModifiedComponentInstance : ComponentInstancesToReregister)
-			{
-				ModifiedComponentInstance->RegisterComponent();
+				for (UActorComponent* ModifiedComponentInstance : ComponentInstancesToReregister)
+				{
+					ModifiedComponentInstance->RegisterComponent();
+				}
 			}
 		}
 
-		if (!bIsPreviewing && CopiedPropertyCount > 0 && TargetActor->GetClass()->HasAllClassFlags(CLASS_CompiledFromBlueprint))
+		if (!bIsPreviewing && CopiedPropertyCount > 0 && TargetActor->HasAnyFlags(RF_ClassDefaultObject|RF_ArchetypeObject) && TargetActor->GetClass()->HasAllClassFlags(CLASS_CompiledFromBlueprint))
 		{
-			if (bTargetActorIsCDO)
-			{
-				FBlueprintEditorUtils::PostEditChangeBlueprintActors(CastChecked<UBlueprint>(TargetActor->GetClass()->ClassGeneratedBy));
-			}
-			else
-			{
-				TargetActor->RerunConstructionScripts();
-			}
+			FBlueprintEditorUtils::PostEditChangeBlueprintActors(CastChecked<UBlueprint>(TargetActor->GetClass()->ClassGeneratedBy));
 		}
 
 		// If one of the changed properties was part of the actor's transformation, then we'll call PostEditMove too.

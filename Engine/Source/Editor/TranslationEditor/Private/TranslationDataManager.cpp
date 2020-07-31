@@ -892,7 +892,6 @@ bool FTranslationDataManager::SaveSelectedTranslations(TArray<UTranslationUnit*>
 				PortableObjectDom.SetProjectName(ManifestAndArchiveName);
 				PortableObjectDom.SetLanguage(CultureName);
 				PortableObjectDom.CreateNewHeader();
-				PortableObjectPipeline::UpdatePOFileHeaderForSettings(PortableObjectDom, LocalizationTarget->Settings.ExportSettings.CollapseMode, LocalizationTarget->Settings.ExportSettings.POFormat);
 
 				TArray<UTranslationUnit*>& TranslationsArray = DataManager->GetAllTranslationsArray();
 				TSharedPtr<TArray<UTranslationUnit*>> EditedItems = Item.Value;
@@ -923,7 +922,10 @@ bool FTranslationDataManager::SaveSelectedTranslations(TArray<UTranslationUnit*>
 									// Add the PO entry
 									{
 										TSharedRef<FPortableObjectEntry> PoEntry = MakeShareable(new FPortableObjectEntry());
-										PortableObjectPipeline::PopulateBasicPOFileEntry(*PoEntry, Translation->Namespace, ContextInfo.Key, nullptr, Translation->Source, Translation->Translation, LocalizationTarget->Settings.ExportSettings.CollapseMode, LocalizationTarget->Settings.ExportSettings.POFormat);
+
+										PoEntry->MsgId = PortableObjectPipeline::ConditionArchiveStrForPo(Translation->Source);
+										PoEntry->MsgCtxt = PortableObjectPipeline::ConditionIdentityForPOMsgCtxt(Translation->Namespace, ContextInfo.Key, nullptr, LocalizationTarget->Settings.ExportSettings.CollapseMode);
+										PoEntry->MsgStr.Add(PortableObjectPipeline::ConditionArchiveStrForPo(Translation->Translation));
 
 										//@TODO: We support additional metadata entries that can be translated.  How do those fit in the PO file format?  Ex: isMature
 										const FString PORefString = PortableObjectPipeline::ConvertSrcLocationToPORef(ContextInfo.Context);

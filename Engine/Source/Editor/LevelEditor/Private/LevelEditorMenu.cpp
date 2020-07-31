@@ -251,7 +251,7 @@ TSharedRef< SWidget > FLevelEditorMenu::MakeNotificationBar( const TSharedPtr<FU
 	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>( "LevelEditor");
 	const TSharedPtr<FExtender> NotificationBarExtenders = LevelEditorModule.GetNotificationBarExtensibilityManager()->GetAllExtenders();
 
-	FToolBarBuilder NotificationBarBuilder( CommandList, FMultiBoxCustomization::None, NotificationBarExtenders );
+	FToolBarBuilder NotificationBarBuilder( CommandList, FMultiBoxCustomization::None, NotificationBarExtenders, Orient_Horizontal );
 	NotificationBarBuilder.SetStyle(&FEditorStyle::Get(), "NotificationBar");
 	{
 		NotificationBarBuilder.BeginSection("Start");

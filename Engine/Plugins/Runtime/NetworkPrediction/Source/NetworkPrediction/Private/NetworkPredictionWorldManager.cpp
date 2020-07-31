@@ -160,12 +160,11 @@ void UNetworkPredictionWorldManager::ReconcileSimulationsPostNetworkUpdate()
 			}
 
 			FixedTickState.PendingFrame = RollbackFrame;
-			const int32 ServerRollbackFrame = RollbackFrame + FixedTickState.Offset;
-			const int32 BeginRollbackTimeMS = ServerRollbackFrame * FixedTickState.FixedStepMS;
+			const int32 BeginRollbackTimeMS = RollbackFrame * FixedTickState.FixedStepMS;
 		
 			for (TUniquePtr<IFixedRollbackService>& Ptr : Services.FixedRollback.Array)
 			{
-				Ptr->BeginRollback(RollbackFrame, BeginRollbackTimeMS, ServerRollbackFrame);
+				Ptr->BeginRollback(&FixedTickState, RollbackFrame, BeginRollbackTimeMS);
 			}
 
 			// Do rollback if necessary
@@ -459,19 +458,17 @@ void UNetworkPredictionWorldManager::BeginNewSimulationFrame(UWorld* InWorld, EL
 	//	Finalize
 	// -------------------------------------------------------------------------
 	const int32 FixedTotalSimTimeMS = FixedTickState.GetTotalSimTimeMS();
-	const int32 FixedServerFrame = FixedTickState.PendingFrame + FixedTickState.Offset;
-	const int32 FixedServerConfirmedFrame = FixedTickState.ConfirmedFrame + FixedTickState.Offset;;
+	const int32 FixedFrame = FixedTickState.PendingFrame;
 	for (TUniquePtr<IFinalizeService>& Ptr : Services.FixedFinalize.Array)
 	{
-		Ptr->FinalizeFrame(DeltaTimeSeconds, FixedServerFrame, FixedTotalSimTimeMS, FixedServerConfirmedFrame);
+		Ptr->FinalizeFrame(DeltaTimeSeconds, FixedFrame, FixedTotalSimTimeMS);
 	}
 
 	const int32 IndependentTotalSimTimeMS = VariableTickState.Frames[VariableTickState.PendingFrame].TotalMS;
 	const int32 IndependentFrame = VariableTickState.PendingFrame;
-	const int32 IndependentConfirmedFrame = VariableTickState.ConfirmedFrame;
 	for (TUniquePtr<IFinalizeService>& Ptr : Services.IndependentLocalFinalize.Array)
 	{
-		Ptr->FinalizeFrame(DeltaTimeSeconds, IndependentFrame, IndependentTotalSimTimeMS, IndependentConfirmedFrame);
+		Ptr->FinalizeFrame(DeltaTimeSeconds, IndependentFrame, IndependentTotalSimTimeMS);
 	}
 	
 	for (TUniquePtr<IRemoteFinalizeService>& Ptr : Services.IndependentRemoteFinalize.Array)

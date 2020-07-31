@@ -56,7 +56,6 @@ public class UMGEditor : ModuleRules
 				"EditorStyle",
 				"Slate",
 				"SlateCore",
-				"SlateRHIRenderer",
 				"MessageLog",
 				"MovieScene",
 				"MovieSceneTools",
@@ -69,7 +68,6 @@ public class UMGEditor : ModuleRules
 				"GameProjectGeneration",
 				"PropertyPath",
 				"ToolMenus",
-				"SlateReflector",
 				"DeveloperSettings"
 			}
 			);

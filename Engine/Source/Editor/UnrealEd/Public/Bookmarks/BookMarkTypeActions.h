@@ -62,8 +62,6 @@ public:
 					LevelVC->SetViewRotation(Bookmark->Rotation);
 				}
 				LevelVC->Invalidate();
-
-				FEditorDelegates::OnEditorCameraMoved.Broadcast(Bookmark->Location, Bookmark->Rotation, LevelVC->ViewportType, LevelVC->ViewIndex);
 			}
 		}
 	}

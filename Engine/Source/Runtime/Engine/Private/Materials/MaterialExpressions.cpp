@@ -2675,6 +2675,7 @@ UMaterialExpressionTextureSampleParameter::UMaterialExpressionTextureSampleParam
 
 	MenuCategories.Empty();
 	MenuCategories.Add( ConstructorStatics.NAME_Obsolete);
+	SortPriority = 0;
 	ApplyChannelNames();
 #endif
 }
@@ -7312,6 +7313,7 @@ UMaterialExpressionParameter::UMaterialExpressionParameter(const FObjectInitiali
 
 #if WITH_EDITORONLY_DATA
 	MenuCategories.Add(ConstructorStatics.NAME_Parameters);
+	SortPriority = 0;
 
 	bCollapsed = false;
 #endif

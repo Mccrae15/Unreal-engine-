@@ -10,7 +10,7 @@
 
 class UMaterialInterface;
 
-UENUM(BlueprintType)
+UENUM()
 enum class EMaterialSearchLocation : uint8
 {
 	/** Search for matching material in local import folder only. */

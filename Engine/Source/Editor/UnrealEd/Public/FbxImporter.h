@@ -495,8 +495,7 @@ public:
 	static float ConvertDist(FbxDouble Distance);
 	static bool ConvertPropertyValue(FbxProperty& FbxProperty, FProperty& UnrealProperty, union UPropertyValue& OutUnrealPropertyValue);
 	static FTransform ConvertTransform(FbxAMatrix Matrix);
-	static FMatrix ConvertMatrix(const FbxAMatrix& Matrix);
-	static FbxAMatrix ConvertMatrix(const FMatrix& Matrix);
+	static FMatrix ConvertMatrix(FbxAMatrix Matrix);
 
 	/*
 	 * Convert fbx linear space color to sRGB FColor

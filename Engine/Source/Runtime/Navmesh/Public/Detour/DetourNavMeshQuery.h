@@ -88,7 +88,7 @@ class NAVMESH_API dtQueryFilter
 {
 protected:
 	dtQueryFilterData data;
-	bool isVirtual;
+	const bool isVirtual;
 	
 public:
 	dtQueryFilter(bool inIsVirtual = true) : isVirtual(inIsVirtual)

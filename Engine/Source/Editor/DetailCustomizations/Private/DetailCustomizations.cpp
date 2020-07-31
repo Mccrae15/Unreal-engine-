@@ -140,7 +140,6 @@
 #include "MaterialShadingModelCustomization.h"
 #include "DebugCameraControllerSettingsCustomization.h"
 #include "BoundsCopyComponentDetails.h"
-#include "SupportedRangeTypes.h"	// StructsSupportingRangeVisibility
 
 IMPLEMENT_MODULE( FDetailCustomizationsModule, DetailCustomizations );
 
@@ -186,10 +185,6 @@ void FDetailCustomizationsModule::ShutdownModule()
 	}
 }
 
-/** Helper that will flag this struct name as supporting the UIMin and UIMax meta data types */
-#define REGISTER_UIMINMAX_CUSTOMIZATION( StructName, CallbackFunc ) \
-			RangeVisibilityUtils::StructsSupportingRangeVisibility.Add( StructName );		\
-			RegisterCustomPropertyTypeLayout( StructName, FOnGetPropertyTypeCustomizationInstance::CreateStatic( CallbackFunc ));
 
 void FDetailCustomizationsModule::RegisterPropertyTypeCustomizations()
 {
@@ -198,12 +193,12 @@ void FDetailCustomizationsModule::RegisterPropertyTypeCustomizations()
 	RegisterCustomPropertyTypeLayout("DataTableRowHandle", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDataTableCustomizationLayout::MakeInstance));
 	RegisterCustomPropertyTypeLayout("DataTableCategoryHandle", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDataTableCategoryCustomizationLayout::MakeInstance));
 	RegisterCustomPropertyTypeLayout("CurveTableRowHandle", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCurveTableCustomizationLayout::MakeInstance));
-	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Vector, &FVectorStructCustomization::MakeInstance);
-	REGISTER_UIMINMAX_CUSTOMIZATION("IntVector", &FVectorStructCustomization::MakeInstance);
-	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Vector4, &FVector4StructCustomization::MakeInstance);
-	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Vector2D, &FMathStructCustomization::MakeInstance);
-	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_IntPoint, &FMathStructCustomization::MakeInstance);
-	REGISTER_UIMINMAX_CUSTOMIZATION(NAME_Rotator, &FRotatorStructCustomization::MakeInstance);
+	RegisterCustomPropertyTypeLayout(NAME_Vector, FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FVectorStructCustomization::MakeInstance));
+	RegisterCustomPropertyTypeLayout("IntVector", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FVectorStructCustomization::MakeInstance));
+	RegisterCustomPropertyTypeLayout(NAME_Vector4, FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FVector4StructCustomization::MakeInstance));
+	RegisterCustomPropertyTypeLayout(NAME_Vector2D, FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMathStructCustomization::MakeInstance));
+	RegisterCustomPropertyTypeLayout(NAME_IntPoint, FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMathStructCustomization::MakeInstance));
+	RegisterCustomPropertyTypeLayout(NAME_Rotator, FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FRotatorStructCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout(NAME_LinearColor, FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FColorStructCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout(NAME_Color, FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FColorStructCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout(NAME_Matrix, FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMatrixStructCustomization::MakeInstance));
@@ -281,8 +276,6 @@ void FDetailCustomizationsModule::RegisterPropertyTypeCustomizations()
 	RegisterCustomPropertyTypeLayout("EMaterialShadingModel", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMaterialShadingModelCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("DebugCameraControllerSettingsViewModeIndex", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDebugCameraControllerSettingsViewModeIndexCustomization::MakeInstance));
 }
-
-#undef REGISTER_UIMINMAX_CUSTOMIZATION
 
 void FDetailCustomizationsModule::RegisterObjectCustomizations()
 {

@@ -74,13 +74,10 @@ public:
 
 protected:
 	/** Protect constructor as this is a singleton */
-	FSlateNotificationManager();
+	FSlateNotificationManager() = default;
 
 	/** Create a notification list for the specified screen rectangle */
 	TSharedRef<SNotificationList> CreateStackForArea(const FSlateRect& InRectangle);
-
-	/** FCoreDelegates::OnPreExit shutdown callback */
-	void ShutdownOnPreExit();
 
 private:
 

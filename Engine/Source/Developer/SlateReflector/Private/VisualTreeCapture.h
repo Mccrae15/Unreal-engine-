@@ -76,5 +76,4 @@ private:
 	void OnWindowBeingDestroyed(const SWindow& WindowBeingDestoyed);
 private:
 	TMap<const SWindow*, TSharedPtr<FVisualTreeSnapshot>> VisualTrees;
-	bool bIsEnabled;
 };

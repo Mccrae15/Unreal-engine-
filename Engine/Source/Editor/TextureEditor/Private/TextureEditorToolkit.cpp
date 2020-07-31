@@ -37,7 +37,6 @@
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "Curves/CurveLinearColorAtlas.h"
-#include "TextureEditorSettings.h"
 
 #define LOCTEXT_NAMESPACE "FTextureEditorToolkit"
 
@@ -161,9 +160,6 @@ void FTextureEditorToolkit::InitTextureEditor( const EToolkitMode::Type Mode, co
 
 	SavedCompressionSetting = false;
 
-	// Start at whatever the last used zoom mode was
-	const UTextureEditorSettings& Settings = *GetDefault<UTextureEditorSettings>();
-	ZoomMode = Settings.ZoomMode;
 	Zoom = 1.0f;
 
 	// Register our commands. This will only register them if not previously registered
@@ -263,9 +259,8 @@ void FTextureEditorToolkit::CalculateTextureDimensions( uint32& Width, uint32& H
 	uint32 MaxWidth; 
 	uint32 MaxHeight;
 
-	// Fit is the same as fill, but doesn't scale up past 100%
-	const ETextureEditorZoomMode CurrentZoomMode = GetZoomMode();
-	if (CurrentZoomMode == ETextureEditorZoomMode::Fit || CurrentZoomMode == ETextureEditorZoomMode::Fill)
+	const bool bFitToViewport = GetFitToViewport();
+	if (bFitToViewport)
 	{
 		const UVolumeTexture* VolumeTexture = Cast<UVolumeTexture>(Texture);
 
@@ -317,17 +312,6 @@ void FTextureEditorToolkit::CalculateTextureDimensions( uint32& Width, uint32& H
 			Width = Width * MaxHeight / Height;
 			Height = MaxHeight;
 		}
-		
-		// If fit, then we only want to scale down
-		// So if our natural dimensions are smaller than the viewport, we can just use those
-		if (CurrentZoomMode == ETextureEditorZoomMode::Fit)
-		{
-			if (PreviewEffectiveTextureWidth < Width && PreviewEffectiveTextureHeight < Height)
-			{
-				Width = PreviewEffectiveTextureWidth;
-				Height = PreviewEffectiveTextureHeight;
-			}
-		}
 	}
 	else
 	{
@@ -359,15 +343,13 @@ ESimpleElementBlendMode FTextureEditorToolkit::GetColourChannelBlendMode( ) cons
 	return (ESimpleElementBlendMode)Result;
 }
 
-bool FTextureEditorToolkit::IsFitToViewport() const
+
+bool FTextureEditorToolkit::GetFitToViewport( ) const
 {
-	return IsCurrentZoomMode(ETextureEditorZoomMode::Fit);
+	const UTextureEditorSettings& Settings = *GetDefault<UTextureEditorSettings>();
+	return Settings.FitToViewport;
 }
 
-bool FTextureEditorToolkit::IsFillToViewport() const
-{
-	return IsCurrentZoomMode(ETextureEditorZoomMode::Fill);
-}
 
 int32 FTextureEditorToolkit::GetMipLevel( ) const
 {
@@ -409,7 +391,7 @@ bool FTextureEditorToolkit::GetUseSpecifiedMip( ) const
 }
 
 
-double FTextureEditorToolkit::GetCustomZoomLevel( ) const
+double FTextureEditorToolkit::GetZoom( ) const
 {
 	return Zoom;
 }
@@ -577,85 +559,30 @@ void FTextureEditorToolkit::PopulateQuickInfo( )
 }
 
 
-void FTextureEditorToolkit::SetZoomMode( const ETextureEditorZoomMode InZoomMode )
+void FTextureEditorToolkit::SetFitToViewport( const bool bFitToViewport )
 {
-	// Update our own zoom mode
-	ZoomMode = InZoomMode;
-	
-	// And also save it so it's used for new texture editors
 	UTextureEditorSettings& Settings = *GetMutableDefault<UTextureEditorSettings>();
-	Settings.ZoomMode = ZoomMode;
+	Settings.FitToViewport = bFitToViewport;
 	Settings.PostEditChange();
 }
 
-ETextureEditorZoomMode FTextureEditorToolkit::GetZoomMode() const
-{
-	// Each texture editors keeps a local zoom mode so that it can be changed without affecting other open editors
-	return ZoomMode;
-}
 
-double FTextureEditorToolkit::CalculateDisplayedZoomLevel() const
-{
-	// Avoid calculating dimensions if we're custom anyway
-	if (GetZoomMode() == ETextureEditorZoomMode::Custom)
-	{
-		return Zoom;
-	}
-
-	uint32 DisplayWidth, DisplayHeight;
-	CalculateTextureDimensions(DisplayWidth, DisplayHeight);
-	if (PreviewEffectiveTextureHeight != 0)
-	{
-		return (double)DisplayHeight / PreviewEffectiveTextureHeight;
-	}
-	else if (PreviewEffectiveTextureWidth != 0)
-	{
-		return (double)DisplayWidth / PreviewEffectiveTextureWidth;
-	}
-	else
-	{
-		return 0;
-	}
-}
-
-void FTextureEditorToolkit::SetCustomZoomLevel( double ZoomValue )
+void FTextureEditorToolkit::SetZoom( double ZoomValue )
 {
 	Zoom = FMath::Clamp(ZoomValue, MinZoom, MaxZoom);
-	
-	// For now we also want to be in custom mode whenever this is changed
-	SetZoomMode(ETextureEditorZoomMode::Custom);
+	SetFitToViewport(false);
 }
 
-
-void FTextureEditorToolkit::OffsetZoom(double OffsetValue, bool bSnapToStepSize)
-{
-	// Offset from our current "visual" zoom level so that you can
-	// smoothly transition from Fit/Fill mode into a custom zoom level
-	const double CurrentZoom = CalculateDisplayedZoomLevel();
-
-	if (bSnapToStepSize)
-	{
-		// Snap to the zoom step when offsetting to avoid zooming all the way to the min (0.01)
-		// then back up (+0.1) causing your zoom level to be off by 0.01 (eg. 11%)
-		// If we were in a fit view mode then our current zoom level could also be off the grid
-		const double FinalZoom = FMath::GridSnap(CurrentZoom + OffsetValue, ZoomStep);
-		SetCustomZoomLevel(FinalZoom);
-	}
-	else
-	{
-		SetCustomZoomLevel(CurrentZoom + OffsetValue);
-	}
-}
 
 void FTextureEditorToolkit::ZoomIn( )
 {
-	OffsetZoom(ZoomStep);
+	SetZoom(Zoom + ZoomStep);
 }
 
 
 void FTextureEditorToolkit::ZoomOut( )
 {
-	OffsetZoom(-ZoomStep);
+	SetZoom(Zoom - ZoomStep);
 }
 
 float FTextureEditorToolkit::GetVolumeOpacity() const
@@ -663,9 +590,9 @@ float FTextureEditorToolkit::GetVolumeOpacity() const
 	return VolumeOpacity;
 }
 
-void FTextureEditorToolkit::SetVolumeOpacity(float InVolumeOpacity)
+void FTextureEditorToolkit::SetVolumeOpacity(float ZoomValue)
 {
-	VolumeOpacity = FMath::Clamp(InVolumeOpacity, 0.f, 1.f);
+	VolumeOpacity = FMath::Clamp(ZoomValue, 0.f, 1.f);
 }
 
 const FRotator& FTextureEditorToolkit::GetVolumeOrientation() const
@@ -767,17 +694,10 @@ void FTextureEditorToolkit::BindCommands( )
 		FIsActionChecked::CreateSP(this, &FTextureEditorToolkit::HandleDesaturationChannelActionIsChecked));
 
 	ToolkitCommands->MapAction(
-		Commands.FillToViewport,
-		FExecuteAction::CreateSP(this, &FTextureEditorToolkit::HandleFillToViewportActionExecute));
-
-	ToolkitCommands->MapAction(
 		Commands.FitToViewport,
-		FExecuteAction::CreateSP(this, &FTextureEditorToolkit::HandleFitToViewportActionExecute));
-
-	ToolkitCommands->MapAction(
-		Commands.ZoomToNatural,
-		FExecuteAction::CreateSP(this, &FTextureEditorToolkit::HandleZoomToNaturalActionExecute));
-	
+		FExecuteAction::CreateSP(this, &FTextureEditorToolkit::HandleFitToViewportActionExecute),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &FTextureEditorToolkit::HandleFitToViewportActionIsChecked));
 
 	ToolkitCommands->MapAction(
 		Commands.CheckeredBackground,
@@ -1300,19 +1220,15 @@ bool FTextureEditorToolkit::HandleCompressNowActionCanExecute( ) const
 
 void FTextureEditorToolkit::HandleFitToViewportActionExecute( )
 {
-	SetZoomMode(ETextureEditorZoomMode::Fit);
+	ToggleFitToViewport();
 }
 
 
-void FTextureEditorToolkit::HandleFillToViewportActionExecute()
+bool FTextureEditorToolkit::HandleFitToViewportActionIsChecked( ) const
 {
-	SetZoomMode(ETextureEditorZoomMode::Fill);
+	return GetFitToViewport();
 }
 
-void FTextureEditorToolkit::HandleZoomToNaturalActionExecute()
-{
-	SetCustomZoomLevel(1);
-}
 
 void FTextureEditorToolkit::HandleGreenChannelActionExecute( )
 {

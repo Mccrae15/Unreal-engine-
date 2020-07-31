@@ -89,11 +89,11 @@ static bool DoesTypeNotMatchProperty(UEdGraphPin* SourcePin, const FEdGraphPinTy
 		else
 		{
 			const UClass* MetaClass = NULL;
-			if (FClassProperty* ClassProperty = CastField<FClassProperty>(TestProperty))
+			if (auto ClassProperty = CastField<FClassProperty>(TestProperty))
 			{
 				MetaClass = ClassProperty->MetaClass;
 			}
-			else if (FSoftClassProperty* SoftClassProperty = CastField<FSoftClassProperty>(TestProperty))
+			else if (auto SoftClassProperty = CastField<FSoftClassProperty>(TestProperty))
 			{
 				MetaClass = SoftClassProperty->MetaClass;
 			}
@@ -243,7 +243,7 @@ static bool DoesTypeNotMatchProperty(UEdGraphPin* SourcePin, const FEdGraphPinTy
 			if (StructProperty != NULL)
 			{
 				bool bMatchingStructs = (StructType == StructProperty->Struct);
-				if (const UUserDefinedStruct* UserDefinedStructFromProperty = Cast<const UUserDefinedStruct>(StructProperty->Struct))
+				if (auto UserDefinedStructFromProperty = Cast<const UUserDefinedStruct>(StructProperty->Struct))
 				{
 					bMatchingStructs |= (UserDefinedStructFromProperty->PrimaryStruct.Get() == StructType);
 				}
@@ -467,7 +467,7 @@ void FKismetCompilerUtilities::ConsignToOblivion(UClass* OldClass, bool bForceNo
 	if (OldClass != NULL)
 	{
 		// Use the Kismet class reinstancer to ensure that the CDO and any existing instances of this class are cleaned up!
-		TSharedPtr<FBlueprintCompileReinstancer> CTOResinstancer = FBlueprintCompileReinstancer::Create(OldClass);
+		auto CTOResinstancer = FBlueprintCompileReinstancer::Create(OldClass);
 
 		UPackage* OwnerOutermost = OldClass->GetOutermost();
 		if( OldClass->ClassDefaultObject )
@@ -1344,7 +1344,7 @@ void FKismetCompilerUtilities::ValidateProperEndExecutionPath(FKismetFunctionCon
 				if (!bAlreadyVisited && !SourceNode->IsA<UK2Node_FunctionResult>())
 				{
 					const bool bIsExecutionSequence = IsExecutionSequence(SourceNode); 
-					for (UEdGraphPin* CurrentPin : SourceNode->Pins)
+					for (auto CurrentPin : SourceNode->Pins)
 					{
 						if (CurrentPin
 							&& (CurrentPin->Direction == EEdGraphPinDirection::EGPD_Output)
@@ -1362,8 +1362,8 @@ void FKismetCompilerUtilities::ValidateProperEndExecutionPath(FKismetFunctionCon
 								}
 								continue;
 							}
-							UEdGraphPin* LinkedPin = CurrentPin->LinkedTo[0];
-							const UK2Node* NextNode = ensure(LinkedPin) ? Cast<const UK2Node>(LinkedPin->GetOwningNodeUnchecked()) : nullptr;
+							auto LinkedPin = CurrentPin->LinkedTo[0];
+							auto NextNode = ensure(LinkedPin) ? Cast<const UK2Node>(LinkedPin->GetOwningNodeUnchecked()) : nullptr;
 							ensure(NextNode);
 							if (CurrentNode)
 							{
@@ -1388,16 +1388,16 @@ void FKismetCompilerUtilities::ValidateProperEndExecutionPath(FKismetFunctionCon
 				BreakableNodes.Add(SourceNode, &bAlreadyVisited);
 				if (!bAlreadyVisited)
 				{
-					for (UEdGraphPin* CurrentPin : SourceNode->Pins)
+					for (auto CurrentPin : SourceNode->Pins)
 					{
 						if (CurrentPin
 							&& (CurrentPin->Direction == EEdGraphPinDirection::EGPD_Input)
 							&& (CurrentPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
 							&& CurrentPin->LinkedTo.Num())
 						{
-							for (UEdGraphPin* LinkedPin : CurrentPin->LinkedTo)
+							for (auto LinkedPin : CurrentPin->LinkedTo)
 							{
-								const UK2Node* NextNode = ensure(LinkedPin) ? Cast<const UK2Node>(LinkedPin->GetOwningNodeUnchecked()) : nullptr;
+								auto NextNode = ensure(LinkedPin) ? Cast<const UK2Node>(LinkedPin->GetOwningNodeUnchecked()) : nullptr;
 								ensure(NextNode);
 								if (!FRecrursiveHelper::IsExecutionSequence(NextNode))
 								{
@@ -1419,19 +1419,19 @@ void FKismetCompilerUtilities::ValidateProperEndExecutionPath(FKismetFunctionCon
 			, TSet<const UK2Node*>& BreakableNodes
 			, FKismetFunctionContext& InContext)
 		{
-			for (const UK2Node_ExecutionSequence* SequenceNode : UnBreakableExecutionSequenceNodes)
+			for (auto SequenceNode : UnBreakableExecutionSequenceNodes)
 			{
 				bool bIsBreakable = true;
 				// Sequence is breakable when all it's outputs are breakable
-				for (UEdGraphPin* CurrentPin : SequenceNode->Pins)
+				for (auto CurrentPin : SequenceNode->Pins)
 				{
 					if (CurrentPin
 						&& (CurrentPin->Direction == EEdGraphPinDirection::EGPD_Output)
 						&& (CurrentPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
 						&& CurrentPin->LinkedTo.Num())
 					{
-						UEdGraphPin* LinkedPin = CurrentPin->LinkedTo[0];
-						const UK2Node* NextNode = ensure(LinkedPin) ? Cast<const UK2Node>(LinkedPin->GetOwningNodeUnchecked()) : nullptr;
+						auto LinkedPin = CurrentPin->LinkedTo[0];
+						auto NextNode = ensure(LinkedPin) ? Cast<const UK2Node>(LinkedPin->GetOwningNodeUnchecked()) : nullptr;
 						ensure(NextNode);
 						if (!BreakableNodes.Contains(NextNode))
 						{
@@ -1455,7 +1455,7 @@ void FKismetCompilerUtilities::ValidateProperEndExecutionPath(FKismetFunctionCon
 		static void CheckDeadExecutionPath(TSet<const UK2Node*>& BreakableNodesSeeds, FKismetFunctionContext& InContext)
 		{
 			TSet<const UK2Node_ExecutionSequence*> UnBreakableExecutionSequenceNodes;
-			for (UEdGraphNode* Node : InContext.SourceGraph->Nodes)
+			for (auto Node : InContext.SourceGraph->Nodes)
 			{
 				if (FRecrursiveHelper::IsExecutionSequence(Node))
 				{
@@ -1466,7 +1466,7 @@ void FKismetCompilerUtilities::ValidateProperEndExecutionPath(FKismetFunctionCon
 			TSet<const UK2Node*> BreakableNodes;
 			while (BreakableNodesSeeds.Num())
 			{
-				for (const UK2Node* StartingNode : BreakableNodesSeeds)
+				for (auto StartingNode : BreakableNodesSeeds)
 				{
 					GatherBreakableNodes(StartingNode, BreakableNodes, InContext);
 				}
@@ -1474,10 +1474,10 @@ void FKismetCompilerUtilities::ValidateProperEndExecutionPath(FKismetFunctionCon
 				FRecrursiveHelper::GatherBreakableNodesSeedsFromSequences(UnBreakableExecutionSequenceNodes, BreakableNodesSeeds, BreakableNodes, InContext);
 			}
 
-			for (const UK2Node_ExecutionSequence* UnBreakableExecutionSequenceNode : UnBreakableExecutionSequenceNodes)
+			for (auto UnBreakableExecutionSequenceNode : UnBreakableExecutionSequenceNodes)
 			{
 				bool bUnBreakableOutputWasFound = false;
-				for (UEdGraphPin* CurrentPin : UnBreakableExecutionSequenceNode->Pins)
+				for (auto CurrentPin : UnBreakableExecutionSequenceNode->Pins)
 				{
 					if (CurrentPin
 						&& (CurrentPin->Direction == EEdGraphPinDirection::EGPD_Output)
@@ -1490,8 +1490,8 @@ void FKismetCompilerUtilities::ValidateProperEndExecutionPath(FKismetFunctionCon
 							break;
 						}
 
-						UEdGraphPin* LinkedPin = CurrentPin->LinkedTo[0];
-						const UK2Node* NextNode = ensure(LinkedPin) ? Cast<const UK2Node>(LinkedPin->GetOwningNodeUnchecked()) : nullptr;
+						auto LinkedPin = CurrentPin->LinkedTo[0];
+						auto NextNode = ensure(LinkedPin) ? Cast<const UK2Node>(LinkedPin->GetOwningNodeUnchecked()) : nullptr;
 						ensure(NextNode);
 						if (!BreakableNodes.Contains(NextNode))
 						{
@@ -1940,12 +1940,12 @@ bool FKismetFunctionContext::DoesStatementRequiresSwitch(const FBlueprintCompile
 
 bool FKismetFunctionContext::MustUseSwitchState(const FBlueprintCompiledStatement* ExcludeThisOne) const
 {
-	for (UEdGraphNode* Node : LinearExecutionList)
+	for (auto Node : LinearExecutionList)
 	{
-		const TArray<FBlueprintCompiledStatement*>* StatementList = StatementsPerNode.Find(Node);
+		auto StatementList = StatementsPerNode.Find(Node);
 		if (StatementList)
 		{
-			for (FBlueprintCompiledStatement* Statement : (*StatementList))
+			for (auto Statement : (*StatementList))
 			{
 				if (Statement && (Statement != ExcludeThisOne) && DoesStatementRequiresSwitch(Statement))
 				{
@@ -1962,21 +1962,21 @@ void FKismetFunctionContext::MergeAdjacentStates()
 	for (int32 ExecIndex = 0; ExecIndex < LinearExecutionList.Num(); ++ExecIndex)
 	{
 		// if the last statement in current node jumps to the first statement in next node, then it's redundant
-		const UEdGraphNode* CurrentNode = LinearExecutionList[ExecIndex];
-		TArray<FBlueprintCompiledStatement*>* CurStatementList = StatementsPerNode.Find(CurrentNode);
+		const auto CurrentNode = LinearExecutionList[ExecIndex];
+		auto CurStatementList = StatementsPerNode.Find(CurrentNode);
 		const bool CurrentNodeIsValid = CurrentNode && CurStatementList && CurStatementList->Num();
-		const FBlueprintCompiledStatement* LastStatementInCurrentNode = CurrentNodeIsValid ? CurStatementList->Last() : nullptr;
+		const auto LastStatementInCurrentNode = CurrentNodeIsValid ? CurStatementList->Last() : NULL;
 
 		if (LastStatementInCurrentNode
 			&& LastStatementInCurrentNode->TargetLabel
 			&& (LastStatementInCurrentNode->Type == KCST_UnconditionalGoto)
 			&& !LastStatementInCurrentNode->bIsJumpTarget)
 		{
-			const int32 NextNodeIndex = ExecIndex + 1;
-			const UEdGraphNode* NextNode = LinearExecutionList.IsValidIndex(NextNodeIndex) ? LinearExecutionList[NextNodeIndex] : nullptr;
-			const TArray<FBlueprintCompiledStatement*>* NextNodeStatements = StatementsPerNode.Find(NextNode);
+			const auto NextNodeIndex = ExecIndex + 1;
+			const auto NextNode = LinearExecutionList.IsValidIndex(NextNodeIndex) ? LinearExecutionList[NextNodeIndex] : NULL;
+			const auto NextNodeStatements = StatementsPerNode.Find(NextNode);
 			const bool bNextNodeValid = NextNode && NextNodeStatements && NextNodeStatements->Num();
-			const FBlueprintCompiledStatement* FirstStatementInNextNode = bNextNodeValid ? (*NextNodeStatements)[0] : nullptr;
+			const auto FirstStatementInNextNode = bNextNodeValid ? (*NextNodeStatements)[0] : NULL;
 			if (FirstStatementInNextNode == LastStatementInCurrentNode->TargetLabel)
 			{
 				CurStatementList->RemoveAt(CurStatementList->Num() - 1);
@@ -1986,9 +1986,9 @@ void FKismetFunctionContext::MergeAdjacentStates()
 
 	// Remove unnecessary GotoReturn statements
 	// if it's last statement generated by last node (in LinearExecution) then it can be removed
-	const UEdGraphNode* LastExecutedNode = LinearExecutionList.Num() ? LinearExecutionList.Last() : nullptr;
+	const auto LastExecutedNode = LinearExecutionList.Num() ? LinearExecutionList.Last() : NULL;
 	TArray<FBlueprintCompiledStatement*>* StatementList = StatementsPerNode.Find(LastExecutedNode);
-	FBlueprintCompiledStatement* LastStatementInLastNode = (StatementList && StatementList->Num()) ? StatementList->Last() : nullptr;
+	FBlueprintCompiledStatement* LastStatementInLastNode = (StatementList && StatementList->Num()) ? StatementList->Last() : NULL;
 	const bool SafeForNativeCode = !bGeneratingCpp || !MustUseSwitchState(LastStatementInLastNode);
 	if (LastStatementInLastNode && SafeForNativeCode && (KCST_GotoReturn == LastStatementInLastNode->Type) && !LastStatementInLastNode->bIsJumpTarget)
 	{
@@ -2024,8 +2024,8 @@ struct FGotoMapUtils
 
 	static UEdGraphNode* TargetNodeFromMap(const FBlueprintCompiledStatement* GotoStatement, const TMap< FBlueprintCompiledStatement*, UEdGraphPin* >& GotoFixupRequestMap)
 	{
-		UEdGraphPin* const * ExecNetPtr = GotoFixupRequestMap.Find(GotoStatement);
-		UEdGraphPin* ExecNet = ExecNetPtr ? *ExecNetPtr : nullptr;
+		auto ExecNetPtr = GotoFixupRequestMap.Find(GotoStatement);
+		auto ExecNet = ExecNetPtr ? *ExecNetPtr : NULL;
 		return TargetNodeFromPin(GotoStatement, ExecNet);
 	}
 };
@@ -2092,10 +2092,10 @@ void FKismetFunctionContext::ResolveGotoFixups()
 
 void FKismetFunctionContext::FinalSortLinearExecList()
 {
-	const UEdGraphSchema_K2* K2Schema = Schema;
+	auto K2Schema = Schema;
 	LinearExecutionList.RemoveAllSwap([&](UEdGraphNode* CurrentNode)
 	{
-		TArray<FBlueprintCompiledStatement*>* CurStatementList = StatementsPerNode.Find(CurrentNode);
+		auto CurStatementList = StatementsPerNode.Find(CurrentNode);
 		return !(CurrentNode && CurStatementList && CurStatementList->Num());
 	});
 
@@ -2111,30 +2111,30 @@ void FKismetFunctionContext::FinalSortLinearExecList()
 
 	while (UnsortedExecutionSet.Num())
 	{
-		UEdGraphNode* NextNode = nullptr;
+		UEdGraphNode* NextNode = NULL;
 
 		// get last state target
-		const UEdGraphNode* CurrentNode = SortedLinearExecutionList.Last();
-		const TArray<FBlueprintCompiledStatement*>* CurStatementList = StatementsPerNode.Find(CurrentNode);
+		const auto CurrentNode = SortedLinearExecutionList.Last();
+		const auto CurStatementList = StatementsPerNode.Find(CurrentNode);
 		const bool CurrentNodeIsValid = CurrentNode && CurStatementList && CurStatementList->Num();
-		const FBlueprintCompiledStatement* LastStatementInCurrentNode = CurrentNodeIsValid ? CurStatementList->Last() : nullptr;
+		const auto LastStatementInCurrentNode = CurrentNodeIsValid ? CurStatementList->Last() : NULL;
 
 		// Find next element in current chain
 		if (LastStatementInCurrentNode && (LastStatementInCurrentNode->Type == KCST_UnconditionalGoto))
 		{
-			UEdGraphNode* TargetNode = FGotoMapUtils::TargetNodeFromMap(LastStatementInCurrentNode, GotoFixupRequestMap);
-			NextNode = UnsortedExecutionSet.Remove(TargetNode) ? TargetNode : nullptr;
+			auto TargetNode = FGotoMapUtils::TargetNodeFromMap(LastStatementInCurrentNode, GotoFixupRequestMap);
+			NextNode = UnsortedExecutionSet.Remove(TargetNode) ? TargetNode : NULL;
 		}
 
 		if (CurrentNode)
 		{
-			for (UEdGraphPin* Pin : CurrentNode->Pins)
+			for (auto Pin : CurrentNode->Pins)
 			{
 				if (Pin && (EEdGraphPinDirection::EGPD_Output == Pin->Direction) && K2Schema->IsExecPin(*Pin) && Pin->LinkedTo.Num())
 				{
-					for (UEdGraphPin* Link : Pin->LinkedTo)
+					for (auto Link : Pin->LinkedTo)
 					{
-						UEdGraphNode* LinkedNode = Link->GetOwningNodeUnchecked();
+						auto LinkedNode = Link->GetOwningNodeUnchecked();
 						if (LinkedNode && (LinkedNode != NextNode) && UnsortedExecutionSet.Contains(LinkedNode))
 						{
 							NodesToStartNextChain.Add(LinkedNode);
@@ -2203,7 +2203,7 @@ struct FEventGraphUtils
 		{
 			bResult |= Node->IsA<UK2Node_Event>();
 			bResult |= Node->IsA<UK2Node_Timeline>();
-			if (const UK2Node_CallFunction* CallNode = Cast<const UK2Node_CallFunction>(Node))
+			if (auto CallNode = Cast<const UK2Node_CallFunction>(Node))
 			{
 				bResult |= CallNode->IsLatentFunction();
 			}
@@ -2238,16 +2238,16 @@ struct FEventGraphUtils
 
 		const UEdGraphSchema_K2* Schema = CastChecked<const UEdGraphSchema_K2>(Node->GetSchema());
 		const bool bIsPure = Node->IsNodePure();
-		for (UEdGraphPin* Pin : Node->Pins)
+		for (auto Pin : Node->Pins)
 		{
 			const bool bProperPure		= bIsPure	&& Pin && (Pin->Direction == EEdGraphPinDirection::EGPD_Output);
 			const bool bProperNotPure	= !bIsPure	&& Pin && (Pin->Direction == EEdGraphPinDirection::EGPD_Input) && Schema->IsExecPin(*Pin);
 			if (bProperPure || bProperNotPure)
 			{
-				for (UEdGraphPin* Link : Pin->LinkedTo)
+				for (auto Link : Pin->LinkedTo)
 				{
-					UEdGraphNode* LinkOwner = Link ? Link->GetOwningNodeUnchecked() : nullptr;
-					const UK2Node* NodeToCheck = LinkOwner ? CastChecked<const UK2Node>(LinkOwner) : nullptr;
+					auto LinkOwner = Link ? Link->GetOwningNodeUnchecked() : NULL;
+					auto NodeToCheck = LinkOwner ? CastChecked<const UK2Node>(LinkOwner) : NULL;
 					FindEventsCallingTheNodeRecursive(NodeToCheck, Results, CheckedNodes, StopOn);
 				}
 			}
@@ -2311,22 +2311,22 @@ struct FEventGraphUtils
 		}
 
 		// 
-		TSet<const UK2Node*> SourceEntryPoints = FEventGraphUtils::FindExecutionNodes(OwnerNode, nullptr);
+		auto SourceEntryPoints = FEventGraphUtils::FindExecutionNodes(OwnerNode, NULL);
 		if (1 != SourceEntryPoints.Num())
 		{
 			return true;
 		}
 
 		//
-		for (UEdGraphPin* Link : Net.LinkedTo)
+		for (auto Link : Net.LinkedTo)
 		{
-			const UK2Node* LinkOwnerNode = Cast<const UK2Node>(Link->GetOwningNodeUnchecked());
+			auto LinkOwnerNode = Cast<const UK2Node>(Link->GetOwningNodeUnchecked());
 			ensure(LinkOwnerNode);
 			if (Link->PinType.bIsReference)
 			{
 				return true;
 			}
-			TSet<const UK2Node*> EventsCallingDestination = FEventGraphUtils::FindExecutionNodes(LinkOwnerNode, OwnerNode);
+			auto EventsCallingDestination = FEventGraphUtils::FindExecutionNodes(LinkOwnerNode, OwnerNode);
 			if (0 != EventsCallingDestination.Num())
 			{
 				return true;

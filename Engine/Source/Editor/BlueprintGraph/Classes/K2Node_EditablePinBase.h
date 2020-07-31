@@ -17,9 +17,6 @@ struct FUserPinInfo
 		: DesiredPinDirection(EGPD_MAX)
 	{}
 
-	/** Constructs a FUserPinInfo to match an existing Pin */
-	explicit FUserPinInfo(const UEdGraphPin& InPin);
-
 	/** The name of the pin, as defined by the user */
 	UPROPERTY()
 	FName PinName;

@@ -173,6 +173,7 @@ void AActor::PostEditMove(bool bFinished)
 	// If the root component was not just recreated by the construction script - call PostEditComponentMove on it
 	if(RootComponent != NULL && !RootComponent->IsCreatedByConstructionScript())
 	{
+		// @TODO Should we call on ALL components?
 		RootComponent->PostEditComponentMove(bFinished);
 	}
 

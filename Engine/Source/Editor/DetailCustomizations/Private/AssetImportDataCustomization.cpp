@@ -276,10 +276,7 @@ FReply FAssetImportDataCustomization::OnClearPathClicked(int32 Index) const
 	if (ImportData && ImportData->SourceData.SourceFiles.IsValidIndex(Index))
 	{
 		FImportDataSourceFileTransactionScope TransactionScope(LOCTEXT("SourceReimportClearPath", "Clear Source file path"), ImportData);
-		//Clear the filename, Hash and timestamp. Leave the Display label.
-		ImportData->SourceData.SourceFiles[Index].RelativeFilename = FString();
-		ImportData->SourceData.SourceFiles[Index].FileHash = FMD5Hash();
-		ImportData->SourceData.SourceFiles[Index].Timestamp = 0;
+		ImportData->SourceData.SourceFiles[Index] = FAssetImportInfo::FSourceFile(FString());
 	}
 
 	return FReply::Handled();

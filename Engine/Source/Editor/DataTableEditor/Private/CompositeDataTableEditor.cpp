@@ -142,11 +142,6 @@ void FCompositeDataTableEditor::InitDataTableEditor(const EToolkitMode::Type Mod
 	}
 }
 
-bool FCompositeDataTableEditor::CanEditRows() const
-{
-	return false;
-}
-
 TSharedRef<SDockTab> FCompositeDataTableEditor::SpawnTab_Stack(const FSpawnTabArgs& Args)
 {
 	check(Args.GetTabId().TabType == StackTabId);

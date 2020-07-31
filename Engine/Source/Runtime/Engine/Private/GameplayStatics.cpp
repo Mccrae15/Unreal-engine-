@@ -46,14 +46,10 @@
 #include "Components/SceneCaptureComponent2D.h"
 #include "Sound/SoundCue.h"
 #include "Sound/SoundWave.h"
-#if WITH_ACCESSIBILITY
-#include "Framework/Application/SlateApplication.h"
-#include "Widgets/Accessibility/SlateAccessibleMessageHandler.h"
-#endif
 
 #define LOCTEXT_NAMESPACE "GameplayStatics"
 
-static const int UE4_SAVEGAME_FILE_TYPE_TAG = 0x53415647;		// "SAVG"
+static const int UE4_SAVEGAME_FILE_TYPE_TAG = 0x53415647;		// "sAvG"
 
 struct FSaveGameFileVersion
 {
@@ -2938,16 +2934,6 @@ int32 UGameplayStatics::GetIntOption( const FString& Options, const FString& Key
 bool UGameplayStatics::HasLaunchOption(const FString& OptionToCheck)
 {
 	return FParse::Param(FCommandLine::Get(), *OptionToCheck);
-}
-
-void UGameplayStatics::AnnounceAccessibleString(const FString& AnnouncementString)
-{
-#if WITH_ACCESSIBILITY
-	if (!AnnouncementString.IsEmpty())
-	{
-		FSlateApplication::Get().GetAccessibleMessageHandler()->MakeAccessibleAnnouncement(AnnouncementString);
-	}
-#endif
 }
 
 /**

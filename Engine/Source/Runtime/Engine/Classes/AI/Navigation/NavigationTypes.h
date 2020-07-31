@@ -471,7 +471,6 @@ struct FMovementProperties
 		, bCanFly(false)
 	{
 	}
-	FMovementProperties(const FMovementProperties& Other) = default;
 };
 
 /** Properties of representation of an 'agent' (or Pawn) used by AI navigation/pathfinding. */

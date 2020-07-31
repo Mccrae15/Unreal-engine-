@@ -704,13 +704,19 @@ void FBodyInstanceCustomization::CreateCustomCollisionSetup( TSharedRef<class IP
 				.AutoWidth()
 				.VAlign(VAlign_Center)
 				[
-					SNew(SCheckBox)
-					.OnCheckStateChanged( this, &FBodyInstanceCustomization::OnCollisionChannelChanged, Index, ECR_Block )
-					.IsChecked( this, &FBodyInstanceCustomization::IsCollisionChannelChecked, Index, ECR_Block )
+					SNew(SBox)
+					.WidthOverride(RowWidth_Customization)
+					.Content()
+					[
+						SNew(SCheckBox)
+						.OnCheckStateChanged( this, &FBodyInstanceCustomization::OnCollisionChannelChanged, Index, ECR_Block )
+						.IsChecked( this, &FBodyInstanceCustomization::IsCollisionChannelChecked, Index, ECR_Block )
+					]
 				]
 
 				+SHorizontalBox::Slot()
 				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Right)
 				[
 					SNew(SButton)
 					.OnClicked(this, &FBodyInstanceCustomization::SetToDefaultResponse, Index)

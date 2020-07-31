@@ -58,9 +58,6 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
 
-#include "SSceneReimportNodeTreeView.h"
-#include "SSceneBaseMeshListView.h"
-
 #define LOCTEXT_NAMESPACE "FBXSceneReImportFactory"
 
 UFbxSceneImportData *GetFbxSceneImportData(UObject *Obj)
@@ -252,24 +249,22 @@ bool GetFbxSceneReImportOptions(UnFbx::FFbxImporter* FbxImporter
 
 	GlobalImportSettings->OverrideMaterials.Reset();
 
-	if (!GIsRunningUnattendedScript)
+	TSharedPtr<SWindow> ParentWindow;
+	if (FModuleManager::Get().IsModuleLoaded("MainFrame"))
 	{
-		TSharedPtr<SWindow> ParentWindow;
-		if (FModuleManager::Get().IsModuleLoaded("MainFrame"))
-		{
-			IMainFrameModule& MainFrame = FModuleManager::LoadModuleChecked<IMainFrameModule>("MainFrame");
-			ParentWindow = MainFrame.GetParentWindow();
-		}
-		TSharedRef<SWindow> Window = SNew(SWindow)
-			.ClientSize(FVector2D(800.f, 650.f))
-			.Title(NSLOCTEXT("UnrealEd", "FBXSceneReimportOpionsTitle", "FBX Scene Reimport Options"));
-		TSharedPtr<SFbxSceneOptionWindow> FbxSceneOptionWindow;
+		IMainFrameModule& MainFrame = FModuleManager::LoadModuleChecked<IMainFrameModule>("MainFrame");
+		ParentWindow = MainFrame.GetParentWindow();
+	}
+	TSharedRef<SWindow> Window = SNew(SWindow)
+		.ClientSize(FVector2D(800.f, 650.f))
+		.Title(NSLOCTEXT("UnrealEd", "FBXSceneReimportOpionsTitle", "FBX Scene Reimport Options"));
+	TSharedPtr<SFbxSceneOptionWindow> FbxSceneOptionWindow;
 
-		//Make sure the display option show the save default options
-		SFbxSceneOptionWindow::CopyFbxOptionsToStaticMeshOptions(GlobalImportSettings, StaticMeshImportData);
-		SFbxSceneOptionWindow::CopyFbxOptionsToSkeletalMeshOptions(GlobalImportSettings, SkeletalMeshImportData);
+	//Make sure the display option show the save default options
+	SFbxSceneOptionWindow::CopyFbxOptionsToStaticMeshOptions(GlobalImportSettings, StaticMeshImportData);
+	SFbxSceneOptionWindow::CopyFbxOptionsToSkeletalMeshOptions(GlobalImportSettings, SkeletalMeshImportData);
 
-		Window->SetContent
+	Window->SetContent
 		(
 			SAssignNew(FbxSceneOptionWindow, SFbxSceneOptionWindow)
 			.SceneInfo(SceneInfoPtr)
@@ -284,23 +279,13 @@ bool GetFbxSceneReImportOptions(UnFbx::FFbxImporter* FbxImporter
 			.GlobalImportSettings(GlobalImportSettings)
 			.OwnerWindow(Window)
 			.FullPath(Path)
-		);
+			);
 
-		FSlateApplication::Get().AddModalWindow(Window, ParentWindow, false);
+	FSlateApplication::Get().AddModalWindow(Window, ParentWindow, false);
 
-		if (!FbxSceneOptionWindow->ShouldImport())
-		{
-			return false;
-		}
-	}
-	else
+	if (!FbxSceneOptionWindow->ShouldImport())
 	{
-		//Fill the node and mesh status data so the reimport know what was added/removed/changed
-		SFbxReimportSceneTreeView::FillNodeStatusMap(&NodeStatusMap, SceneInfoPtr, SceneInfoOriginalPtr);
-		bool bFillSkeletalMeshStatusMap = false;
-		SFbxSSceneBaseMeshListView::FillMeshStatusMap(&MeshStatusMap, SceneInfoPtr, SceneInfoOriginalPtr, bFillSkeletalMeshStatusMap);
-		bFillSkeletalMeshStatusMap = true;
-		SFbxSSceneBaseMeshListView::FillMeshStatusMap(&MeshStatusMap, SceneInfoPtr, SceneInfoOriginalPtr, bFillSkeletalMeshStatusMap);
+		return false;
 	}
 
 	//Set the bakepivot option in the SceneImportOptions
@@ -683,7 +668,7 @@ EReimportResult::Type UReimportFbxSceneFactory::Reimport(UObject* Obj)
 			//Delete the asset and use the normal dialog to make sure the user understand he will remove some content
 			//The user can decide to cancel the delete or not. This will not interrupt the reimport process
 			//The delete is done at the end because we want to remove the blueprint reference before deleting object
-			ObjectTools::DeleteAssets(AssetDataToDelete, !GIsRunningUnattendedScript);
+			ObjectTools::DeleteAssets(AssetDataToDelete, true);
 		}
 	}
 	//Make sure the content browser is in sync
@@ -698,13 +683,6 @@ EReimportResult::Type UReimportFbxSceneFactory::Reimport(UObject* Obj)
 	FbxImporter = nullptr;
 	GWarn->EndSlowTask();
 	return EReimportResult::Succeeded;
-}
-
-void UReimportFbxSceneFactory::ScriptReimportHelper(UObject* Obj)
-{
-	//Scripted reimport should be consider unattended
-	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
-	Reimport(Obj);
 }
 
 void UReimportFbxSceneFactory::RemoveChildNodeRecursively(USimpleConstructionScript* SimpleConstructionScript, USCS_Node* ScsNode)

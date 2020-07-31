@@ -111,10 +111,6 @@ class TUniquePtr : public /*private*/ Deleter // @todo loadtime: can we go back 
 public:
 	using ElementType = T;
 
-	// Non-copyable
-	TUniquePtr(const TUniquePtr&) = delete;
-	TUniquePtr& operator=(const TUniquePtr&) = delete;
-
 	/**
 	 * Default constructor - initializes the TUniquePtr to null.
 	 */
@@ -375,6 +371,10 @@ public:
 	}
 
 private:
+	// Non-copyable
+	TUniquePtr(const TUniquePtr&);
+	TUniquePtr& operator=(const TUniquePtr&);
+
 	using PtrType = T*;
 	LAYOUT_FIELD(PtrType, Ptr);
 };
@@ -387,10 +387,6 @@ class TUniquePtr<T[], Deleter> : private Deleter
 
 public:
 	using ElementType = T;
-
-	// Non-copyable
-	TUniquePtr(const TUniquePtr&) = delete;
-	TUniquePtr& operator=(const TUniquePtr&) = delete;
 
 	/**
 	 * Default constructor - initializes the TUniquePtr to null.
@@ -649,6 +645,10 @@ public:
 	}
 
 private:
+	// Non-copyable
+	TUniquePtr(const TUniquePtr&);
+	TUniquePtr& operator=(const TUniquePtr&);
+
 	T* Ptr;
 };
 

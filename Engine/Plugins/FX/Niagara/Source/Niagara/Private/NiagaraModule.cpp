@@ -557,7 +557,7 @@ void FNiagaraTypeDefinition::Init()
 	ExecutionStateEnum = StaticEnum<ENiagaraExecutionState>();
 	ExecutionStateSourceEnum = StaticEnum<ENiagaraExecutionStateSource>();
 	SimulationTargetEnum = StaticEnum<ENiagaraSimTarget>();
-	ScriptUsageEnum = StaticEnum<ENiagaraCompileUsageStaticSwitch>();
+	ScriptUsageEnum = StaticEnum<ENiagaraScriptUsage>();
 
 	ParameterScopeEnum = StaticEnum<ENiagaraParameterScope>();
 	ParameterPanelCategoryEnum = StaticEnum<ENiagaraParameterPanelCategory>();

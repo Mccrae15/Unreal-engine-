@@ -215,10 +215,7 @@ FShaderResourceViewRHIRef FD3D12DynamicRHI::RHICreateShaderResourceView(const FS
 
 			if (!Desc.VertexBuffer)
 			{
-				return GetAdapter().CreateLinkedObject<FD3D12ShaderResourceView>(FRHIGPUMask::All(), [](FD3D12Device* Device)
-					{
-						return new FD3D12ShaderResourceView(nullptr);
-					});
+				return new FD3D12ShaderResourceView(nullptr);
 			}
 
 			FD3D12VertexBuffer* VertexBuffer = FD3D12DynamicRHI::ResourceCast(Desc.VertexBuffer);
@@ -342,10 +339,7 @@ FShaderResourceViewRHIRef FD3D12DynamicRHI::RHICreateShaderResourceView(const FS
 
 			if (!Desc.IndexBuffer)
 			{
-				return GetAdapter().CreateLinkedObject<FD3D12ShaderResourceView>(FRHIGPUMask::All(), [](FD3D12Device* Device)
-					{
-						return new FD3D12ShaderResourceView(nullptr);
-					});
+				return new FD3D12ShaderResourceView(nullptr);
 			}
 
 			FD3D12IndexBuffer* IndexBuffer = FD3D12DynamicRHI::ResourceCast(Desc.IndexBuffer);

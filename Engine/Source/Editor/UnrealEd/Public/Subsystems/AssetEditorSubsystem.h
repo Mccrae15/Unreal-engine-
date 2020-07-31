@@ -146,7 +146,6 @@ public:
 	/** Request notification to restore the assets that were previously open when the editor was last closed */
 	void RequestRestorePreviouslyOpenAssets();
 
-	
 	void RegisterUAssetEditor(UAssetEditor* NewAssetEditor);
 	void UnregisterUAssetEditor(UAssetEditor* RemovedAssetEditor);
 	
@@ -284,7 +283,6 @@ private:
 	UPROPERTY(Transient)
 	TArray<UAssetEditor*> OwnedAssetEditors;
 	
-	/** Map of FEditorModeId to EditorModeInfo for all known UEdModes when the subsystem initialized */
 	RegisteredModeInfoMap EditorModes;
 
 	/** Event that is triggered whenever a mode is unregistered */

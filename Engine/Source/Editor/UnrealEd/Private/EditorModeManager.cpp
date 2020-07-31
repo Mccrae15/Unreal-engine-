@@ -34,8 +34,6 @@
 #include "Subsystems/BrushEditingSubsystem.h"
 #include "Tools/UEdMode.h"
 #include "Widgets/Images/SImage.h"
-#include "InputRouter.h"
-#include "InteractiveGizmoManager.h"
 
 /*------------------------------------------------------------------------------
 	FEditorModeTools.
@@ -934,7 +932,8 @@ void FEditorModeTools::ActivateMode(FEditorModeID InID, bool bToggle)
 		Toolkit->GetToolPaletteNames(PaletteNames);
 		for (auto Palette : PaletteNames)
 		{
-			FUniformToolBarBuilder ModeToolbarBuilder(CommandList, FMultiBoxCustomization(ScriptableMode->GetModeInfo().ToolbarCustomizationName), TSharedPtr<FExtender>(), false);
+			const bool bUniform = true;
+			FToolBarBuilder ModeToolbarBuilder(CommandList, FMultiBoxCustomization(ScriptableMode->GetModeInfo().ToolbarCustomizationName), TSharedPtr<FExtender>(), Orient_Horizontal, false, bUniform);
 			ModeToolbarBuilder.SetStyle(&FEditorStyle::Get(), "PaletteToolBar");
 			Toolkit->BuildToolPalette(Palette, ModeToolbarBuilder);
 

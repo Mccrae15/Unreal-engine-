@@ -113,10 +113,11 @@ public:
 		// supported file extensions
 		SupportedFileExtensions.Add(TEXT("webm"));
 
-		// supported platforms
-		SupportedPlatforms.Add(TEXT("Linux"));
-		SupportedPlatforms.Add(TEXT("Mac"));
-		SupportedPlatforms.Add(TEXT("Windows"));
+		// if the module got built and run succesfully on this platform, it means it's supported
+		SupportedPlatforms.Add(FPlatformMisc::GetUBTPlatform());
+		
+		// Extra care to support windows, because platform name is Win64
+		SupportedPlatforms.Add("Windows");
 
 		// supported schemes
 		SupportedUriSchemes.Add(TEXT("file"));

@@ -2810,6 +2810,7 @@ GameProjectUtils::EProjectDuplicateResult GameProjectUtils::DuplicateProjectForU
 				TEXT("Intermediate"),
 				TEXT("Saved/Autosaves"),
 				TEXT("Saved/Backup"),
+				TEXT("Saved/Config"),
 				TEXT("Saved/Cooked"),
 				TEXT("Saved/HardwareSurvey"),
 				TEXT("Saved/Logs"),

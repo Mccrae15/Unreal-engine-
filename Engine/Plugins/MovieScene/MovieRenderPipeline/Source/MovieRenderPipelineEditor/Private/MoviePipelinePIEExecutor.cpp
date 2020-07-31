@@ -100,7 +100,6 @@ void UMoviePipelinePIEExecutor::Start(const UMoviePipelineExecutorJob* InJob)
 	PlayInEditorSettings->bLaunchSeparateServer = false;
 	PlayInEditorSettings->SetRunUnderOneProcess(true);
 	PlayInEditorSettings->LastExecutedPlayModeType = EPlayModeType::PlayMode_InEditorFloating;
-	PlayInEditorSettings->bUseNonRealtimeAudioDevice = true;
 
 	FRequestPlaySessionParams Params;
 	Params.EditorPlaySettings = PlayInEditorSettings;

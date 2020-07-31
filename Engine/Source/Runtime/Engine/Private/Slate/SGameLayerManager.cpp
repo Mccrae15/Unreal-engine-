@@ -11,7 +11,6 @@
 #include "Engine/GameEngine.h"
 #include "Engine/UserInterfaceSettings.h"
 #include "GeneralProjectSettings.h"
-#include "Input/HittestGrid.h"
 #include "Widgets/LayerManager/STooltipPresenter.h"
 #include "Widgets/Layout/SDPIScaler.h"
 #include "Widgets/Layout/SPopup.h"

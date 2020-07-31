@@ -104,6 +104,10 @@ public:
 	/** Size of vertex points drawn when mesh painting is active. */
 	UPROPERTY(EditAnywhere, Category = "VertexPainting|Visualization")
 	float VertexPreviewSize;
+
+	virtual void SaveProperties(UInteractiveTool* SaveFromTool) override;
+	virtual void RestoreProperties(UInteractiveTool* RestoreToTool) override;
+
 };
 
 
@@ -133,12 +137,15 @@ public:
 	bool bWriteAlpha;
 
 	/** When unchecked the painting on the base LOD will be propagate automatically to all other LODs when exiting the mode or changing the selection */
-	UPROPERTY(EditAnywhere, Category = Painting, meta = (TransientToolProperty))
+	UPROPERTY(EditAnywhere, Category = Painting)
 	bool bPaintOnSpecificLOD;
 
 	/** LOD Index to which should specifically be painted */
-	UPROPERTY(EditAnywhere, Category = Painting, meta = (UIMin = "0", ClampMin = "0", EditCondition = "bPaintOnSpecificLOD", TransientToolProperty))
+	UPROPERTY(EditAnywhere, Category = Painting, meta = (UIMin = "0", ClampMin = "0", EditCondition = "bPaintOnSpecificLOD"))
 	int32 LODIndex;
+
+	virtual void SaveProperties(UInteractiveTool* SaveFromTool) override;
+	virtual void RestoreProperties(UInteractiveTool* RestoreToTool) override;
 };
 
 UCLASS()
@@ -160,6 +167,9 @@ public:
 	/** Texture Blend Weight index which should be erased during Painting */
 	UPROPERTY(EditAnywhere, Category = WeightPainting, meta = (EnumCondition = 1))
 	EMeshPaintTextureIndex EraseTextureWeightIndex;
+
+	virtual void SaveProperties(UInteractiveTool* SaveFromTool) override;
+	virtual void RestoreProperties(UInteractiveTool* RestoreToTool) override;
 };
 
 UCLASS(Abstract)

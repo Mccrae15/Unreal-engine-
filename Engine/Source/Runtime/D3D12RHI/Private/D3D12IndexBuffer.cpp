@@ -57,10 +57,7 @@ FIndexBufferRHIRef FD3D12DynamicRHI::RHICreateIndexBuffer(uint32 Stride, uint32 
 {
 	if (CreateInfo.bWithoutNativeResource)
 	{
-		return GetAdapter().CreateLinkedObject<FD3D12IndexBuffer>(CreateInfo.GPUMask, [](FD3D12Device* Device)
-			{
-				return new FD3D12IndexBuffer();
-			});
+		return new FD3D12IndexBuffer();
 	}
 
 	const D3D12_RESOURCE_DESC Desc = CreateIndexBufferResourceDesc(Size, InUsage);
@@ -107,10 +104,7 @@ FIndexBufferRHIRef FD3D12DynamicRHI::CreateIndexBuffer_RenderThread(class FRHICo
 {
 	if (CreateInfo.bWithoutNativeResource)
 	{
-		return GetAdapter().CreateLinkedObject<FD3D12IndexBuffer>(CreateInfo.GPUMask, [](FD3D12Device* Device)
-			{
-				return new FD3D12IndexBuffer();
-			});
+		return new FD3D12IndexBuffer();
 	}
 
 	const D3D12_RESOURCE_DESC Desc = CreateIndexBufferResourceDesc(Size, InUsage);

@@ -7,7 +7,7 @@
 #include "Engine/Brush.h"
 #include "Volume.generated.h"
 
-ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogVolume, Log, All);
+DECLARE_LOG_CATEGORY_EXTERN(LogVolume, Log, All);
 
 /** 
  *	An editable 3D volume placed in a level. Different types of volumes perform different functions
