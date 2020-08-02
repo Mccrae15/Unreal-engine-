@@ -26,10 +26,7 @@ void UMovieSceneEventRepeaterSection::ImportEntityImpl(UMovieSceneEntitySystemLi
 	const FSequenceInstance& ThisInstance   = EntityLinker->GetInstanceRegistry()->GetInstance(Params.Sequence.InstanceHandle);
 	FMovieSceneContext       Context        = ThisInstance.GetContext();
 
-	// Don't allow events to fire when playback is in a stopped state. This can occur when stopping 
-	// playback and returning the current position to the start of playback. It's not desireable to have 
-	// all the events from the last playback position to the start of playback be fired.
-	if (Context.GetStatus() == EMovieScenePlayerStatus::Stopped || Context.IsSilent())
+	if (Context.IsSilent())
 	{
 		return;
 	}

@@ -770,6 +770,12 @@ struct FGTAOTAAHistory
 };
 
 
+// Plugins can derive from this and use it for their own purposes
+class RENDERER_API ICustomTemporalAAHistory : public IRefCountedObject
+{
+public:
+	virtual ~ICustomTemporalAAHistory() {}
+};
 
 // Structure that hold all information related to previous frame.
 struct FPreviousViewInfo
@@ -801,6 +807,9 @@ struct FPreviousViewInfo
 
 	// Temporal AA result of last frame
 	FTemporalAAHistory TemporalAAHistory;
+
+	// Custom Temporal AA result of last frame, used by plugins
+	TRefCountPtr<ICustomTemporalAAHistory> CustomTemporalAAHistory;
 
 	// Half resolution version temporal AA result of last frame
 	TRefCountPtr<IPooledRenderTarget> HalfResTemporalAAHistory;
@@ -963,7 +972,7 @@ public:
 	TArray<FVolumetricMeshBatch, SceneRenderingAllocator> VolumetricMeshBatches;
 
 	/** Mesh batches with a sky material. */
-	TArray<FVolumetricMeshBatch, SceneRenderingAllocator> SkyMesheBatches;
+	TArray<FVolumetricMeshBatch, SceneRenderingAllocator> SkyMeshBatches;
 
 	/** A map from light ID to a boolean visibility value. */
 	TArray<FVisibleLightViewInfo,SceneRenderingAllocator> VisibleLightInfos;
@@ -1240,8 +1249,8 @@ public:
 #endif
 
 	/** Returns the size of view rect after primary upscale ( == only with secondary screen percentage). */
-	FIntPoint GetSecondaryViewRectSize() const;
-
+	RENDERER_API FIntPoint GetSecondaryViewRectSize() const;
+	
 	/** Returns whether the view requires a secondary upscale. */
 	bool RequiresSecondaryUpscale() const
 	{
@@ -1848,6 +1857,11 @@ protected:
 
 private:
 	void ComputeFamilySize();
+
+#if !UE_BUILD_SHIPPING
+	/** Dump all UPrimitiveComponents in the Scene to a CSV file */
+	void DumpPrimitives(const FViewCommands& ViewCommands);
+#endif
 };
 
 /**

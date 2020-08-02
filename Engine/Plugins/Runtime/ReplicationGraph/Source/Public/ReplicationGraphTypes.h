@@ -14,6 +14,7 @@
 #include "Engine/NetConnection.h"
 
 class AActor;
+class AController;
 class UNetConnection;
 class UNetReplicationGraphConnection;
 class UReplicationGraph;
@@ -294,6 +295,17 @@ struct REPLICATIONGRAPH_API FActorRepListRefView : public TActorRepListViewBase<
 		return false;
 	}
 
+	bool RemoveFast(const FActorRepListType& ElementToRemove)
+	{
+		int32 idx = IndexOf(ElementToRemove);
+		if (idx >= 0)
+		{
+			RemoveAtSwap(idx);
+			return true;
+		}
+		return false;
+	}
+
 	void RemoveAtSwap(int32 idx)
 	{
 		repCheck(RepList && Num() > idx);
@@ -427,7 +439,6 @@ struct FGlobalActorReplicationInfo;
 
 struct FFastSharedReplicationInfo
 {
-	// LastBuiltFrameNum = 0;
 	uint32 LastAttemptBuildFrameNum = 0; // the last frame we called FastSharedReplicationFunc on
 	uint32 LastBunchBuildFrameNum = 0;	// the last frame a new bunch was actually created
 	FOutBunch Bunch;
@@ -646,6 +657,8 @@ struct FGlobalActorReplicationInfoMap
 			return *Ptr->Get();
 		}
 
+		ensureMsgf(IsActorValidForReplication(Actor), TEXT("This obj %s is pending to kill, storing this data will generate stale data in the map."), *GetPathNameSafe(Actor));
+
 		// We need to add data for this actor
 		FClassReplicationInfo& ClassInfo = GetClassInfo( GetActorRepListTypeClass(Actor) );
 
@@ -663,6 +676,8 @@ struct FGlobalActorReplicationInfoMap
 		{
 			return *Ptr->Get();
 		}
+
+		ensureMsgf(IsActorValidForReplication(Actor), TEXT("This obj %s is pending to kill, storing this data will generate stale data in the map."), *GetPathNameSafe(Actor));
 
 		bWasCreated = true;
 
@@ -1174,21 +1189,17 @@ typedef TArray<FNetViewer, FReplicationGraphConnectionsAllocator> FNetViewerArra
 // Parameter structure for what we actually pass down during the Gather phase.
 struct FConnectionGatherActorListParameters
 {
+	UE_DEPRECATED(4.26, "Please use the constructor that takes a viewer array.")
 	FConnectionGatherActorListParameters(FNetViewer& InViewer, UNetReplicationGraphConnection& InConnectionManager, TSet<FName>& InClientVisibleLevelNamesRef, uint32 InReplicationFrameNum, FGatheredReplicationActorLists& InOutGatheredReplicationLists)
-		: Viewer(InViewer), ConnectionManager(InConnectionManager), ReplicationFrameNum(InReplicationFrameNum), OutGatheredReplicationLists(InOutGatheredReplicationLists), ClientVisibleLevelNamesRef(InClientVisibleLevelNamesRef)
+		: ConnectionManager(InConnectionManager), ReplicationFrameNum(InReplicationFrameNum), OutGatheredReplicationLists(InOutGatheredReplicationLists), ClientVisibleLevelNamesRef(InClientVisibleLevelNamesRef)
 	{
-		Viewers.Add(InViewer);
+		Viewers.Emplace(InViewer);
 	}
 
 	FConnectionGatherActorListParameters(FNetViewerArray& InViewers, UNetReplicationGraphConnection& InConnectionManager, TSet<FName>& InClientVisibleLevelNamesRef, uint32 InReplicationFrameNum, FGatheredReplicationActorLists& InOutGatheredReplicationLists)
-		: Viewer(InViewers[0]), Viewers(InViewers), ConnectionManager(InConnectionManager), ReplicationFrameNum(InReplicationFrameNum), OutGatheredReplicationLists(InOutGatheredReplicationLists), ClientVisibleLevelNamesRef(InClientVisibleLevelNamesRef)
+		: Viewers(InViewers), ConnectionManager(InConnectionManager), ReplicationFrameNum(InReplicationFrameNum), OutGatheredReplicationLists(InOutGatheredReplicationLists), ClientVisibleLevelNamesRef(InClientVisibleLevelNamesRef)
 	{
 	}
-
-
-	/** In: The Data the nodes have to work with */
-	UE_DEPRECATED(4.23, "Use the viewer arrays for support for subconnections")
-	FNetViewer& Viewer;
 
 	FNetViewerArray Viewers;
 	UNetReplicationGraphConnection& ConnectionManager;

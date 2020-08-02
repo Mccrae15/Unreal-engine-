@@ -22,6 +22,7 @@
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Engine/CollisionProfile.h"
 #include "PrimitiveSceneInfo.h"
+#include "NiagaraCrashReporterHandler.h"
 #include "NiagaraEmitterInstanceBatcher.h"
 #include "NiagaraDataSetAccessor.h"
 #include "NiagaraComponentSettings.h"
@@ -456,6 +457,7 @@ UNiagaraComponent::UNiagaraComponent(const FObjectInitializer& ObjectInitializer
 	, bDidAutoAttach(false)
 	, bAllowScalability(true)
 	, bIsCulledByScalability(false)
+	, bDuringUpdateContextReset(false)
 	//, bIsChangingAutoAttachment(false)
 	, ScalabilityManagerHandle(INDEX_NONE)
 {
@@ -961,7 +963,12 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 	}
 	
 #if WITH_EDITOR
-	ApplyOverridesToParameterStore();
+	//TODO: Do this else where. I get needing to ensure params are correct from the component but these are stomping over runtime changes to the params in editor builds.
+	//For now we can bypass the worst of the impact by disallowing in game worlds.
+	if(!World->IsGameWorld())
+	{
+		ApplyOverridesToParameterStore();
+	}
 #endif
 
 	FNiagaraSystemInstance::EResetMode ResetMode = FNiagaraSystemInstance::EResetMode::ResetSystem;
@@ -1153,7 +1160,8 @@ void UNiagaraComponent::OnSystemComplete()
 
 	//Don't really complete if we're being culled by scalability.
 	//We want to stop ticking but not be reclaimed by the pools etc.
-	if (bIsCulledByScalability == false)
+	//We also want to skip this work if we're destroying during and update context reset.
+	if (bIsCulledByScalability == false && bDuringUpdateContextReset == false)
 	{		
 		//UE_LOG(LogNiagara, Log, TEXT("OnSystemFinished.Broadcast(this);: { %p -  %p - %s"), this, SystemInstance.Get(), *Asset->GetName());
 		OnSystemFinished.Broadcast(this);
@@ -1433,6 +1441,8 @@ void UNiagaraComponent::SendRenderDynamicData_Concurrent()
 
 	if (SystemInstance.IsValid() && SceneProxy)
 	{
+		FNiagaraCrashReporterScope CRScope(SystemInstance.Get());
+
 #if STATS
 		TStatId SystemStatID = GetAsset() ? GetAsset()->GetStatID(true, true) : TStatId();
 		FScopeCycleCounter SystemStatCounter(SystemStatID);
@@ -2289,6 +2299,11 @@ void UNiagaraComponent::ApplyOverridesToParameterStore()
 
 	for (const auto& Pair : TemplateParameterOverrides)
 	{ 
+		if (!FNiagaraUserRedirectionParameterStore::IsUserParameter(Pair.Key))
+		{
+			continue;
+		}
+
 		const int32* ExistingParam = OverrideParameters.FindParameterOffset(Pair.Key);
 		if (ExistingParam != nullptr)
 		{
@@ -2300,6 +2315,11 @@ void UNiagaraComponent::ApplyOverridesToParameterStore()
 	{
 		for (const auto& Pair : InstanceParameterOverrides)
 		{ 
+			if (!FNiagaraUserRedirectionParameterStore::IsUserParameter(Pair.Key))
+			{
+				continue;
+			}
+
 			const int32* ExistingParam = OverrideParameters.FindParameterOffset(Pair.Key);
 			if (ExistingParam != nullptr)
 			{
@@ -2379,14 +2399,28 @@ void UNiagaraComponent::AssetExposedParametersChanged()
 
 bool UNiagaraComponent::HasParameterOverride(const FNiagaraVariableBase& InKey) const 
 {
+	FNiagaraVariableBase UserVariable = InKey;
+
+	if (Asset)
+	{
+		if (!Asset->GetExposedParameters().RedirectUserVariable(UserVariable))
+		{
+			return false;
+		}
+	}
+	else if (!FNiagaraUserRedirectionParameterStore::IsUserParameter(UserVariable))
+	{
+		return false;
+	}
+
 	if (IsTemplate())
 	{
-		const FNiagaraVariant* ThisValue = TemplateParameterOverrides.Find(InKey);
+		const FNiagaraVariant* ThisValue = TemplateParameterOverrides.Find(UserVariable);
 
 		const FNiagaraVariant* ArchetypeValue = nullptr;
 		if (const UNiagaraComponent* Archetype = Cast<UNiagaraComponent>(GetArchetype()))
 		{
-			ArchetypeValue = Archetype->TemplateParameterOverrides.Find(InKey);
+			ArchetypeValue = Archetype->TemplateParameterOverrides.Find(UserVariable);
 		}
 
 		if (ThisValue != nullptr && ArchetypeValue != nullptr)
@@ -2402,7 +2436,7 @@ bool UNiagaraComponent::HasParameterOverride(const FNiagaraVariableBase& InKey) 
 	}
 	else
 	{
-		if (InstanceParameterOverrides.Contains(InKey))
+		if (InstanceParameterOverrides.Contains(UserVariable))
 		{
 			return true;
 		}
@@ -2418,42 +2452,31 @@ FNiagaraVariant UNiagaraComponent::FindParameterOverride(const FNiagaraVariableB
 		return FNiagaraVariant();
 	}
 
-	if (Asset->GetExposedParameters().FindParameterOffset(InKey) == nullptr)
+	FNiagaraVariableBase UserVariable = InKey;
+
+	const FNiagaraUserRedirectionParameterStore& ParameterStore = Asset->GetExposedParameters();
+
+	if (!ParameterStore.RedirectUserVariable(UserVariable))
 	{
 		return FNiagaraVariant();
 	}
 
-	FNiagaraVariableBase RedirectedVar = Asset->GetExposedParameters().FindRedirection(InKey);
+	if (ParameterStore.FindParameterOffset(UserVariable) == nullptr)
+	{
+		return FNiagaraVariant();
+	}
 
 	if (!IsTemplate())
 	{
-		// Check both user and non-user keys
-		{
-			const FNiagaraVariant* Value = InstanceParameterOverrides.Find(InKey);
-			if (Value != nullptr)
-			{
-				return *Value;
-			}
-		}
-		{
-			const FNiagaraVariant* Value = InstanceParameterOverrides.Find(RedirectedVar);
-			if (Value != nullptr)
-			{
-				return *Value;
-			}
-		}
-	}
-
-	// Check both user and non-user keys
-	{
-		const FNiagaraVariant* Value = TemplateParameterOverrides.Find(InKey);
+		const FNiagaraVariant* Value = InstanceParameterOverrides.Find(UserVariable);
 		if (Value != nullptr)
 		{
 			return *Value;
 		}
 	}
+
 	{
-		const FNiagaraVariant* Value = TemplateParameterOverrides.Find(RedirectedVar);
+		const FNiagaraVariant* Value = TemplateParameterOverrides.Find(UserVariable);
 		if (Value != nullptr)
 		{
 			return *Value;
@@ -2488,49 +2511,57 @@ void UNiagaraComponent::SetParameterOverride(const FNiagaraVariableBase& InKey, 
 	}
 
 	// we want to be sure we're storing data based on the fully qualified key name (i.e. taking the user redirection into account)
-	const FNiagaraVariableBase ParameterKey = OverrideParameters.FindRedirection(InKey);
+	FNiagaraVariableBase UserVariable = InKey;
+	if (!OverrideParameters.RedirectUserVariable(UserVariable))
+	{
+		return;
+	}
 
 	if (IsTemplate())
 	{
-		TemplateParameterOverrides.Add(ParameterKey, InValue);
+		TemplateParameterOverrides.Add(UserVariable, InValue);
 	}
 	else
 	{
-		InstanceParameterOverrides.Add(ParameterKey, InValue);
+		InstanceParameterOverrides.Add(UserVariable, InValue);
 	}
 
-	SetOverrideParameterStoreValue(ParameterKey, InValue);
+	SetOverrideParameterStoreValue(UserVariable, InValue);
 }
 
 void UNiagaraComponent::RemoveParameterOverride(const FNiagaraVariableBase& InKey)
 {
 	// we want to be sure we're storing data based on the fully qualified key name (i.e. taking the user redirection into account)
-	const FNiagaraVariableBase ParameterKey = OverrideParameters.FindRedirection(InKey);
+	FNiagaraVariableBase UserVariable = InKey;
+	if (!OverrideParameters.RedirectUserVariable(UserVariable))
+	{
+		return;
+	}
 
 	if (!IsTemplate())
 	{
-		InstanceParameterOverrides.Remove(ParameterKey);
+		InstanceParameterOverrides.Remove(UserVariable);
 	}
 	else
 	{
-		TemplateParameterOverrides.Remove(ParameterKey);
+		TemplateParameterOverrides.Remove(UserVariable);
 
 		// we are an archetype, but check if we have an archetype and inherit the value from there
 		const UNiagaraComponent* Archetype = Cast<UNiagaraComponent>(GetArchetype());
 		if (Archetype != nullptr)
 		{
-			FNiagaraVariant ArchetypeValue = Archetype->FindParameterOverride(ParameterKey);
+			FNiagaraVariant ArchetypeValue = Archetype->FindParameterOverride(UserVariable);
 			if (ArchetypeValue.IsValid())
 			{
 				// defined in archetype, reset value to that
-				if (ParameterKey.IsDataInterface())
+				if (UserVariable.IsDataInterface())
 				{
 					UNiagaraDataInterface* DataInterface = DuplicateObject(ArchetypeValue.GetDataInterface(), this);
-					TemplateParameterOverrides.Add(ParameterKey, FNiagaraVariant(DataInterface));
+					TemplateParameterOverrides.Add(UserVariable, FNiagaraVariant(DataInterface));
 				}
 				else
 				{
-					TemplateParameterOverrides.Add(ParameterKey, ArchetypeValue);
+					TemplateParameterOverrides.Add(UserVariable, ArchetypeValue);
 				}
 			}
 		}

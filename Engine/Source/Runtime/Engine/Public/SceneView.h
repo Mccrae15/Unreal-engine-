@@ -27,6 +27,7 @@ class ISceneViewExtension;
 class FSceneViewFamily;
 class FVolumetricFogViewResources;
 class FIESLightProfileResource;
+class ITemporalUpscaler;
 
 enum class ERayTracingRenderMode
 {
@@ -716,6 +717,7 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(float, SkyLightAffectReflectionFlag) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, SkyLightAffectGlobalIlluminationFlag) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FLinearColor, SkyLightColor) \
+	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FVector4, MobileSkyIrradianceEnvironmentMap, [7]) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, MobilePreviewMode) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, HMDEyePaddingOffset) \
 	VIEW_UNIFORM_BUFFER_MEMBER_EX(float, ReflectionCubemapMaxMip, EShaderPrecisionModifier::Half) \
@@ -1726,12 +1728,27 @@ public:
 		: FSceneViewFamily(static_cast<const FSceneViewFamily&>(InViewFamily))
 	{
 		check(ScreenPercentageInterface == nullptr);
+		check(TemporalUpscalerInterface == nullptr);
 	}
 
+
+	FORCEINLINE void SetTemporalUpscalerInterface(const ITemporalUpscaler* InTemporalUpscalerInterface)
+	{
+		check(InTemporalUpscalerInterface);
+		checkf(TemporalUpscalerInterface == nullptr, TEXT("View family already had a temporal upscaler assigned."));
+		TemporalUpscalerInterface = InTemporalUpscalerInterface;
+	}
+
+	FORCEINLINE const ITemporalUpscaler* GetTemporalUpscalerInterface() const
+	{
+		return TemporalUpscalerInterface;
+	}
 
 private:
 	/** Interface to handle screen percentage of the views of the family. */
 	ISceneViewFamilyScreenPercentage* ScreenPercentageInterface;
+
+	const ITemporalUpscaler* TemporalUpscalerInterface;
 
 	// Only FSceneRenderer can copy a view family.
 	FSceneViewFamily(const FSceneViewFamily&) = default;

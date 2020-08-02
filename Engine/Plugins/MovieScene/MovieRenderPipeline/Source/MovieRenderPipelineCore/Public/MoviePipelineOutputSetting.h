@@ -19,7 +19,7 @@ public:
 #endif
 	virtual bool IsValidOnShots() const override { return false; }
 	virtual bool IsValidOnMaster() const override { return true; }
-	virtual void GetFilenameFormatArguments(FMoviePipelineFormatArgs& InOutFormatArgs) const override;
+	virtual void GetFormatArguments(FMoviePipelineFormatArgs& InOutFormatArgs) const override;
 	virtual bool CanBeDisabled() const override { return false; }
 
 	// UObject Interface
@@ -80,6 +80,15 @@ public:
 	/** Used when overriding the playback range. In Display Rate frames. If bUseCustomPlaybackRange is false range will come from Sequence. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta=(EditCondition=bUseCustomPlaybackRange), Category = "Frames")
 	int32 CustomEndFrame;
+
+public:
+	/** The value to use for the version token if versions are not automatically incremented. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (EditCondition = "!bAutoVersion", UIMin = 1, UIMax = 10), Category = "Versioning")
+	int32 VersionNumber;
+
+	/** If true, version tokens will automatically be incremented with each local render. If false, the custom version number below will be used. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Versioning")
+	bool bAutoVersion;
 
 public:
 	/** How many digits should all output frame numbers be padded to? MySequence_1.png -> MySequence_0001.png. Useful for software that struggles to recognize frame ranges when non-padded. */

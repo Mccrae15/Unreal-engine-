@@ -7,7 +7,14 @@
 #include "VulkanRHIPrivate.h"
 #include "IHeadMountedDisplayModule.h"
 #include "IHeadMountedDisplayVulkanExtensions.h"
-
+#include "VulkanRHIBridge.h"
+namespace VulkanRHIBridge
+{
+	extern TArray<const ANSICHAR*> InstanceExtensions;
+	extern TArray<const ANSICHAR*> InstanceLayers;
+	extern TArray<const ANSICHAR*> DeviceExtensions;
+	extern TArray<const ANSICHAR*> DeviceLayers;
+}
 #if VULKAN_HAS_DEBUGGING_ENABLED
 bool GRenderDocFound = false;
 #endif
@@ -403,6 +410,10 @@ void FVulkanDynamicRHI::GetInstanceLayersAndExtensions(TArray<const ANSICHAR*>& 
 		}
 	}
 
+	// plugins might have used the VulkanRHIBridge to enable additional extensions
+	OutInstanceExtensions.Append(VulkanRHIBridge::InstanceExtensions);
+	OutInstanceLayers.Append(VulkanRHIBridge::InstanceLayers);
+
 	TArray<const ANSICHAR*> PlatformExtensions;
 	FVulkanPlatform::GetInstanceExtensions(PlatformExtensions);
 
@@ -589,6 +600,10 @@ void FVulkanDevice::GetDeviceExtensionsAndLayers(VkPhysicalDevice Gpu, EGpuVendo
 		}
 	}
 
+	// plugins might have used the VulkanRHIBridge to enable additional extensions
+	OutDeviceExtensions.Append(VulkanRHIBridge::DeviceExtensions);
+	OutDeviceLayers.Append(VulkanRHIBridge::DeviceLayers);
+
 	// Now gather the actually used extensions based on the enabled layers
 	TArray<const ANSICHAR*> AvailableExtensions;
 	{
@@ -738,10 +753,6 @@ void FOptionalVulkanDeviceExtensions::Setup(const TArray<const ANSICHAR*>& Devic
 	{
 		UE_LOG(LogVulkanRHI, Warning, TEXT("Tried to enable GPU crash debugging but no extension found! Will use local tracepoints."));
 	}
-
-#if VULKAN_SUPPORTS_GOOGLE_DISPLAY_TIMING
-	HasGoogleDisplayTiming = HasExtension(DeviceExtensions, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
-#endif
 
 #if VULKAN_SUPPORTS_COLOR_CONVERSIONS
 	HasYcbcrSampler = HasExtension(DeviceExtensions, VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME) && HasExtension(DeviceExtensions, VK_KHR_BIND_MEMORY_2_EXTENSION_NAME) && HasExtension(DeviceExtensions, VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);

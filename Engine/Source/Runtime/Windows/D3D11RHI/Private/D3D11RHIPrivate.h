@@ -344,7 +344,7 @@ struct FD3DGPUProfiler : public FGPUProfiler
 
 	void EndFrame();
 
-	bool CheckGpuHeartbeat() const;
+	bool CheckGpuHeartbeat(bool bShowActiveStatus) const;
 
 private:
 	TMap<uint32, FString> CachedStrings;
@@ -684,7 +684,7 @@ public:
 
 	bool CheckGpuHeartbeat() const override
 	{
-		return GPUProfilingData.CheckGpuHeartbeat();
+		return GPUProfilingData.CheckGpuHeartbeat(false);
 	}
 
 	void AddLockedData(const FD3D11LockedKey& Key, const FD3D11LockedData& LockedData)
@@ -955,6 +955,17 @@ protected:
 	TMultiMap<ID3D11Resource*, FUnresolvedRTInfo> UnresolvedTargets;
 #endif
 
+public:
+	void RegisterGPUWork(uint32 NumPrimitives = 0, uint32 NumVertices = 0)
+	{
+		GPUProfilingData.RegisterGPUWork(NumPrimitives, NumVertices);
+	}
+	void RegisterGPUDispatch(FIntVector GroupCount)
+	{
+		GPUProfilingData.RegisterGPUDispatch(GroupCount);
+	}
+
+protected:
 	FD3DGPUProfiler GPUProfilingData;
 	// >= 0, was computed before, unless hardware was changed during engine init it should be the same
 	int32 ChosenAdapter;

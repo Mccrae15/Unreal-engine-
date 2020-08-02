@@ -14,6 +14,10 @@
 
 class FChaosSolversModule;
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FSolverPreAdvance, Chaos::FReal);
+DECLARE_MULTICAST_DELEGATE_OneParam(FSolverPreBuffer, Chaos::FReal);
+DECLARE_MULTICAST_DELEGATE_OneParam(FSolverPostAdvance, Chaos::FReal);
+
 namespace Chaos
 {
 
@@ -27,18 +31,19 @@ namespace Chaos
 	{
 	public:
 
-		FPhysicsSolverAdvanceTask(FPhysicsSolverBase& InSolver, TArray<TFunction<void()>>&& InQueue, FReal InDt);
+		FPhysicsSolverAdvanceTask(FPhysicsSolverBase& InSolver, TArray<TFunction<void()>>&& InQueue, TArray<FPushPhysicsData*>&& PushData, FReal InDt);
 
 		TStatId GetStatId() const;
 		static ENamedThreads::Type GetDesiredThread();
 		static ESubsequentsMode::Type GetSubsequentsMode();
 		void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent);
-		static void AdvanceSolver(FPhysicsSolverBase& Solver,TArray<TFunction<void()>>&& Queue,const FReal Dt);
+		void AdvanceSolver();
 
 	private:
 
 		FPhysicsSolverBase& Solver;
 		TArray<TFunction<void()>> Queue;
+		TArray<FPushPhysicsData*> PushData;
 		FReal Dt;
 	};
 
@@ -107,19 +112,41 @@ namespace Chaos
 		}
 
 		template <typename Lambda>
+		FSimCallbackHandle& RegisterSimCallbackNoData(const Lambda& Func)
+		{
+			return MarshallingManager.RegisterSimCallback([&Func](const TArray<FSimCallbackData*>&){ Func();});
+		}
+
+		template <typename Lambda>
+		void RegisterSimOneShotCallback(const Lambda& Func)
+		{
+			FSimCallbackHandle& Callback = MarshallingManager.RegisterSimCallback([Func](const TArray<FSimCallbackData*>&){ Func();});
+			MarshallingManager.UnregisterSimCallback(Callback,true);
+		}
+
+		template <typename Lambda>
+		FSimCallbackHandle& RegisterSimCallback(const Lambda& Func)
+		{
+			return MarshallingManager.RegisterSimCallback(Func);
+		}
+
+		void UnregisterSimCallback(FSimCallbackHandle& Handle)
+		{
+			MarshallingManager.UnregisterSimCallback(Handle);
+		}
+
+		// Used to marshal data for a callback associated with a specific external time
+		FSimCallbackData& FindOrCreateCallbackProducerData(FSimCallbackHandle& Callback)
+		{
+			return MarshallingManager.GetProducerCallbackData_External(Callback);
+		}
+
+		template <typename Lambda>
 		void EnqueueCommandImmediate(const Lambda& Func)
 		{
 			//TODO: remove this check. Need to rename with _External
-			//The important part is that we don't enqueue from sim code
 			check(IsInGameThread());
-			if(ThreadingMode == EThreadingModeTemp::SingleThread)
-			{
-				Func();
-			}
-			else
-			{
-				CommandQueue.Add(Func);
-			}
+			RegisterSimOneShotCallback(Func);
 		}
 
 		//Ensures that any running tasks finish.
@@ -129,17 +156,6 @@ namespace Chaos
 			{
 				FTaskGraphInterface::Get().WaitUntilTaskCompletes(PendingTasks);
 			}
-		}
-
-		//Need this until we have a better way to deal with pending commands that affect scene query structure
-		void FlushCommands_External()
-		{
-			WaitOnPendingTasks_External();
-			for(const auto& Command : CommandQueue)
-			{
-				Command();
-			}
-			CommandQueue.Empty();
 		}
 
 		const UObject* GetOwner() const
@@ -174,12 +190,15 @@ namespace Chaos
 			//make sure any GT state is pushed into necessary buffer
 			PushPhysicsState(InDt);
 
+			SetExternalTimeConsumed_External(MarshallingManager.GetExternalTimeConsumed_External());
+			TArray<FPushPhysicsData*> PushData = MarshallingManager.StepInternalTime_External(InDt);
+
 			//todo: handle dt etc..
 			if(ThreadingMode == EThreadingModeTemp::SingleThread)
 			{
 				ensure(!PendingTasks || PendingTasks->IsComplete());	//if mode changed we should have already blocked
-				ensure(CommandQueue.Num() == 0);	//commands execute right away. Once we add fixed dt this will change
-				FPhysicsSolverAdvanceTask::AdvanceSolver(*this, MoveTemp(CommandQueue),InDt);
+				FPhysicsSolverAdvanceTask ImmediateTask(*this,MoveTemp(CommandQueue),MoveTemp(PushData),InDt);
+				ImmediateTask.AdvanceSolver();
 			}
 			else
 			{
@@ -189,7 +208,7 @@ namespace Chaos
 					Prereqs.Add(PendingTasks);
 				}
 
-				PendingTasks = TGraphTask<FPhysicsSolverAdvanceTask>::CreateTask(&Prereqs).ConstructAndDispatchWhenReady(*this,MoveTemp(CommandQueue),InDt);
+				PendingTasks = TGraphTask<FPhysicsSolverAdvanceTask>::CreateTask(&Prereqs).ConstructAndDispatchWhenReady(*this,MoveTemp(CommandQueue), MoveTemp(PushData), InDt);
 			}
 
 			return PendingTasks;
@@ -206,6 +225,41 @@ namespace Chaos
 			return DebugName;
 		}
 #endif
+
+		void ApplyCallbacks_Internal()
+		{
+			for(FSimCallbackHandlePT* Callback : SimCallbacks)
+			{
+				if(!Callback->bPendingDelete)
+				{
+					Callback->Handle->Func(Callback->IntervalData);
+					MarshallingManager.FreeCallbackData_Internal(Callback);	//todo: split out for different sim phases, also wait for resim
+
+					if(Callback->Handle->bRunOnceMore)
+					{
+						Callback->bPendingDelete = true;
+					}
+				}
+			}
+
+			//todo: need to split up for different phases of sim (always free when entire sim phase is finished)
+			//typically one shot callbacks are added to end of array, so removing in reverse order should be O(1)
+			//every so often a persistent callback is unregistered, so need to consider all callbacks
+			//might be possible to improve this, but number of callbacks is expected to be small
+			//one shot callbacks expect a FIFO so can't use RemoveAtSwap
+			//might be worth splitting into two different buffers if this is too slow
+			for(int32 Idx = SimCallbacks.Num()-1; Idx >= 0; --Idx)
+			{
+				FSimCallbackHandlePT* Callback = SimCallbacks[Idx];
+				if(Callback->bPendingDelete)
+				{
+					MarshallingManager.FreeCallbackData_Internal(Callback);
+					delete Callback->Handle;
+					delete Callback;
+					SimCallbacks.RemoveAt(Idx);
+				}
+			}		
+		}
 
 	protected:
 		/** Mode that the results buffers should be set to (single, double, triple) */
@@ -248,6 +302,8 @@ namespace Chaos
 
 		virtual void AdvanceSolverBy(const FReal Dt) = 0;
 		virtual void PushPhysicsState(const FReal Dt) = 0;
+		virtual void ProcessPushedData_Internal(const TArray<FPushPhysicsData*>& PushDataArray) = 0;
+		virtual void SetExternalTimeConsumed_External(const FReal Time) = 0;
 
 #if CHAOS_CHECKED
 		FName DebugName;
@@ -260,10 +316,11 @@ namespace Chaos
 	//
 	TArray<TFunction<void()>> CommandQueue;
 
+	TArray<FSimCallbackHandlePT*> SimCallbacks;
+
 	FGraphEventRef PendingTasks;
 
 	private:
-
 		/** 
 		 * Ptr to the engine object that is counted as the owner of this solver.
 		 * Never used internally beyond how the solver is stored and accessed through the solver module.
@@ -280,5 +337,25 @@ namespace Chaos
 		friend struct TSolverQueryMaterialScope;
 
 		ETraits TraitIdx;
+
+	public:
+		/** Events */
+		/** Pre advance is called before any physics processing or simulation happens in a given physics update */
+		FDelegateHandle AddPreAdvanceCallback(FSolverPreAdvance::FDelegate InDelegate);
+		bool            RemovePreAdvanceCallback(FDelegateHandle InHandle);
+
+		/** Pre buffer happens after the simulation has been advanced (particle positions etc. will have been updated) but GT results haven't been prepared yet */
+		FDelegateHandle AddPreBufferCallback(FSolverPreAdvance::FDelegate InDelegate);
+		bool            RemovePreBufferCallback(FDelegateHandle InHandle);
+
+		/** Post advance happens after all processing and results generation has been completed */
+		FDelegateHandle AddPostAdvanceCallback(FSolverPostAdvance::FDelegate InDelegate);
+		bool            RemovePostAdvanceCallback(FDelegateHandle InHandle);
+
+	protected:
+		/** Storage for events, see the Add/Remove pairs above for event timings */
+		FSolverPreAdvance EventPreSolve;
+		FSolverPreBuffer EventPreBuffer;
+		FSolverPostAdvance EventPostSolve;
 	};
 }

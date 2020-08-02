@@ -406,6 +406,7 @@ namespace Chaos
 		/**/
 		virtual void AdvanceSolverBy(const FReal DeltaTime) override;
 		virtual void PushPhysicsState(const FReal DeltaTime) override;
+		virtual void SetExternalTimeConsumed_External(const FReal Time) override;
 
 		//
 		// Solver Data
@@ -462,6 +463,10 @@ namespace Chaos
 		THandleArray<FChaosPhysicsMaterialMask> QueryMaterialMasks;
 		THandleArray<FChaosPhysicsMaterial> SimMaterials;
 		THandleArray<FChaosPhysicsMaterialMask> SimMaterialMasks;
+
+		void ProcessSinglePushedData_Internal(FPushPhysicsData& PushData);
+		virtual void ProcessPushedData_Internal(const TArray<FPushPhysicsData*>& PushDataArray) override;
+
 	public:
 
 		template<typename ParticleEntry, typename ProxyEntry, SIZE_T PreAllocCount>

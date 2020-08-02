@@ -193,7 +193,6 @@ public:
 	virtual void PostLoad() override; 
 	virtual void BeginDestroy() override;
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
-	virtual bool NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const override;
 #if WITH_EDITOR
 	virtual void PreEditChange(FProperty* PropertyThatWillChange)override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override; 
@@ -361,6 +360,10 @@ public:
 	/** If true bBakeOutRapidIteration will be made to be true during cooks  */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance")
 	uint32 bBakeOutRapidIterationOnCook : 1;
+
+	/** If true we generate shader permutations per stage to optimize the GPU.  */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance")
+	uint32 bUseShaderPermutations : 1;
 
 	/** Toggles whether or not emitters within this system will try and compress their particle attributes.
 	In some cases, this precision change can lead to perceivable differences, but memory costs and or performance (especially true for GPU emitters) can improve. */

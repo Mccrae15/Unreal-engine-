@@ -349,8 +349,9 @@ void FSplineComponentVisualizer::DrawVisualization(const UActorComponent* Compon
 		const FColor ReadOnlyColor = FColor(255, 0, 255, 255);
 		const FColor NormalColor = bIsSplineEditable ? FColor(SplineComp->EditorUnselectedSplineSegmentColor.ToFColor(true)) : ReadOnlyColor;
 		const FColor SelectedColor = bIsSplineEditable ? FColor(SplineComp->EditorSelectedSplineSegmentColor.ToFColor(true)) : ReadOnlyColor;
+		const FColor TangentColor = bIsSplineEditable ? FColor(SplineComp->EditorTangentColor.ToFColor(true)) : ReadOnlyColor;
 		const float GrabHandleSize = 10.0f + (bIsSplineEditable ? GetDefault<ULevelEditorViewportSettings>()->SelectedSplinePointSizeAdjustment : 0.0f);
-		const float TangentHandleSize = 8.0f + (bIsSplineEditable ? GetDefault<ULevelEditorViewportSettings>()->SelectedSplinePointSizeAdjustment : 0.0f);
+		const float TangentHandleSize = 8.0f + (bIsSplineEditable ? GetDefault<ULevelEditorViewportSettings>()->SelectedSplineTangentHandleSizeAdjustment : 0.0f);
 
 		// Draw the tangent handles before anything else so they will not overdraw the rest of the spline
 		if (SplineComp == EditedSplineComp)
@@ -381,20 +382,20 @@ void FSplineComponentVisualizer::DrawVisualization(const UActorComponent* Compon
 
 						PDI->SetHitProxy(NULL);
 
-						PDI->DrawLine(Location, Location + LeaveTangent, SelectedColor, SDPG_Foreground);
-						PDI->DrawLine(Location, Location - ArriveTangent, SelectedColor, SDPG_Foreground);
+						PDI->DrawLine(Location, Location + LeaveTangent, TangentColor, SDPG_Foreground);
+						PDI->DrawLine(Location, Location - ArriveTangent, TangentColor, SDPG_Foreground);
 
 						if (bIsSplineEditable)
 						{
 							PDI->SetHitProxy(new HSplineTangentHandleProxy(Component, SelectedKey, false));
 						}
-						PDI->DrawPoint(Location + LeaveTangent, SelectedColor, TangentHandleSize, SDPG_Foreground);
+						PDI->DrawPoint(Location + LeaveTangent, TangentColor, TangentHandleSize, SDPG_Foreground);
 
 						if (bIsSplineEditable)
 						{
 							PDI->SetHitProxy(new HSplineTangentHandleProxy(Component, SelectedKey, true));
 						}
-						PDI->DrawPoint(Location - ArriveTangent, SelectedColor, TangentHandleSize, SDPG_Foreground);
+						PDI->DrawPoint(Location - ArriveTangent, TangentColor, TangentHandleSize, SDPG_Foreground);
 
 						PDI->SetHitProxy(NULL);
 					}
@@ -1683,6 +1684,10 @@ bool FSplineComponentVisualizer::DuplicateKeyForAltDrag(const FVector& InDrag)
 	check(SelectedKeys.Num() == 1);
 	check(SelectedKeys.Contains(LastKeyIndexSelected));
 
+	// When dragging from end point, maximum angle is 60 degrees from attached segment
+	// to determine whether to split existing segment or create a new point
+	static const float Angle60 = 1.0472;
+
 	// Insert duplicates into the list, highest index first, so that the lower indices remain the same
 	FInterpCurveVector& SplinePosition = SplineComp->GetSplinePointsPosition();
 
@@ -1705,7 +1710,7 @@ bool FSplineComponentVisualizer::DuplicateKeyForAltDrag(const FVector& InDrag)
 		}
 		else
 		{
-			PrevAngle = HALF_PI;
+			PrevAngle = Angle60;
 		}
 	}
 
@@ -1723,16 +1728,16 @@ bool FSplineComponentVisualizer::DuplicateKeyForAltDrag(const FVector& InDrag)
 		}
 		else
 		{
-			NextAngle = HALF_PI;
+			NextAngle = Angle60;
 		}
 	}
 
 	// Set key index to which the drag will be applied after duplication
 	int32 SegmentIndex = CurrentIndex;
 
-	// Note dragging off first or last key in non-closed loop spline always adds a new segment
 	if ((bHasPrevKey && bHasNextKey && PrevAngle < NextAngle) ||
-		(!bHasPrevKey && bHasNextKey))
+		(bHasPrevKey && !bHasNextKey && PrevAngle < Angle60) ||
+		(!bHasPrevKey && bHasNextKey && NextAngle >= Angle60))
 	{
 		SegmentIndex--;
 	}

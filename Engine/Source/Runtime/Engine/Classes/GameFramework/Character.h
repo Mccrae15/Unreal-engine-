@@ -951,5 +951,5 @@ public:
 	 * Called on the actor right before replication occurs.
 	 * Called for everyone when recording a Client Replay, including Simulated Proxies.
 	 */
-	virtual void PreReplicationForReplay(IRepChangedPropertyTracker & ChangedPropertyTracker) override;
+	virtual void PreReplicationForReplay(IRepChangedPropertyTracker& ChangedPropertyTracker) override;
 };

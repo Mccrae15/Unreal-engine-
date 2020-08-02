@@ -140,6 +140,7 @@ ENUM_CLASS_FLAGS(EInstallBundleRequestFlags)
 enum class EInstallBundleReleaseResult
 {
 	OK,
+	ManifestArchiveError,
 	Count,
 };
 INSTALLBUNDLEMANAGER_API const TCHAR* LexToString(EInstallBundleReleaseResult Result);
@@ -237,6 +238,7 @@ struct FInstallBundleSourceBundleInfo
 	EInstallBundlePriority Priority = EInstallBundlePriority::Low;
 	uint64 FullInstallSize = 0; // Total disk footprint when this bundle is fully installed
 	uint64 CurrentInstallSize = 0; // Disk footprint of the bundle in it's current state
+	FDateTime LastAccessTime = FDateTime::MinValue(); // If cached, used to decide eviction order
 	bool bIsStartup = false; // Only one startup bundle allowed.  All sources must agree on this.
 	bool bDoPatchCheck = false; // This bundle should do a patch check and fail if it doesn't pass
 	EInstallBundleInstallState BundleContentState = EInstallBundleInstallState::NotInstalled; // Whether this bundle is up to date
@@ -273,6 +275,7 @@ struct FInstallBundleSourceUpdateContentResultInfo
 	TSet<FString> NonUFSShaderLibPaths;
 
 	uint64 CurrentInstallSize = 0;
+	FDateTime LastAccessTime = FDateTime::MinValue(); // If cached, used to decide eviction order
 
 	bool bContentWasInstalled = false;
 	
@@ -282,8 +285,7 @@ struct FInstallBundleSourceUpdateContentResultInfo
 struct FInstallBundleSourceRemoveContentResultInfo
 {
 	FName BundleName;
-
-	bool bContentWasRemoved = false;
+	EInstallBundleReleaseResult Result = EInstallBundleReleaseResult::OK;
 };
 
 struct FInstallBundleSourceProgress

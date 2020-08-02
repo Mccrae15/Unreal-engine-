@@ -15,7 +15,7 @@
 #include "VolumetricCloudRendering.h"
 #include "VolumetricCloudProxy.h"
 #include "FogRendering.h"
-
+#include "GPUScene.h"
 
 extern float GReflectionCaptureNearPlane;
 
@@ -24,12 +24,12 @@ DECLARE_GPU_STAT(CaptureConvolveSkyEnvMap);
 
 
 static TAutoConsoleVariable<int32> CVarRealTimeReflectionCaptureTimeSlicing(
-	TEXT("r.RealTimeReflectionCapture.TimeSlice"), 0,
-	TEXT("SkyAtmosphere components are rendered when this is not 0, otherwise ignored.\n"),
+	TEXT("r.SkyLight.RealTimeReflectionCapture.TimeSlice"), 1,
+	TEXT("When enabled, the real-time sky light capture and convolutions will by distributed over several frames to lower the per-frame cost.\n"),
 	ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<int32> CVarRealTimeReflectionCaptureShadowFromOpaque(
-	TEXT("r.RealTimeReflectionCapture.ShadowFromOpaque"), 0,
+	TEXT("r.SkyLight.RealTimeReflectionCapture.ShadowFromOpaque"), 0,
 	TEXT("Opaque meshes cast shadow from directional lights when enabled.\n"),
 	ECVF_RenderThreadSafe);
 
@@ -239,7 +239,16 @@ void FScene::AllocateAndCaptureFrameSkyEnvMap(
 	// Note: cube view is not meant to be sent to lambdas because we only create a single one. You should only send the ViewUniformBuffer around.
 	FViewInfo& CubeView = *MainView.CreateSnapshot();
 	CubeView.FOV = 90.0f;
-	// We cannot override exposure because sky input texture are using exposure
+	// Note: We cannot override exposure because sky input texture are using exposure
+
+	// DYNAMIC PRIMITIVES - We empty the CubeView dynamic primitive list to make sure UploadDynamicPrimitiveShaderDataForViewInternal is going through the cheap fast path only updating unfirm buffer.
+	// This means we cannot render procedurally animated meshes into the real-time sky capture as of today.
+	CubeView.DynamicPrimitiveShaderData.Empty();
+
+	// Other view data clean up
+	CubeView.StereoPass = eSSP_FULL;
+	CubeView.DrawDynamicFlags = EDrawDynamicFlags::ForceLowestLOD;
+	CubeView.MaterialTextureMipBias = 0;
 
 	FViewMatrices::FMinimalInitializer SceneCubeViewInitOptions;
 	SceneCubeViewInitOptions.ConstrainedViewRect = FIntRect(FIntPoint(0, 0), FIntPoint(CubeWidth, CubeWidth));
@@ -422,9 +431,16 @@ void FScene::AllocateAndCaptureFrameSkyEnvMap(
 				{
 					CubeView.CachedViewUniformShaderParameters->CameraAerialPerspectiveVolume = RealTimeReflectionCaptureCamera360APLutTexture->GetRenderTargetItem().ShaderResourceTexture;
 				}
-				// Else we do nothing as we assum the MainView one will not be used
+				// Else we do nothing as we assume the MainView one will not be used
 
 				TUniformBufferRef<FViewUniformShaderParameters> CubeViewUniformBuffer = TUniformBufferRef<FViewUniformShaderParameters>::CreateUniformBufferImmediate(*CubeView.CachedViewUniformShaderParameters, UniformBuffer_SingleFrame);
+				CubeView.ViewUniformBuffer = CubeViewUniformBuffer;
+				if (CubeView.bSceneHasSkyMaterial)
+				{
+					// DYNAMIC PRIMITIVES - This will hit the fast path not updating the GPU scene, but only setting the GPUSCene resources on the view uniform buffer.
+					UploadDynamicPrimitiveShaderDataForView(RHICmdList, *this, CubeView);
+				}
+
 				SkyRC.ViewUniformBuffer = CubeViewUniformBuffer;
 				SkyRC.ViewMatrices = &CubeViewMatrices;
 
@@ -473,10 +489,10 @@ void FScene::AllocateAndCaptureFrameSkyEnvMap(
 										SetupBasePassState(BasePassDepthStencilAccess_NoDepthWrite, false, DrawRenderState);
 
 										FSkyPassMeshProcessor PassMeshProcessor(Scene, nullptr, DrawRenderState, DynamicMeshPassContext);
-										for (int32 MeshBatchIndex = 0; MeshBatchIndex < MainView.SkyMesheBatches.Num(); ++MeshBatchIndex)
+										for (int32 MeshBatchIndex = 0; MeshBatchIndex < MainView.SkyMeshBatches.Num(); ++MeshBatchIndex)
 										{
-											const FMeshBatch* MeshBatch = MainView.SkyMesheBatches[MeshBatchIndex].Mesh;
-											const FPrimitiveSceneProxy* PrimitiveSceneProxy = MainView.SkyMesheBatches[MeshBatchIndex].Proxy;
+											const FMeshBatch* MeshBatch = MainView.SkyMeshBatches[MeshBatchIndex].Mesh;
+											const FPrimitiveSceneProxy* PrimitiveSceneProxy = MainView.SkyMeshBatches[MeshBatchIndex].Proxy;
 											const FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveSceneProxy->GetPrimitiveSceneInfo();
 
 											const uint64 DefaultBatchElementMask = ~0ull;

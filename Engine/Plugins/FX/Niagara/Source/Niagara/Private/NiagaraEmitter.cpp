@@ -350,6 +350,10 @@ void UNiagaraEmitter::PostLoad()
 		{
 			RendererProperties.RemoveAt(RendererIndex);
 		}
+		else
+		{
+			RendererProperties[RendererIndex]->ConditionalPostLoad();
+		}
 	}
 
 	for (int32 SimulationStageIndex = SimulationStages.Num() - 1; SimulationStageIndex >= 0; --SimulationStageIndex)
@@ -357,6 +361,10 @@ void UNiagaraEmitter::PostLoad()
 		if (ensureMsgf(SimulationStages[SimulationStageIndex] != nullptr && SimulationStages[SimulationStageIndex]->Script != nullptr, TEXT("Null simulation stage, or simulation stage with a null script found in %s at index %i, removing it to prevent crashes."), *GetPathName(), SimulationStageIndex) == false)
 		{
 			SimulationStages.RemoveAt(SimulationStageIndex);
+		}
+		else
+		{
+			SimulationStages[SimulationStageIndex]->ConditionalPostLoad();
 		}
 	}
 
@@ -1015,14 +1023,19 @@ void UNiagaraEmitter::CacheFromCompiledData(const FNiagaraDataSetCompiledData* C
 
 void UNiagaraEmitter::CacheFromShaderCompiled()
 {
+	bRequiresViewUniformBuffer = false;
 	if (GPUComputeScript && (SimTarget == ENiagaraSimTarget::GPUComputeSim))
 	{
 		if (const FNiagaraShaderScript* NiagaraShaderScript = GPUComputeScript->GetRenderThreadScript())
 		{
-			FNiagaraShaderRef NiagaraShaderRef = NiagaraShaderScript->GetShaderGameThread();
-			if (NiagaraShaderRef.IsValid())
+			for (int i=0; i < NiagaraShaderScript->GetNumPermutations(); ++i)
 			{
-				bRequiresViewUniformBuffer = NiagaraShaderRef->ViewUniformBufferParam.IsBound();
+				FNiagaraShaderRef NiagaraShaderRef = NiagaraShaderScript->GetShaderGameThread(i);
+				if (NiagaraShaderRef.IsValid() && NiagaraShaderRef->ViewUniformBufferParam.IsBound())
+				{
+					bRequiresViewUniformBuffer = true;
+					break;
+				}
 			}
 		}
 	}

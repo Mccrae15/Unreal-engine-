@@ -191,6 +191,7 @@ void FChaosEngineInterface::UpdateMaterial(FPhysicsMaterialHandle& InHandle,UPhy
 	if(Chaos::FChaosPhysicsMaterial* Material = InHandle.Get())
 	{
 		Material->Friction = InMaterial->Friction;
+		Material->StaticFriction = InMaterial->StaticFriction;
 		Material->FrictionCombineMode = UToCCombineMode(InMaterial->FrictionCombineMode);
 		Material->Restitution = InMaterial->Restitution;
 		Material->RestitutionCombineMode = UToCCombineMode(InMaterial->RestitutionCombineMode);
@@ -985,20 +986,15 @@ void FChaosEngineInterface::SetCollisionEnabled(const FPhysicsConstraintHandle& 
 	}
 }
 
-void FChaosEngineInterface::SetProjectionEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInProjectionEnabled,float InLinearTolerance,float InAngularToleranceDegrees)
+void FChaosEngineInterface::SetProjectionEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInProjectionEnabled,float InLinearAlpha,float InAngularAlpha)
 {
 	if(InConstraintRef.IsValid())
 	{
 		if(Chaos::FJointConstraint* Constraint = InConstraintRef.Constraint)
 		{
 			Constraint->SetProjectionEnabled(bInProjectionEnabled);
-
-			// @todo(chaos) : Solver Settings 
-			// ... Constraint tolerances are solver specific, so it needs to use the interface 
-			// ... against the solver not the constraint handle. 
-			//
-			//Constraint->SetSolverPositionTolerance(InLinearTolerance);
-			//Constraint->SetSolverAngularTolerance(InAngularToleranceDegrees);
+			Constraint->SetProjectionLinearAlpha(InLinearAlpha);
+			Constraint->SetProjectionAngularAlpha(InAngularAlpha);
 		}
 	}
 }
@@ -1087,9 +1083,10 @@ void FChaosEngineInterface::SetTwistLimit(const FPhysicsConstraintHandle& InCons
 	{
 		if (Chaos::FJointConstraint* Constraint = InConstraintRef.Constraint)
 		{
-			// @todo(chaos) :  Joint Constraints : Limits
-			Chaos::FVec3 AngularLimits = Constraint->GetAngularLimits();
-			Constraint->SetAngularDriveVelocityTarget(AngularLimits);
+			Chaos::FVec3 Limit = Constraint->GetAngularLimits();
+			Limit[(int32)Chaos::EJointAngularConstraintIndex::Twist] = FMath::DegreesToRadians(InUpperLimit - InLowerLimit);
+			Constraint->SetAngularLimits(Limit);
+			Constraint->SetTwistContactDistance(InContactDistance);
 		}
 	}
 }
@@ -1100,9 +1097,11 @@ void FChaosEngineInterface::SetSwingLimit(const FPhysicsConstraintHandle& InCons
 	{
 		if (Chaos::FJointConstraint* Constraint = InConstraintRef.Constraint)
 		{
-			// @todo(chaos) :  Joint Constraints : Limits
-			Chaos::FVec3 AngularLimits = Constraint->GetAngularLimits();
-			Constraint->SetAngularDriveVelocityTarget(AngularLimits);
+			Chaos::FVec3 Limit = Constraint->GetAngularLimits();
+			Limit[(int32)Chaos::EJointAngularConstraintIndex::Swing1] = FMath::DegreesToRadians(InYLimit);
+			Limit[(int32)Chaos::EJointAngularConstraintIndex::Swing2] = FMath::DegreesToRadians(InZLimit);
+			Constraint->SetAngularLimits(Limit);
+			Constraint->SetSwingContactDistance(InContactDistance);
 		}
 	}
 }

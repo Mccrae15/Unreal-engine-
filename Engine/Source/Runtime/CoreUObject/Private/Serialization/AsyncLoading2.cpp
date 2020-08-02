@@ -80,6 +80,7 @@ FArchive& operator<<(FArchive& Ar, FContainerHeader& ContainerHeader)
 	Ar << ContainerHeader.PackageIds;
 	Ar << ContainerHeader.StoreEntries;
 	Ar << ContainerHeader.CulturePackageMap;
+	Ar << ContainerHeader.PackageRedirects;
 
 	return Ar;
 }
@@ -457,7 +458,7 @@ public:
 		FIoBatch Batch = IoDispatcher.NewBatch();
 		FIoRequest NameRequest = Batch.Read(NamesId, FIoReadOptions());
 		FIoRequest HashRequest = Batch.Read(HashesId, FIoReadOptions());
-		Batch.Issue();
+		Batch.Issue(IoDispatcherPriority_High);
 
 		ReserveNameBatch(	IoDispatcher.GetSizeForChunk(NamesId).ValueOrDie(),
 							IoDispatcher.GetSizeForChunk(HashesId).ValueOrDie());
@@ -780,14 +781,14 @@ public:
 
 	FIoDispatcher& IoDispatcher;
 	FNameMap& GlobalNameMap;
-	TMap<FIoContainerId, FLoadedContainer> LoadedContainers;
+	TMap<FIoContainerId, TUniquePtr<FLoadedContainer>> LoadedContainers;
 
 	FString CurrentCulture;
 
 	FCriticalSection PackageNameMapsCritical;
 
 	TMap<FPackageId, FPackageStoreEntry*> StoreEntriesMap;
-	TMap<FPackageId, FPackageId> LocalizedPackageMap; // SourceId->LocalizedId for CurrentCulture
+	TMap<FPackageId, FPackageId> RedirectsPackageMap;
 	int32 NextCustomPackageIndex = 0;
 
 	FGlobalImportStore ImportStore;
@@ -808,9 +809,6 @@ public:
 			FScopeLock Lock(&PackageNameMapsCritical);
 			return StoreEntriesMap.Contains(PackageId);
 		});
-
-		LoadContainers(IoDispatcher.GetMountedContainers());
-		IoDispatcher.OnContainerMounted().AddRaw(this, &FPackageStore::OnContainerMounted);
 	}
 
 	void SetupInitialLoadData()
@@ -823,6 +821,7 @@ public:
 		IoDispatcher.ReadWithCallback(
 			CreateIoChunkId(0, 0, EIoChunkType::LoaderInitialLoadMeta),
 			FIoReadOptions(),
+			IoDispatcherPriority_High,
 			[InitialLoadEvent, &InitialLoadIoBuffer](TIoStatusOr<FIoBuffer> Result)
 			{
 				InitialLoadIoBuffer = Result.ConsumeValueOrDie();
@@ -879,7 +878,12 @@ public:
 				continue;
 			}
 
-			FLoadedContainer& LoadedContainer = LoadedContainers.FindOrAdd(ContainerId);
+			TUniquePtr<FLoadedContainer>& LoadedContainerPtr = LoadedContainers.FindOrAdd(ContainerId);
+			if (!LoadedContainerPtr)
+			{
+				LoadedContainerPtr.Reset(new FLoadedContainer);
+			}
+			FLoadedContainer& LoadedContainer = *LoadedContainerPtr;
 			if (LoadedContainer.bValid && LoadedContainer.Order >= Container.Environment.GetOrder())
 			{
 				UE_LOG(LogStreaming, Log, TEXT("Skipping loading mounted container ID '0x%llX', already loaded with higher order"), ContainerId.Value());
@@ -895,7 +899,7 @@ public:
 			LoadedContainer.Order = Container.Environment.GetOrder();
 
 			FIoChunkId HeaderChunkId = CreateIoChunkId(ContainerId.Value(), 0, EIoChunkType::ContainerHeader);
-			IoDispatcher.ReadWithCallback(HeaderChunkId, FIoReadOptions(), [this, &Remaining, Event, &LoadedContainer](TIoStatusOr<FIoBuffer> Result)
+			IoDispatcher.ReadWithCallback(HeaderChunkId, FIoReadOptions(), IoDispatcherPriority_High, [this, &Remaining, Event, &LoadedContainer](TIoStatusOr<FIoBuffer> Result)
 			{
 				// Execution method Thread will run the async block synchronously when multithreading is NOT supported
 				const EAsyncExecution ExecutionMethod = FPlatformProcess::SupportsMultithreading() ? EAsyncExecution::TaskGraph : EAsyncExecution::Thread;
@@ -948,8 +952,16 @@ public:
 								{
 									const FPackageId& SourceId = Pair.Key;
 									const FPackageId& LocalizedId = Pair.Value;
-									LocalizedPackageMap.Emplace(SourceId, LocalizedId);
+									RedirectsPackageMap.Emplace(SourceId, LocalizedId);
 								}
+							}
+						}
+
+						{
+							TRACE_CPUPROFILER_EVENT_SCOPE(LoadPackageStoreRedirects);
+							for (const TPair<FPackageId, FPackageId>& Redirect : ContainerHeader.PackageRedirects)
+							{
+								RedirectsPackageMap.Emplace(Redirect.Key, Redirect.Value);
 							}
 						}
 					}
@@ -965,7 +977,7 @@ public:
 		Event->Wait();
 		FPlatformProcess::ReturnSynchEventToPool(Event);
 
-		ApplyLocalization();
+		ApplyRedirects(RedirectsPackageMap);
 	}
 
 	void OnContainerMounted(const FIoDispatcherMountedContainer& Container)
@@ -974,30 +986,28 @@ public:
 		LoadContainers(MakeArrayView(&Container, 1));
 	}
 
-	void ApplyLocalization()
+	void ApplyRedirects(const TMap<FPackageId, FPackageId>& Redirects)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(ApplyLocalization);
+		TRACE_CPUPROFILER_EVENT_SCOPE(ApplyRedirects);
 
 		FScopeLock Lock(&PackageNameMapsCritical);
 
-		if (LocalizedPackageMap.Num() == 0)
+		if (Redirects.Num() == 0)
 		{
 			return;
 		}
 
-		// Mark already localized entries if this becomes a performance problem
-
-		for (auto It = LocalizedPackageMap.CreateIterator(); It; ++It)
+		for (auto It = Redirects.CreateConstIterator(); It; ++It)
 		{
 			const FPackageId& SourceId = It.Key();
-			const FPackageId& LocalizedId = It.Value();
-			check(LocalizedId.IsValid());
-			FPackageStoreEntry* LocalizedEntry = StoreEntriesMap.FindRef(LocalizedId);
-			check(LocalizedEntry);
+			const FPackageId& RedirectId = It.Value();
+			check(RedirectId.IsValid());
+			FPackageStoreEntry* RedirectEntry = StoreEntriesMap.FindRef(RedirectId);
+			check(RedirectEntry);
 			FPackageStoreEntry*& PackageEntry = StoreEntriesMap.FindOrAdd(SourceId);
-			if (LocalizedEntry && PackageEntry)
+			if (RedirectEntry && PackageEntry)
 			{
-				PackageEntry = LocalizedEntry;
+				PackageEntry = RedirectEntry;
 			}
 		}
 
@@ -1007,9 +1017,9 @@ public:
 
 			for (FPackageId& ImportedPackageId : StoreEntry->ImportedPackages)
 			{
-				if (FPackageId* LocalizedId = LocalizedPackageMap.Find(ImportedPackageId))
+				if (const FPackageId* RedirectId = Redirects.Find(ImportedPackageId))
 				{
-					ImportedPackageId = *LocalizedId;
+					ImportedPackageId = *RedirectId;
 				}
 			}
 		}
@@ -1034,10 +1044,10 @@ public:
 		FPackageId PackageId = Package->GetPackageId();
 		if (!LoadedPackageStore.Remove(PackageId))
 		{
-			FPackageId* LocalizedId = LocalizedPackageMap.Find(PackageId);
-			if (LocalizedId)
+			FPackageId* RedirectedId = RedirectsPackageMap.Find(PackageId);
+			if (RedirectedId)
 			{
-				LoadedPackageStore.Remove(*LocalizedId);
+				LoadedPackageStore.Remove(*RedirectedId);
 			}
 		}
 	}
@@ -2115,8 +2125,7 @@ private:
 
 	TQueue<FAsyncPackage2*, EQueueMode::Mpsc> ExternalReadQueue;
 	FThreadSafeCounter WaitingForIoBundleCounter;
-	FThreadSafeCounter WaitingForPostLoadCounter;
-
+	
 	/** List of all pending package requests */
 	TSet<int32> PendingRequests;
 	/** Synchronization object for PendingRequests list */
@@ -2702,6 +2711,7 @@ void FAsyncLoadingThread2::StartBundleIoRequests()
 		FIoReadOptions ReadOptions;
 		IoDispatcher.ReadWithCallback(CreateIoChunkId(Package->Desc.DiskPackageId.Value(), 0, EIoChunkType::ExportBundleData),
 			ReadOptions,
+			IoDispatcherPriority_Medium,
 			[Package](TIoStatusOr<FIoBuffer> Result)
 		{
 			if (Result.IsOk())
@@ -4412,7 +4422,6 @@ EAsyncPackageState::Type FAsyncLoadingThread2::ProcessLoadedPackagesFromGameThre
 					UE_ASYNC_PACKAGE_DEBUG(Package->Desc);
 					CompletedPackages.RemoveAtSwap(PackageIndex--);
 					Package->ClearImportedPackages();
-					Package->AsyncLoadingThread.WaitingForPostLoadCounter.Decrement();
 					Package->ReleaseRef();
 				}
 			}
@@ -4634,6 +4643,8 @@ void FAsyncLoadingThread2::LazyInitializeFromLoadPackage()
 	{
 		GlobalPackageStore.SetupInitialLoadData();
 	}
+	GlobalPackageStore.LoadContainers(IoDispatcher.GetMountedContainers());
+	IoDispatcher.OnContainerMounted().AddRaw(&GlobalPackageStore, &FPackageStore::OnContainerMounted);
 }
 
 
@@ -4738,10 +4749,7 @@ uint32 FAsyncLoadingThread2::Run()
 							{
 								TRACE_CPUPROFILER_EVENT_SCOPE(ProcessExternalReads);
 
-								FAsyncPackage2::EExternalReadAction Action =
-									bDidSomething ?
-									FAsyncPackage2::ExternalReadAction_Poll :
-									FAsyncPackage2::ExternalReadAction_Wait;
+								FAsyncPackage2::EExternalReadAction Action = FAsyncPackage2::ExternalReadAction_Poll;
 
 								EAsyncPackageState::Type Result = Package->ProcessExternalReads(Action);
 								if (Result == EAsyncPackageState::Complete)
@@ -4783,17 +4791,21 @@ uint32 FAsyncLoadingThread2::Run()
 
 			if (!bDidSomething)
 			{
+				FAsyncPackage2* Package = nullptr;
 				if (WaitingForIoBundleCounter.GetValue() > 0)
 				{
 					TRACE_CPUPROFILER_EVENT_SCOPE(AsyncLoadingTime);
 					TRACE_CPUPROFILER_EVENT_SCOPE(WaitingForIo);
 					Waiter.Wait();
 				}
-				else if (WaitingForPostLoadCounter.GetValue() > 0)
+				else if (ExternalReadQueue.Peek(Package))
 				{
 					TRACE_CPUPROFILER_EVENT_SCOPE(AsyncLoadingTime);
-					TRACE_CPUPROFILER_EVENT_SCOPE(WaitingForPostLoad);
-					Waiter.Wait();
+					TRACE_CPUPROFILER_EVENT_SCOPE(ProcessExternalReads);
+
+					EAsyncPackageState::Type Result = Package->ProcessExternalReads(FAsyncPackage2::ExternalReadAction_Wait);
+					check(Result == EAsyncPackageState::Complete);
+					ExternalReadQueue.Pop();
 				}
 				else
 				{

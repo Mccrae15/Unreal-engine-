@@ -212,36 +212,29 @@ bool FMaterialCachedExpressionData::UpdateForFunction(const FMaterialCachedExpre
 	// This is important so we add parameters in the proper order (parameter values are latched the first time a given parameter name is encountered)
 	FMaterialCachedExpressionContext LocalContext(Context);
 	LocalContext.bUpdateFunctionExpressions = false; // we update functions explicitly
+	
+	FMaterialCachedExpressionData* Self = this;
+	auto ProcessFunction = [Self, &LocalContext, Association, ParameterIndex, &bResult](UMaterialFunctionInterface* InFunction) -> bool
 	{
-		FMaterialCachedExpressionData* Self = this;
-		auto DependentFunctionLamba = [Self, &LocalContext, Association, ParameterIndex, &bResult](UMaterialFunctionInterface* DepFunction) -> bool
+		const TArray<UMaterialExpression*>* FunctionExpressions = InFunction->GetFunctionExpressions();
+		if (FunctionExpressions)
 		{
-			const TArray<UMaterialExpression*>* FunctionExpressions = DepFunction->GetFunctionExpressions();
-			if (FunctionExpressions)
+			if (!Self->UpdateForExpressions(LocalContext, *FunctionExpressions, Association, ParameterIndex))
 			{
-				if (!Self->UpdateForExpressions(LocalContext, *FunctionExpressions, Association, ParameterIndex))
-				{
-					bResult = false;
-				}
+				bResult = false;
 			}
-			return true;
-		};
-		Function->IterateDependentFunctions(MoveTemp(DependentFunctionLamba));
-	}
-
-	const TArray<UMaterialExpression*>* FunctionExpressions = Function->GetFunctionExpressions();
-	if (FunctionExpressions)
-	{
-		if (!UpdateForExpressions(LocalContext, *FunctionExpressions, Association, ParameterIndex))
-		{
-			bResult = false;
 		}
-	}
 
-	FMaterialFunctionInfo NewFunctionInfo;
-	NewFunctionInfo.Function = Function;
-	NewFunctionInfo.StateId = Function->StateId;
-	FunctionInfos.Add(NewFunctionInfo);
+		FMaterialFunctionInfo NewFunctionInfo;
+		NewFunctionInfo.Function = InFunction;
+		NewFunctionInfo.StateId = InFunction->StateId;
+		Self->FunctionInfos.Add(NewFunctionInfo);
+
+		return true;
+	};
+	Function->IterateDependentFunctions(ProcessFunction);
+
+	ProcessFunction(Function);
 
 	return bResult;
 }
@@ -559,18 +552,23 @@ bool FMaterialCachedExpressionData::UpdateForExpressions(const FMaterialCachedEx
 		}
 		else if (UMaterialExpressionQualitySwitch* QualitySwitchNode = Cast<UMaterialExpressionQualitySwitch>(Expression))
 		{
+			const FExpressionInput DefaultInput = QualitySwitchNode->Default.GetTracedInput();
+
 			for (int32 InputIndex = 0; InputIndex < EMaterialQualityLevel::Num; InputIndex++)
 			{
 				if (QualitySwitchNode->Inputs[InputIndex].IsConnected())
 				{
-					QualityLevelsUsed[InputIndex] = true;
+					// We can ignore quality levels that are defined the same way as 'Default'
+					// This avoids compiling a separate explicit quality level resource, that will end up exactly the same as the default resource
+					const FExpressionInput Input = QualitySwitchNode->Inputs[InputIndex].GetTracedInput();
+					if (Input.Expression != DefaultInput.Expression ||
+						Input.OutputIndex != DefaultInput.OutputIndex)
+					{
+						QualityLevelsUsed[InputIndex] = true;
+					}
 				}
 			}
 
-			if (QualitySwitchNode->Default.IsConnected())
-			{
-				QualityLevelsUsed[EMaterialQualityLevel::High] = true;
-			}
 		}
 		else if (Expression->IsA(UMaterialExpressionRuntimeVirtualTextureOutput::StaticClass()))
 		{

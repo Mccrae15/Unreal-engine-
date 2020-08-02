@@ -627,6 +627,7 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FEngineHitchDetectedDelegate, EFrameHitchTy
 
 
 DECLARE_MULTICAST_DELEGATE(FPreRenderDelegate);
+DECLARE_MULTICAST_DELEGATE(FPostRenderDelegate);
 
 /**
  * Abstract base class of all Engine classes, responsible for management of systems critical to editor or game systems.
@@ -1554,6 +1555,9 @@ public:
 	/** Delegate called just prior to rendering. */
 	FPreRenderDelegate PreRenderDelegate;
 	FPreRenderDelegate& GetPreRenderDelegate() { return PreRenderDelegate; }
+	/** Delegate called just after to rendering. */
+	FPostRenderDelegate PostRenderDelegate;
+	FPostRenderDelegate& GetPostRenderDelegate() { return PostRenderDelegate; }
 
 	/** 
 	 * Error message event relating to server travel failures 
@@ -2847,8 +2851,10 @@ public:
 	void DestroyNamedNetDriver(UWorld *InWorld, FName NetDriverName);
 	void DestroyNamedNetDriver(UPendingNetGame *PendingNetGame, FName NetDriverName);
 
-	virtual bool NetworkRemapPath( UNetDriver* Driver, FString &Str, bool bReading=true) { return false; }
-	virtual bool NetworkRemapPath( UPendingNetGame *PendingNetGame, FString &Str, bool bReading=true) { return false; }
+	UE_DEPRECATED(4.26, "Please use NetworkRemapPath that takes a connection instead.")
+	virtual bool NetworkRemapPath(UNetDriver* Driver, FString &Str, bool bReading=true) { return false; }
+	virtual bool NetworkRemapPath(UNetConnection* Connection, FString& Str, bool bReading=true) { return false; }
+	virtual bool NetworkRemapPath(UPendingNetGame *PendingNetGame, FString &Str, bool bReading=true) { return false; }
 
 	virtual bool HandleOpenCommand( const TCHAR* Cmd, FOutputDevice& Ar, UWorld * InWorld );
 
