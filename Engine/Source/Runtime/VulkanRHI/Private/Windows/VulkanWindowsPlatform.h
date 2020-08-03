@@ -68,6 +68,13 @@ public:
 	}
 
 	static bool RequiresRenderPassResolveAttachments() { return GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1; }
+
+#if WITH_LATE_LATCHING_CODE
+	static bool SupportsUniformBufferPatching()
+	{
+		return false;
+	}
+#endif
 };
 
 typedef FVulkanWindowsPlatform FVulkanPlatform;

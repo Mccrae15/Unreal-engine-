@@ -595,7 +595,11 @@ inline void FVulkanCommandListContext::SetShaderUniformBuffer(ShaderStage::EStag
 		else
 		{
 			const FVulkanEmulatedUniformBuffer* EmulatedUniformBuffer = static_cast<const FVulkanEmulatedUniformBuffer*>(UniformBuffer);
+#if WITH_LATE_LATCHING_CODE
+			PendingGfxState->SetUniformBufferConstantData(Stage, BufferIndex, EmulatedUniformBuffer->ConstantData, EmulatedUniformBuffer);
+#else
 			PendingGfxState->SetUniformBufferConstantData(Stage, BufferIndex, EmulatedUniformBuffer->ConstantData);
+#endif		
 		}
 	}
 
@@ -675,7 +679,11 @@ void FVulkanCommandListContext::RHISetShaderUniformBuffer(FRHIComputeShader* Com
 		else
 		{
 			const FVulkanEmulatedUniformBuffer* EmulatedUniformBuffer = static_cast<const FVulkanEmulatedUniformBuffer*>(UniformBuffer);
+#if WITH_LATE_LATCHING_CODE
+			State.SetUniformBufferConstantData(BufferIndex, EmulatedUniformBuffer->ConstantData, EmulatedUniformBuffer);
+#else
 			State.SetUniformBufferConstantData(BufferIndex, EmulatedUniformBuffer->ConstantData);
+#endif
 		}
 	}
 
@@ -1233,3 +1241,24 @@ void FVulkanCommandContextContainer::operator delete(void* RawMemory)
 {
 	FMemory::Free(RawMemory);
 }
+
+#if WITH_LATE_LATCHING_CODE
+void FVulkanCommandListContext::RHIBeginLateLatching(FRHICommandListImmediate* RHICmdList, int32 FrameNumber)
+{
+	UniformBufferUploader->EnableUniformBufferPatching = true;
+	UniformBufferUploader->UniformBufferPatchingFrameNumber = FrameNumber;
+	UniformBufferUploader->BeginPatchSubmitCounter = GetQueue()->GetSubmitCount();
+}
+
+void FVulkanCommandListContext::RHIEndLateLatching()
+{
+	// If Mid-Frame Submission happens, we should disable actual patching since GPU had probably already started consuming the data.
+	bool NeedAbortPatching = (GetQueue()->GetSubmitCount() != UniformBufferUploader->BeginPatchSubmitCounter);
+	if (NeedAbortPatching)
+		UE_LOG(LogTemp, Warning, TEXT("Warning: Late Latching aborting mid frame vkQueue Submission, should investigate why it happens, SumbitCount Start %d End %d"), UniformBufferUploader->BeginPatchSubmitCounter, GetQueue()->GetSubmitCount());
+
+	UniformBufferUploader->ApplyUniformBufferPatching(NeedAbortPatching);
+	UniformBufferUploader->EnableUniformBufferPatching = false;
+	UniformBufferUploader->UniformBufferPatchingFrameNumber = -1;
+}
+#endif

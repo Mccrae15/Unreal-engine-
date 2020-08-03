@@ -220,7 +220,7 @@ void FTextureRenderTargetCubeResource::InitDynamicRHI()
 		}
 
 		// Create the RHI texture. Only one mip is used and the texture is targetable for resolve.
-		uint32 TexCreateFlags = bIsSRGB ? TexCreate_SRGB : 0;
+		ETextureCreateFlags TexCreateFlags = bIsSRGB ? TexCreate_SRGB : TexCreate_None;
 		{
 			FRHIResourceCreateInfo CreateInfo = { FClearValueBinding(Owner->ClearColor) };
 			RHICreateTargetableShaderResourceCube(

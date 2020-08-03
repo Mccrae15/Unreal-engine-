@@ -185,7 +185,7 @@ FD3D11Texture2D* FD3D11Viewport::GetSwapChainSurface(FD3D11DynamicRHI* D3DRHI, E
 		1,
 		PixelFormat,
 		false,
-		false,
+		TexCreate_None,
 		false,
 		FClearValueBinding()
 		);

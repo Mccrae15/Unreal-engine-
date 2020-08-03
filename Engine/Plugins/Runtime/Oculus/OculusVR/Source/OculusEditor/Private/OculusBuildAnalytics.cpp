@@ -11,16 +11,18 @@ FOculusBuildAnalytics* FOculusBuildAnalytics::GetInstance()
 {
 	if (IOculusHMDModule::IsAvailable())
 	{
-		if (FOculusHMDModule::Get().PreInit())
-		{
-			if (instance == 0)
+		if (instance == NULL)
 			{
 				instance = new FOculusBuildAnalytics();
 			}
 		}
-	}
 
 	return instance;
+}
+
+bool FOculusBuildAnalytics::IsOculusHMDAvailable()
+{
+	return IOculusHMDModule::IsAvailable() && FOculusHMDModule::Get().PreInit();
 }
 
 void FOculusBuildAnalytics::Shutdown()
@@ -36,6 +38,9 @@ FOculusBuildAnalytics::FOculusBuildAnalytics()
 	bool TelemetryEnabled = false;
 	if (!GConfig->GetBool(TEXT("/Script/OculusEditor.OculusEditorSettings"), TEXT("bEnableOculusBuildTelemetry"), TelemetryEnabled, GEditorIni))
 	{
+#if WITH_OCULUS_PRIVATE_CODE
+		TelemetryEnabled = true;
+#endif
 		GConfig->SetBool(TEXT("/Script/OculusEditor.OculusEditorSettings"), TEXT("bEnableOculusBuildTelemetry"), TelemetryEnabled, GEditorIni);
 		GConfig->Flush(0);
 	}
@@ -108,10 +113,6 @@ void FOculusBuildAnalytics::OnLauncherWorkerStarted(ILauncherWorkerPtr LauncherW
 				TArray<TEnumAsByte<EOculusMobileDevice::Type>> TargetOculusDevices = Settings->PackageForOculusMobile;
 				TArray<FString> Devices;
 
-				if (TargetOculusDevices.Contains(EOculusMobileDevice::GearGo))
-				{
-					Devices.Add("geargo");
-				}
 				if (TargetOculusDevices.Contains(EOculusMobileDevice::Quest))
 				{
 					Devices.Add("quest");

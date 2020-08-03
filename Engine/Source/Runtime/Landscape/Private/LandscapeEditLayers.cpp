@@ -165,7 +165,7 @@ public:
 		FTextureResource::InitRHI();
 
 		FRHIResourceCreateInfo CreateInfo;
-		uint32 Flags = 0;
+		ETextureCreateFlags Flags = TexCreate_None;
 
 		if (CreateUAV)
 		{
@@ -233,7 +233,7 @@ public:
 		FTextureResource::InitRHI();
 
 		FRHIResourceCreateInfo CreateInfo;
-		uint32 Flags = TexCreate_NoTiling | TexCreate_OfflineProcessed;
+		ETextureCreateFlags Flags = TexCreate_NoTiling | TexCreate_OfflineProcessed;
 
 		if (CreateUAV)
 		{

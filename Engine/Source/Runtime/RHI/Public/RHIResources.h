@@ -500,6 +500,11 @@ public:
 	mutable int32 NumMeshCommandReferencesForDebugging = 0;
 #endif
 
+#if WITH_LATE_LATCHING_CODE
+	virtual int32 GetPatchingFrameNumber() const { return -1; }
+	virtual void FlagPatchingFrameNumber(int32 FrameNumber) { }
+#endif
+
 private:
 	/** Layout of the uniform buffer. */
 	const FRHIUniformBufferLayout* Layout;
@@ -650,7 +655,7 @@ class RHI_API FRHITexture : public FRHIResource
 public:
 	
 	/** Initialization constructor. */
-	FRHITexture(uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, uint32 InFlags, FLastRenderTimeContainer* InLastRenderTime, const FClearValueBinding& InClearValue)
+	FRHITexture(uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, ETextureCreateFlags InFlags, FLastRenderTimeContainer* InLastRenderTime, const FClearValueBinding& InClearValue)
 		: ClearValue(InClearValue)
 		, NumMips(InNumMips)
 		, NumSamples(InNumSamples)
@@ -710,7 +715,7 @@ public:
 	EPixelFormat GetFormat() const { return Format; }
 
 	/** @return The flags used to create the texture. */
-	uint32 GetFlags() const { return Flags; }
+	ETextureCreateFlags GetFlags() const { return Flags; }
 
 	/* @return the number of samples for multi-sampling. */
 	uint32 GetNumSamples() const { return NumSamples; }
@@ -793,7 +798,7 @@ private:
 	uint32 NumMips;
 	uint32 NumSamples;
 	EPixelFormat Format;
-	uint32 Flags;
+	ETextureCreateFlags Flags;
 	FLastRenderTimeContainer& LastRenderTime;
 	FLastRenderTimeContainer DefaultLastRenderTime;	
 	FName TextureName;
@@ -804,7 +809,7 @@ class RHI_API FRHITexture2D : public FRHITexture
 public:
 	
 	/** Initialization constructor. */
-	FRHITexture2D(uint32 InSizeX,uint32 InSizeY,uint32 InNumMips,uint32 InNumSamples,EPixelFormat InFormat,uint32 InFlags, const FClearValueBinding& InClearValue)
+	FRHITexture2D(uint32 InSizeX,uint32 InSizeY,uint32 InNumMips,uint32 InNumSamples,EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture(InNumMips, InNumSamples, InFormat, InFlags, NULL, InClearValue)
 	, SizeX(InSizeX)
 	, SizeY(InSizeY)
@@ -840,7 +845,7 @@ class RHI_API FRHITexture2DArray : public FRHITexture2D
 public:
 	
 	/** Initialization constructor. */
-	FRHITexture2DArray(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,uint32 NumSamples, EPixelFormat InFormat,uint32 InFlags, const FClearValueBinding& InClearValue)
+	FRHITexture2DArray(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,uint32 NumSamples, EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture2D(InSizeX, InSizeY, InNumMips,NumSamples,InFormat,InFlags, InClearValue)
 	, SizeZ(InSizeZ)
 	{}
@@ -868,7 +873,7 @@ class RHI_API FRHITexture3D : public FRHITexture
 public:
 	
 	/** Initialization constructor. */
-	FRHITexture3D(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,EPixelFormat InFormat,uint32 InFlags, const FClearValueBinding& InClearValue)
+	FRHITexture3D(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture(InNumMips,1,InFormat,InFlags,NULL, InClearValue)
 	, SizeX(InSizeX)
 	, SizeY(InSizeY)
@@ -904,7 +909,7 @@ class RHI_API FRHITextureCube : public FRHITexture
 public:
 	
 	/** Initialization constructor. */
-	FRHITextureCube(uint32 InSize,uint32 InNumMips,EPixelFormat InFormat,uint32 InFlags, const FClearValueBinding& InClearValue)
+	FRHITextureCube(uint32 InSize,uint32 InNumMips,EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture(InNumMips,1,InFormat,InFlags,NULL, InClearValue)
 	, Size(InSize)
 	{}
@@ -929,7 +934,7 @@ class RHI_API FRHITextureReference : public FRHITexture
 {
 public:
 	explicit FRHITextureReference(FLastRenderTimeContainer* InLastRenderTime)
-		: FRHITexture(0,0,PF_Unknown,0,InLastRenderTime, FClearValueBinding())
+		: FRHITexture(0,0,PF_Unknown,TexCreate_None,InLastRenderTime, FClearValueBinding())
 	{}
 
 	virtual FRHITextureReference* GetTextureReference() override { return this; }
@@ -1952,7 +1957,7 @@ class FGraphicsPipelineStateInitializer
 public:
 	// Can't use TEnumByte<EPixelFormat> as it changes the struct to be non trivially constructible, breaking memset
 	using TRenderTargetFormats		= TStaticArray<uint8/*EPixelFormat*/, MaxSimultaneousRenderTargets>;
-	using TRenderTargetFlags		= TStaticArray<uint32, MaxSimultaneousRenderTargets>;
+	using TRenderTargetFlags		= TStaticArray<uint64/*ETextureCreateFlags*/, MaxSimultaneousRenderTargets>;
 
 	FGraphicsPipelineStateInitializer()
 		: RenderTargetsEnabled(0)
@@ -1987,7 +1992,7 @@ public:
 		const TRenderTargetFormats&	InRenderTargetFormats,
 		const TRenderTargetFlags&	InRenderTargetFlags,
 		EPixelFormat				InDepthStencilTargetFormat,
-		uint32						InDepthStencilTargetFlag,
+		ETextureCreateFlags			InDepthStencilTargetFlag,
 		ERenderTargetLoadAction		InDepthTargetLoadAction,
 		ERenderTargetStoreAction	InDepthTargetStoreAction,
 		ERenderTargetLoadAction		InStencilTargetLoadAction,

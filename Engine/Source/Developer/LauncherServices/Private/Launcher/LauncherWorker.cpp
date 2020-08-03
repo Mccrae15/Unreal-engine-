@@ -756,6 +756,11 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 		UATCommand += TEXT(" -compressed");
 	}
 
+	if ( InProfile->IsOculusDeployingSo() )
+	{
+		UATCommand += " -deploysotodevice";
+	}
+
 	// stage/package/deploy
 	if (InProfile->GetDeploymentMode() != ELauncherProfileDeploymentModes::DoNotDeploy)
 	{

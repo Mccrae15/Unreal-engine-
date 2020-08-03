@@ -247,6 +247,14 @@ void FRHICommandEndRenderPass::Execute(FRHICommandListBase& CmdList)
 	INTERNAL_DECORATOR(RHIEndRenderPass)();
 }
 
+#if WITH_LATE_LATCHING_CODE
+void FRHICommandEndLateLatching::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(EndLateLatching);
+	INTERNAL_DECORATOR(RHIEndLateLatching)();
+}
+#endif
+
 void FRHICommandNextSubpass::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(NextSubpass);

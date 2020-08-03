@@ -370,7 +370,7 @@ class D3D11RHI_API TD3D11Texture2D : public BaseResourceType, public FD3D11Textu
 public:
 
 	/** Flags used when the texture was created */
-	uint32 Flags;
+	ETextureCreateFlags Flags;
 
 	/** Initialization constructor. */
 	TD3D11Texture2D(
@@ -388,7 +388,7 @@ public:
 		uint32 InNumSamples,
 		EPixelFormat InFormat,
 		bool bInCubemap,
-		uint32 InFlags,
+		ETextureCreateFlags InFlags,
 		bool bInPooled,
 		const FClearValueBinding& InClearValue
 #if PLATFORM_SUPPORTS_VIRTUAL_TEXTURES
@@ -500,7 +500,7 @@ public:
 		uint32 InSizeZ,
 		uint32 InNumMips,
 		EPixelFormat InFormat,
-		uint32 InFlags,
+		ETextureCreateFlags InFlags,
 		const FClearValueBinding& InClearValue
 		)
 	: FRHITexture3D(InSizeX,InSizeY,InSizeZ,InNumMips,InFormat,InFlags,InClearValue)
@@ -544,7 +544,7 @@ public:
 class FD3D11BaseTexture2D : public FRHITexture2D
 {
 public:
-	FD3D11BaseTexture2D(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, uint32 InFlags, const FClearValueBinding& InClearValue)
+	FD3D11BaseTexture2D(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture2D(InSizeX,InSizeY,InNumMips,InNumSamples,InFormat,InFlags, InClearValue)
 	{}
 	uint32 GetSizeZ() const { return 0; }
@@ -553,7 +553,7 @@ public:
 class FD3D11BaseTexture2DArray : public FRHITexture2DArray
 {
 public:
-	FD3D11BaseTexture2DArray(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, uint32 InFlags, const FClearValueBinding& InClearValue)
+	FD3D11BaseTexture2DArray(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture2DArray(InSizeX,InSizeY,InSizeZ,InNumMips,InNumSamples, InFormat,InFlags,InClearValue)
 	{ check(InNumSamples == 1); }
 };
@@ -561,7 +561,7 @@ public:
 class FD3D11BaseTextureCube : public FRHITextureCube
 {
 public:
-	FD3D11BaseTextureCube(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, uint32 InFlags, const FClearValueBinding& InClearValue)
+	FD3D11BaseTextureCube(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITextureCube(InSizeX,InNumMips,InFormat,InFlags,InClearValue)
 	, SliceCount(InSizeZ)
 	{ check(InNumSamples == 1); }

@@ -146,7 +146,7 @@ void FWebBrowserTextureResource::ClearTexture(const FLinearColor& ClearColor)
 {
 	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("FWebBrowserTextureResource:ClearTexture"));
 	// create output render target if we don't have one yet
-	const uint32 OutputCreateFlags = TexCreate_Dynamic | TexCreate_SRGB;
+	const ETextureCreateFlags OutputCreateFlags = TexCreate_Dynamic | TexCreate_SRGB;
 
 	if ((ClearColor != CurrentClearColor) || !OutputTarget.IsValid() || ((OutputTarget->GetFlags() & OutputCreateFlags) != OutputCreateFlags))
 	{
@@ -215,7 +215,7 @@ void FWebBrowserTextureResource::CopySample(const TSharedPtr<FWebBrowserTextureS
 	{
 		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("FWebBrowserTextureResource:CopySample 2"));
 		// create a new output render target if necessary
-		const uint32 OutputCreateFlags = TexCreate_Dynamic | TexCreate_SRGB;
+		const ETextureCreateFlags OutputCreateFlags = TexCreate_Dynamic | TexCreate_SRGB;
 		const FIntPoint SampleDim = Sample->GetDim();
 
 		if ((ClearColor != CurrentClearColor) || !OutputTarget.IsValid() || (OutputTarget->GetSizeXY() != SampleDim) || ((OutputTarget->GetFlags() & OutputCreateFlags) != OutputCreateFlags))

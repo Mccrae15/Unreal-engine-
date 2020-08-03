@@ -244,7 +244,7 @@ static FRDGTextureRef AddHairCoverageLUTPass(FRDGBuilder& GraphBuilder, const FV
 	OutputDesc.Extent.Y = OutputResolution.Y;
 	OutputDesc.Format = PF_R32_FLOAT;
 	OutputDesc.NumMips = 1;
-	OutputDesc.Flags = 0;
+	OutputDesc.Flags = TexCreate_None;
 	OutputDesc.TargetableFlags = TexCreate_UAV | TexCreate_ShaderResource;
 	FRDGTextureRef HairLUTTexture = GraphBuilder.CreateTexture(OutputDesc, TEXT("HairCoverageLUT"));
 

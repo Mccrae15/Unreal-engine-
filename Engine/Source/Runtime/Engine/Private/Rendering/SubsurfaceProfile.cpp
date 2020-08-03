@@ -219,7 +219,7 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 	const uint32 Width = BSSS_TRANSMISSION_PROFILE_OFFSET + BSSS_TRANSMISSION_PROFILE_SIZE;
 
 	// at minimum 64 lines (less reallocations)
-	FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(FIntPoint(Width, FMath::Max(Height, (uint32)64)), PF_B8G8R8A8, FClearValueBinding::None, 0, TexCreate_ShaderResource, false));
+	FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(FIntPoint(Width, FMath::Max(Height, (uint32)64)), PF_B8G8R8A8, FClearValueBinding::None, TexCreate_None, TexCreate_ShaderResource, false));
 	if (b16Bit)
 	{
 		Desc.Format = PF_A16B16G16R16;

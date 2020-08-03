@@ -1284,7 +1284,7 @@ void FLandscapeTextureAtlas::InitializeIfNeeded()
 
 		const uint32 SizeX = AddrSpaceAllocator.DimInTexels;
 		const uint32 SizeY = AddrSpaceAllocator.DimInTexels;
-		const uint32 Flags = TexCreate_ShaderResource | TexCreate_UAV;
+		const ETextureCreateFlags Flags = TexCreate_ShaderResource | TexCreate_UAV;
 		const EPixelFormat Format = bHeight ? PF_R8G8 : PF_G8;
 		FRHIResourceCreateInfo CreateInfo(bHeight ? TEXT("HeightFieldAtlas") : TEXT("VisibilityAtlas"));
 

@@ -276,8 +276,6 @@ FSceneRenderTargets::FSceneRenderTargets(const FViewInfo& View, const FSceneRend
 	, MobileCustomStencil(GRenderTargetPool.MakeSnapshot(SnapshotSource.MobileCustomStencil))
 	, CustomStencilSRV(SnapshotSource.CustomStencilSRV)
 	, SkySHIrradianceMap(GRenderTargetPool.MakeSnapshot(SnapshotSource.SkySHIrradianceMap))
-	, MobileMultiViewSceneColor(GRenderTargetPool.MakeSnapshot(SnapshotSource.MobileMultiViewSceneColor))
-	, MobileMultiViewSceneDepthZ(GRenderTargetPool.MakeSnapshot(SnapshotSource.MobileMultiViewSceneDepthZ))
 	, EditorPrimitivesColor(GRenderTargetPool.MakeSnapshot(SnapshotSource.EditorPrimitivesColor))
 	, EditorPrimitivesDepth(GRenderTargetPool.MakeSnapshot(SnapshotSource.EditorPrimitivesDepth))
 	, SeparateTranslucencyRT(SnapshotSource.SeparateTranslucencyRT)
@@ -321,6 +319,7 @@ FSceneRenderTargets::FSceneRenderTargets(const FViewInfo& View, const FSceneRend
 	, bKeepDepthContent(SnapshotSource.bKeepDepthContent)
 	, bAllocatedFoveationTexture(SnapshotSource.bAllocatedFoveationTexture)
 	, bAllowTangentGBuffer(SnapshotSource.bAllowTangentGBuffer)
+	, bRequireMultiview(SnapshotSource.bRequireMultiview)
 {
 	FMemory::Memcpy(LargestDesiredSizes, SnapshotSource.LargestDesiredSizes);
 #if PREVENT_RENDERTARGET_SIZE_THRASHING
@@ -679,6 +678,11 @@ void FSceneRenderTargets::Allocate(FRHICommandListImmediate& RHICmdList, const F
 	}
 
 	bool bDownsampledOcclusionQueries = GDownsampledOcclusionQueries != 0;
+
+	{
+		static const auto MobileMultiViewCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
+		bRequireMultiview = (GSupportsMobileMultiView || GRHISupportsArrayIndexFromAnyShader) && (MobileMultiViewCVar && MobileMultiViewCVar->GetValueOnAnyThread() != 0) && SceneRenderer->Views[0].bIsMobileMultiViewEnabled;
+	}
 
 	int32 MaxShadowResolution = GetCachedScalabilityCVars().MaxShadowResolution;
 
@@ -1137,67 +1141,20 @@ void FSceneRenderTargets::AllocSceneColor(FRHICommandList& RHICmdList)
 		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(BufferSize, SceneColorBufferFormat, DefaultColorClear, TexCreate_None, TexCreate_RenderTargetable | TexCreate_ShaderResource, false));
 		Desc.Flags |= GFastVRamConfig.SceneColor;
 		Desc.NumSamples = GetNumSceneColorMSAASamples(CurrentFeatureLevel);
+		Desc.ArraySize = bRequireMultiview ? 2 : 1;
+		Desc.bIsArray = bRequireMultiview;
 
 		if (CurrentFeatureLevel >= ERHIFeatureLevel::SM5 && Desc.NumSamples == 1)
 		{
 			// GCNPerformanceTweets.pdf Tip 37: Warning: Causes additional synchronization between draw calls when using a render target allocated with this flag, use sparingly
 			Desc.TargetableFlags |= TexCreate_UAV;
 		}
-		Desc.Flags |= MobileHWsRGB ? TexCreate_SRGB : 0;
+		Desc.Flags |= MobileHWsRGB ? TexCreate_SRGB : TexCreate_None;
 
 		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, GetSceneColorForCurrentShadingPath(), GetSceneColorTargetName(CurrentShadingPath));
 	}
 
 	check(GetSceneColorForCurrentShadingPath());
-}
-
-void FSceneRenderTargets::AllocMobileMultiViewSceneColor(FRHICommandList& RHICmdList, const int32 ScaleFactor)
-{
-	// For mono support. 
-	// Ensure we clear alpha to 0. We use alpha to tag which pixels had objects rendered into them so we can mask them out for the mono pass
-	if (MobileMultiViewSceneColor && !(MobileMultiViewSceneColor->GetRenderTargetItem().TargetableTexture->GetClearBinding() == DefaultColorClear))
-	{
-		MobileMultiViewSceneColor.SafeRelease();
-	}
-
-	bool MobileHWsRGB = IsMobileColorsRGB();
-
-	if (!MobileMultiViewSceneColor)
-	{
-		const EPixelFormat SceneColorBufferFormat = GetSceneColorFormat();
-		const FIntPoint MultiViewBufferSize(BufferSize.X / ScaleFactor, BufferSize.Y);
-
-		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(MultiViewBufferSize, SceneColorBufferFormat, DefaultColorClear, TexCreate_None, TexCreate_RenderTargetable | TexCreate_ShaderResource, false));
-		Desc.NumSamples = GetNumSceneColorMSAASamples(CurrentFeatureLevel);
-		Desc.ArraySize = 2;
-		Desc.bIsArray = true;
-		Desc.Flags |= MobileHWsRGB ? TexCreate_SRGB : 0;
-		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, MobileMultiViewSceneColor, TEXT("MobileMultiViewSceneColor"));
-	}
-	check(MobileMultiViewSceneColor);
-}
-
-void FSceneRenderTargets::AllocMobileMultiViewDepth(FRHICommandList& RHICmdList, const int32 ScaleFactor)
-{
-	// For mono support. We change the default depth clear value to the mono clip plane to clip the stereo portion of the frustum.
-	if (MobileMultiViewSceneDepthZ && !(MobileMultiViewSceneDepthZ->GetRenderTargetItem().TargetableTexture->GetClearBinding() == DefaultDepthClear))
-	{
-		MobileMultiViewSceneDepthZ.SafeRelease();
-	}
-
-	if (!MobileMultiViewSceneDepthZ)
-	{
-		const FIntPoint MultiViewBufferSize(BufferSize.X / ScaleFactor, BufferSize.Y);
-
-		// Using the result of GetDepthFormat() without stencil due to packed depth-stencil not working in array frame buffers.
-		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(MultiViewBufferSize, PF_D24, DefaultDepthClear, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead, false));
-		Desc.Flags |= TexCreate_FastVRAM;
-		Desc.NumSamples = GetNumSceneColorMSAASamples(CurrentFeatureLevel);
-		Desc.ArraySize = 2;
-		Desc.bIsArray = true;
-		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, MobileMultiViewSceneDepthZ, TEXT("MobileMultiViewSceneDepthZ"));
-	}
-	check(MobileMultiViewSceneDepthZ);
 }
 
 void FSceneRenderTargets::AllocLightAttenuation(FRHICommandList& RHICmdList)
@@ -1696,7 +1653,7 @@ TRefCountPtr<IPooledRenderTarget>& FSceneRenderTargets::GetSeparateTranslucency(
 {
 	if (!SeparateTranslucencyRT || SeparateTranslucencyRT->GetDesc().Extent != Size)
 	{
-		uint32 Flags = TexCreate_RenderTargetable | TexCreate_ShaderResource;
+		ETextureCreateFlags Flags = TexCreate_RenderTargetable | TexCreate_ShaderResource;
 
 		// Create the SeparateTranslucency render target (alpha is needed to lerping)
 		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(Size, PF_FloatRGBA, FClearValueBinding::Black, TexCreate_None, Flags, false));
@@ -1718,7 +1675,7 @@ TRefCountPtr<IPooledRenderTarget>& FSceneRenderTargets::GetSeparateTranslucencyM
 {
 	if (!SeparateTranslucencyModulateRT || SeparateTranslucencyModulateRT->GetDesc().Extent != Size)
 	{
-		uint32 Flags = TexCreate_RenderTargetable | TexCreate_ShaderResource;
+		ETextureCreateFlags Flags = TexCreate_RenderTargetable | TexCreate_ShaderResource;
 
 		// Create the SeparateTranslucency render target (alpha is needed to lerping)
 		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(Size, PF_FloatR11G11B10, FClearValueBinding::White, TexCreate_None, Flags, false));
@@ -2301,23 +2258,8 @@ void FSceneRenderTargets::AllocateMobileRenderTargets(FRHICommandListImmediate& 
 	// on ES2 we don't do on demand allocation of SceneColor yet (in non ES2 it's released in the Tonemapper Process())
 	AllocSceneColor(RHICmdList);
 	AllocateCommonDepthTargets(RHICmdList);
+
 	AllocateFoveationTexture(RHICmdList);
-
-	static const auto MobileMultiViewCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
-
-	const bool bIsUsingMobileMultiView = (GSupportsMobileMultiView || GRHISupportsArrayIndexFromAnyShader) && (MobileMultiViewCVar && MobileMultiViewCVar->GetValueOnAnyThread() != 0);
-
-	if (bIsUsingMobileMultiView)
-	{
-		// If the plugin uses separate render targets it is required to support mobile multi-view direct
-		IStereoRenderTargetManager* const StereoRenderTargetManager = GEngine->StereoRenderingDevice.IsValid() ? GEngine->StereoRenderingDevice->GetRenderTargetManager() : nullptr;
-		const bool bIsMobileMultiViewDirectEnabled = StereoRenderTargetManager && StereoRenderTargetManager->ShouldUseSeparateRenderTarget();
-
-		const int32 ScaleFactor = (bIsMobileMultiViewDirectEnabled) ? 1 : 2;
-
-		AllocMobileMultiViewSceneColor(RHICmdList, ScaleFactor);
-		AllocMobileMultiViewDepth(RHICmdList, ScaleFactor);
-	}
 
 	AllocateDebugViewModeTargets(RHICmdList);
 
@@ -2390,7 +2332,7 @@ void FSceneRenderTargets::AllocateReflectionTargets(FRHICommandList& RHICmdList,
 		if (!bSharedReflectionTargetsAllocated)
 		{
 			// We write to these cubemap faces individually during filtering
-			uint32 CubeTexFlags = TexCreate_TargetArraySlicesIndependently;
+			ETextureCreateFlags CubeTexFlags = TexCreate_TargetArraySlicesIndependently;
 
 			{
 				// Create scratch cubemaps for filtering passes
@@ -2429,7 +2371,7 @@ void FSceneRenderTargets::AllocateDebugViewModeTargets(FRHICommandList& RHICmdLi
 			QuadOverdrawSize, 
 			PF_R32_UINT,
 			FClearValueBinding::None,
-			0,
+			TexCreate_None,
 			TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_UAV,
 			false
 			);
@@ -2459,12 +2401,15 @@ void FSceneRenderTargets::AllocateCommonDepthTargets(FRHICommandList& RHICmdList
 		bHMDAllocatedDepthTarget = StereoRenderTargetManager && StereoRenderTargetManager->AllocateDepthTexture(0, BufferSize.X, BufferSize.Y, PF_DepthStencil, 1, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead, DepthTex, SRTex, GetNumSceneColorMSAASamples(CurrentFeatureLevel));
 
 		// Allow UAV depth?
-		const uint32 DepthUAVFlag = GRHISupportsDepthUAV ? TexCreate_UAV : 0;
+		const ETextureCreateFlags textureUAVCreateFlags = GRHISupportsDepthUAV ? TexCreate_UAV : TexCreate_None;
 
 		// Create a texture to store the resolved scene depth, and a render-targetable surface to hold the unresolved scene depth.
-		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(BufferSize, PF_DepthStencil, DefaultDepthClear, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead | DepthUAVFlag, false));
+		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(BufferSize, bRequireMultiview ? PF_D24 : PF_DepthStencil, DefaultDepthClear, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead | textureUAVCreateFlags, false));
 		Desc.NumSamples = GetNumSceneColorMSAASamples(CurrentFeatureLevel);
 		Desc.Flags |= GFastVRamConfig.SceneDepth;
+		Desc.ArraySize = bRequireMultiview ? 2 : 1;
+		Desc.bIsArray = bRequireMultiview;
+		Desc.bDisableShaderResourceTexCreation = !bKeepDepthContent && Desc.NumSamples > 1;
 
 		if (!bKeepDepthContent)
 		{
@@ -2525,10 +2470,14 @@ void FSceneRenderTargets::AllocateFoveationTexture(FRHICommandList& RHICmdList)
 	{
 		FoveationTexture.SafeRelease();
 	}
+
 	bAllocatedFoveationTexture = StereoRenderTargetManager && StereoRenderTargetManager->AllocateFoveationTexture(0, BufferSize.X, BufferSize.Y, PF_R8G8, 0, TexCreate_None, TexCreate_None, Texture, TextureSize);
-	if (bAllocatedFoveationTexture)
+	if (!FoveationTexture && bAllocatedFoveationTexture)
 	{
 		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(TextureSize, PF_R8G8, FClearValueBinding::White, TexCreate_None, TexCreate_None, false));
+		Desc.ArraySize = bRequireMultiview ? 2 : 1;
+		Desc.bIsArray = bRequireMultiview;
+
 		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, FoveationTexture, TEXT("FixedFoveation"));
 		const uint32 OldElementSize = FoveationTexture->ComputeMemorySize();
 		FoveationTexture->GetRenderTargetItem().ShaderResourceTexture = FoveationTexture->GetRenderTargetItem().TargetableTexture = Texture;
@@ -2630,7 +2579,7 @@ void FSceneRenderTargets::AllocateDeferredShadingPathRenderTargets(FRHICommandLi
 			const int32 TranslucencyLightingVolumeDim = GetTranslucencyLightingVolumeDim();
 
 			// TODO: We can skip the and TLV allocations when rendering in forward shading mode
-			uint32 TranslucencyTargetFlags = TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_ReduceMemoryWithTilingMode;
+			ETextureCreateFlags TranslucencyTargetFlags = TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_ReduceMemoryWithTilingMode;
 
 			if (CurrentFeatureLevel >= ERHIFeatureLevel::SM5)
 			{
@@ -2650,7 +2599,7 @@ void FSceneRenderTargets::AllocateDeferredShadingPathRenderTargets(FRHICommandLi
 						TranslucencyLightingVolumeDim,
 						PF_FloatRGBA,
 						FClearValueBinding::Transparent,
-						0,
+						TexCreate_None,
 						TranslucencyTargetFlags,
 						false,
 						1,
@@ -2675,7 +2624,7 @@ void FSceneRenderTargets::AllocateDeferredShadingPathRenderTargets(FRHICommandLi
 						TranslucencyLightingVolumeDim,
 						PF_FloatRGBA,
 						FClearValueBinding::Transparent,
-						0,
+						TexCreate_None,
 						TranslucencyTargetFlags,
 						false,
 						1,
@@ -2737,7 +2686,9 @@ void FSceneRenderTargets::AllocateDeferredShadingPathRenderTargets(FRHICommandLi
 
 EPixelFormat FSceneRenderTargets::GetDesiredMobileSceneColorFormat() const
 {
-	EPixelFormat DefaultColorFormat = (!IsMobileHDR() || !GSupportsRenderTargetFormat_PF_FloatRGBA) ? PF_B8G8R8A8 : PF_FloatRGBA;
+    const EPixelFormat defaultLowpFormat = FPlatformMisc::IsStandaloneStereoOnlyDevice() ? PF_R8G8B8A8 : PF_B8G8R8A8;
+
+	EPixelFormat DefaultColorFormat = (!IsMobileHDR() || !GSupportsRenderTargetFormat_PF_FloatRGBA) ? defaultLowpFormat : PF_FloatRGBA;
 	check(GPixelFormats[DefaultColorFormat].Supported);
 
 	EPixelFormat MobileSceneColorBufferFormat = DefaultColorFormat;
@@ -2750,7 +2701,7 @@ EPixelFormat FSceneRenderTargets::GetDesiredMobileSceneColorFormat() const
 		case 2:
 			MobileSceneColorBufferFormat = PF_FloatR11G11B10; break;
 		case 3:
-			MobileSceneColorBufferFormat = PF_B8G8R8A8; break;
+			MobileSceneColorBufferFormat = defaultLowpFormat; break;
 		default:
 		break;
 	}
@@ -2994,9 +2945,6 @@ void FSceneRenderTargets::ReleaseAllTargets()
 		TranslucencyLightingVolumeDirectional[RTSetIndex].SafeRelease();
 	}
 
-	MobileMultiViewSceneColor.SafeRelease();
-	MobileMultiViewSceneDepthZ.SafeRelease();
-
 	EditorPrimitivesColor.SafeRelease();
 	EditorPrimitivesDepth.SafeRelease();
 
@@ -3107,7 +3055,7 @@ IPooledRenderTarget* FSceneRenderTargets::RequestCustomDepth(FRHICommandListImme
 		{
 			// Skip depth decompression, custom depth doesn't benefit from it
 			// Also disables fast clears, but typically only a small portion of custom depth is written to anyway
-			uint32 CustomDepthFlags = TexCreate_NoFastClear;
+			ETextureCreateFlags CustomDepthFlags = TexCreate_NoFastClear;
 
 			// Todo: Could check if writes stencil here and create min viable target
 			FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(CustomDepthBufferSize, PF_DepthStencil, FClearValueBinding::DepthFar, CustomDepthFlags, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource, false));
@@ -3122,7 +3070,7 @@ IPooledRenderTarget* FSceneRenderTargets::RequestCustomDepth(FRHICommandListImme
 			
 			if (bMobilePath)
 			{
-				uint32 CustomDepthStencilTargetableFlags = TexCreate_RenderTargetable | TexCreate_ShaderResource;
+				ETextureCreateFlags CustomDepthStencilTargetableFlags = TexCreate_RenderTargetable | TexCreate_ShaderResource;
 
 				FPooledRenderTargetDesc MobileCustomDepthDesc(FPooledRenderTargetDesc::Create2DDesc(CustomDepthBufferSize, PF_R16F, FClearValueBinding(FLinearColor(65500.0f, 65500.0f, 65500.0f)), TexCreate_None, CustomDepthStencilTargetableFlags, false));
 				GRenderTargetPool.FindFreeElement(RHICmdList, MobileCustomDepthDesc, MobileCustomDepth, TEXT("MobileCustomDepth"));
@@ -3214,11 +3162,7 @@ bool FSceneRenderTargets::AreRenderTargetClearsValid(ESceneColorFormatType InSce
 			const TRefCountPtr<IPooledRenderTarget>& SceneColorTarget = GetSceneColorForCurrentShadingPath();
 			const bool bColorValid = SceneColorTarget && (SceneColorTarget->GetRenderTargetItem().TargetableTexture->GetClearBinding() == DefaultColorClear);
 			const bool bDepthValid = SceneDepthZ && (SceneDepthZ->GetRenderTargetItem().TargetableTexture->GetClearBinding() == DefaultDepthClear);
-
-			// For mobile multi-view + mono support
-			const bool bMobileMultiViewColorValid = (!MobileMultiViewSceneColor || MobileMultiViewSceneColor->GetRenderTargetItem().TargetableTexture->GetClearBinding() == DefaultColorClear);
-			const bool bMobileMultiViewDepthValid = (!MobileMultiViewSceneDepthZ || MobileMultiViewSceneDepthZ->GetRenderTargetItem().TargetableTexture->GetClearBinding() == DefaultDepthClear);
-			return bColorValid && bDepthValid && bMobileMultiViewColorValid && bMobileMultiViewDepthValid;
+			return bColorValid && bDepthValid;
 		}
 	default:
 		{

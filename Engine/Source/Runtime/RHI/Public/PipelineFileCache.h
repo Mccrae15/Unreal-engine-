@@ -128,7 +128,7 @@ struct RHI_API FPipelineCacheFileFormatPSO
 		FDepthStencilStateInitializerRHI DepthStencilState;
 		
 		EPixelFormat RenderTargetFormats[MaxSimultaneousRenderTargets];
-		uint32 RenderTargetFlags[MaxSimultaneousRenderTargets];
+		ETextureCreateFlags RenderTargetFlags[MaxSimultaneousRenderTargets];
 		uint32 RenderTargetsActive;
 		uint32 MSAASamples;
 		

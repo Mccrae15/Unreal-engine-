@@ -525,22 +525,6 @@ struct INPUTCORE_API EKeys
 	static const FKey MixedReality_Right_Trackpad_Left;
 	static const FKey MixedReality_Right_Trackpad_Right;
 
-	// Oculus Go Controller
-	static const FKey OculusGo_Left_System_Click;
-	static const FKey OculusGo_Left_Back_Click;
-	static const FKey OculusGo_Left_Trigger_Click;
-	static const FKey OculusGo_Left_Trackpad_X;
-	static const FKey OculusGo_Left_Trackpad_Y;
-	static const FKey OculusGo_Left_Trackpad_Click;
-	static const FKey OculusGo_Left_Trackpad_Touch;
-	static const FKey OculusGo_Right_System_Click;
-	static const FKey OculusGo_Right_Back_Click;
-	static const FKey OculusGo_Right_Trigger_Click;
-	static const FKey OculusGo_Right_Trackpad_X;
-	static const FKey OculusGo_Right_Trackpad_Y;
-	static const FKey OculusGo_Right_Trackpad_Click;
-	static const FKey OculusGo_Right_Trackpad_Touch;
-
 	// Oculus Touch Controller
 	static const FKey OculusTouch_Left_X_Click;
 	static const FKey OculusTouch_Left_Y_Click;

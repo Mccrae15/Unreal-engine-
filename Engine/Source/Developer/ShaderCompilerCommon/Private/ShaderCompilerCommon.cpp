@@ -1286,7 +1286,7 @@ static FString Mali_ExtractErrors(const FString &MaliOutput)
 	return ReturnedErrors;
 }
 
-void CompileOfflineMali(const FShaderCompilerInput& Input, FShaderCompilerOutput& ShaderOutput, const ANSICHAR* ShaderSource, const int32 SourceSize, bool bVulkanSpirV)
+void CompileOfflineMali(const FShaderCompilerInput& Input, FShaderCompilerOutput& ShaderOutput, const ANSICHAR* ShaderSource, const int32 SourceSize, bool bVulkanSpirV, const ANSICHAR* VulkanSpirVEntryPoint)
 {
 	const bool bCompilerExecutableExists = FPaths::FileExists(Input.ExtraSettings.OfflineCompilerPath);
 
@@ -1309,27 +1309,27 @@ void CompileOfflineMali(const FShaderCompilerInput& Input, FShaderCompilerOutput
 		switch (Frequency)
 		{
 			case SF_Vertex:
-				GLSLSourceFile += TEXT(".vert");
+				GLSLSourceFile += bVulkanSpirV ? TEXT(".spv") : TEXT(".vert");
 				CompilerCommand += TEXT(" -v");
 			break;
 			case SF_Pixel:
-				GLSLSourceFile += TEXT(".frag");
+				GLSLSourceFile += bVulkanSpirV ? TEXT(".spv") : TEXT(".frag");
 				CompilerCommand += TEXT(" -f");
 			break;
 			case SF_Geometry:
-				GLSLSourceFile += TEXT(".geom");
+				GLSLSourceFile += bVulkanSpirV ? TEXT(".spv") : TEXT(".geom");
 				CompilerCommand += TEXT(" -g");
 			break;
 			case SF_Hull:
-				GLSLSourceFile += TEXT(".tesc");
+				GLSLSourceFile += bVulkanSpirV ? TEXT(".spv") : TEXT(".tesc");
 				CompilerCommand += TEXT(" -t");
 			break;
 			case SF_Domain:
-				GLSLSourceFile += TEXT(".tese");
+				GLSLSourceFile += bVulkanSpirV ? TEXT(".spv") : TEXT(".tese");
 				CompilerCommand += TEXT(" -e");
 			break;
 			case SF_Compute:
-				GLSLSourceFile += TEXT(".comp");
+				GLSLSourceFile += bVulkanSpirV ? TEXT(".spv") : TEXT(".comp");
 				CompilerCommand += TEXT(" -C");
 			break;
 
@@ -1340,7 +1340,7 @@ void CompileOfflineMali(const FShaderCompilerInput& Input, FShaderCompilerOutput
 
 		if (bVulkanSpirV)
 		{
-			CompilerCommand += TEXT(" -p");
+			CompilerCommand += FString::Printf(TEXT(" -y %s -p"), ANSI_TO_TCHAR(VulkanSpirVEntryPoint));
 		}
 		else
 		{

@@ -462,14 +462,6 @@ namespace UnrealBuildTool
 				OculusMobileDevices = new List<string>();
 			}
 
-			// Handle bPackageForGearVR for backwards compatibility
-			bool bPackageForGearVR = false;
-			Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bPackageForGearVR", out bPackageForGearVR);
-			if (bPackageForGearVR && !OculusMobileDevices.Contains("GearGo"))
-			{
-				OculusMobileDevices.Add("GearGo");
-			}
-
 			return OculusMobileDevices;
 		}
 
@@ -2357,6 +2349,10 @@ namespace UnrealBuildTool
 			{
 				Text.AppendLine(string.Format("\t\t<meta-data android:name=\"com.epicgames.ue4.GameActivity.bDaydream\" android:value=\"true\"/>"));
 			}
+			if (bPackageForOculusMobile && !bIsForDistribution)
+			{
+				Text.AppendLine("\t\t\t<meta-data android:name=\"com.oculus.extlib\" android:value=\"true\"/>");
+			}
 			Text.AppendLine("\t\t<meta-data android:name=\"com.google.android.gms.games.APP_ID\"");
 			Text.AppendLine("\t\t           android:value=\"@string/app_id\" />");
 			Text.AppendLine("\t\t<meta-data android:name=\"com.google.android.gms.version\"");
@@ -2649,6 +2645,14 @@ namespace UnrealBuildTool
 
 				File.WriteAllText(Filename, XML_HEADER + "\n<resources>\n\t<string name=\"app_id\">" + NewAppId + "</string>\n</resources>\n");
 			}
+		}
+
+		void ValidateOculus()
+		{
+			ConfigHierarchy Ini = GetConfigCacheIni(ConfigHierarchyType.Engine);
+
+			bool bSupportsVulkan = false;
+			Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bSupportsVulkan", out bSupportsVulkan);
 		}
 
 		private bool FilesAreDifferent(string SourceFilename, string DestFilename)
@@ -3009,14 +3013,6 @@ namespace UnrealBuildTool
 
 			if (bForDistribution)
 			{
-				bool bDisableV2Signing = false;
-
-				if (GetTargetOculusMobileDevices().Contains("GearGo"))
-				{
-					bDisableV2Signing = true;
-					Log.TraceInformation("Disabling v2Signing for Oculus Go / Gear VR APK");
-				}
-
 				string KeyAlias, KeyStore, KeyStorePassword, KeyPassword;
 				Ini.GetString("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "KeyStore", out KeyStore);
 				Ini.GetString("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "KeyAlias", out KeyAlias);
@@ -3051,10 +3047,6 @@ namespace UnrealBuildTool
 				GradleBuildAdditionsContent.AppendLine(string.Format("\t\t\tstorePassword '{0}'", KeyStorePassword));
 				GradleBuildAdditionsContent.AppendLine(string.Format("\t\t\tkeyAlias '{0}'", KeyAlias));
 				GradleBuildAdditionsContent.AppendLine(string.Format("\t\t\tkeyPassword '{0}'", KeyPassword));
-				if (bDisableV2Signing)
-				{
-					GradleBuildAdditionsContent.AppendLine("\t\t\tv2SigningEnabled false");
-				}
 				GradleBuildAdditionsContent.AppendLine("\t\t}");
 				GradleBuildAdditionsContent.AppendLine("\t}");
 
@@ -3592,6 +3584,9 @@ namespace UnrealBuildTool
 
 				//Now validate GooglePlay app_id if enabled
 				ValidateGooglePlay(UE4BuildPath);
+
+				//Now validate settings for Oculus devices
+				ValidateOculus();
 
 				//determine which orientation requirements this app has
 				bool bNeedLandscape = false;

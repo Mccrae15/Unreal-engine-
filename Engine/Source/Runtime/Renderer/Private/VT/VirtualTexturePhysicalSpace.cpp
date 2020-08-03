@@ -95,7 +95,7 @@ void FVirtualTexturePhysicalSpace::InitRHI()
 		const EPixelFormat FormatUAV = GetUnorderedAccessViewFormat(FormatSRV);
 		const bool bCreateAliasedUAV = (FormatUAV != PF_Unknown) && (FormatUAV != FormatSRV);
 		// Not all mobile RHIs support sRGB texture views/aliasing, use only linear targets on mobile
-		uint32 VT_SRGB = GMaxRHIFeatureLevel > ERHIFeatureLevel::ES3_1 ? TexCreate_SRGB : TexCreate_None;
+		ETextureCreateFlags VT_SRGB = GMaxRHIFeatureLevel > ERHIFeatureLevel::ES3_1 ? TexCreate_SRGB : TexCreate_None;
 		
 		// Allocate physical texture from the render target pool
 		const uint32 TextureSize = GetTextureSize();

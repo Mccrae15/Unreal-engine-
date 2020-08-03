@@ -1449,7 +1449,7 @@ namespace UnrealBuildTool
 				CompileAction.CommandArguments = string.Format(" @\"{0}\"", CompilerResponseFileName);
 				CompileAction.PrerequisiteItems.Add(CompilerResponseFileItem);
 				CompileAction.CommandDescription = "Compile";
-				CompileAction.StatusDescription = Path.GetFileName(SourceFile.AbsolutePath);
+				CompileAction.StatusDescription = string.Format("{0} [{1}]", Path.GetFileName(SourceFile.AbsolutePath), CompileEnvironment.Platform);
 				CompileAction.bIsGCCCompiler = true;
 
 				// Don't farm out creation of pre-compiled headers as it is the critical path task.

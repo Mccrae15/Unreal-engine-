@@ -869,7 +869,7 @@ void FHZBOcclusionTester::Submit(FRHICommandListImmediate& RHICmdList, const FVi
 	TRefCountPtr< IPooledRenderTarget >	BoundsCenterTexture;
 	TRefCountPtr< IPooledRenderTarget >	BoundsExtentTexture;
 	{
-		uint32 Flags = TexCreate_ShaderResource | TexCreate_Dynamic;
+		ETextureCreateFlags Flags = TexCreate_ShaderResource | TexCreate_Dynamic;
 		FPooledRenderTargetDesc Desc( FPooledRenderTargetDesc::Create2DDesc( FIntPoint( SizeX, SizeY ), PF_A32B32G32R32F, FClearValueBinding::None, Flags, TexCreate_None, false ) );
 
 		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, BoundsCenterTexture, TEXT("HZBBoundsCenter") );

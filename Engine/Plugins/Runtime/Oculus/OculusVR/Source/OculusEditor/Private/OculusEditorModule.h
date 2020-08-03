@@ -68,5 +68,6 @@ public:
 	FReply PluginClickPlatFn(bool text);
 
 	void OnEnableBuildTelemetry(ECheckBoxState NewState);
-	ECheckBoxState IsBuildTelemetryEnabled() const;
+	ECheckBoxState GetBuildTelemetryCheckBoxState() const;
+	EVisibility GetOculusHMDAvailableWarningVisibility() const;
 };

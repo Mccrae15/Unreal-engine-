@@ -684,7 +684,7 @@ void FGoogleARCoreDevice::AllocatePassthroughCameraTexture_RenderThread()
 		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 		FRHIResourceCreateInfo CreateInfo;
 		
-		PassthroughCameraTexture = RHICmdList.CreateTextureExternal2D(1, 1, PF_R8G8B8A8, 1, 1, 0, CreateInfo);
+		PassthroughCameraTexture = RHICmdList.CreateTextureExternal2D(1, 1, PF_R8G8B8A8, 1, 1, TexCreate_None, CreateInfo);
 		
 		void* NativeResource = PassthroughCameraTexture->GetNativeResource();
 		check(NativeResource);

@@ -184,9 +184,9 @@ public:
 	virtual bool NeedReAllocateViewportRenderTarget(const class FViewport& Viewport) override;
 	virtual bool NeedReAllocateDepthTexture(const TRefCountPtr<IPooledRenderTarget>& DepthTarget) override;
 	virtual bool NeedReAllocateFoveationTexture(const TRefCountPtr<IPooledRenderTarget>& FoveationTarget) override;
-	virtual bool AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 InTexFlags, uint32 InTargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override;
-	virtual bool AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 InTexFlags, uint32 TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override;
-	virtual bool AllocateFoveationTexture(uint32 Index, uint32 RenderSizeX, uint32 RenderSizeY, uint8 Format, uint32 NumMips, uint32 InTexFlags, uint32 InTargetableTextureFlags, FTexture2DRHIRef& OutTexture, FIntPoint& OutTextureSize) override;
+	virtual bool AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags InTargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override;
+	virtual bool AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture, FTexture2DRHIRef& OutShaderResourceTexture, uint32 NumSamples = 1) override;
+	virtual bool AllocateFoveationTexture(uint32 Index, uint32 RenderSizeX, uint32 RenderSizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags InTargetableTextureFlags, FTexture2DRHIRef& OutTexture, FIntPoint& OutTextureSize) override;
 	virtual void UpdateViewportWidget(bool bUseSeparateRenderTarget, const class FViewport& Viewport, class SViewport* ViewportWidget) override;
 	virtual FXRRenderBridge* GetActiveRenderBridge_GameThread(bool bUseSeparateRenderTarget);
 	void AllocateEyeBuffer();
@@ -212,7 +212,10 @@ public:
 	virtual void PostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
 	virtual int32 GetPriority() const override;
 	virtual bool IsActiveThisFrame(class FViewport* InViewport) const override;
-
+#if WITH_LATE_LATCHING_CODE
+	virtual bool LateLatchingEnabled() const override; 
+	virtual void PreLateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
+#endif
 
 public:
 	FOculusHMD(const FAutoRegister&);
@@ -276,8 +279,10 @@ public:
 	FVector GetBaseOffsetInMeters() const;
 
 	OCULUSHMD_API bool ConvertPose(const ovrpPosef& InPose, FPose& OutPose) const;
+	OCULUSHMD_API bool ConvertPose(const FPose& InPose, ovrpPosef& OutPose) const;
 	OCULUSHMD_API bool ConvertPose_RenderThread(const ovrpPosef& InPose, FPose& OutPose) const;
 	OCULUSHMD_API static bool ConvertPose_Internal(const ovrpPosef& InPose, FPose& OutPose, const FSettings* Settings, float WorldToMetersScale = 100.0f);
+	OCULUSHMD_API static bool ConvertPose_Internal(const FPose& InPose, ovrpPosef& OutPose, const FSettings* Settings, float WorldToMetersScale = 100.0f);
 
 	/** Turns ovrVector3f in Unreal World space to a scaled FVector and applies translation and rotation corresponding to player movement */
 	FVector ScaleAndMovePointWithPlayer(ovrpVector3f& OculusHMDPoint);
@@ -335,7 +340,7 @@ public:
 	void FinishRHIFrame_RHIThread(); // Called from FinishRendering_RHIThread
 
 	void SetCPUAndGPULevel(int CPULevel, int GPULevel);
-	void SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel InFFRLevel);
+	void SetFixedFoveatedRenderingLevel(EFixedFoveatedRenderingLevel InFFRLevel, bool isDynamic);
 	void SetColorScaleAndOffset(FLinearColor ColorScale, FLinearColor ColorOffset, bool bApplyToAllLayers);
 
 	OCULUSHMD_API void UpdateRTPoses();

@@ -89,7 +89,7 @@ inline FRDGTextureRef FRDGBuilder::CreateTexture(
 		checkf(GPixelFormats[Desc.Format].Supported, TEXT("Failed to create texture %s with pixel format %s because it is not supported."),
 			Name, GPixelFormats[Desc.Format].Name);
 
-		const bool bCanHaveUAV = Desc.TargetableFlags & TexCreate_UAV;
+		const bool bCanHaveUAV = (bool)(Desc.TargetableFlags & TexCreate_UAV);
 		const bool bIsMSAA = Desc.NumSamples > 1;
 
 		// D3D11 doesn't allow creating a UAV on MSAA texture.

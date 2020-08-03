@@ -1106,7 +1106,7 @@ void GenerateFolliculeMask(
 		OutputDesc.Depth = 0;
 		OutputDesc.Format = PF_R8G8B8A8;
 		OutputDesc.NumMips = MipCount;
-		OutputDesc.Flags = 0;
+		OutputDesc.Flags = TexCreate_None;
 		OutputDesc.TargetableFlags = TexCreate_RenderTargetable | TexCreate_ShaderResource | TexCreate_UAV;
 		OutTexture = GraphBuilder.CreateTexture(OutputDesc, TEXT("FollicleMask"));
 	}

@@ -82,6 +82,13 @@ static TAutoConsoleVariable<int32> CVarMobileCustomDepthForTranslucency(
 	TEXT(" 1 = On [default]"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
+static TAutoConsoleVariable<int32> CVarMobileDisableTransluencySubpass(
+	TEXT("r.Mobile.DisableTransluencySubpass"),
+	0,
+	TEXT("0: Run transluency in its own subpass, enabling opaque depth fetch (Default)\n")
+	TEXT("1: Transluency and opaque draws are in the same subpass (no depth fetch supported!)\n"),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
 DECLARE_GPU_STAT_NAMED(MobileSceneRender, TEXT("Mobile Scene Render"));
 
 DECLARE_CYCLE_STAT(TEXT("SceneStart"), STAT_CLMM_SceneStart, STATGROUP_CommandListMarkers);
@@ -369,6 +376,47 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 	OnStartRender(RHICmdList);
 }
 
+#if WITH_LATE_LATCHING_CODE
+void FMobileSceneRenderer::BeginLateLatching(FRHICommandListImmediate& RHICmdList)
+{
+	SCOPED_NAMED_EVENT(BeginLateLatching, FColor::Orange);
+	uint32 FrameNumber = ViewFamily.FrameNumber;
+	Scene->UniformBuffers.ViewUniformBuffer->FlagPatchingFrameNumber(FrameNumber);
+	Scene->UniformBuffers.InstancedViewUniformBuffer->FlagPatchingFrameNumber(FrameNumber);
+	RHICmdList.BeginLateLatching(FrameNumber);
+}
+
+void FMobileSceneRenderer::EndLateLatching(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
+{
+	SCOPED_NAMED_EVENT(ApplyLateLatching, FColor::Orange);
+
+	// Flush to reduce post latelatching overhead
+	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+
+	for (int32 ViewExt = 0; ViewExt < ViewFamily.ViewExtensions.Num(); ++ViewExt)
+	{
+		ViewFamily.ViewExtensions[ViewExt]->PreLateLatchingViewFamily_RenderThread(RHICmdList, ViewFamily);
+	}
+
+	for (int32 ViewExt = 0; ViewExt < ViewFamily.ViewExtensions.Num(); ++ViewExt)
+	{
+		ViewFamily.ViewExtensions[ViewExt]->LateLatchingViewFamily_RenderThread(RHICmdList, ViewFamily);
+		for (int ViewIndex = 0; ViewIndex < ViewFamily.Views.Num(); ViewIndex++)
+		{
+			ViewFamily.ViewExtensions[ViewExt]->LateLatchingView_RenderThread(RHICmdList, ViewFamily, Views[ViewIndex]);
+		}
+	}
+
+	for (int ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+	{
+		Views[ViewIndex].UpdateLateLatchData();
+	}
+
+	Scene->UniformBuffers.CachedView = NULL;
+	Scene->UniformBuffers.UpdateViewUniformBuffer(View);
+	RHICmdList.EndLateLatching();
+}
+#endif
 /** 
 * Renders the view family. 
 */
@@ -407,9 +455,6 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		return;
 	}
 
-	SCOPED_DRAW_EVENT(RHICmdList, MobileSceneRender);
-	SCOPED_GPU_STAT(RHICmdList, MobileSceneRender);
-
 	WaitOcclusionTests(RHICmdList);
 	FRHICommandListExecutor::GetImmediateCommandList().PollOcclusionQueries();
 	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
@@ -446,6 +491,8 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	// Whether to submit cmdbuffer with offscreen rendering before doing post-processing
 	bool bSubmitOffscreenRendering = !bGammaSpace || bRenderToSceneColor;
 
+	const bool bUseSubpass = CVarMobileDisableTransluencySubpass.GetValueOnAnyThread() == 0;
+
 	// Initialize global system textures (pass-through if already initialized).
 	GSystemTextures.InitializeTextures(RHICmdList, ViewFeatureLevel);
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
@@ -467,7 +514,14 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 	// Find the visible primitives.
 	InitViews(RHICmdList);
-	
+
+#if WITH_LATE_LATCHING_CODE
+	if (ViewFamily.bLateLatchingEnabled)
+	{
+		BeginLateLatching(RHICmdList);
+	}
+#endif
+
 	if (GRHINeedsExtraDeletionLatency || !GRHICommandList.Bypass())
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FMobileSceneRenderer_PostInitViewsFlushDel);
@@ -543,19 +597,19 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	{
 		if (bMobileMSAA)
 		{
-			SceneColor = (View.bIsMobileMultiViewEnabled) ? SceneContext.MobileMultiViewSceneColor->GetRenderTargetItem().TargetableTexture : SceneContext.GetSceneColorSurface();
-			SceneColorResolve = GetMultiViewSceneColor(SceneContext);
+			SceneColor = SceneContext.GetSceneColorSurface();
+			SceneColorResolve = ViewFamily.RenderTarget->GetRenderTargetTexture();
 			ColorTargetAction = ERenderTargetActions::Clear_Resolve;
 			// Rendering to a backbuffer, make sure it's writeable
 			RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, SceneColorResolve);
 		}
 		else
 		{
-			SceneColor = GetMultiViewSceneColor(SceneContext);
+			SceneColor = ViewFamily.RenderTarget->GetRenderTargetTexture();
 			// Rendering to a backbuffer, make sure it's writeable
 			RHICmdList.TransitionResource(EResourceTransitionAccess::EWritable, SceneColor);
 		}
-		SceneDepth = (View.bIsMobileMultiViewEnabled) ? SceneContext.MobileMultiViewSceneDepthZ->GetRenderTargetItem().TargetableTexture : static_cast<FTextureRHIRef>(SceneContext.GetSceneDepthSurface());
+		SceneDepth = SceneContext.GetSceneDepthSurface();
 	}
 	else
 	{
@@ -595,7 +649,7 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		FoveationTexture,
 		FExclusiveDepthStencil::DepthWrite_StencilWrite
 	);
-	SceneColorRenderPassInfo.SubpassHint = ESubpassHint::DepthReadSubpass;
+	SceneColorRenderPassInfo.SubpassHint = bUseSubpass ? ESubpassHint::DepthReadSubpass : ESubpassHint::None;
 	SceneColorRenderPassInfo.NumOcclusionQueries = ComputeNumOcclusionQueriesToBatch();
 	SceneColorRenderPassInfo.bOcclusionQueries = SceneColorRenderPassInfo.NumOcclusionQueries != 0;
 	SceneColorRenderPassInfo.bMultiviewPass = View.bIsMobileMultiViewEnabled;
@@ -654,7 +708,10 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	}
 
 	// scene depth is read only and can be fetched
-	RHICmdList.NextSubpass();
+	if (bUseSubpass) 
+	{
+		RHICmdList.NextSubpass();
+	}
 		
 	// Split if we need to render translucency in a separate render pass
 	if (bRequiresTranslucencyPass)
@@ -779,11 +836,6 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Post));
 
-	if (!View.bIsMobileMultiViewDirectEnabled)
-	{
-		CopyMobileMultiViewSceneColor(RHICmdList);
-	}
-
 	if (bUseVirtualTexturing)
 	{	
 		// No pass after this can make VT page requests
@@ -822,6 +874,13 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	}
 
 	RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_SceneEnd));
+
+#if WITH_LATE_LATCHING_CODE
+	if (ViewFamily.bLateLatchingEnabled)
+	{
+		EndLateLatching(RHICmdList, View);
+	}
+#endif
 
 	RenderFinish(RHICmdList);
 
@@ -1119,108 +1178,6 @@ void FMobileSceneRenderer::CreateDirectionalLightUniformBuffers(FViewInfo& View)
 		SetupMobileDirectionalLightUniformParameters(*Scene, View, VisibleLightInfos, ChannelIdx, bDynamicShadows, Params);
 		View.MobileDirectionalLightUniformBuffers[ChannelIdx + 1] = TUniformBufferRef<FMobileDirectionalLightShaderParameters>::CreateUniformBufferImmediate(Params, UniformBuffer_SingleFrame);
 	}
-}
-
-class FCopyMobileMultiViewSceneColorPS : public FGlobalShader
-{
-	DECLARE_SHADER_TYPE(FCopyMobileMultiViewSceneColorPS, Global);
-public:
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return true;;
-	}
-
-	FCopyMobileMultiViewSceneColorPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
-		FGlobalShader(Initializer)
-	{
-		MobileMultiViewSceneColorTexture.Bind(Initializer.ParameterMap, TEXT("MobileMultiViewSceneColorTexture"));
-		MobileMultiViewSceneColorTextureSampler.Bind(Initializer.ParameterMap, TEXT("MobileMultiViewSceneColorTextureSampler"));
-	}
-
-	FCopyMobileMultiViewSceneColorPS() {}
-
-	void SetParameters(FRHICommandList& RHICmdList, FRHIUniformBuffer* ViewUniformBuffer, FTextureRHIRef InMobileMultiViewSceneColorTexture)
-	{
-		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
-		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, ViewUniformBuffer);
-		SetTextureParameter(
-			RHICmdList,
-			ShaderRHI,
-			MobileMultiViewSceneColorTexture,
-			MobileMultiViewSceneColorTextureSampler,
-			TStaticSamplerState<SF_Bilinear>::GetRHI(),
-			InMobileMultiViewSceneColorTexture);
-	}
-
-	LAYOUT_FIELD(FShaderResourceParameter, MobileMultiViewSceneColorTexture)
-	LAYOUT_FIELD(FShaderResourceParameter, MobileMultiViewSceneColorTextureSampler)
-};
-
-IMPLEMENT_SHADER_TYPE(, FCopyMobileMultiViewSceneColorPS, TEXT("/Engine/Private/MobileMultiView.usf"), TEXT("MainPS"), SF_Pixel);
-
-void FMobileSceneRenderer::CopyMobileMultiViewSceneColor(FRHICommandListImmediate& RHICmdList)
-{
-	if (Views.Num() <= 1 || !Views[0].bIsMobileMultiViewEnabled)
-	{
-		return;
-	}
-
-	RHICmdList.DiscardRenderTargets(true, true, 0);
-
-	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
-
-	// Switching from the multi-view scene color render target array to side by side scene color
-	FRHIRenderPassInfo RPInfo(ViewFamily.RenderTarget->GetRenderTargetTexture(), ERenderTargetActions::Clear_Store);
-	RPInfo.DepthStencilRenderTarget.Action = EDepthStencilTargetActions::ClearDepthStencil_DontStoreDepthStencil;
-	RPInfo.DepthStencilRenderTarget.DepthStencilTarget = SceneContext.GetSceneDepthTexture();
-	RPInfo.DepthStencilRenderTarget.ExclusiveDepthStencil = FExclusiveDepthStencil::DepthNop_StencilNop;
-
-	TransitionRenderPassTargets(RHICmdList, RPInfo);
-	RHICmdList.BeginRenderPass(RPInfo, TEXT("CopyMobileMultiViewColor"));
-	{
-	FGraphicsPipelineStateInitializer GraphicsPSOInit;
-	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-	GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
-	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-
-	const auto ShaderMap = GetGlobalShaderMap(FeatureLevel);
-	TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
-	TShaderMapRef<FCopyMobileMultiViewSceneColorPS> PixelShader(ShaderMap);
-	extern TGlobalResource<FFilterVertexDeclaration> GFilterVertexDeclaration;
-
-	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-
-	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
-	{
-		const FViewInfo& View = Views[ViewIndex];
-
-		// Multi-view color target is our input texture array
-		PixelShader->SetParameters(RHICmdList, View.ViewUniformBuffer, SceneContext.MobileMultiViewSceneColor->GetRenderTargetItem().ShaderResourceTexture);
-
-		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Min.X + View.ViewRect.Width(), View.ViewRect.Min.Y + View.ViewRect.Height(), 1.0f);
-		const FIntPoint TargetSize(View.ViewRect.Width(), View.ViewRect.Height());
-
-		DrawRectangle(
-			RHICmdList,
-			0, 0,
-			View.ViewRect.Width(), View.ViewRect.Height(),
-			0, 0,
-			View.ViewRect.Width(), View.ViewRect.Height(),
-			TargetSize,
-			TargetSize,
-			VertexShader,
-			EDRF_UseTriangleOptimization);
-	}
-
-	}
-	RHICmdList.EndRenderPass();
 }
 
 class FPreTonemapMSAA_ES2 : public FGlobalShader
