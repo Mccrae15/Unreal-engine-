@@ -123,25 +123,22 @@ TMap< FOcclusionResultsKey, FOcclusionResults > GOcclusionResults;
 namespace VirtualHeightfieldMesh
 {
 	/** Calculate distances used for LODs in a given view for a given scene proxy. */
-	FVector CalculateLodRanges(FSceneView const* InView, FVirtualHeightfieldMeshSceneProxy const* InProxy)
+	FVector4 CalculateLodRanges(FSceneView const* InView, FVirtualHeightfieldMeshSceneProxy const* InProxy)
 	{
 		const uint32 MaxLevel = InProxy->AllocatedVirtualTexture->GetMaxLevel();
 		const float Lod0UVSize = 1.f / (float)(1 << MaxLevel);
 		const FVector2D Lod0WorldSize = FVector2D(InProxy->UVToWorldScale.X, InProxy->UVToWorldScale.Y) * Lod0UVSize;
 		const float Lod0WorldRadius = Lod0WorldSize.Size();
 		const float ScreenMultiple = FMath::Max(0.5f * InView->ViewMatrices.GetProjectionMatrix().M[0][0], 0.5f * InView->ViewMatrices.GetProjectionMatrix().M[1][1]);
-		const float LodDistance = Lod0WorldRadius * ScreenMultiple;
-
-		const float LodDistance0 = LodDistance * (1 + InProxy->LodRangeBias);
-		const float LodDistance1 = 2.f * LodDistance / InProxy->LodRangeScale;
+		const float Lod0Distance = Lod0WorldRadius * ScreenMultiple / InProxy->Lod0ScreenSize;
 		const float LodScale = InView->LODDistanceFactor * CVarVHMLodScale.GetValueOnRenderThread();
 		
-		return FVector(LodDistance0, LodDistance1, LodScale);
+		return FVector4(Lod0Distance, InProxy->Lod0Distribution, InProxy->LodDistribution, LodScale);
 	}
 }
 
 /** Renderer extension to manage the buffer pool and add hooks for GPU culling passes. */
-class FVirtualHeightfieldMeshRendererExtension
+class FVirtualHeightfieldMeshRendererExtension : public FRenderResource
 {
 public:
 	FVirtualHeightfieldMeshRendererExtension()
@@ -159,6 +156,11 @@ public:
 	VirtualHeightfieldMesh::FDrawInstanceBuffers& AddWork(FVirtualHeightfieldMeshSceneProxy const* InProxy, FSceneView const* InMainView, FSceneView const* InCullView);
 	/** Submit all the work added by AddWork(). The work fills all of the buffers ready for use by the referencing mesh batches. */
 	void SubmitWork(FRHICommandListImmediate& InRHICmdList);
+
+protected:
+	//~ Begin FRenderResource Interface
+	virtual void ReleaseRHI() override;
+	//~ End FRenderResource Interface
 
 private:
 	/** Called by renderer at start of render frame. */
@@ -211,7 +213,7 @@ private:
 };
 
 /** Single global instance of the VirtualHeightfieldMesh renderer extension. */
-FVirtualHeightfieldMeshRendererExtension GVirtualHeightfieldMeshViewRendererExtension;
+TGlobalResource< FVirtualHeightfieldMeshRendererExtension > GVirtualHeightfieldMeshViewRendererExtension;
 
 void FVirtualHeightfieldMeshRendererExtension::RegisterExtension()
 {
@@ -222,6 +224,11 @@ void FVirtualHeightfieldMeshRendererExtension::RegisterExtension()
 		GEngine->GetPostRenderDelegate().AddRaw(this, &FVirtualHeightfieldMeshRendererExtension::EndFrame);
 		bInit = true;
 	}
+}
+
+void FVirtualHeightfieldMeshRendererExtension::ReleaseRHI()
+{
+	Buffers.Empty();
 }
 
 VirtualHeightfieldMesh::FDrawInstanceBuffers& FVirtualHeightfieldMeshRendererExtension::AddWork(FVirtualHeightfieldMeshSceneProxy const* InProxy, FSceneView const* InMainView, FSceneView const* InCullView)
@@ -331,8 +338,9 @@ FVirtualHeightfieldMeshSceneProxy::FVirtualHeightfieldMeshSceneProxy(UVirtualHei
 	, bCallbackRegistered(false)
 	, NumQuadsPerTileSide(0)
 	, VertexFactory(nullptr)
-	, LodRangeScale(InComponent->GetLodRamgeScale())
-	, LodRangeBias(InComponent->GetLodRamgeBias())
+	, Lod0ScreenSize(InComponent->GetLod0ScreenSize())
+	, Lod0Distribution(InComponent->GetLod0Distribution())
+	, LodDistribution(InComponent->GetLodDistribution())
 	, NumSubdivisionLODs(InComponent->GetNumSubdivisionLods())
 	, NumTailLods(InComponent->GetNumTailLods())
 	, OcclusionData(InComponent->GetOcclusionData())
@@ -667,9 +675,8 @@ namespace VirtualHeightfieldMesh
 			SHADER_PARAMETER_TEXTURE(Texture2D<float>, OcclusionTexture)
 			SHADER_PARAMETER(int32, OcclusionLevelOffset)
 			SHADER_PARAMETER_TEXTURE(Texture2D<uint>, PageTableTexture)
-			SHADER_PARAMETER(uint32, PageTableFeedbackId)
 			SHADER_PARAMETER(FVector4, PageTableSize)
-			SHADER_PARAMETER(FVector, LodDistances)
+			SHADER_PARAMETER(FVector4, LodDistances)
 			SHADER_PARAMETER(FVector, ViewOrigin)
 			SHADER_PARAMETER_ARRAY(FVector4, FrustumPlanes, [5])
 			SHADER_PARAMETER(FMatrix, UVToWorld)
@@ -679,7 +686,6 @@ namespace VirtualHeightfieldMesh
 			SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWQueueBuffer)
 			SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint2>, RWQuadBuffer)
 			SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWIndirectArgsBuffer)
-			SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWFeedbackBuffer)
 		END_SHADER_PARAMETER_STRUCT()
 
 		static bool ShouldCompilePermutation(FGlobalShaderPermutationParameters const& Parameters)
@@ -757,11 +763,13 @@ namespace VirtualHeightfieldMesh
 		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 			SHADER_PARAMETER(FVector4, PageTableSize)
 			SHADER_PARAMETER_TEXTURE(Texture2D, PageTableTexture)
+			SHADER_PARAMETER(uint32, PageTableFeedbackId)
 			SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint2>, QuadBuffer)
 			SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float2>, LodTexture)
 			SHADER_PARAMETER_RDG_BUFFER(Buffer<uint>, IndirectArgsBuffer)
 			SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, IndirectArgsBufferSRV)
 			SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWQuadNeighborBuffer)
+			SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, RWFeedbackBuffer)
 		END_SHADER_PARAMETER_STRUCT()
 
 		static bool ShouldCompilePermutation(FGlobalShaderPermutationParameters const& Parameters)
@@ -956,7 +964,7 @@ namespace VirtualHeightfieldMesh
 	{
 		FSceneView const* ViewDebug;
 		FVector ViewOrigin;
-		FVector LodDistances;
+		FVector4 LodDistances;
 		FVector4 Planes[5];
 		FTextureRHIRef OcclusionTexture;
 		int32 OcclusionLevelOffset;
@@ -1129,7 +1137,6 @@ namespace VirtualHeightfieldMesh
 		PassParameters->OcclusionLevelOffset = InViewDesc.OcclusionLevelOffset;
 		PassParameters->PageTableTexture = InDesc.PageTableTexture;
 		PassParameters->PageTableSize = InDesc.PageTableSize;
-		PassParameters->PageTableFeedbackId = InDesc.PageTableFeedbackId;
 		PassParameters->UVToWorld = InDesc.UVToWorld;
 		PassParameters->UVToWorldScale = InDesc.UVToWorldScale;
 		PassParameters->ViewOrigin = InViewDesc.ViewOrigin;
@@ -1143,7 +1150,6 @@ namespace VirtualHeightfieldMesh
 		PassParameters->RWQueueBuffer = InVolatileResources.QueueBufferUAV;
 		PassParameters->RWQuadBuffer = InVolatileResources.QuadBufferUAV;
 		PassParameters->RWIndirectArgsBuffer = InVolatileResources.IndirectArgsBufferUAV;
-		PassParameters->RWFeedbackBuffer = InVolatileResources.FeedbackBufferUAV;
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
@@ -1197,12 +1203,14 @@ namespace VirtualHeightfieldMesh
 
 		FResolveNeighborLodsCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FResolveNeighborLodsCS::FParameters>();
 		PassParameters->PageTableSize = InDesc.PageTableSize;
+		PassParameters->PageTableFeedbackId = InDesc.PageTableFeedbackId;
 		PassParameters->PageTableTexture = InDesc.PageTableTexture;
 		PassParameters->QuadBuffer = InVolatileResources.QuadBufferSRV;
 		PassParameters->LodTexture = InVolatileResources.LodTexture;
 		PassParameters->IndirectArgsBuffer = InVolatileResources.IndirectArgsBuffer;
 		PassParameters->IndirectArgsBufferSRV = InVolatileResources.IndirectArgsBufferSRV;
 		PassParameters->RWQuadNeighborBuffer = InVolatileResources.QuadNeighborBufferUAV;
+		PassParameters->RWFeedbackBuffer = InVolatileResources.FeedbackBufferUAV;
 
 		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("ResolveNeighborLods"),
