@@ -424,6 +424,7 @@ ULevelEditorMiscSettings::ULevelEditorMiscSettings( const FObjectInitializer& Ob
 	MinimumBoundsForCheckingSize = FVector(500.0f, 500.0f, 50.0f);
 	bCreateNewAudioDeviceForPlayInEditor = true;
 	bEnableLegacyMeshPaintMode = false;
+	bAvoidRelabelOnPasteSelected = false;
 }
 
 void ULevelEditorMiscSettings::PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent )
@@ -891,8 +892,9 @@ ULevelEditorViewportSettings::ULevelEditorViewportSettings( const FObjectInitial
 	BillboardScale = 1.0f;
 	TransformWidgetSizeAdjustment = 0.0f;
 	SelectedSplinePointSizeAdjustment = 0.0f;
-	SelectedSplineTangentHandleSizeAdjustment = 0.0f;
 	SplineLineThicknessAdjustment = 0.0f;
+	SplineTangentHandleSizeAdjustment = 0.0f;
+	SplineTangentScale = 1.0f;
 	MeasuringToolUnits = MeasureUnits_Centimeters;
 	bAllowArcballRotate = false;
 	bAllowScreenRotate = false;

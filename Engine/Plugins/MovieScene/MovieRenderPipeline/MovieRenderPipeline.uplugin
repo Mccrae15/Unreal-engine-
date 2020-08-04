@@ -45,6 +45,12 @@
 			"Name": "MovieRenderPipelineEditor",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "UEOpenExrRTTI",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"WhitelistPlatforms": [ "Mac", "Win32", "Win64", "Linux" ]
 		}
 	]
 }
