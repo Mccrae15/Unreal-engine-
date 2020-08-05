@@ -29,7 +29,7 @@ class FNiagaraShaderScript;
 class FNiagaraShaderMap;
 class FNiagaraShader;
 class FNiagaraShaderMapId;
-class UNiagaraScript;
+class UNiagaraScriptBase;
 struct FNiagaraVMExecutableDataId;
 
 #define MAX_CONCURRENT_EVENT_DATASETS 4
@@ -404,8 +404,7 @@ public:
 	FNiagaraShaderMap();
 
 	// Destructor.
-	virtual ~FNiagaraShaderMap();
-	virtual void OnReleased() override;
+	~FNiagaraShaderMap();
 
 	/**
 	* Compiles the shaders for a script and caches them in this shader map.
@@ -453,6 +452,10 @@ public:
 	/** Registers a niagara shader map in the global map so it can be used by Niagara scripts. */
 	void Register(EShaderPlatform InShaderPlatform);
 
+	// Reference counting.
+	NIAGARASHADER_API  void AddRef();
+	NIAGARASHADER_API  void Release();
+
 	/**
 	* Removes all entries in the cache with exceptions based on a shader type
 	* @param ShaderType - The shader type to flush
@@ -495,6 +498,7 @@ public:
 
 	//const FUniformExpressionSet& GetUniformExpressionSet() const { return NiagaraCompilationOutput.UniformExpressionSet; }
 
+	int32 GetNumRefs() const { return NumRefs; }
 	uint32 GetCompilingId()  { return CompilingId; }
 	static TMap<TRefCountPtr<FNiagaraShaderMap>, TArray<FNiagaraShaderScript*> > &GetInFlightShaderMaps() 
 	{
@@ -524,6 +528,8 @@ private:
 
 	/** Uniquely identifies this shader map during compilation, needed for deferred compilation where shaders from multiple shader maps are compiled together. */
 	uint32 CompilingId;
+
+	mutable int32 NumRefs;
 
 	/** Used to catch errors where the shader map is deleted directly. */
 	bool bDeletedThroughDeferredCleanup;
@@ -719,14 +725,14 @@ public:
 
 	const FString& GetFriendlyName()	const { return FriendlyName; }
 
-	NIAGARASHADER_API void SetScript(UNiagaraScript* InScript, ERHIFeatureLevel::Type InFeatureLevel, EShaderPlatform InShaderPlatform, const FGuid& InCompilerVersion, const TArray<FString>& InAdditionalDefines,
+	NIAGARASHADER_API void SetScript(UNiagaraScriptBase* InScript, ERHIFeatureLevel::Type InFeatureLevel, EShaderPlatform InShaderPlatform, const FGuid& InCompilerVersion, const TArray<FString>& InAdditionalDefines,
 		const FNiagaraCompileHash& InBaseCompileHash, const TArray<FNiagaraCompileHash>& InReferencedCompileHashes, 
 		bool bInUsesRapidIterationParams, bool bInUseShaderPermutations, FString InFriendlyName);
 #if WITH_EDITOR
 	NIAGARASHADER_API bool MatchesScript(ERHIFeatureLevel::Type InFeatureLevel, EShaderPlatform InShaderPlatform, const FNiagaraVMExecutableDataId& ScriptId) const;
 #endif
 
-	UNiagaraScript *GetBaseVMScript()
+	UNiagaraScriptBase* GetBaseVMScript()
 	{
 		return BaseVMScript;
 	}
@@ -790,7 +796,7 @@ protected:
 	void UpdateCachedData_PostCompile(bool bCalledFromSerialize = false);
 
 private:
-	UNiagaraScript* BaseVMScript;
+	UNiagaraScriptBase* BaseVMScript;
 
 	TArray<FString> CompileErrors;
 

@@ -4,7 +4,6 @@
 
 #include "Modules/ModuleManager.h"
 #include "Modules/ModuleInterface.h"
-#include "IAssetTypeActions.h"
 
 class FLSAEditorModule : public IModuleInterface
 {
@@ -29,8 +28,4 @@ protected:
 		static FName ModuleName = FName(TEXT("LSAEditor"));
 		return ModuleName;
 	}
-
-private:
-
-	TSharedPtr<IAssetTypeActions> FrameTranslatorActions;
 };

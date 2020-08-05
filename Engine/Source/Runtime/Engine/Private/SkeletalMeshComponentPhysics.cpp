@@ -64,7 +64,7 @@ CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 
 TAutoConsoleVariable<int32> CVarEnableClothPhysics(TEXT("p.ClothPhysics"), 1, TEXT("If 1, physics cloth will be used for simulation."));
 TAutoConsoleVariable<int32> CVarEnableClothPhysicsUseTaskThread(TEXT("p.ClothPhysics.UseTaskThread"), 1, TEXT("If 1, run cloth on the task thread. If 0, run on game thread."));
-TAutoConsoleVariable<int32> CVarClothPhysicsTickWaitForParallelClothTask(TEXT("p.ClothPhysics.WaitForParallelClothTask"), 0, TEXT(""));
+TAutoConsoleVariable<int32> CVarClothPhysicsTickWaitForParallelClothTask(TEXT("p.ClothPhysics.WaitForParallelClothTask"), 1, TEXT(""));
 TAutoConsoleVariable<int32> CVarEnableKinematicDeferralPrePhysicsCondition(TEXT("p.EnableKinematicDeferralPrePhysicsCondition"), 1, TEXT("If is 1, and deferral would've been disallowed due to EUpdateTransformFlags, allow if in PrePhysics tick. If 0, condition is unchanged."));
 
 //This is the total cloth time split up among multiple computation (updating gpu, updating sim, etc...)
@@ -1332,10 +1332,18 @@ void USkeletalMeshComponent::OnUpdateTransform(EUpdateTransformFlags UpdateTrans
 			
 			// If enabled, allow deferral of PropagateFromParent updates in prephysics only.
 			// Probably should rework this entire condition to be more concrete, but do not want to introduce that much risk.
+			UWorld* World = GetWorld();
 			if (CVarEnableKinematicDeferralPrePhysicsCondition.GetValueOnGameThread())
 			{
-				UWorld* World = GetWorld();
 				if (World && (World->TickGroup == ETickingGroup::TG_PrePhysics))
+				{
+					AllowDeferral = EAllowKinematicDeferral::AllowDeferral;
+				}
+			}
+
+			if(GEnableKinematicDeferralStartPhysicsCondition)
+			{
+				if (World && (World->TickGroup == ETickingGroup::TG_StartPhysics))
 				{
 					AllowDeferral = EAllowKinematicDeferral::AllowDeferral;
 				}

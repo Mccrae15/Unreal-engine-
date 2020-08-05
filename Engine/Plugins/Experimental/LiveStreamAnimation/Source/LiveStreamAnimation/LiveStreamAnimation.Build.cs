@@ -8,20 +8,13 @@ public class LiveStreamAnimation : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-        PrivateDependencyModuleNames.AddRange(
-            new string[] {
-                "ForwardingChannels",
-                "LiveLinkInterface",
-				"LiveLink"
-            }
-        );
-
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
 				"CoreUObject",
 				"Engine",
-				"DeveloperSettings"
+				"DeveloperSettings",
+				"ForwardingChannels"
 			}
 		);
 	}

@@ -13,7 +13,6 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"UnrealEd",
 					"AssetTools",
-					"LiveLinkInterface",
 					"Engine",
 					"PropertyEditor",
 					"SlateCore",
