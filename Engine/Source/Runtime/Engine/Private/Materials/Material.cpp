@@ -866,11 +866,27 @@ FMaterialResource* FindOrCreateMaterialResource(TArray<FMaterialResource*>& Mate
 		MaterialResources.Add(CurrentResource);
 	}
 
+	const UMaterial* CurrentOwnerMaterial = CurrentResource->GetMaterial();
+	const UMaterialInstance* CurrentOwnerMaterialInstance = CurrentResource->GetMaterialInstance();
+	
 	// make sure the material resource we found has the correct owner
-	checkf(CurrentResource->GetMaterial() == OwnerMaterial, TEXT("expected FMaterialResource with material %s, got %s"),
-		*GetNameSafe(OwnerMaterial), *GetNameSafe(CurrentResource->GetMaterial()));
-	checkf(CurrentResource->GetMaterialInstance() == OwnerMaterialInstance, TEXT("expected FMaterialResource with MI %s, got %s"),
-		*GetNameSafe(OwnerMaterialInstance), *GetNameSafe(CurrentResource->GetMaterialInstance()));
+	// special case for nullptrs: since the Material and MI get fed to the reference collector, they can be zeroed out by GC or utility tools
+	checkf(CurrentOwnerMaterial == OwnerMaterial || CurrentOwnerMaterial == nullptr, TEXT("expected FMaterialResource with material %s, got %s"),
+		*GetNameSafe(OwnerMaterial), *GetNameSafe(CurrentOwnerMaterial));
+	checkf(CurrentOwnerMaterialInstance == OwnerMaterialInstance || CurrentOwnerMaterialInstance == nullptr, TEXT("expected FMaterialResource with MI %s, got %s"),
+		*GetNameSafe(OwnerMaterialInstance), *GetNameSafe(CurrentOwnerMaterialInstance));
+
+	// assume previous ownership and restore zeroed-out references
+	if (UNLIKELY(CurrentOwnerMaterial == nullptr))
+	{
+		CurrentResource->SetMaterial(OwnerMaterial);
+	}
+
+	// OwnerMI itself can be nullptr (for UMaterial resources).
+	if (UNLIKELY(CurrentOwnerMaterialInstance == nullptr && OwnerMaterialInstance != nullptr))
+	{
+		CurrentResource->SetMaterialInstance(OwnerMaterialInstance);
+	}
 
 	return CurrentResource;
 }
@@ -3080,6 +3096,7 @@ void UMaterial::CacheResourceShadersForCooking(EShaderPlatform ShaderPlatform, T
 	const UShaderPlatformQualitySettings* MaterialQualitySettings = UMaterialShaderQualitySettings::Get()->GetShaderPlatformQualitySettings(ShaderPlatform);
 	bool bNeedDefaultQuality = false;
 
+	TArray<FMaterialResource*> NewResourcesToCache;	// only new resources need to have CacheShaders() called on them, whereas OutCachedMaterialResources may already contain resources for another shader platform
 	for (int32 QualityLevelIndex = 0; QualityLevelIndex < EMaterialQualityLevel::Num; QualityLevelIndex++)
 	{
 		// Add all quality levels actually used
@@ -3087,7 +3104,7 @@ void UMaterial::CacheResourceShadersForCooking(EShaderPlatform ShaderPlatform, T
 		{
 			FMaterialResource* NewResource = AllocateResource();
 			NewResource->SetMaterial(this, nullptr, (ERHIFeatureLevel::Type)TargetFeatureLevel, (EMaterialQualityLevel::Type)QualityLevelIndex);
-			OutCachedMaterialResources.Add(NewResource);
+			NewResourcesToCache.Add(NewResource);
 		}
 		else
 		{
@@ -3104,10 +3121,12 @@ void UMaterial::CacheResourceShadersForCooking(EShaderPlatform ShaderPlatform, T
 	{
 		FMaterialResource* NewResource = AllocateResource();
 		NewResource->SetMaterial(this, nullptr, (ERHIFeatureLevel::Type)TargetFeatureLevel);
-		OutCachedMaterialResources.Add(NewResource);
+		NewResourcesToCache.Add(NewResource);
 	}
 
-	CacheShadersForResources(ShaderPlatform, OutCachedMaterialResources, TargetPlatform);
+	CacheShadersForResources(ShaderPlatform, NewResourcesToCache, TargetPlatform);
+
+	OutCachedMaterialResources.Append(NewResourcesToCache);
 }
 
 void UMaterial::CacheShadersForResources(EShaderPlatform ShaderPlatform, const TArray<FMaterialResource*>& ResourcesToCache, const ITargetPlatform* TargetPlatform)
