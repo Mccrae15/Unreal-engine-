@@ -312,7 +312,18 @@ bool FAppleHttpRequest::ProcessRequest()
 
 	if( !bStarted )
 	{
-		FinishedRequest();
+		// Ensure we run on game thread
+		if (!IsInGameThread())
+		{
+			FHttpModule::Get().GetHttpManager().AddGameThreadTask([StrongThis = StaticCastSharedRef<FAppleHttpRequest>(AsShared())]()
+			{
+				StrongThis->FinishedRequest();
+			});
+		}
+		else
+		{
+			FinishedRequest();
+		}
 	}
 
 	return bStarted;
@@ -430,7 +441,19 @@ void FAppleHttpRequest::CancelRequest()
 	{
 		[Connection cancel];
 	}
-	FinishedRequest();
+
+	// Ensure we run on game thread
+	if (!IsInGameThread())
+	{
+		FHttpModule::Get().GetHttpManager().AddGameThreadTask([StrongThis = StaticCastSharedRef<FAppleHttpRequest>(AsShared())]()
+		{
+			StrongThis->FinishedRequest();
+		});
+	}
+	else
+	{
+		FinishedRequest();
+	}
 }
 
 
@@ -446,10 +469,9 @@ const FHttpResponsePtr FAppleHttpRequest::GetResponse() const
 	return Response;
 }
 
-
 void FAppleHttpRequest::Tick(float DeltaSeconds)
 {
-	if( CompletionStatus == EHttpRequestStatus::Processing || Response->HadError() )
+	if (Response.IsValid() && (CompletionStatus == EHttpRequestStatus::Processing || Response->HadError()))
 	{
 		if (OnRequestProgress().IsBound())
 		{
@@ -460,7 +482,7 @@ void FAppleHttpRequest::Tick(float DeltaSeconds)
 				OnRequestProgress().Execute(SharedThis(this), BytesWritten, BytesRead);
 			}
 		}
-		if( Response->IsReady() )
+		if (Response->IsReady())
 		{
 			FinishedRequest();
 		}
