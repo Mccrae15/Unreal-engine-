@@ -224,6 +224,7 @@ bool FWinHttpHttpRequest::ProcessRequest()
 	TotalBytesSent = 0;
 	TotalBytesReceived = 0;
 	RequestStartTimeSeconds.Reset();
+	RequestFinishTimeSeconds.Reset();
 	bRequestCancelled = false;
 
 	State = EHttpRequestStatus::Processing;
