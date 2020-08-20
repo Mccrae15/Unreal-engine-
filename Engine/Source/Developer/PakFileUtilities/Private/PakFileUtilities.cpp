@@ -328,14 +328,18 @@ public:
 					}
 				}
 				Lines[EntryIndex] = Lines[EntryIndex].TrimQuotes();
-				FString Path = FString::Printf(TEXT("%s"), *Lines[EntryIndex]);
-				FPaths::NormalizeFilename(Path);
-				Path = Path.ToLower();
-				if (bSecondaryOrderFile && OrderMap.Contains(Path))
+				FString FileExt = FPaths::GetExtension(Lines[EntryIndex]);
+				if (!FileExt.IsEmpty())
 				{
-					continue;
+					FString Path = FString::Printf(TEXT("%s"), *Lines[EntryIndex]);
+					FPaths::NormalizeFilename(Path);
+					Path = Path.ToLower();
+					if (bSecondaryOrderFile && OrderMap.Contains(Path))
+					{
+						continue;
+					}
+					OrderMap.Add(Path, OpenOrderNumber + OrderOffset);
 				}
-				OrderMap.Add(Path, OpenOrderNumber + OrderOffset);
 			}
 			UE_LOG(LogPakFile, Display, TEXT("Finished loading pak order file %s."), ResponseFile);
 			return true;

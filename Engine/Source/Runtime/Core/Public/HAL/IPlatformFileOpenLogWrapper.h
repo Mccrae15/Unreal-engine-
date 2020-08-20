@@ -277,15 +277,20 @@ public:
 		}
 		CriticalSection.Unlock();
 	}
-};
 
-IAsyncReadRequest* FLoggingAsyncReadFileHandle::ReadRequest(int64 Offset, int64 BytesToRead, EAsyncIOPriorityAndFlags PriorityAndFlags, FAsyncFileCallBack* CompleteCallback, uint8* UserSuppliedMemory)
-{
-	if ( ( PriorityAndFlags & AIOP_FLAG_PRECACHE ) == 0 )
+	void AddPackageToOpenLog(const TCHAR* Filename)
 	{
-		Owner->AddToOpenLog(*Filename);
+		CriticalSection.Lock();
+		if (FilenameAccessMap.Find(Filename) == nullptr)
+		{
+			FilenameAccessMap.Emplace(Filename, ++OpenOrder);
+			FString Text = FString::Printf(TEXT("\"%s\" %llu\n"), Filename, OpenOrder);
+			for (auto File = LogOutput.CreateIterator(); File; ++File)
+			{
+				(*File)->Write((uint8*)StringCast<ANSICHAR>(*Text).Get(), Text.Len());
+			}
+		}
+		CriticalSection.Unlock();
 	}
-	return ActualRequest->ReadRequest(Offset, BytesToRead, PriorityAndFlags, CompleteCallback, UserSuppliedMemory);
-}
-
+};
 #endif // !UE_BUILD_SHIPPING

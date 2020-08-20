@@ -57,6 +57,7 @@
 #include "ProfilingDebugging/CountersTrace.h"
 #include "Async/Async.h"
 #include "HAL/LowLevelMemStats.h"
+#include "HAL/IPlatformFileOpenLogWrapper.h"
 
 #if UE_BUILD_DEVELOPMENT || UE_BUILD_DEBUG
 PRAGMA_DISABLE_OPTIMIZATION
@@ -2080,6 +2081,10 @@ private:
 	int32 LoadRecursionLevel = 0;
 #endif
 
+#if !UE_BUILD_SHIPPING
+	FPlatformFileOpenLog* FileOpenLogWrapper = nullptr;
+#endif
+
 	/** [ASYNC/GAME THREAD] Event used to signal loading should be cancelled */
 	FEvent* CancelLoadingEvent;
 	/** [ASYNC/GAME THREAD] Event used to signal that the async loading thread should be suspended */
@@ -2536,6 +2541,8 @@ void FAsyncLoadingThread2::InitializeLoading()
 		ParsePackageNames(VerbosePackageNamesString, GAsyncLoading2_VerbosePackageIds);
 		ParsePackageNames(DebugPackageNamesString, GAsyncLoading2_VerbosePackageIds);
 	}
+
+	FileOpenLogWrapper = (FPlatformFileOpenLog*)(FPlatformFileManager::Get().FindPlatformFile(FPlatformFileOpenLog::GetTypeName()));
 #endif
 
 #if USE_NEW_BULKDATA
@@ -5580,6 +5587,13 @@ int32 FAsyncLoadingThread2::LoadPackage(const FString& InName, const FGuid* InGu
 		{
 			CompletionDelegatePtr.Reset(new FLoadPackageAsyncDelegate(InCompletionDelegate));
 		}
+
+#if !UE_BUILD_SHIPPING
+		if (FileOpenLogWrapper)
+		{
+			FileOpenLogWrapper->AddPackageToOpenLog(*DiskPackageName.ToString());
+		}
+#endif
 
 		// Add new package request
 		FAsyncPackageDesc2 PackageDesc(RequestID, DiskPackageId, StoreEntry, DiskPackageName, CustomPackageId, CustomPackageName, MoveTemp(CompletionDelegatePtr));
