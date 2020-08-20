@@ -141,7 +141,12 @@ bool GenerateOcclusionRay(
 	return true;
 }
 
-float ComputeDiffuseTransmission(float3 V, float3 P, float3 N, float MeanFreePath, float Eta, FLightShaderParameters LightParameters, float2 LightSample, inout RandomSequence RandSequence, uint RejectionRetryMax)
+float ComputeDiffuseTransmission(
+	float3 V, float3 P, float3 N,
+	float MeanFreePath, float Eta,
+	FLightShaderParameters LightParameters, float2 LightSample,
+	inout RandomSequence RandSequence, 
+	uint RejectionRetryMax, uint2 PixelCoord)
 {
 	float TransmissionDistance = SSSS_MAX_TRANSMISSION_PROFILE_DISTANCE;
 	float RcpMeanFreePath = rcp(MeanFreePath);
@@ -172,6 +177,7 @@ float ComputeDiffuseTransmission(float3 V, float3 P, float3 N, float MeanFreePat
 			TLAS,
 			RayFlags,
 			InstanceInclusionMask,
+			PixelCoord,
 			RejectionTestRay);
 
 		float RejectionDistancePdf = ScatterDistancePdf;
@@ -189,6 +195,7 @@ float ComputeDiffuseTransmission(float3 V, float3 P, float3 N, float MeanFreePat
 				TLAS,
 				RayFlags,
 				InstanceInclusionMask,
+				PixelCoord,
 				RejectionTestRay);
 		}
 		if (RejectionTestPayload.IsHit()) return 0.0;
@@ -208,6 +215,7 @@ float ComputeDiffuseTransmission(float3 V, float3 P, float3 N, float MeanFreePat
 		TLAS,
 		RayFlags,
 		InstanceInclusionMask,
+		PixelCoord,
 		SSSRay);
 
 	if (SSSPayload.IsHit())
@@ -219,6 +227,7 @@ float ComputeDiffuseTransmission(float3 V, float3 P, float3 N, float MeanFreePat
 			TLAS,
 			RayFlags,
 			InstanceInclusionMask,
+			PixelCoord,
 			SSSRay);
 		if (VisibilityPayload.IsMiss())
 		{
@@ -385,6 +394,7 @@ FOcclusionResult ComputeOcclusion(
 			TLAS,
 			RayFlags,
 			RaytracingMask,
+			PixelCoord,
 			Ray);
 
 		#if USE_HAIR_LIGHTING
@@ -424,7 +434,7 @@ FOcclusionResult ComputeOcclusion(
 		const float Eta = TransmissionProfileParams.OneOverIOR;
 		const uint RejectionRetryMax = LocalSamplesPerPixel - 1;
 
-		Out.TransmissionDistance = ComputeDiffuseTransmission(V, WorldPosition, WorldNormal, MeanFreePath, Eta, LightParameters, LightSample, RandSequence, RejectionRetryMax);
+		Out.TransmissionDistance = ComputeDiffuseTransmission(V, WorldPosition, WorldNormal, MeanFreePath, Eta, LightParameters, LightSample, RandSequence, RejectionRetryMax, PixelCoord);
 	}
 	else // if (ShadingModelID == SHADINGMODELID_EYE)
 	{
