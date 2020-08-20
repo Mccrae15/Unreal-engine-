@@ -457,7 +457,7 @@ public:
 		FIoBatch Batch = IoDispatcher.NewBatch();
 		FIoRequest NameRequest = Batch.Read(NamesId, FIoReadOptions());
 		FIoRequest HashRequest = Batch.Read(HashesId, FIoReadOptions());
-		Batch.Issue();
+		Batch.Issue(IoDispatcherPriority_High);
 
 		ReserveNameBatch(	IoDispatcher.GetSizeForChunk(NamesId).ValueOrDie(),
 							IoDispatcher.GetSizeForChunk(HashesId).ValueOrDie());
@@ -808,9 +808,6 @@ public:
 			FScopeLock Lock(&PackageNameMapsCritical);
 			return StoreEntriesMap.Contains(PackageId);
 		});
-
-		LoadContainers(IoDispatcher.GetMountedContainers());
-		IoDispatcher.OnContainerMounted().AddRaw(this, &FPackageStore::OnContainerMounted);
 	}
 
 	void SetupInitialLoadData()
@@ -823,6 +820,7 @@ public:
 		IoDispatcher.ReadWithCallback(
 			CreateIoChunkId(0, 0, EIoChunkType::LoaderInitialLoadMeta),
 			FIoReadOptions(),
+			IoDispatcherPriority_High,
 			[InitialLoadEvent, &InitialLoadIoBuffer](TIoStatusOr<FIoBuffer> Result)
 			{
 				InitialLoadIoBuffer = Result.ConsumeValueOrDie();
@@ -900,7 +898,7 @@ public:
 			LoadedContainer.Order = Container.Environment.GetOrder();
 
 			FIoChunkId HeaderChunkId = CreateIoChunkId(ContainerId.Value(), 0, EIoChunkType::ContainerHeader);
-			IoDispatcher.ReadWithCallback(HeaderChunkId, FIoReadOptions(), [this, &Remaining, Event, &LoadedContainer](TIoStatusOr<FIoBuffer> Result)
+			IoDispatcher.ReadWithCallback(HeaderChunkId, FIoReadOptions(), IoDispatcherPriority_High, [this, &Remaining, Event, &LoadedContainer](TIoStatusOr<FIoBuffer> Result)
 			{
 				// Execution method Thread will run the async block synchronously when multithreading is NOT supported
 				const EAsyncExecution ExecutionMethod = FPlatformProcess::SupportsMultithreading() ? EAsyncExecution::TaskGraph : EAsyncExecution::Thread;
@@ -2126,8 +2124,7 @@ private:
 
 	TQueue<FAsyncPackage2*, EQueueMode::Mpsc> ExternalReadQueue;
 	FThreadSafeCounter WaitingForIoBundleCounter;
-	FThreadSafeCounter WaitingForPostLoadCounter;
-
+	
 	/** List of all pending package requests */
 	TSet<int32> PendingRequests;
 	/** Synchronization object for PendingRequests list */
@@ -2712,6 +2709,7 @@ void FAsyncLoadingThread2::StartBundleIoRequests()
 		FIoReadOptions ReadOptions;
 		IoDispatcher.ReadWithCallback(CreateIoChunkId(Package->Desc.DiskPackageId.Value(), 0, EIoChunkType::ExportBundleData),
 			ReadOptions,
+			IoDispatcherPriority_Medium,
 			[Package](TIoStatusOr<FIoBuffer> Result)
 		{
 			if (Result.IsOk())
@@ -4421,7 +4419,6 @@ EAsyncPackageState::Type FAsyncLoadingThread2::ProcessLoadedPackagesFromGameThre
 					UE_ASYNC_PACKAGE_DEBUG(Package->Desc);
 					CompletedPackages.RemoveAtSwap(PackageIndex--);
 					Package->ClearImportedPackages();
-					Package->AsyncLoadingThread.WaitingForPostLoadCounter.Decrement();
 					Package->ReleaseRef();
 				}
 			}
@@ -4645,6 +4642,8 @@ void FAsyncLoadingThread2::LazyInitializeFromLoadPackage()
 	{
 		GlobalPackageStore.SetupInitialLoadData();
 	}
+	GlobalPackageStore.LoadContainers(IoDispatcher.GetMountedContainers());
+	IoDispatcher.OnContainerMounted().AddRaw(&GlobalPackageStore, &FPackageStore::OnContainerMounted);
 }
 
 
@@ -4749,10 +4748,7 @@ uint32 FAsyncLoadingThread2::Run()
 							{
 								TRACE_CPUPROFILER_EVENT_SCOPE(ProcessExternalReads);
 
-								FAsyncPackage2::EExternalReadAction Action =
-									bDidSomething ?
-									FAsyncPackage2::ExternalReadAction_Poll :
-									FAsyncPackage2::ExternalReadAction_Wait;
+								FAsyncPackage2::EExternalReadAction Action = FAsyncPackage2::ExternalReadAction_Poll;
 
 								EAsyncPackageState::Type Result = Package->ProcessExternalReads(Action);
 								if (Result == EAsyncPackageState::Complete)
@@ -4794,17 +4790,21 @@ uint32 FAsyncLoadingThread2::Run()
 
 			if (!bDidSomething)
 			{
+				FAsyncPackage2* Package = nullptr;
 				if (WaitingForIoBundleCounter.GetValue() > 0)
 				{
 					TRACE_CPUPROFILER_EVENT_SCOPE(AsyncLoadingTime);
 					TRACE_CPUPROFILER_EVENT_SCOPE(WaitingForIo);
 					Waiter.Wait();
 				}
-				else if (WaitingForPostLoadCounter.GetValue() > 0)
+				else if (ExternalReadQueue.Peek(Package))
 				{
 					TRACE_CPUPROFILER_EVENT_SCOPE(AsyncLoadingTime);
-					TRACE_CPUPROFILER_EVENT_SCOPE(WaitingForPostLoad);
-					Waiter.Wait();
+					TRACE_CPUPROFILER_EVENT_SCOPE(ProcessExternalReads);
+
+					EAsyncPackageState::Type Result = Package->ProcessExternalReads(FAsyncPackage2::ExternalReadAction_Wait);
+					check(Result == EAsyncPackageState::Complete);
+					ExternalReadQueue.Pop();
 				}
 				else
 				{
