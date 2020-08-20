@@ -843,6 +843,8 @@ FMaterialClosestHitPayload TraceRayAndAccumulateBottomLayerResults(
 		// Disable precomputed sky light contribution from hit shaders when ray tracing sky light contribution
 		bEnableSkyLightContribution = false;
 	}
+	
+	bool bIgnoreTranslucentMaterials = false;
 
 	FMaterialClosestHitPayload BottomLayerPayload = TraceMaterialRay(
 		TLAS,
@@ -850,7 +852,8 @@ FMaterialClosestHitPayload TraceRayAndAccumulateBottomLayerResults(
 		InstanceInclusionMask,
 		Ray,
 		RayCone,
-		bEnableSkyLightContribution);
+		bEnableSkyLightContribution,
+		bIgnoreTranslucentMaterials);
 
 	ComputeBottomLayerMaterialProperties(Ray, BottomLayerPayload);
 
