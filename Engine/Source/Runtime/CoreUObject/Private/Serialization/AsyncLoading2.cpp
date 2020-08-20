@@ -79,6 +79,7 @@ FArchive& operator<<(FArchive& Ar, FContainerHeader& ContainerHeader)
 	Ar << ContainerHeader.PackageIds;
 	Ar << ContainerHeader.StoreEntries;
 	Ar << ContainerHeader.CulturePackageMap;
+	Ar << ContainerHeader.PackageRedirects;
 
 	return Ar;
 }
@@ -786,7 +787,7 @@ public:
 	FCriticalSection PackageNameMapsCritical;
 
 	TMap<FPackageId, FPackageStoreEntry*> StoreEntriesMap;
-	TMap<FPackageId, FPackageId> LocalizedPackageMap; // SourceId->LocalizedId for CurrentCulture
+	TMap<FPackageId, FPackageId> RedirectsPackageMap;
 	int32 NextCustomPackageIndex = 0;
 
 	FGlobalImportStore ImportStore;
@@ -947,8 +948,16 @@ public:
 								{
 									const FPackageId& SourceId = Pair.Key;
 									const FPackageId& LocalizedId = Pair.Value;
-									LocalizedPackageMap.Emplace(SourceId, LocalizedId);
+									RedirectsPackageMap.Emplace(SourceId, LocalizedId);
 								}
+							}
+						}
+
+						{
+							TRACE_CPUPROFILER_EVENT_SCOPE(LoadPackageStoreRedirects);
+							for (const TPair<FPackageId, FPackageId>& Redirect : ContainerHeader.PackageRedirects)
+							{
+								RedirectsPackageMap.Emplace(Redirect.Key, Redirect.Value);
 							}
 						}
 					}
@@ -964,7 +973,7 @@ public:
 		Event->Wait();
 		FPlatformProcess::ReturnSynchEventToPool(Event);
 
-		ApplyLocalization();
+		ApplyRedirects(RedirectsPackageMap);
 	}
 
 	void OnContainerMounted(const FIoDispatcherMountedContainer& Container)
@@ -973,30 +982,28 @@ public:
 		LoadContainers(MakeArrayView(&Container, 1));
 	}
 
-	void ApplyLocalization()
+	void ApplyRedirects(const TMap<FPackageId, FPackageId>& Redirects)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(ApplyLocalization);
+		TRACE_CPUPROFILER_EVENT_SCOPE(ApplyRedirects);
 
 		FScopeLock Lock(&PackageNameMapsCritical);
 
-		if (LocalizedPackageMap.Num() == 0)
+		if (Redirects.Num() == 0)
 		{
 			return;
 		}
 
-		// Mark already localized entries if this becomes a performance problem
-
-		for (auto It = LocalizedPackageMap.CreateIterator(); It; ++It)
+		for (auto It = Redirects.CreateConstIterator(); It; ++It)
 		{
 			const FPackageId& SourceId = It.Key();
-			const FPackageId& LocalizedId = It.Value();
-			check(LocalizedId.IsValid());
-			FPackageStoreEntry* LocalizedEntry = StoreEntriesMap.FindRef(LocalizedId);
-			check(LocalizedEntry);
+			const FPackageId& RedirectId = It.Value();
+			check(RedirectId.IsValid());
+			FPackageStoreEntry* RedirectEntry = StoreEntriesMap.FindRef(RedirectId);
+			check(RedirectEntry);
 			FPackageStoreEntry*& PackageEntry = StoreEntriesMap.FindOrAdd(SourceId);
-			if (LocalizedEntry && PackageEntry)
+			if (RedirectEntry && PackageEntry)
 			{
-				PackageEntry = LocalizedEntry;
+				PackageEntry = RedirectEntry;
 			}
 		}
 
@@ -1006,9 +1013,9 @@ public:
 
 			for (FPackageId& ImportedPackageId : StoreEntry->ImportedPackages)
 			{
-				if (FPackageId* LocalizedId = LocalizedPackageMap.Find(ImportedPackageId))
+				if (const FPackageId* RedirectId = Redirects.Find(ImportedPackageId))
 				{
-					ImportedPackageId = *LocalizedId;
+					ImportedPackageId = *RedirectId;
 				}
 			}
 		}
@@ -1033,10 +1040,10 @@ public:
 		FPackageId PackageId = Package->GetPackageId();
 		if (!LoadedPackageStore.Remove(PackageId))
 		{
-			FPackageId* LocalizedId = LocalizedPackageMap.Find(PackageId);
-			if (LocalizedId)
+			FPackageId* RedirectedId = RedirectsPackageMap.Find(PackageId);
+			if (RedirectedId)
 			{
-				LoadedPackageStore.Remove(*LocalizedId);
+				LoadedPackageStore.Remove(*RedirectedId);
 			}
 		}
 	}
