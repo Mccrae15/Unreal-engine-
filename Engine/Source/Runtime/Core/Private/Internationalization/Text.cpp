@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/Text.h"
+#include "CoreTypes.h"
 #include "Algo/Transform.h"
 #include "Misc/Parse.h"
 #include "UObject/ObjectVersion.h"
