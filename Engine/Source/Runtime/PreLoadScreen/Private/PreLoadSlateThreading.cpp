@@ -58,13 +58,6 @@ void FPreLoadSlateWidgetRenderer::DrawWindow(float DeltaTime)
 		return;
 	}
 
-    if (GDynamicRHI && GDynamicRHI->RHIIsRenderingSuspended())
-    {
-        // This avoids crashes if we Suspend rendering whilst the loading screen is up
-        // as we don't want Slate to submit any more draw calls until we Resume.
-        return;
-    }
-
     FVector2D DrawSize = VirtualRenderWindow->GetClientSizeInScreen();
 
     FSlateApplication::Get().Tick(ESlateTickType::TimeOnly);
@@ -192,50 +185,55 @@ void FPreLoadScreenSlateSynchMechanism::SlateThreadRunMainLoop()
 
     while (IsSlateMainLoopRunning())
     {
-        double CurrentTime = FPlatformTime::Seconds();
-        double DeltaTime = CurrentTime - LastTime;
+		double CurrentTime = FPlatformTime::Seconds();
+		double DeltaTime = CurrentTime - LastTime;
 
-        // 60 fps max
-        const double MaxTickRate = 1.0 / 60.0f;
+		// 60 fps max
+		const double MaxTickRate = 1.0 / 60.0f;
 
-        const double TimeToWait = MaxTickRate - DeltaTime;
+		const double TimeToWait = MaxTickRate - DeltaTime;
 
-        if (TimeToWait > 0)
-        {
-            FPlatformProcess::Sleep(TimeToWait);
-            CurrentTime = FPlatformTime::Seconds();
-            DeltaTime = CurrentTime - LastTime;
-        }
+		if (TimeToWait > 0)
+		{
+			FPlatformProcess::Sleep(TimeToWait);
+			CurrentTime = FPlatformTime::Seconds();
+			DeltaTime = CurrentTime - LastTime;
+		}
 
-        if (FSlateApplication::IsInitialized() && !IsSlateDrawPassEnqueued() && FPreLoadScreenManager::ShouldRender())
-        {
-            FSlateRenderer* MainSlateRenderer = FSlateApplication::Get().GetRenderer();
-            FScopeLock ScopeLock(MainSlateRenderer->GetResourceCriticalSection());
+		if (FSlateApplication::IsInitialized() && !IsSlateDrawPassEnqueued() && FPreLoadScreenManager::ShouldRender())
+		{
+			// This avoids crashes if we Suspend rendering whilst the loading screen is up
+			// as we don't want Slate to submit any more draw calls until we Resume.
+			if (GDynamicRHI && GDynamicRHI->RHIIsRenderingSuspended())
+			{
+				FSlateRenderer* MainSlateRenderer = FSlateApplication::Get().GetRenderer();
+				FScopeLock ScopeLock(MainSlateRenderer->GetResourceCriticalSection());
 
-            //Don't queue up a draw pass if our main loop is shutting down
-            if (IsSlateMainLoopRunning())
-            {
-                WidgetRenderer->DrawWindow(DeltaTime);
-                SetSlateDrawPassEnqueued();
-            }
+				//Don't queue up a draw pass if our main loop is shutting down
+				if (IsSlateMainLoopRunning())
+				{
+					WidgetRenderer->DrawWindow(DeltaTime);
+					SetSlateDrawPassEnqueued();
+				}
 
-            //Queue up a render tick every time we tick on this sync thread.
-			FPreLoadScreenSlateSynchMechanism* SyncMech = this;
-			ENQUEUE_RENDER_COMMAND(PreLoadScreenRenderTick)(
-				[SyncMech](FRHICommandListImmediate& RHICmdList)
-                {
-                    FPreLoadScreenManager* PreLoadManager = FPreLoadScreenManager::Get();
-                    if (PreLoadManager && FPreLoadScreenManager::ShouldRender())
-                    {
-                        FPreLoadScreenManager::Get()->RenderTick();
-                    }
+				//Queue up a render tick every time we tick on this sync thread.
+				FPreLoadScreenSlateSynchMechanism* SyncMech = this;
+				ENQUEUE_RENDER_COMMAND(PreLoadScreenRenderTick)(
+					[SyncMech](FRHICommandListImmediate& RHICmdList)
+					{
+						FPreLoadScreenManager* PreLoadManager = FPreLoadScreenManager::Get();
+						if (PreLoadManager && FPreLoadScreenManager::ShouldRender())
+						{
+							FPreLoadScreenManager::Get()->RenderTick();
+						}
                         
-                    SyncMech->ResetSlateDrawPassEnqueued();
-                }
-            );
-        }
+						SyncMech->ResetSlateDrawPassEnqueued();
+					}
+				);
+			}
+		}
 
-        LastTime = CurrentTime;
+		LastTime = CurrentTime;
     }
 
     while (IsSlateDrawPassEnqueued())
