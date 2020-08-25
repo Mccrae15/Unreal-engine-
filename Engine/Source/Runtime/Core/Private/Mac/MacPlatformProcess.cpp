@@ -22,7 +22,7 @@
     #include <cpuid.h>
 #endif
 
-static void* GetDllHandleImpl( const TCHAR* Filename )
+static void* GetDllHandleImpl(NSString* DylibPath, NSString* ExecutableFolder)
 {
 	SCOPED_AUTORELEASE_POOL;
 
