@@ -661,3 +661,8 @@ IOnlineGameItemStatsPtr FOnlineSubsystemImpl::GetGameItemStatsInterface() const
 {
 	return nullptr;
 }
+
+IOnlineGameMatchesPtr FOnlineSubsystemImpl::GetGameMatchesInterface() const
+{
+	return nullptr;
+}
