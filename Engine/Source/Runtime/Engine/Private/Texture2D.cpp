@@ -826,9 +826,13 @@ void UTexture2D::UpdateResource()
 	const bool bLoadOnlyFirstMip = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings()->GetMipLoadOptions(this) == ETextureMipLoadOptions::OnlyFirstMip;
 	if (bLoadOnlyFirstMip && PlatformData && PlatformData->Mips.Num() > 0 && FPlatformProperties::RequiresCookedData())
 	{
-		const int32 FirstMip = FMath::Clamp(0, GetCachedLODBias(), PlatformData->Mips.Num() - 1);
-		// Remove any mips after the first mip.
-		PlatformData->Mips.RemoveAt(FirstMip + 1, PlatformData->Mips.Num() - FirstMip - 1);
+		const int32 FirstMip = FMath::Min(FMath::Max(0, GetCachedLODBias()), GetMipTailBaseIndex());
+		if (FirstMip < GetMipTailBaseIndex())
+		{
+			// Remove any mips after the first mip.
+			PlatformData->Mips.RemoveAt(FirstMip + 1, PlatformData->Mips.Num() - FirstMip - 1);
+			PlatformData->OptData.NumMipsInTail = 0;
+		}
 		// Remove any mips before the first mip.
 		PlatformData->Mips.RemoveAt(0, FirstMip);
 		// Update the texture size for the memory usage metrics.
@@ -1146,12 +1150,8 @@ int32 UTexture2D::GetNumNonStreamingMips() const
 	}
 	else
 	{
-		int32 MipCount = GetNumMips();
-		NumNonStreamingMips = FMath::Max(0, MipCount - GetMipTailBaseIndex());
-
 		// Take in to account the min resident limit.
-		NumNonStreamingMips = FMath::Max(NumNonStreamingMips, GetMinTextureResidentMipCount());
-		NumNonStreamingMips = FMath::Min(NumNonStreamingMips, MipCount);
+		NumNonStreamingMips = FMath::Min(GetNumMips(), GetMinTextureResidentMipCount());
 	}
 
 	return NumNonStreamingMips;
@@ -1635,7 +1635,6 @@ void FTexture2DResource::InitRHI()
 
 	// Create the RHI texture.
 	uint32 TexCreateFlags = (Owner->SRGB ? TexCreate_SRGB : 0) | TexCreate_OfflineProcessed | TexCreate_Streamable;
-	ensure(Owner->GetMipTailBaseIndex() != -1); //TexCreate_NoMipTail is deprecated
 	// disable tiled format if needed
 	if( Owner->bNoTiling )
 	{
