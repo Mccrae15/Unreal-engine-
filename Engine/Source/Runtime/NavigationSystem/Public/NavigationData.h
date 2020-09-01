@@ -673,13 +673,23 @@ public:
 
 		return SharedPath;
 	}
-	
+
+	void RemovedObservedPath(const UObject* RemoveForThis);
+
 	void RegisterObservedPath(FNavPathSharedPtr SharedPath)
 	{
 		check(IsInGameThread());
 		if (ObservedPaths.Num() == 0)
 		{
 			NextObservedPathsTickInSeconds = ObservedPathsTickInterval;
+		}
+		FNavigationPath* Path2 = SharedPath.Get();
+		if (Path2)
+		{
+			if (Path2->GetQuerier())
+			{
+				RemovedObservedPath(Path2->GetQuerier());
+			}
 		}
 		ObservedPaths.Add(SharedPath);
 	}

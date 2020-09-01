@@ -101,3 +101,77 @@ bool USteamVRFunctionLibrary::GetHandPositionAndOrientation(int32 ControllerInde
 
 	return RetVal;
 }
+
+FString USteamVRFunctionLibrary::GetControllerName(int32 DeviceIndex)
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->GetControllerName(DeviceIndex);
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+	return FString();
+}
+FString USteamVRFunctionLibrary::GetHMDModel()
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->GetHMDModel();
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+	return FString();
+}
+
+FVector USteamVRFunctionLibrary::GetBasePosition()
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->GetBasePosition();
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+	return FVector::ZeroVector;
+}
+
+FRotator USteamVRFunctionLibrary::GetBaseRotation()
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->GetBaseRotation();
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+	return FRotator::ZeroRotator;
+}
+
+void USteamVRFunctionLibrary::SetBaseRotation(FRotator NewRotation)
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->SetBaseRotation(NewRotation);
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+
+}
+
+void USteamVRFunctionLibrary::SetBasePosition(FVector NewPosition)
+{
+#if STEAMVR_SUPPORTED_PLATFORMS
+	FSteamVRHMD* SteamVRHMD = GetSteamVRHMD();
+	if (SteamVRHMD)
+	{
+		return SteamVRHMD->SetBasePosition(NewPosition);
+	}
+#endif // STEAMVR_SUPPORTED_PLATFORMS
+}

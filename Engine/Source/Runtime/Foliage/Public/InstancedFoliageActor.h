@@ -65,6 +65,29 @@ class UProceduralFoliageComponent;
 // Function for filtering out hit components during FoliageTrace
 typedef TFunction<bool(const UPrimitiveComponent*)> FFoliageTraceFilterFunc;
 
+
+USTRUCT(BlueprintType)
+struct FSelectedFoliage
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere,BlueprintReadWrite, category = mesh)
+		UStaticMesh* StaticMesh;
+
+	UPROPERTY(EditAnywhere,BlueprintReadWrite, category = transforms)
+		TArray<FTransform> InstancesTransforms;
+
+	FSelectedFoliage() {
+		StaticMesh = nullptr;
+		InstancesTransforms = TArray<FTransform>();
+	}
+
+	FSelectedFoliage(UStaticMesh* SM_In, TArray<FTransform> Transforms_arr) {
+		StaticMesh = SM_In;
+		InstancesTransforms = Transforms_arr;
+	}
+};
+
 UCLASS(notplaceable, hidecategories = (Object, Rendering, Mobility), MinimalAPI, NotBlueprintable)
 class AInstancedFoliageActor : public AActor
 {
@@ -79,6 +102,7 @@ public:
 	TMap<UFoliageType*, TUniqueObj<FFoliageInfo>> FoliageInfos;
 
 public:
+
 	//~ Begin UObject Interface.
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
@@ -176,6 +200,9 @@ public:
 	
 	// Move selected instances to a foliage actor in target level
 	FOLIAGE_API void MoveSelectedInstancesToLevel(ULevel* InTargetLevel);
+
+	UFUNCTION(Category = "DEBUG", BlueprintCallable)
+	TArray<FSelectedFoliage> GetSelectedInstancesInfo();
 
 	// Move all instances to a foliage actor in target level
 	FOLIAGE_API void MoveAllInstancesToLevel(ULevel* InTargetLevel);

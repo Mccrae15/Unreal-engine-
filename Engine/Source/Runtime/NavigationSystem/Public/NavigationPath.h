@@ -68,6 +68,12 @@ public:
 	float GetPathCost() const;
 
 	UFUNCTION(BlueprintCallable, Category = "AI|Navigation")
+		bool DoesContaintNavlinks();
+
+	UFUNCTION(BlueprintCallable, Category = "AI|Navigation")
+		bool ContainsSpecificNavlink(int NavLinkID);
+
+	UFUNCTION(BlueprintCallable, Category = "AI|Navigation")
 	bool IsPartial() const;
 
 	UFUNCTION(BlueprintCallable, Category = "AI|Navigation")

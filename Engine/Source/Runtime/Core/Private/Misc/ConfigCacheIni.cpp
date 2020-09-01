@@ -3585,7 +3585,69 @@ void FConfigCacheIni::InitializeConfigSystem()
 	}
 
 	FConfigCacheIni::LoadGlobalIniFile(GGameIni, TEXT("Game"));
+
+#define USECARBONINPUTSWITCHER 0 
+
+#if USECARBONINPUTSWITCHER
+
+	int Option;
+	GConfig->GetInt(TEXT("/Script/Carbon_VR_Template.MyDeveloperSettings"), TEXT("CurrentControllSet"), Option, GGameIni);
+	switch (Option)
+	{
+		
+		case 0:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputOculusTouchRight"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputOculusTouchRight"));
+			break;
+		case 1:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputOculusTouchLeft"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputOculusTouchLeft"));
+			break;
+		case 2:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputViveWandsRight"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputViveWandsRight"));
+			break;
+		case 3:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputViveWandsLeft"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputViveWandsLeft"));
+			break;
+		case 4:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputIndexRight"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputIndexRight"));
+			break;
+		case 5:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputIndexLeft"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputIndexLeft"));
+			break;
+		case 6:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputWMRRight"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputWMRRight"));
+			break;
+		case 7:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputWMRLeft"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputWMRLeft"));
+			break;
+		case 8:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputPSVRRight"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputPSVRRight"));
+			break;
+		case 9:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("InputPSVRLeft"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded InputPSVRLeft"));
+			break;
+		case 10:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded Default Input"));
+			break;
+		default:
+			FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
+			UE_LOG(LogConfig, Warning, TEXT("Loaded Default Inputdasda"));
+			break;
+	}
+#else
 	FConfigCacheIni::LoadGlobalIniFile(GInputIni, TEXT("Input"));
+#endif
+
 #if WITH_EDITOR
 	// load some editor specific .ini files
 
@@ -3639,7 +3701,7 @@ bool FConfigCacheIni::LoadGlobalIniFile(FString& FinalIniFilename, const TCHAR* 
 {
 	// figure out where the end ini file is
 	FinalIniFilename = GetDestIniFilename(BaseIniName, Platform, GeneratedConfigDir);
-	
+
 	// Start the loading process for the remote config file when appropriate
 	if (FRemoteConfig::Get()->ShouldReadRemoteFile(*FinalIniFilename))
 	{

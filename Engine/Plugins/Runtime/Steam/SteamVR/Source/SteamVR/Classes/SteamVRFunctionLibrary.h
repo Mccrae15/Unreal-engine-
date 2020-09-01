@@ -64,4 +64,25 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "SteamVR", meta = (DeprecatedFunction, DeprecationMessage = "Use motion controller components instead"))
 	static bool GetHandPositionAndOrientation(int32 ControllerIndex, EControllerHand Hand, FVector& OutPosition, FRotator& OutOrientation);
+
+	UFUNCTION(BlueprintPure, Category = "SteamVR")
+	static FString GetControllerName(int32 DeviceIndex);
+
+	UFUNCTION(BlueprintPure, Category = "SteamVR")
+	static 	FString GetHMDModel();
+
+	UFUNCTION(BlueprintPure, Category = "SteamVR")
+	static FVector GetBasePosition();
+
+	UFUNCTION(BlueprintPure, Category = "SteamVR")
+	static FRotator GetBaseRotation();
+
+	UFUNCTION(BlueprintCallable, Category = "SteamVR")
+	static void SetBasePosition(FVector NewPosition);
+	
+	UFUNCTION(BlueprintCallable, Category = "SteamVR")
+	static void SetBaseRotation(FRotator NewRotation);
+	
 };
+
+	

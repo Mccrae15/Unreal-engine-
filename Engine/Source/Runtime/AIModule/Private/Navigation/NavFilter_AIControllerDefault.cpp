@@ -15,5 +15,12 @@ TSubclassOf<UNavigationQueryFilter> UNavFilter_AIControllerDefault::GetSimpleFil
 	const APawn* AsPawn = Cast<const APawn>(&Querier);
 	const AAIController* AsAIController = Cast<const AAIController>(AsPawn ? AsPawn->GetController() : &Querier);
 
-	return ensure(AsAIController) ? AsAIController->GetDefaultNavigationFilterClass() : nullptr;
+	if (AsAIController)
+	{
+		return ensure(AsAIController) ? AsAIController->GetDefaultNavigationFilterClass() : nullptr;
+	}
+	else
+	{
+		return nullptr;
+	}
 }

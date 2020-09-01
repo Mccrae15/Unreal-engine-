@@ -365,6 +365,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Components|StaticMesh")
 	virtual bool SetStaticMesh(class UStaticMesh* NewMesh);
 
+
 	/** Get the StaticMesh used by this instance. */
 	UStaticMesh* GetStaticMesh() const 
 	{ 

@@ -115,6 +115,7 @@ protected:
 
 public:
 	/** Returns SmartLinkComp subobject **/
+	UFUNCTION(BlueprintPure, Category = "SmartLink")
 	UNavLinkCustomComponent* GetSmartLinkComp() const { return SmartLinkComp; }
 #if WITH_EDITORONLY_DATA
 	/** Returns EdRenderComp subobject **/
