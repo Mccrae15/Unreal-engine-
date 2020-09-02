@@ -991,27 +991,27 @@ public:
 
 		if (DescriptorTableBaseIndex != InvalidIndex)
 		{
-			return DescriptorTableBaseIndex;
-		}
+				return DescriptorTableBaseIndex;
+			}
 		else
 		{
-			DescriptorTableBaseIndex = Heap.Allocate(NumDescriptors);
+		DescriptorTableBaseIndex = Heap.Allocate(NumDescriptors);
 
 			D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor = Heap.GetDescriptorCPU(DescriptorTableBaseIndex);
 			checkf(Heap.CPUBase.ptr, TEXT("Ray tracing descriptor heap of type %d assigned to descriptor cache is invalid."), Type);
 			GetParentDevice()->GetDevice()->CopyDescriptors(1, &DestDescriptor, &NumDescriptors, NumDescriptors, Descriptors, nullptr, Type);
 
-			if (Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
-			{
-				INC_DWORD_STAT_BY(STAT_D3D12RayTracingUsedViewDescriptors, NumDescriptors);
-			}
-			else
-			{
-				INC_DWORD_STAT_BY(STAT_D3D12RayTracingUsedSamplerDescriptors, NumDescriptors);
-			}
-
-			return DescriptorTableBaseIndex;
+		if (Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
+		{
+			INC_DWORD_STAT_BY(STAT_D3D12RayTracingUsedViewDescriptors, NumDescriptors);
 		}
+		else
+		{
+			INC_DWORD_STAT_BY(STAT_D3D12RayTracingUsedSamplerDescriptors, NumDescriptors);
+		}
+
+		return DescriptorTableBaseIndex;
+	}
 	}
 
 	FD3D12RayTracingDescriptorHeap ViewHeap;
@@ -1243,6 +1243,8 @@ public:
 
 	void CopyToGPU(FD3D12Device* Device)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(ShaderTableCopyToGPU);
+
 		check(IsInRHIThread() || !IsRunningRHIInSeparateThread());
 
 		checkf(Data.Num(), TEXT("Shader table is expected to be initialized before copying to GPU."));
@@ -1257,7 +1259,7 @@ public:
 
 		Buffer = Adapter->CreateRHIBuffer<FD3D12MemBuffer>(
 			nullptr, BufferDesc, BufferDesc.Alignment,
-			0, BufferDesc.Width, BUF_Static, CreateInfo);
+			0, BufferDesc.Width, BUF_Static, ED3D12ResourceStateMode::SingleState, CreateInfo);
 
 		SetName(Buffer->GetResource(), TEXT("Shader binding table"));
 
@@ -1700,17 +1702,17 @@ public:
 		// Link final RTPSO from shader collections
 
 		LinkTime -= FPlatformTime::Cycles64();
-		StateObject = CreateRayTracingStateObject(
-			RayTracingDevice,
-			{}, // Libraries,
-			{}, // LibraryExports,
-			Initializer.MaxPayloadSizeInBytes,
-			{}, // HitGroups
-			GlobalRootSignature,
-			{}, // LocalRootSignatures
-			{}, // LocalRootSignatureAssociations,
-			UniqueShaderCollectionDescs,
-			D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE);
+			StateObject = CreateRayTracingStateObject(
+				RayTracingDevice,
+				{}, // Libraries,
+				{}, // LibraryExports,
+				Initializer.MaxPayloadSizeInBytes,
+				{}, // HitGroups
+				GlobalRootSignature,
+				{}, // LocalRootSignatures
+				{}, // LocalRootSignatureAssociations,
+				UniqueShaderCollectionDescs,
+				D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE);
 		LinkTime += FPlatformTime::Cycles64();
 
 		HRESULT QueryInterfaceResult = StateObject->QueryInterface(IID_PPV_ARGS(PipelineProperties.GetInitReference()));
@@ -2105,8 +2107,6 @@ void FD3D12RayTracingGeometry::TransitionBuffers(FD3D12CommandContext& CommandCo
 
 static void CreateAccelerationStructureBuffers(TRefCountPtr<FD3D12MemBuffer>& AccelerationStructureBuffer, TRefCountPtr<FD3D12MemBuffer>&  ScratchBuffer, FD3D12Adapter* Adapter, uint32 GPUIndex, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO& PrebuildInfo)
 {
-	check(IsInRHIThread() || !IsRunningRHIInSeparateThread());
-
 	FRHIResourceCreateInfo CreateInfo;
 
 	D3D12_RESOURCE_DESC AccelerationStructureBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
@@ -2116,7 +2116,7 @@ static void CreateAccelerationStructureBuffers(TRefCountPtr<FD3D12MemBuffer>& Ac
 	CreateInfo.DebugName = TEXT("AccelerationStructureBuffer");
 	AccelerationStructureBuffer = Adapter->CreateRHIBuffer<FD3D12MemBuffer>(
 		nullptr, AccelerationStructureBufferDesc, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT,
-		0, AccelerationStructureBufferDesc.Width, BUF_AccelerationStructure, CreateInfo);
+		0, AccelerationStructureBufferDesc.Width, BUF_AccelerationStructure, ED3D12ResourceStateMode::SingleState, CreateInfo);
 
 	SetName(AccelerationStructureBuffer->GetResource(), TEXT("Acceleration structure"));
 
@@ -2128,7 +2128,7 @@ static void CreateAccelerationStructureBuffers(TRefCountPtr<FD3D12MemBuffer>& Ac
 	CreateInfo.DebugName = TEXT("ScratchBuffer");
 	ScratchBuffer = Adapter->CreateRHIBuffer<FD3D12MemBuffer>(
 		nullptr, ScratchBufferDesc, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT,
-		0, ScratchBufferDesc.Width, BUF_UnorderedAccess, CreateInfo);
+		0, ScratchBufferDesc.Width, BUF_UnorderedAccess, ED3D12ResourceStateMode::SingleState, CreateInfo);
 
 	SetName(ScratchBuffer->GetResource(), TEXT("Acceleration structure scratch"));
 }
@@ -2166,7 +2166,7 @@ void FD3D12RayTracingGeometry::BuildAccelerationStructure(FD3D12CommandContext& 
 		}
 
 		FD3D12VertexBuffer* VertexBuffer = CommandContext.RetrieveObject<FD3D12VertexBuffer>(Segment.VertexBuffer.GetReference());
-			   
+
 		if (GeometryType == D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES)
 		{
 			switch (Segment.VertexBufferElementType)
@@ -2279,9 +2279,33 @@ void FD3D12RayTracingGeometry::BuildAccelerationStructure(FD3D12CommandContext& 
 
 		INC_MEMORY_STAT_BY(STAT_D3D12RayTracingBLASMemory, AccelerationStructureBuffers[GPUIndex]->GetSize());
 		INC_MEMORY_STAT_BY(STAT_D3D12RayTracingBLASMemory, ScratchBuffers[GPUIndex]->GetSize());
+	}
 
-		// #dxr_todo UE-72161: scratch buffers should be created in UAV state from the start
-		FD3D12DynamicRHI::TransitionResource(CommandContext.CommandListHandle, ScratchBuffers[GPUIndex].GetReference()->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, 0);
+	// Compact BLAS if it is static
+	bool bShouldCompactAfterBuild = BuildFlags & D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION && BuildFlags & D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE && !(BuildFlags & D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE);
+
+	if (bShouldCompactAfterBuild)
+	{
+		D3D12_RESOURCE_DESC PostBuildInfoBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(uint64), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+		FRHIResourceCreateInfo CreateInfo;
+
+		CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
+		CreateInfo.DebugName = TEXT("PostBuildInfoBuffer");
+		PostBuildInfoBuffers[GPUIndex] = Adapter->CreateRHIBuffer<FD3D12MemBuffer>(
+			nullptr, PostBuildInfoBufferDesc, 8,
+			0, PostBuildInfoBufferDesc.Width, BUF_UnorderedAccess | BUF_SourceCopy, ED3D12ResourceStateMode::MultiState, CreateInfo);
+
+		SetName(PostBuildInfoBuffers[GPUIndex]->GetResource(), TEXT("PostBuildInfoBuffer"));
+
+		FD3D12DynamicRHI::TransitionResource(CommandContext.CommandListHandle, PostBuildInfoBuffers[GPUIndex].GetReference()->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, 0);
+
+		PostBuildInfoStagingBuffers[GPUIndex] = RHICreateStagingBuffer();
+
+		// Do not defer delete the staging buffer data because when readback is done we don't need
+		// to keep it alive any longer - shouldn't even wait on frame fence
+		PostBuildInfoBuffers[GPUIndex]->DoNoDeferDelete();
+		PostBuildInfoStagingBuffers[GPUIndex]->DoNoDeferDelete();
 	}
 
 	TransitionBuffers(CommandContext);
@@ -2301,7 +2325,7 @@ void FD3D12RayTracingGeometry::BuildAccelerationStructure(FD3D12CommandContext& 
 			: D3D12_GPU_VIRTUAL_ADDRESS(0);
 
 		ID3D12GraphicsCommandList4* RayTracingCommandList = CommandContext.CommandListHandle.RayTracingCommandList();
-		RayTracingCommandList->BuildRaytracingAccelerationStructure(&BuildDesc, 0, nullptr);
+			RayTracingCommandList->BuildRaytracingAccelerationStructure(&BuildDesc, 0, nullptr);
 		SetDirty(CommandContext.GetGPUMask(), false);
 
 		if (bIsUpdate)
@@ -2323,7 +2347,88 @@ void FD3D12RayTracingGeometry::BuildAccelerationStructure(FD3D12CommandContext& 
 	}
 }
 
-FD3D12RayTracingScene::FD3D12RayTracingScene(FD3D12Adapter& Adapter)
+void FD3D12RayTracingGeometry::ConditionalCompactAccelerationStructure(FD3D12CommandContext& CommandContext)
+{
+	const bool bShouldCompactAfterBuild = BuildFlags& D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION&& BuildFlags& D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE && !(BuildFlags & D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE);
+
+	if (!bShouldCompactAfterBuild)
+	{
+		return;
+	}
+
+	const uint32 GPUIndex = CommandContext.GetGPUIndex();
+
+	// return the buffers are null (mostly because the BLAS has been compacted)
+	if (PostBuildInfoBuffers[GPUIndex] == nullptr)
+	{
+		return;
+	}
+
+	FD3D12Adapter* Adapter = CommandContext.GetParentAdapter();
+
+	const FD3D12Fence& Fence = CommandContext.GetParentDevice()->GetCommandListManager().GetFence();
+
+	// Ensure that our builds & copies have finished on GPU
+	if (PostBuildInfoBufferReadbackFences[GPUIndex] > Fence.GetLastCompletedFenceFast())
+	{
+		return;
+	}
+
+	uint64 SizeAfterCompaction = 0;
+
+	{
+		// Read size and release readback buffers.
+		SizeAfterCompaction = *(uint64*)PostBuildInfoStagingBuffers[GPUIndex]->Lock(0, sizeof(uint64));
+
+		PostBuildInfoStagingBuffers[GPUIndex]->Unlock();
+		PostBuildInfoBuffers[GPUIndex] = nullptr;
+		PostBuildInfoStagingBuffers[GPUIndex] = nullptr;
+		PostBuildInfoBufferReadbackFences[GPUIndex] = MAX_uint64;
+	}
+
+	ensureMsgf(SizeAfterCompaction, TEXT("Compacted acceleration structure size is expected to be non-zero. This error suggests that GPU readback synchronization is broken."));
+
+	if (SizeAfterCompaction == 0)
+	{
+		return;
+	}
+
+	DEC_MEMORY_STAT_BY(STAT_D3D12RayTracingUsedVideoMemory, AccelerationStructureBuffers[GPUIndex]->GetSize());
+	DEC_MEMORY_STAT_BY(STAT_D3D12RayTracingBLASMemory, AccelerationStructureBuffers[GPUIndex]->GetSize());
+
+	// Move old AS into this temporary variable which gets released when this function returns
+	TRefCountPtr<FD3D12MemBuffer> OldAccelerationStructure = MoveTemp(AccelerationStructureBuffers[GPUIndex]);
+
+	{
+		FRHIResourceCreateInfo CreateInfo;
+
+		D3D12_RESOURCE_DESC AccelerationStructureBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(SizeAfterCompaction, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+		CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
+		CreateInfo.DebugName = TEXT("AccelerationStructureBuffer");
+		AccelerationStructureBuffers[GPUIndex] = Adapter->CreateRHIBuffer<FD3D12MemBuffer>(
+			nullptr, AccelerationStructureBufferDesc, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT,
+			0, AccelerationStructureBufferDesc.Width, BUF_AccelerationStructure, CreateInfo);
+
+		INC_MEMORY_STAT_BY(STAT_D3D12RayTracingUsedVideoMemory, AccelerationStructureBuffers[GPUIndex]->GetSize());
+		INC_MEMORY_STAT_BY(STAT_D3D12RayTracingBLASMemory, AccelerationStructureBuffers[GPUIndex]->GetSize());
+
+		SetName(AccelerationStructureBuffers[GPUIndex]->GetResource(),
+			DebugName.IsValid() ? *DebugName.ToString() : TEXT("BLAS"));
+
+		OldAccelerationStructure->GetResource()->UpdateResidency(CommandContext.CommandListHandle);
+		AccelerationStructureBuffers[GPUIndex]->GetResource()->UpdateResidency(CommandContext.CommandListHandle);
+
+		ID3D12GraphicsCommandList4* RayTracingCommandList = CommandContext.CommandListHandle.RayTracingCommandList();
+		RayTracingCommandList->CopyRaytracingAccelerationStructure(
+			AccelerationStructureBuffers[GPUIndex]->ResourceLocation.GetGPUVirtualAddress(),
+			OldAccelerationStructure->ResourceLocation.GetGPUVirtualAddress(),
+			D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
+	}
+}
+
+FD3D12RayTracingScene::FD3D12RayTracingScene(FD3D12Adapter* Adapter, const FRayTracingSceneInitializer& Initializer)
+	: FD3D12AdapterChild(Adapter)
 {
 	ShaderResourceView = Adapter.CreateLinkedObject<FD3D12ShaderResourceView>(FRHIGPUMask::All(), [&](FD3D12Device* Device)
 	{
@@ -2391,9 +2496,6 @@ void FD3D12RayTracingScene::BuildAccelerationStructure(FD3D12CommandContext& Com
 	INC_MEMORY_STAT_BY(STAT_D3D12RayTracingUsedVideoMemory, AccelerationStructureBuffer->GetSize());
 	INC_MEMORY_STAT_BY(STAT_D3D12RayTracingTLASMemory, AccelerationStructureBuffer->GetSize());
 
-	// #dxr_todo UE-72161: scratch buffers should be created in UAV state from the start
-	FD3D12DynamicRHI::TransitionResource(CommandContext.CommandListHandle, ScratchBuffer.GetReference()->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, 0);
-
 	FD3D12ShaderResourceView* AccelerationStructureView = CommandContext.RetrieveObject<FD3D12ShaderResourceView>(ShaderResourceView.GetReference());
 
 	if (bAccelerationStructureViewInitialized[GPUIndex])
@@ -2428,9 +2530,10 @@ void FD3D12RayTracingScene::BuildAccelerationStructure(FD3D12CommandContext& Com
 			sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * PrebuildDescInputs.NumDescs,
 			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
+		// #dxr_todo multi state only when bShouldCopyIndirectInstances is set - will still need transition to copy_src for lock behind but this can be done on the complete pool in theory (have to check cost)
 		InstanceBuffer = Adapter->CreateRHIBuffer<FD3D12StructuredBuffer>(
 			nullptr, InstanceBufferDesc, D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT,
-			sizeof(D3D12_RAYTRACING_INSTANCE_DESC), InstanceBufferDesc.Width, BUF_UnorderedAccess, CreateInfo);
+			sizeof(D3D12_RAYTRACING_INSTANCE_DESC), InstanceBufferDesc.Width, BUF_UnorderedAccess, ED3D12ResourceStateMode::MultiState, CreateInfo);
 
 		D3D12_RAYTRACING_INSTANCE_DESC* MappedData = (D3D12_RAYTRACING_INSTANCE_DESC*)Adapter->GetOwningRHI()->LockBuffer(
 			nullptr, InstanceBuffer.GetReference(), 0, InstanceBufferDesc.Width, RLM_WriteOnly);
@@ -2447,8 +2550,8 @@ void FD3D12RayTracingScene::BuildAccelerationStructure(FD3D12CommandContext& Com
 			const FRayTracingGeometryInstance& Instance = Instances[InstanceIndex];
 			FD3D12RayTracingGeometry* Geometry = FD3D12DynamicRHI::ResourceCast(Instance.GeometryRHI);
 
-			checkf(!Geometry->IsDirty(CommandContext.GetGPUIndex()),
-				TEXT("Acceleration structures for all geometries must be built before building the top level acceleration structure for the scene."));
+				checkf(!Geometry->IsDirty(CommandContext.GetGPUIndex()),
+					TEXT("Acceleration structures for all geometries must be built before building the top level acceleration structure for the scene."));
 
 			D3D12_RAYTRACING_INSTANCE_DESC InstanceDesc = {};
 
@@ -3288,23 +3391,23 @@ static void DispatchRays(FD3D12CommandContext& CommandContext,
 		SetRayTracingShaderResources(CommandContext, RayGenShader, GlobalBindings, TransientDescriptorCache, ResourceBinder);
 	}
 
-	if (OptShaderTable)
-	{
-		OptShaderTable->TransitionResources(CommandContext);
-	}
+		if (OptShaderTable)
+		{
+			OptShaderTable->TransitionResources(CommandContext);
+		}
 
-	CommandContext.CommandListHandle.FlushResourceBarriers();
+		CommandContext.CommandListHandle.FlushResourceBarriers();
 
-	ID3D12StateObject* RayTracingStateObject = Pipeline->StateObject.GetReference();
+		ID3D12StateObject* RayTracingStateObject = Pipeline->StateObject.GetReference();
 
-	ID3D12GraphicsCommandList4* RayTracingCommandList = CommandContext.CommandListHandle.RayTracingCommandList();
-	RayTracingCommandList->SetPipelineState1(RayTracingStateObject);
-	RayTracingCommandList->DispatchRays(&DispatchDesc);
+		ID3D12GraphicsCommandList4* RayTracingCommandList = CommandContext.CommandListHandle.RayTracingCommandList();
+		RayTracingCommandList->SetPipelineState1(RayTracingStateObject);
+		RayTracingCommandList->DispatchRays(&DispatchDesc);
 
-	if (CommandContext.IsDefaultContext())
-	{
-		CommandContext.GetParentDevice()->RegisterGPUWork(1);
-	}
+		if (CommandContext.IsDefaultContext())
+		{
+			CommandContext.GetParentDevice()->RegisterGPUWork(1);
+		}
 
 	// Restore old global descriptor heaps
 	CommandContext.CommandListHandle.GraphicsCommandList()->SetDescriptorHeaps(2, PreviousHeaps);
@@ -3421,7 +3524,7 @@ void FD3D12CommandContext::RHIRayTraceDispatch(FRHIRayTracingPipelineState* InRa
 static void SetRayTracingHitGroup(
 	FD3D12CommandContext& CommandContext,
 	FD3D12RayTracingShaderTable* ShaderTable,
-	FD3D12RayTracingScene* Scene, 
+	FD3D12RayTracingScene* Scene,
 	FD3D12RayTracingPipelineState* Pipeline,
 	uint32 InstanceIndex, uint32 SegmentIndex, uint32 ShaderSlot, uint32 HitGroupIndex,
 	uint32 NumUniformBuffers, FRHIUniformBuffer* const* UniformBuffers,
@@ -3488,17 +3591,17 @@ void FD3D12CommandContext::RHISetRayTracingHitGroups(
 		TEXT("Hit shader records are assumed to be at the beginning of local shader table"));
 
 	for (uint32 BindingIndex = 0; BindingIndex < NumBindings; ++ BindingIndex)
-	{
+		{
 		const FRayTracingLocalShaderBindings& Binding = Bindings[BindingIndex];
 		SetRayTracingHitGroup(*this, ShaderTable, Scene, Pipeline,
-			Binding.InstanceIndex,
-			Binding.SegmentIndex,
-			Binding.ShaderSlot,
-			Binding.ShaderIndexInPipeline,
-			Binding.NumUniformBuffers,
-			Binding.UniformBuffers,
-			Binding.LooseParameterDataSize,
-			Binding.LooseParameterData,
+				Binding.InstanceIndex,
+				Binding.SegmentIndex,
+				Binding.ShaderSlot,
+				Binding.ShaderIndexInPipeline,
+				Binding.NumUniformBuffers,
+				Binding.UniformBuffers,
+				Binding.LooseParameterDataSize,
+				Binding.LooseParameterData,
 			Binding.UserData);
 	}
 }

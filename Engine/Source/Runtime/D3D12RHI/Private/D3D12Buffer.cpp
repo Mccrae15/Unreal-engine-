@@ -18,16 +18,19 @@ template void FD3D12DynamicRHI::UnlockBuffer<FD3D12StructuredBuffer>(FRHICommand
 template FD3D12VertexBuffer* FD3D12Adapter::CreateRHIBuffer<FD3D12VertexBuffer>(FRHICommandListImmediate* RHICmdList,
 	const D3D12_RESOURCE_DESC& Desc,
 	uint32 Alignment, uint32 Stride, uint32 Size, uint32 InUsage,
+	ED3D12ResourceStateMode InResourceStateMode,
 	FRHIResourceCreateInfo& CreateInfo);
 
 template FD3D12IndexBuffer* FD3D12Adapter::CreateRHIBuffer<FD3D12IndexBuffer>(FRHICommandListImmediate* RHICmdList,
 	const D3D12_RESOURCE_DESC& Desc,
 	uint32 Alignment, uint32 Stride, uint32 Size, uint32 InUsage,
+	ED3D12ResourceStateMode InResourceStateMode,
 	FRHIResourceCreateInfo& CreateInfo);
 
 template FD3D12StructuredBuffer* FD3D12Adapter::CreateRHIBuffer<FD3D12StructuredBuffer>(FRHICommandListImmediate* RHICmdList,
 	const D3D12_RESOURCE_DESC& Desc,
 	uint32 Alignment, uint32 Stride, uint32 Size, uint32 InUsage,
+	ED3D12ResourceStateMode InResourceStateMode,
 	FRHIResourceCreateInfo& CreateInfo);
 
 struct FRHICommandUpdateBufferString
@@ -84,6 +87,7 @@ void FD3D12Adapter::AllocateBuffer(FD3D12Device* Device,
 	const D3D12_RESOURCE_DESC& InDesc,
 	uint32 Size,
 	uint32 InUsage,
+	ED3D12ResourceStateMode InResourceStateMode,
 	FRHIResourceCreateInfo& CreateInfo,
 	uint32 Alignment,
 	FD3D12TransientResource& TransientResource,
@@ -96,6 +100,7 @@ void FD3D12Adapter::AllocateBuffer(FD3D12Device* Device,
 
 	if (bIsDynamic)
 	{
+		check(InResourceStateMode != ED3D12ResourceStateMode::MultiState);
 		void* pData = GetUploadHeapAllocator(Device->GetGPUIndex()).AllocUploadResource(Size, Alignment, ResourceLocation);
 		check(ResourceLocation.GetSize() == Size);
 
@@ -110,7 +115,7 @@ void FD3D12Adapter::AllocateBuffer(FD3D12Device* Device,
 	}
 	else
 	{
-		Device->GetDefaultBufferAllocator().AllocDefaultResource(InDesc, InUsage, ResourceLocation, Alignment, CreateInfo.DebugName);
+		Device->GetDefaultBufferAllocator().AllocDefaultResource(InDesc, (EBufferUsageFlags)InUsage, InResourceStateMode, ResourceLocation, Alignment, CreateInfo.DebugName);
 		check(ResourceLocation.GetSize() == Size);
 	}
 }
@@ -123,6 +128,7 @@ BufferType* FD3D12Adapter::CreateRHIBuffer(FRHICommandListImmediate* RHICmdList,
 	uint32 Stride,
 	uint32 Size,
 	uint32 InUsage,
+	ED3D12ResourceStateMode InResourceStateMode,
 	FRHIResourceCreateInfo& CreateInfo)
 {
 	SCOPE_CYCLE_COUNTER(STAT_D3D12CreateBufferTime);
@@ -141,7 +147,7 @@ BufferType* FD3D12Adapter::CreateRHIBuffer(FRHICommandListImmediate* RHICmdList,
 
 			if (Device->GetGPUIndex() == FirstGPUIndex)
 			{
-				AllocateBuffer(Device, InDesc, Size, InUsage, CreateInfo, Alignment, *NewBuffer, NewBuffer->ResourceLocation);
+				AllocateBuffer(Device, InDesc, Size, InUsage, InResourceStateMode, CreateInfo, Alignment, *NewBuffer, NewBuffer->ResourceLocation);
 				NewBuffer0 = NewBuffer;
 			}
 			else
@@ -160,7 +166,7 @@ BufferType* FD3D12Adapter::CreateRHIBuffer(FRHICommandListImmediate* RHICmdList,
 			BufferType* NewBuffer = new BufferType(Device, Stride, Size, InUsage);
 			NewBuffer->BufferAlignment = Alignment;
 
-			AllocateBuffer(Device, InDesc, Size, InUsage, CreateInfo, Alignment, *NewBuffer, NewBuffer->ResourceLocation);
+			AllocateBuffer(Device, InDesc, Size, InUsage, InResourceStateMode, CreateInfo, Alignment, *NewBuffer, NewBuffer->ResourceLocation);
 
 			return NewBuffer;
 		});

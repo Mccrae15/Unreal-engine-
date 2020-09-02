@@ -383,16 +383,16 @@ static void LogDREDData(ID3D12Device* Device)
 			{
 				int32 LastCompletedOp = *Node->pLastBreadcrumbValue;
 
-				UE_LOG(LogD3D12RHI, Error, TEXT("DRED: Commandlist \"%s\" on CommandQueue \"%s\", %d completed of %d"), Node->pCommandListDebugNameW, Node->pCommandQueueDebugNameW, LastCompletedOp, Node->BreadcrumbCount);
+					UE_LOG(LogD3D12RHI, Error, TEXT("DRED: Commandlist \"%s\" on CommandQueue \"%s\", %d completed of %d"), Node->pCommandListDebugNameW, Node->pCommandQueueDebugNameW, LastCompletedOp, Node->BreadcrumbCount);
 
 				int32 FirstOp = FMath::Max(LastCompletedOp - 5, 0);
 				int32 LastOp = FMath::Min(LastCompletedOp + 5, int32(Node->BreadcrumbCount) - 1);
 
-				for (int32 Op = FirstOp; Op <= LastOp; ++Op)
-				{
+					for (int32 Op = FirstOp; Op <= LastOp; ++Op)
+					{
 					//uint32 LastOpIndex = (*Node->pLastBreadcrumbValue - 1) % 65536;
-					D3D12_AUTO_BREADCRUMB_OP BreadcrumbOp = Node->pCommandHistory[Op];
-					const TCHAR* OpName = (BreadcrumbOp < UE_ARRAY_COUNT(OpNames)) ? OpNames[BreadcrumbOp] : TEXT("Unknown Op");
+						D3D12_AUTO_BREADCRUMB_OP BreadcrumbOp = Node->pCommandHistory[Op];
+						const TCHAR* OpName = (BreadcrumbOp < UE_ARRAY_COUNT(OpNames)) ? OpNames[BreadcrumbOp] : TEXT("Unknown Op");
 					UE_LOG(LogD3D12RHI, Error, TEXT("\tOp: %d, %s%s"), Op, OpName, (Op + 1 == LastCompletedOp) ? TEXT(" - Last completed") : TEXT(""));
 				}
 
@@ -1199,6 +1199,14 @@ DEFINE_STAT(STAT_D3D12UsedVideoMemory);
 DEFINE_STAT(STAT_D3D12AvailableVideoMemory);
 DEFINE_STAT(STAT_D3D12TotalVideoMemory);
 DEFINE_STAT(STAT_D3D12TextureAllocatorWastage);
+
+DEFINE_STAT(STAT_D3D12BufferPoolMemoryAllocated);
+DEFINE_STAT(STAT_D3D12BufferPoolMemoryUsed);
+DEFINE_STAT(STAT_D3D12BufferPoolMemoryFree);
+DEFINE_STAT(STAT_D3D12BufferPoolAlignmentWaste);
+DEFINE_STAT(STAT_D3D12BufferPoolPageCount);
+DEFINE_STAT(STAT_D3D12BufferPoolFullPages);
+DEFINE_STAT(STAT_D3D12BufferStandAloneUsedMemory);
 
 DEFINE_STAT(STAT_ViewHeapChanged);
 DEFINE_STAT(STAT_SamplerHeapChanged);
