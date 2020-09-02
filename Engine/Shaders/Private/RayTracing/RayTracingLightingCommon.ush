@@ -223,7 +223,7 @@ void TraceShadowRayMissShaderLighting(
 	in uint2 PixelCoord,
 	inout FPackedMaterialClosestHitPayload PackedPayload)
 {
-	PackedPayload.SetPixelCoordInCustomData(PixelCoord);
+	PackedPayload.SetPixelCoord(PixelCoord);
 	TraceRay
 	(
 		TLAS,
@@ -608,9 +608,6 @@ float3 ComputeDirectLightingMonolithic(
 {
 	float3 DirectLighting = (float3)0;
 
-	// Preserve current custom data value from the material payload, as it will be overwritten during shadow ray tracing.
-	uint SavedPackedCustomData = Payload.PackedCustomData;
-
 	for (uint LightIndex = 0; LightIndex < RaytracingLightsDataPacked.Count; LightIndex++)
 	{
 		uint Lit = 1;
@@ -699,8 +696,6 @@ float3 ComputeDirectLightingMonolithic(
 		float SurfaceShadow = 1.0f;
 		float4 LightAttenuation = 1.0f;
 
-		// Restore material custom data and reconstruct GBuffer
-		Payload.PackedCustomData = SavedPackedCustomData;
 		FGBufferData GBufferData = GetGBufferDataFromPayload(Payload);
 
 		float3 LightContribution = GetDynamicLighting(WorldPosition, ViewDirection, GBufferData, 1.0, GBufferData.ShadingModelID, LightData, LightAttenuation, 0.5, uint2(0, 0), RectTexture, SurfaceShadow).xyz;
