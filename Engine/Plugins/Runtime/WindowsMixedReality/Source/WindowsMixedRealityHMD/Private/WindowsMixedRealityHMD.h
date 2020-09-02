@@ -283,8 +283,8 @@ namespace WindowsMixedReality
 			uint32 sizeX, uint32 sizeY,
 			uint8 format,
 			uint32 numMips,
-			uint32 flags,
-			uint32 targetableTextureFlags,
+			ETextureCreateFlags flags,
+			ETextureCreateFlags TargetableTextureFlags,
 			FTexture2DRHIRef& outTargetableTexture,
 			FTexture2DRHIRef& outShaderResourceTexture,
 			uint32 numSamples = 1) override;
@@ -297,8 +297,8 @@ namespace WindowsMixedReality
 			uint32 SizeY,
 			uint8 Format,
 			uint32 NumMips,
-			uint32 InTexFlags,
-			uint32 TargetableTextureFlags,
+			ETextureCreateFlags InTexFlags,
+			ETextureCreateFlags TargetableTextureFlags,
 			FTexture2DRHIRef& OutTargetableTexture,
 			FTexture2DRHIRef& OutShaderResourceTexture,
 			uint32 NumSamples = 1) override;

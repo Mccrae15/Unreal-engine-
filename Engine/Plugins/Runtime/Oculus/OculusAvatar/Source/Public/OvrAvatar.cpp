@@ -25,6 +25,7 @@
 #include "XRMotionControllerBase.h"
 
 static float GAvatarVisemeMultiplier = 1.5f;
+static float GAvatarPositionScale = 100.0f;
 static FAutoConsoleVariableRef CVarOVRGBlendShapeIndex(
 	TEXT("oculus.avatars.visemeMultiplier"),
 	GAvatarVisemeMultiplier,
@@ -74,6 +75,51 @@ const uint64 UOvrAvatar::GoControllerMeshID = 14216321678048096174ull;
 	FString UOvrAvatar::ExpressiveEyeShell = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_EyeShell"));
 	FString UOvrAvatar::ExpressiveController = FString(TEXT("/OculusAvatar/Materials/AvatarsPBR_2/OculusAvatars_PBRV2_ExpressiveController"));
 
+
+FVector UOvrAvatar::GetPositionFromVertex(const ovrAvatarMeshVertex& vertex)
+{
+	return GAvatarPositionScale * FVector(-vertex.x, -vertex.z, vertex.y);
+}
+
+FVector UOvrAvatar::GetPositionFromVertex(const ovrAvatarMeshVertexV2& vertex)
+{
+	return GAvatarPositionScale * FVector(-vertex.x, -vertex.z, vertex.y);
+}
+
+FVector UOvrAvatar::GetPositionFromVertex(const ovrAvatarBlendVertex& vertex)
+{
+	return GAvatarPositionScale * FVector(-vertex.x, -vertex.z, vertex.y);
+}
+
+FVector UOvrAvatar::GetNormalFromVertex(const ovrAvatarMeshVertex& vertex)
+{
+	return FVector(-vertex.nx, -vertex.nz, vertex.ny);
+}
+
+FVector UOvrAvatar::GetNormalFromVertex(const ovrAvatarMeshVertexV2& vertex)
+{
+	return FVector(-vertex.nx, -vertex.nz, vertex.ny);
+}
+
+FVector UOvrAvatar::GetNormalFromVertex(const ovrAvatarBlendVertex& vertex)
+{
+	return FVector(-vertex.nx, -vertex.nz, vertex.ny);
+}
+
+FVector UOvrAvatar::GetTangentFromVertex(const ovrAvatarMeshVertex& vertex)
+{
+	return FVector(-vertex.tx, -vertex.tz, vertex.ty);
+}
+
+FVector UOvrAvatar::GetTangentFromVertex(const ovrAvatarMeshVertexV2& vertex)
+{
+	return FVector(-vertex.tx, -vertex.tz, vertex.ty);
+}
+
+FVector UOvrAvatar::GetTangentFromVertex(const ovrAvatarBlendVertex& vertex)
+{
+	return FVector(-vertex.tx, -vertex.tz, vertex.ty);
+}
 
 FColor UOvrAvatar::GetColorFromVertex(const ovrAvatarMeshVertex& vertex)
 {
@@ -377,8 +423,6 @@ void UOvrAvatar::HandleAvatarSpecification(const ovrAvatarMessage_AvatarSpecific
 				UPoseableMeshComponent* MeshComponent = CreateMeshComponent(BaseComponent, RenderData->meshAssetID, *MeshName);
 				MeshComponent->SetVisibility(false, true);
 
-				check(!AssetToMaterialStringsMap.Contains(RenderData->meshAssetID));
-
 				TArray<FString> Materials;
 				Materials.Add(MaterialString);
 
@@ -387,7 +431,20 @@ void UOvrAvatar::HandleAvatarSpecification(const ovrAvatarMessage_AvatarSpecific
 					Materials.Add(ExpressiveEyeShell);
 				}
 
-				AssetToMaterialStringsMap.Add(RenderData->meshAssetID, Materials);
+				if (AssetToMaterialStringsMap.Contains(RenderData->meshAssetID))
+				{
+					// This mesh asset id has already been processed.  Make sure the material list matches.
+					auto MaterialArray = AssetToMaterialStringsMap[RenderData->meshAssetID];
+					check(MaterialArray.Num() == Materials.Num());
+					for (int32 i = 0; i < Materials.Num(); i++)
+					{
+						check(MaterialArray[i] == Materials[i]);
+					}
+				}
+				else
+				{
+					AssetToMaterialStringsMap.Add(RenderData->meshAssetID, Materials);
+				}
 
 				bool AddDepthMesh = BodyMaterial == MaterialType::Translucent && IsBodyComponent;
 				AddDepthMesh |= (IsLeftHandComponent || IsRightHandComponent) && HandMaterial == MaterialType::Translucent;
@@ -428,6 +485,16 @@ void UOvrAvatar::HandleAvatarSpecification(const ovrAvatarMessage_AvatarSpecific
 	}
 }
 
+static inline USkeletalMesh * CreateAvatarSkeletalMesh(UObject* outer, uint64_t assetId)
+{
+	USkeletalMesh * mesh = NewObject<USkeletalMesh>(outer, NAME_None, RF_Transient);
+#if WITH_EDITORONLY_DATA
+	mesh->GetImportedModel()->SkeletalMeshModelGUID = FGuid(uint32(assetId & 0xffffffff), uint32((assetId >> 32) & 0xffffffff), 0, 0);
+#endif
+	return mesh;
+
+}
+
 void UOvrAvatar::HandleAssetLoaded(const ovrAvatarMessage_AssetLoaded* message)
 {
 	const ovrAvatarAssetType assetType = ovrAvatarAsset_GetType(message->asset);
@@ -450,7 +517,7 @@ void UOvrAvatar::HandleAssetLoaded(const ovrAvatarMessage_AssetLoaded* message)
 				BodyBlendShapeNames.Add(BlendName);
 			}
 
-			USkeletalMesh * mesh = NewObject<USkeletalMesh>(GetTransientPackage(), NAME_None, RF_Transient);
+			USkeletalMesh * mesh = CreateAvatarSkeletalMesh(GetTransientPackage(), BodyMeshID);
 
 			UE_LOG(LogAvatars, Display, TEXT("Loading Combined Mesh"));
 			FString MeshName = BodyName + TEXT("_Combined");
@@ -511,7 +578,7 @@ void UOvrAvatar::HandleAssetLoaded(const ovrAvatarMessage_AssetLoaded* message)
 		{
 			if (UPoseableMeshComponent* MeshComp = GetMeshComponent(message->assetID))
 			{
-				USkeletalMesh* mesh = NewObject<USkeletalMesh>(GetTransientPackage(), NAME_None, RF_Transient);
+				USkeletalMesh* mesh = CreateAvatarSkeletalMesh(GetTransientPackage(), message->assetID);
 				LoadMesh(mesh, ovrAvatarAsset_GetMeshData(message->asset), message->asset, message->assetID);
 
 				if (BodyMeshID == message->assetID)
@@ -993,7 +1060,23 @@ void UOvrAvatar::UpdateSkeleton(UPoseableMeshComponent& mesh, const ovrAvatarSki
 	FTransform LocalBone = FTransform::Identity;
 	for (uint32 BoneIndex = 0; BoneIndex < pose.jointCount; BoneIndex++)
 	{
-		OvrAvatarHelpers::OvrAvatarTransformToFTransfrom(pose.jointTransform[BoneIndex], LocalBone);
+		OvrAvatarHelpers::OvrAvatarBoneTransformToFTransform(pose.jointTransform[BoneIndex], LocalBone);
+
+		// Apply a fixup rotation to the root of the pose
+		if (BoneIndex == 0)
+		{
+			// For skeletal meshes with 1 joint, the root is the one affected so just do a normal conversion and apply then fixup
+			if (pose.jointCount == 1)
+			{
+				OvrAvatarHelpers::OvrAvatarTransformToFTransform(pose.jointTransform[BoneIndex], LocalBone);
+			}
+
+			FQuat FixupRotation = LocalBone.GetRotation();
+			FixupRotation *= FQuat(-0.5, 0.5, -0.5, 0.5);
+			
+			FixupRotation.Normalize();
+			LocalBone.SetRotation(FixupRotation);
+		}
 		mesh.BoneSpaceTransforms[BoneIndex] = LocalBone;
 	}
 
@@ -1385,7 +1468,8 @@ void UOvrAvatar::LoadMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMeshAssetD
 		FName BoneName = FName(*BoneString);
 
 		FTransform Transform = FTransform::Identity;
-		OvrAvatarHelpers::OvrAvatarTransformToFTransfrom(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::OvrAvatarBoneTransformToFTransform(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::GetBoneRootFixupTransform(BoneString, BoneIndex, Transform);
 
 		FReferenceSkeletonModifier Modifier = FReferenceSkeletonModifier(SkeletalMesh->RefSkeleton, nullptr);
 		int32 ParentIndex = BoneIndex > 0 && data->skinnedBindPose.jointParents[BoneIndex] < 0 ? 0 : data->skinnedBindPose.jointParents[BoneIndex];
@@ -1500,14 +1584,14 @@ void UOvrAvatar::LoadMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMeshAssetD
 
 #if WITH_EDITOR
 			FSoftSkinVertex ModelVertex;
-			ModelVertex.Position = 100.0f * FVector(-SourceVertex->z, SourceVertex->x, SourceVertex->y);
+			ModelVertex.Position = GetPositionFromVertex(*SourceVertex);
 			BoundBox += ModelVertex.Position;
 
-			ModelVertex.Color = UOvrAvatar::GetColorFromVertex(*SourceVertex);
+			ModelVertex.Color = GetColorFromVertex(*SourceVertex);
 
 
-			FVector n = FVector(-SourceVertex->nz, SourceVertex->nx, SourceVertex->ny);
-			FVector t = FVector(-SourceVertex->tz, SourceVertex->tx, SourceVertex->ty);
+			FVector n = GetNormalFromVertex(*SourceVertex);
+			FVector t = GetTangentFromVertex(*SourceVertex);
 			FVector bt = FVector::CrossProduct(t, n) * FMath::Sign(SourceVertex->tw);
 			ModelVertex.TangentX = t;
 			ModelVertex.TangentY = bt;
@@ -1545,13 +1629,13 @@ void UOvrAvatar::LoadMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMeshAssetD
 			MeshSection.SoftVertices.Add(ModelVertex);
 #else
 			FModelVertex ModelVertex;
-			ModelVertex.Position = 100.0f * FVector(-SourceVertex->z, SourceVertex->x, SourceVertex->y);
+			ModelVertex.Position = GetPositionFromVertex(*SourceVertex);
 			BoundBox += ModelVertex.Position;
 
-			ColorArray.Add(UOvrAvatar::GetColorFromVertex(*SourceVertex));
+			ColorArray.Add(GetColorFromVertex(*SourceVertex));
 
-			FVector n = FVector(-SourceVertex->nz, SourceVertex->nx, SourceVertex->ny);
-			FVector t = FVector(-SourceVertex->tz, SourceVertex->tx, SourceVertex->ty);
+			FVector n = GetNormalFromVertex(*SourceVertex);
+			FVector t = GetTangentFromVertex(*SourceVertex);
 			ModelVertex.TangentX = t;
 			ModelVertex.TangentZ = n;
 			ModelVertex.TexCoord = FVector2D(SourceVertex->u, SourceVertex->v);
@@ -1612,7 +1696,6 @@ void UOvrAvatar::LoadMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMeshAssetD
 	}
 #else
 	LodRenderData->StaticVertexBuffers.ColorVertexBuffer.InitFromColorArray(ColorArray);
-	LodRenderData->SkinWeightVertexBuffer.SetMaxBoneInfluences(EXTRA_BONE_INFLUENCES);
 	LodRenderData->SkinWeightVertexBuffer = InWeights;
 	LodRenderData->MultiSizeIndexContainer.CreateIndexBuffer(sizeof(uint16_t));
 
@@ -1644,10 +1727,10 @@ void UOvrAvatar::LoadMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMeshAssetD
 		for (uint32_t VertIndex = 0; VertIndex < data->vertexCount; VertIndex++)
 		{
 			FMorphTargetDelta NewVertData;
-			FMemory::Memcpy((void*)&CurrentVert, (void*)(blendVerts + BlendIndex*data->vertexCount + VertIndex), sizeof(ovrAvatarBlendVertex));
+			FMemory::Memcpy((void*)&CurrentVert, (void*)(blendVerts + BlendIndex * data->vertexCount + VertIndex), sizeof(ovrAvatarBlendVertex));
 
-			NewVertData.PositionDelta = 100.0f * FVector(-CurrentVert.z, CurrentVert.x, CurrentVert.y);
-			NewVertData.TangentZDelta = FVector(-CurrentVert.nz, CurrentVert.nx, CurrentVert.ny);
+			NewVertData.PositionDelta = GetPositionFromVertex(CurrentVert);
+			NewVertData.TangentZDelta = GetTangentFromVertex(CurrentVert);
 			NewVertData.SourceIdx = VertIndex;
 			MorphLODModel.Vertices.Add(NewVertData);
 		}
@@ -1802,7 +1885,7 @@ void UOvrAvatar::InitializeMaterials()
 							{
 								MaterialInstance->SetTextureParameterValue(NormalFields[MatIndex], NormalTexture);
 							}
-							
+
 							FLinearColor TuningParam{ DiffuseIntensityValues[MatIndex], RimIntensityValues[MatIndex], 0.0f, 0.f };
 							MaterialInstance->SetVectorParameterValue(TuningParameterFields[MatIndex], TuningParam);
 						}
@@ -2021,14 +2104,17 @@ ovrAvatarControllerType UOvrAvatar::GetControllerTypeByHardware()
 		break;
 	case ovrpSystemHeadset_Oculus_Quest:
 	case ovrpSystemHeadset_Rift_S:
+	case ovrpSystemHeadset_Oculus_Link_Quest:
 		controllerType = ovrAvatarControllerType_Quest;
 		break;
 	case ovrpSystemHeadset_Rift_DK1:
 	case ovrpSystemHeadset_Rift_DK2:
 	case ovrpSystemHeadset_Rift_CV1:
 	case ovrpSystemHeadset_Rift_CB:
-	default:
 		controllerType = ovrAvatarControllerType_Touch;
+		break;
+	default:
+		controllerType = ovrAvatarControllerType_Quest;
 		break;
 	}
 
@@ -2059,6 +2145,7 @@ bool UOvrAvatar::Is3DOFHardware()
 	case ovrpSystemHeadset_Oculus_Go:
 		return true;
 	case ovrpSystemHeadset_Oculus_Quest:
+	case ovrpSystemHeadset_Oculus_Link_Quest:
 	case ovrpSystemHeadset_Rift_DK1:
 	case ovrpSystemHeadset_Rift_DK2:
 	case ovrpSystemHeadset_Rift_CV1:
@@ -2152,7 +2239,8 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 		FName BoneName = FName(*BoneString);
 
 		FTransform Transform = FTransform::Identity;
-		OvrAvatarHelpers::OvrAvatarTransformToFTransfrom(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::OvrAvatarBoneTransformToFTransform(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::GetBoneRootFixupTransform(BoneString, BoneIndex, Transform);
 
 		FReferenceSkeletonModifier Modifier = FReferenceSkeletonModifier(SkeletalMesh->RefSkeleton, nullptr);
 		int32 ParentIndex = BoneIndex > 0 && data->skinnedBindPose.jointParents[BoneIndex] < 0 ? 0 : data->skinnedBindPose.jointParents[BoneIndex];
@@ -2263,13 +2351,13 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 			const ovrAvatarMeshVertexV2* SourceVertex = &data->vertexBuffer[VertIndex];
 
 			FSoftSkinVertex DestVertex;
-			DestVertex.Position = 100.0f * FVector(-SourceVertex->z, SourceVertex->x, SourceVertex->y);
-			DestVertex.Color = UOvrAvatar::GetColorFromVertex(*SourceVertex);
+			DestVertex.Position = GetPositionFromVertex(*SourceVertex);
+			DestVertex.Color = GetColorFromVertex(*SourceVertex);
 
 			BoundBox += DestVertex.Position;
 
-			FVector n = FVector(-SourceVertex->nz, SourceVertex->nx, SourceVertex->ny);
-			FVector t = FVector(-SourceVertex->tz, SourceVertex->tx, SourceVertex->ty);
+			FVector n = GetNormalFromVertex(*SourceVertex);
+			FVector t = GetTangentFromVertex(*SourceVertex);
 			FVector bt = FVector::CrossProduct(t, n) * FMath::Sign(SourceVertex->tw);
 			DestVertex.TangentX = t;
 			DestVertex.TangentY = bt;
@@ -2344,8 +2432,8 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 		{
 			FMorphTargetDelta NewVertData;
 			CurrentBlendVert = BlendShapeSetOffset + VertIndex;
-			NewVertData.PositionDelta = 100.0f * FVector(-blendVerts[CurrentBlendVert].z, blendVerts[CurrentBlendVert].x, blendVerts[CurrentBlendVert].y);
-			NewVertData.TangentZDelta = FVector(-blendVerts[CurrentBlendVert].nz, blendVerts[CurrentBlendVert].nx, blendVerts[CurrentBlendVert].ny);
+			NewVertData.PositionDelta = GetPositionFromVertex(blendVerts[CurrentBlendVert]);
+			NewVertData.TangentZDelta = GetTangentFromVertex(blendVerts[CurrentBlendVert]);
 			NewVertData.SourceIdx = VertIndex;
 			MorphLODModel.Vertices.Add(NewVertData);
 		}
@@ -2354,7 +2442,7 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 		for (uint32_t VertIndex = data->vertexCount; VertIndex < data->vertexCount + TotalEyeMeshVertCount; VertIndex++)
 		{
 			FMorphTargetDelta NewVertData;
-			NewVertData.PositionDelta = 100.0f * FVector(0.f, 0.f, 0.f);
+			NewVertData.PositionDelta = GAvatarPositionScale * FVector(0.f, 0.f, 0.f);
 			NewVertData.TangentZDelta = FVector(0.f, 0.f, 0.f);
 			NewVertData.SourceIdx = VertIndex;
 			MorphLODModel.Vertices.Add(NewVertData);
@@ -2404,7 +2492,8 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 		FName BoneName = FName(*BoneString);
 
 		FTransform Transform = FTransform::Identity;
-		OvrAvatarHelpers::OvrAvatarTransformToFTransfrom(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::OvrAvatarBoneTransformToFTransform(data->skinnedBindPose.jointTransform[BoneIndex], Transform);
+		OvrAvatarHelpers::GetBoneRootFixupTransform(BoneString, BoneIndex, Transform);
 
 		FReferenceSkeletonModifier Modifier = FReferenceSkeletonModifier(SkeletalMesh->RefSkeleton, nullptr);
 		int32 ParentIndex = BoneIndex > 0 && data->skinnedBindPose.jointParents[BoneIndex] < 0 ? 0 : data->skinnedBindPose.jointParents[BoneIndex];
@@ -2533,13 +2622,13 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 			const ovrAvatarMeshVertexV2* SourceVertex = &data->vertexBuffer[VertIndex];
 
 			FModelVertex ModelVertex;
-			ModelVertex.Position = 100.0f * FVector(-SourceVertex->z, SourceVertex->x, SourceVertex->y);
+			ModelVertex.Position = GetPositionFromVertex(*SourceVertex);
 			BoundBox += ModelVertex.Position;
 
-			ColorArray.Add(UOvrAvatar::GetColorFromVertex(*SourceVertex));
+			ColorArray.Add(GetColorFromVertex(*SourceVertex));
 
-			FVector n = FVector(-SourceVertex->nz, SourceVertex->nx, SourceVertex->ny);
-			FVector t = FVector(-SourceVertex->tz, SourceVertex->tx, SourceVertex->ty);
+			FVector n = GetNormalFromVertex(*SourceVertex);
+			FVector t = GetTangentFromVertex(*SourceVertex);
 			ModelVertex.TangentX = t;
 			ModelVertex.TangentZ = n;
 			ModelVertex.TexCoord = FVector2D(SourceVertex->u, SourceVertex->v);
@@ -2623,8 +2712,8 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 		{
 			FMorphTargetDelta NewVertData;
 			const ovrAvatarBlendVertex CurrentVert = blendVerts[CurrentBlendVert++];
-			NewVertData.PositionDelta = 100.0f * FVector(-CurrentVert.z, CurrentVert.x, CurrentVert.y);
-			NewVertData.TangentZDelta = FVector(-CurrentVert.nz, CurrentVert.nx, CurrentVert.ny);
+			NewVertData.PositionDelta = GetPositionFromVertex(CurrentVert);
+			NewVertData.TangentZDelta = GetTangentFromVertex(CurrentVert);
 			NewVertData.SourceIdx = VertIndex;
 			MorphLODModel.Vertices.Add(NewVertData);
 		}
@@ -2633,7 +2722,7 @@ void UOvrAvatar::LoadCombinedMesh(USkeletalMesh* SkeletalMesh, const ovrAvatarMe
 		for (uint32_t VertIndex = data->vertexCount; VertIndex < TotalVertCount; VertIndex++)
 		{
 			FMorphTargetDelta NewVertData;
-			NewVertData.PositionDelta = 100.0f * FVector(0.f, 0.f, 0.f);
+			NewVertData.PositionDelta = GAvatarPositionScale * FVector(0.f, 0.f, 0.f);
 			NewVertData.TangentZDelta = FVector(0.f, 0.f, 0.f);
 			NewVertData.SourceIdx = VertIndex;
 			MorphLODModel.Vertices.Add(NewVertData);

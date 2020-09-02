@@ -332,22 +332,6 @@ const FKey EKeys::MixedReality_Right_Trackpad_Down("MixedReality_Right_Trackpad_
 const FKey EKeys::MixedReality_Right_Trackpad_Left("MixedReality_Right_Trackpad_Left");
 const FKey EKeys::MixedReality_Right_Trackpad_Right("MixedReality_Right_Trackpad_Right");
 
-// Oculus Go Controller
-const FKey EKeys::OculusGo_Left_System_Click("OculusGo_Left_System_Click");
-const FKey EKeys::OculusGo_Left_Back_Click("OculusGo_Left_Back_Click");
-const FKey EKeys::OculusGo_Left_Trigger_Click("OculusGo_Left_Trigger_Click");
-const FKey EKeys::OculusGo_Left_Trackpad_X("OculusGo_Left_Trackpad_X");
-const FKey EKeys::OculusGo_Left_Trackpad_Y("OculusGo_Left_Trackpad_Y");
-const FKey EKeys::OculusGo_Left_Trackpad_Click("OculusGo_Left_Trackpad_Click");
-const FKey EKeys::OculusGo_Left_Trackpad_Touch("OculusGo_Left_Trackpad_Touch");
-const FKey EKeys::OculusGo_Right_System_Click("OculusGo_Right_System_Click");
-const FKey EKeys::OculusGo_Right_Back_Click("OculusGo_Right_Back_Click");
-const FKey EKeys::OculusGo_Right_Trigger_Click("OculusGo_Right_Trigger_Click");
-const FKey EKeys::OculusGo_Right_Trackpad_X("OculusGo_Right_Trackpad_X");
-const FKey EKeys::OculusGo_Right_Trackpad_Y("OculusGo_Right_Trackpad_Y");
-const FKey EKeys::OculusGo_Right_Trackpad_Click("OculusGo_Right_Trackpad_Click");
-const FKey EKeys::OculusGo_Right_Trackpad_Touch("OculusGo_Right_Trackpad_Touch");
-
 // Oculus Touch Controller
 const FKey EKeys::OculusTouch_Left_X_Click("OculusTouch_Left_X_Click");
 const FKey EKeys::OculusTouch_Left_Y_Click("OculusTouch_Left_Y_Click");
@@ -868,24 +852,6 @@ void EKeys::Initialize()
 	AddKey(FKeyDetails(EKeys::MixedReality_Right_Trackpad_Down, LOCTEXT("MixedReality_Right_Trackpad_Down", "Mixed Reality (R) Trackpad Down"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "MixedReality"));
 	AddKey(FKeyDetails(EKeys::MixedReality_Right_Trackpad_Left, LOCTEXT("MixedReality_Right_Trackpad_Left", "Mixed Reality (R) Trackpad Left"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "MixedReality"));
 	AddKey(FKeyDetails(EKeys::MixedReality_Right_Trackpad_Right, LOCTEXT("MixedReality_Right_Trackpad_Right", "Mixed Reality (R) Trackpad Right"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "MixedReality"));
-
-	// Oculus Go Controller
-	AddMenuCategoryDisplayInfo("OculusGo", LOCTEXT("OculusGoSubCategory", "Oculus Go"), TEXT("GraphEditor.PadEvent_16x"));
-
-	AddKey(FKeyDetails(EKeys::OculusGo_Left_System_Click, LOCTEXT("OculusGo_Left_System_Click", "Oculus Go (L) System"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Left_Back_Click, LOCTEXT("OculusGo_Left_Back_Click", "Oculus Go (L) Back"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Left_Trigger_Click, LOCTEXT("OculusGo_Left_Trigger_Click", "Oculus Go (L) Trigger"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Left_Trackpad_X, LOCTEXT("OculusGo_Left_Trackpad_X", "Oculus Go (L) Trackpad X"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Left_Trackpad_Y, LOCTEXT("OculusGo_Left_Trackpad_Y", "Oculus Go (L) Trackpad Y"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Left_Trackpad_Click, LOCTEXT("OculusGo_Left_Trackpad_Click", "Oculus Go (L) Trackpad"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Left_Trackpad_Touch, LOCTEXT("OculusGo_Left_Trackpad_Touch", "Oculus Go (L) Trackpad Touch"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Right_System_Click, LOCTEXT("OculusGo_Right_System_Click", "Oculus Go (R) System"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Right_Back_Click, LOCTEXT("OculusGo_Right_Back_Click", "Oculus Go (R) Back"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Right_Trigger_Click, LOCTEXT("OculusGo_Right_Trigger_Click", "Oculus Go (R) Trigger"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Right_Trackpad_X, LOCTEXT("OculusGo_Right_Trackpad_X", "Oculus Go (R) Trackpad X"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Right_Trackpad_Y, LOCTEXT("OculusGo_Right_Trackpad_Y", "Oculus Go (R) Trackpad Y"), FKeyDetails::GamepadKey | FKeyDetails::FloatAxis | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Right_Trackpad_Click, LOCTEXT("OculusGo_Right_Trackpad_Click", "Oculus Go (R) Trackpad"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
-	AddKey(FKeyDetails(EKeys::OculusGo_Right_Trackpad_Touch, LOCTEXT("OculusGo_Right_Trackpad_Touch", "Oculus Go (R) Trackpad Touch"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "OculusGo"));
 
 	// Oculus Touch Controller
 	AddMenuCategoryDisplayInfo("OculusTouch", LOCTEXT("OculusTouchSubCategory", "Oculus Touch"), TEXT("GraphEditor.PadEvent_16x"));

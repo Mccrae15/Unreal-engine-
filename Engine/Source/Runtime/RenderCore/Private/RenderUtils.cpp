@@ -204,7 +204,7 @@ public:
 	{
 		// Create the texture RHI.  		
 		FRHIResourceCreateInfo CreateInfo(TEXT("ColoredTexture"));
-		uint32 CreateFlags = TexCreate_ShaderResource;
+		ETextureCreateFlags CreateFlags = TexCreate_ShaderResource;
 		if(bWithUAV)
 		{
 			CreateFlags |= TexCreate_UAV;

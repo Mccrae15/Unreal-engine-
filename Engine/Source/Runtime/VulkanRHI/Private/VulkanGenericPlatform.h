@@ -45,6 +45,7 @@ public:
 	static void SetupFeatureLevels();
 
 	static bool SupportsStandardSwapchain() { return true; }
+	static bool RequiresRenderingBackBuffer() { return true; }
 	static EPixelFormat GetPixelFormatForNonDefaultSwapchain()
 	{
 		checkf(0, TEXT("Platform Requires Standard Swapchain!"));
@@ -89,6 +90,10 @@ public:
 
 	// Some platforms only support real or non-real UBs, so this function can optimize it out
 	static bool UseRealUBsOptimization(bool bCodeHeaderUseRealUBs) { return bCodeHeaderUseRealUBs; }
+
+#if WITH_LATE_LATCHING_CODE
+	static bool SupportsUniformBufferPatching() { return false; }
+#endif
 
 	static bool SupportParallelRenderingTasks() { return true; }
 

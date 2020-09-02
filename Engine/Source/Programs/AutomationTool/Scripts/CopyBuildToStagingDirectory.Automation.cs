@@ -3227,7 +3227,7 @@ public partial class Project : CommandUtils
 			if (Params.CookOnTheFly || Params.FileServer)
 			{
 				FileHostParams += "-filehostip=";
-				bool FirstParam = true;
+				List<string> fileHostEntries = new List<string>();
 				if (UnrealBuildTool.BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
 				{
 					NetworkInterface[] Interfaces = NetworkInterface.GetAllNetworkInterfaces();
@@ -3244,37 +3244,23 @@ public partial class Project : CommandUtils
 									{
 										foreach (var Port in Params.Port)
 										{
-											if (!FirstParam)
-											{
-												FileHostParams += "+";
-											}
-											FirstParam = false;
 											string[] PortProtocol = Port.Split(new char[] { ':' });
 											if (PortProtocol.Length > 1)
 											{
-												FileHostParams += String.Format("{0}://{1}:{2}", PortProtocol[0], IP.UnicastAddresses[Index].Address.ToString(), PortProtocol[1]);
+												fileHostEntries.Add(String.Format("{0}://{1}:{2}", PortProtocol[0], IP.UnicastAddresses[Index].Address.ToString(), PortProtocol[1]));
 											}
 											else
 											{
-												FileHostParams += IP.UnicastAddresses[Index].Address.ToString();
-												FileHostParams += ":";
-												FileHostParams += Params.Port;
+												fileHostEntries.Add(String.Format("{0}:{1}", IP.UnicastAddresses[Index].Address.ToString(), Params.Port));
 											}
 
 										}
 									}
 									else
 									{
-										if (!FirstParam)
-										{
-											FileHostParams += "+";
-										}
-										FirstParam = false;
-
 										// use default port
-										FileHostParams += IP.UnicastAddresses[Index].Address.ToString();
+										fileHostEntries.Add(IP.UnicastAddresses[Index].Address.ToString());
 									}
-
 								}
 							}
 						}
@@ -3296,77 +3282,59 @@ public partial class Project : CommandUtils
 									{
 										foreach (var Port in Params.Port)
 										{
-											if (!FirstParam)
-											{
-												FileHostParams += "+";
-											}
-											FirstParam = false;
 											string[] PortProtocol = Port.Split(new char[] { ':' });
 											if (PortProtocol.Length > 1)
 											{
-												FileHostParams += String.Format("{0}://{1}:{2}", PortProtocol[0], IP.UnicastAddresses[Index].Address.ToString(), PortProtocol[1]);
+												fileHostEntries.Add(String.Format("{0}://{1}:{2}", PortProtocol[0], IP.UnicastAddresses[Index].Address.ToString(), PortProtocol[1]));
 											}
 											else
 											{
-												FileHostParams += IP.UnicastAddresses[Index].Address.ToString();
-												FileHostParams += ":";
-												FileHostParams += Params.Port;
+												fileHostEntries.Add(String.Format("{0}:{1}", IP.UnicastAddresses[Index].Address.ToString(), Params.Port));
 											}
 										}
 									}
 									else
 									{
-										if (!FirstParam)
-										{
-											FileHostParams += "+";
-										}
-										FirstParam = false;
-
-										// use default port
-										FileHostParams += IP.UnicastAddresses[Index].Address.ToString();
+										fileHostEntries.Add(IP.UnicastAddresses[Index].Address.ToString());
 									}
-
 								}
 							}
 						}
 					}
 				}
-				const string LocalHost = "127.0.0.1";
+
+				string localHostEntry = System.Net.IPAddress.Loopback.ToString();
 				if (!IsNullOrEmpty(Params.Port))
 				{
 					foreach (var Port in Params.Port)
 					{
-						if (!FirstParam)
-						{
-							FileHostParams += "+";
-						}
-						FirstParam = false;
 						string[] PortProtocol = Port.Split(new char[] { ':' });
 						if (PortProtocol.Length > 1)
 						{
-							FileHostParams += String.Format("{0}://{1}:{2}", PortProtocol[0], LocalHost, PortProtocol[1]);
+							localHostEntry = String.Format("{0}://{1}:{2}", PortProtocol[0], System.Net.IPAddress.Loopback.ToString(), PortProtocol[1]);
 						}
 						else
 						{
-							FileHostParams += LocalHost;
-							FileHostParams += ":";
-							FileHostParams += Params.Port;
+							localHostEntry = String.Format("{0}:{1}", System.Net.IPAddress.Loopback.ToString(), Params.Port);
 						}
 
 					}
 				}
+
+				ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(Params.RawProjectPath), UnrealTargetPlatform.Android);
+				bool bCookOnTheFlyAdbForLaunchOn = false;
+				Ini.GetBool("/Script/UnrealEd.CookerSettings", "bCookOnTheFlyAdbForLaunchOn", out bCookOnTheFlyAdbForLaunchOn);
+				if ((SC.StageTargetPlatform.PlatformType == UnrealTargetPlatform.Android && bCookOnTheFlyAdbForLaunchOn) || SC.StageTargetPlatform.PlatformType == UnrealTargetPlatform.Lumin)
+				{
+					// Add localhost to beginning of list as cook on the fly port can be forwarded via adb
+					fileHostEntries.Insert(0, localHostEntry);
+				}
 				else
 				{
-					if (!FirstParam)
-					{
-						FileHostParams += "+";
-					}
-					FirstParam = false;
-
-					// use default port
-					FileHostParams += LocalHost;
+					fileHostEntries.Add(localHostEntry);
 				}
-				FileHostParams += " ";
+
+				FileHostParams += string.Join("+", fileHostEntries) + " ";
 			}
 
 			String ProjectFile = String.Format("{0} ", SC.ProjectArgForCommandLines);

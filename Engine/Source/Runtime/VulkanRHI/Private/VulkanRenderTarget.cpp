@@ -396,6 +396,23 @@ void FTransitionAndLayoutManager::BeginRealRenderPass(FVulkanCommandListContext&
 		}
 	}
 
+	FRHITexture* FoveationTexture = RPInfo.FoveationTexture;
+	if (FoveationTexture)
+	{
+		FVulkanSurface& Surface = FVulkanTextureBase::Cast(FoveationTexture)->Surface;
+		VkImageLayout& DSLayout = Layouts.FindOrAdd(Surface.Image);
+		VkImageLayout FinalLayout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
+
+		// transition foveation textures to the foveation layout for rendering
+		if (DSLayout != FinalLayout)
+		{
+			VulkanRHI::EImageLayoutBarrier SrcLayout = VulkanRHI::GetImageLayoutFromVulkanLayout(DSLayout);
+			VulkanRHI::EImageLayoutBarrier DstLayout = VulkanRHI::GetImageLayoutFromVulkanLayout(FinalLayout);
+			VulkanRHI::ImagePipelineBarrier(CmdBuffer->GetHandle(), Surface.Image, SrcLayout, DstLayout, SetupImageSubresourceRange());
+			DSLayout = FinalLayout;
+		}
+	}
+
 	ensure(ClearValueIndex <= RenderPass->GetNumUsedClearValues());
 
 	Barrier.Execute(CmdBuffer);
@@ -1554,7 +1571,8 @@ void FVulkanCommandListContext::TransitionResources(const FPendingTransition& Pe
 				VkImageLayout FinalLayout;
 				if ((AspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0)
 				{
-					FinalLayout = (Surface.UEFlags & TexCreate_RenderTargetable) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
+					FinalLayout = (Surface.UEFlags & TexCreate_RenderTargetable) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL :
+						((Surface.UEFlags & TexCreate_Foveation) ? VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT : VK_IMAGE_LAYOUT_GENERAL);
 				}
 				else
 				{

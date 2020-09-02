@@ -451,6 +451,9 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 	/** Whether we are in VRMode */
 	private boolean IsInVRMode = false;
 
+	/** Whether this application uses VR keyboard as input */
+	private boolean bUsesVrKeyboard = false;
+
 	/** Used for SurfaceHolder.setFixedSize buffer scaling workaround on early Amazon devices and some others */
 	private boolean bUseSurfaceView = false;
 	private SurfaceView MySurfaceView;
@@ -5713,7 +5716,7 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 				//Log.debug("VK onTextChanged " + charSequence);
 
 				//#jira UE-49143 Inconsistent virtual keyboard behavior tapping between controls
-				if(newVirtualKeyboardInput.getY() > 0)
+				if(newVirtualKeyboardInput.getY() > 0 || bUsesVrKeyboard)
 				{
 					//try to avoid "false empty string" events
 					//delay the "set empty string" event and wait for a second call
@@ -5730,6 +5733,10 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 					}
 					else
 					{
+						virtualKeyboardHandler.postDelayed(new Runnable()
+						{
+							public void run()
+							{
 						String message = newVirtualKeyboardInput.getText().toString();
 						//#jira UE-50645 Carriage returns can be pasted into single line UMG fields on Android
 						//oddly enough, we have to use events/filters to control the EditText's copy/paste behaviour
@@ -5740,6 +5747,8 @@ public class GameActivity extends $${gameActivitySuperClass}$$ implements Surfac
 						
 						}
 						nativeVirtualKeyboardChanged(message);
+					}
+						}, 100);
 					}
 				}
 				downgradeEasyCorrectionSpans();

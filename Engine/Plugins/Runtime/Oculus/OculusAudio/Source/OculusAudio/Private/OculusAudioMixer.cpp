@@ -29,7 +29,6 @@ void OculusAudioSpatializationAudioMixer::ClearContext()
 void OculusAudioSpatializationAudioMixer::Initialize(const FAudioPluginInitializationParams InitializationParams)
 {
 	FScopeLock ScopeLock(&ContextLock);
-	InitParams = InitializationParams;
 
 	Context = FOculusAudioContextManager::GetContextForAudioDevice(InitializationParams.AudioDevicePtr);
 	if (!Context)
@@ -46,6 +45,8 @@ void OculusAudioSpatializationAudioMixer::Initialize(const FAudioPluginInitializ
 
 	const UOculusAudioSettings* Settings = GetDefault<UOculusAudioSettings>();
 	ApplyOculusAudioSettings(Settings);
+
+	InitParams = InitializationParams;
 
 	TickDelegateHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &OculusAudioSpatializationAudioMixer::Tick));
 }
@@ -123,6 +124,14 @@ void OculusAudioSpatializationAudioMixer::OnInitSource(const uint32 SourceId, co
 
 		Result = OVRA_CALL(ovrAudio_SetAudioReverbSendLevel)(Context, SourceId, dbToLinear(Settings->ReverbSendLevel));
 		OVR_AUDIO_CHECK(Result, "Failed to set reverb send level");
+	}
+
+	// Ensure that the Params array has enough elements in it to store FSpatializationParams
+	// for this source.  ProcessAudio will index into Params[SourceId], and this array isn't always
+	// sized correctly in Initialize because InitParams.NumSources isn't always 
+	// correct at initialization time.
+	if (Params.Num() < static_cast<int32>(SourceId + 1)) {
+		Params.SetNum(SourceId + 1, false);
 	}
 }
 

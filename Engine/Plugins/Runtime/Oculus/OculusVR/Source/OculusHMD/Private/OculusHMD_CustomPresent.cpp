@@ -165,7 +165,7 @@ void FCustomPresent::UpdateMirrorTexture_RenderThread()
 
 			UE_LOG(LogHMD, Log, TEXT("Allocated a new mirror texture (size %d x %d)"), Width, Height);
 
-			uint32 TexCreateFlags = TexCreate_ShaderResource | TexCreate_RenderTargetable;
+			ETextureCreateFlags TexCreateFlags = TexCreate_ShaderResource | TexCreate_RenderTargetable;
 
 			MirrorTextureRHI = CreateTexture_RenderThread(Width, Height, GetDefaultPixelFormat(), FClearValueBinding::None, 1, 1, 1, RRT_Texture2D, TextureHandle, TexCreateFlags)->GetTexture2D();
 		}
@@ -240,18 +240,18 @@ EPixelFormat FCustomPresent::GetPixelFormat(ovrpTextureFormat Format) const
 }
 
 
-ovrpTextureFormat FCustomPresent::GetOvrpTextureFormat(EPixelFormat Format) const
+ovrpTextureFormat FCustomPresent::GetOvrpTextureFormat(EPixelFormat Format, bool usesRGB) const
 {
 	switch (GetPixelFormat(Format))
 	{
 	case PF_B8G8R8A8:
-		return bSupportsSRGB ? ovrpTextureFormat_B8G8R8A8_sRGB : ovrpTextureFormat_B8G8R8A8;
+		return bSupportsSRGB && usesRGB ? ovrpTextureFormat_B8G8R8A8_sRGB : ovrpTextureFormat_B8G8R8A8;
 	case PF_FloatRGBA:
 		return ovrpTextureFormat_R16G16B16A16_FP;
 	case PF_FloatR11G11B10:
 		return ovrpTextureFormat_R11G11B10_FP;
 	case PF_R8G8B8A8:
-		return bSupportsSRGB ? ovrpTextureFormat_R8G8B8A8_sRGB : ovrpTextureFormat_R8G8B8A8;
+		return bSupportsSRGB && usesRGB ? ovrpTextureFormat_R8G8B8A8_sRGB : ovrpTextureFormat_R8G8B8A8;
 	}
 
 	return ovrpTextureFormat_None;
@@ -279,7 +279,7 @@ int FCustomPresent::GetSystemRecommendedMSAALevel() const
 }
 
 
-FXRSwapChainPtr FCustomPresent::CreateSwapChain_RenderThread(uint32 InSizeX, uint32 InSizeY, EPixelFormat InFormat, FClearValueBinding InBinding, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, ERHIResourceType InResourceType, const TArray<ovrpTextureHandle>& InTextures, uint32 InTexCreateFlags)
+FXRSwapChainPtr FCustomPresent::CreateSwapChain_RenderThread(uint32 InSizeX, uint32 InSizeY, EPixelFormat InFormat, FClearValueBinding InBinding, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, ERHIResourceType InResourceType, const TArray<ovrpTextureHandle>& InTextures, ETextureCreateFlags InTexCreateFlags, const TCHAR* DebugName)
 {
 	CheckInRenderThread();
 
@@ -288,7 +288,13 @@ FXRSwapChainPtr FCustomPresent::CreateSwapChain_RenderThread(uint32 InSizeX, uin
 	{
 		for (int32 TextureIndex = 0; TextureIndex < InTextures.Num(); ++TextureIndex)
 		{
-			RHITextureSwapChain.Add(CreateTexture_RenderThread(InSizeX, InSizeY, InFormat, InBinding, InNumMips, InNumSamples, InNumSamplesTileMem, InResourceType, InTextures[TextureIndex], InTexCreateFlags));
+			FTextureRHIRef TexRef = CreateTexture_RenderThread(InSizeX, InSizeY, InFormat, InBinding, InNumMips, InNumSamples, InNumSamplesTileMem, InResourceType, InTextures[TextureIndex], InTexCreateFlags);
+
+			FString TexName = FString::Printf(TEXT("%s (%d/%d)"), DebugName, TextureIndex, InTextures.Num());
+			TexRef->SetName(*TexName);
+			RHIBindDebugLabelName(TexRef, *TexName);
+			
+			RHITextureSwapChain.Add(TexRef);
 		}
 	}
 
@@ -438,7 +444,7 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 					PixelShader->SetParameters(RHICmdList, SamplerState, SrcTextureRHI, MipIndex);
 				}
 
-				RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0.0f, DstRect.Min.X + MipViewportWidth, DstRect.Min.Y + MipViewportHeight, 1.0f);
+				RHICmdList.SetViewport(DstRect.Min.X, DstRect.Min.Y, 0.0f, MipViewportWidth, MipViewportHeight, 1.0f);
 
 				RendererModule->DrawRectangle(
 					RHICmdList,
@@ -510,6 +516,13 @@ void FCustomPresent::CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdLi
 			RHICmdList.EndRenderPass();
 		}
 	}
+}
+
+void FCustomPresent::SubmitGPUCommands_RenderThread(FRHICommandListImmediate& RHICmdList)
+{
+	CheckInRenderThread();
+
+	RHICmdList.SubmitCommandsHint();
 }
 
 } // namespace OculusHMD

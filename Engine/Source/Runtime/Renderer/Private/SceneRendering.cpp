@@ -262,6 +262,14 @@ static TAutoConsoleVariable<int32> CVarEnableMultiGPUForkAndJoin(
 	ECVF_Default
 	);
 
+#if WITH_LATE_LATCHING_CODE
+static TAutoConsoleVariable<int32> CVarDisableLateLatching(
+	TEXT("r.ForceDisableLateLatching"),
+	0,
+	TEXT("Force Disable LateLatching dynamiclly."),
+	ECVF_RenderThreadSafe | ECVF_Scalability);
+#endif
+
 /*-----------------------------------------------------------------------------
 	FParallelCommandListSet
 -----------------------------------------------------------------------------*/
@@ -551,7 +559,7 @@ void FFastVramConfig::Update()
 	bDirty |= UpdateBufferFlagFromCVar(CVarFastVRam_GlobalDistanceFieldCullGridBuffers, GlobalDistanceFieldCullGridBuffers);
 }
 
-bool FFastVramConfig::UpdateTextureFlagFromCVar(TAutoConsoleVariable<int32>& CVar, uint32& InOutValue)
+bool FFastVramConfig::UpdateTextureFlagFromCVar(TAutoConsoleVariable<int32>& CVar, ETextureCreateFlags& InOutValue)
 {
 	uint32 OldValue = InOutValue;
 	int32 CVarValue = CVar.GetValueOnRenderThread();
@@ -1752,6 +1760,30 @@ void FViewInfo::SetupUniformBufferParameters(
 	ViewUniformShaderParameters.VTFeedbackBuffer = SceneContext.GetVirtualTextureFeedbackUAV();
 	ViewUniformShaderParameters.QuadOverdraw = SceneContext.GetQuadOverdrawBufferUAV();
 }
+
+#if WITH_LATE_LATCHING_CODE
+void FViewInfo::UpdateLateLatchData()
+{
+	FBox VolumeBounds[TVC_MAX];
+	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(FRHICommandListExecutor::GetImmediateCommandList());
+	SetupUniformBufferParameters(
+		SceneContext,
+		VolumeBounds,
+		TVC_MAX,
+		*CachedViewUniformShaderParameters);
+
+	ViewUniformBuffer.UpdateUniformBufferImmediate(*CachedViewUniformShaderParameters);
+
+	FVector PreViewOrigin = CachedViewUniformShaderParameters->PrevPreViewTranslation;
+	FVector CurrentOrigin = CachedViewUniformShaderParameters->PreViewTranslation;
+
+	// Refresh for next frame
+	if (this->ViewState)
+	{
+		this->ViewState->PrevFrameViewInfo.ViewMatrices = ViewMatrices;
+	}
+}
+#endif
 
 void FViewInfo::InitRHIResources()
 {
@@ -4287,20 +4319,6 @@ void FSceneRenderer::ResolveSceneColor(FRHICommandList& RHICmdList)
 
 		// The destination texture must be made readable after the resolve.
 		RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, SceneContext.GetSceneColorTexture());
-	}
-}
-
-FRHITexture* FSceneRenderer::GetMultiViewSceneColor(const FSceneRenderTargets& SceneContext) const
-{
-	const FViewInfo& View = Views[0];
-
-	if (View.bIsMobileMultiViewEnabled && !View.bIsMobileMultiViewDirectEnabled)
-	{
-		return SceneContext.MobileMultiViewSceneColor->GetRenderTargetItem().TargetableTexture;
-	}
-	else
-	{
-		return static_cast<FTextureRHIRef>(ViewFamily.RenderTarget->GetRenderTargetTexture());
 	}
 }
 

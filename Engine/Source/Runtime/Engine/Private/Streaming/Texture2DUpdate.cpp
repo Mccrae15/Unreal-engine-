@@ -93,7 +93,7 @@ void FTexture2DUpdate::DoConvertToVirtualWithNewMips(const FContext& Context)
 		if ((Texture2DRHI->GetFlags() & TexCreate_Virtual) != TexCreate_Virtual)
 		{
 			const TIndirectArray<FTexture2DMipMap>& OwnerMips = Context.Texture->GetPlatformMips();
-			const uint32 TexCreateFlags = Texture2DRHI->GetFlags() | TexCreate_Virtual;
+			const ETextureCreateFlags TexCreateFlags = Texture2DRHI->GetFlags() | TexCreate_Virtual;
 
 			ensure(!IntermediateTextureRHI);
 
@@ -124,7 +124,7 @@ bool FTexture2DUpdate::DoConvertToNonVirtual(const FContext& Context)
 		if ((Texture2DRHI->GetFlags() & TexCreate_Virtual) == TexCreate_Virtual)
 		{
 			const TIndirectArray<FTexture2DMipMap>& OwnerMips = Context.Texture->GetPlatformMips();
-			const uint32 TexCreateFlags = Context.Resource->Texture2DRHI->GetFlags() & ~TexCreate_Virtual;
+			const ETextureCreateFlags TexCreateFlags = Context.Resource->Texture2DRHI->GetFlags() & ~TexCreate_Virtual;
 
 			ensure(!IntermediateTextureRHI);
 			FRHIResourceCreateInfo CreateInfo(Context.Resource->ResourceMem);
