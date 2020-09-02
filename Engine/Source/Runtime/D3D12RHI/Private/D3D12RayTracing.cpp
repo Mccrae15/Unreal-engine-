@@ -476,7 +476,7 @@ public:
 			, CacheKey(InCacheKey)
 			, RayTracingDevice(InRayTracingDevice)
 			, CollectionType(InCollectionType)
-		{
+			{
 		}
 
 		static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
@@ -1684,8 +1684,7 @@ public:
 
 		CompileTime -= FPlatformTime::Cycles64();
 
-		FGraphEventRef CompileCompletionFence = FFunctionGraphTask::CreateAndDispatchWhenReady([]() {}, TStatId(), &CompileCompletionList, ENamedThreads::AnyHiPriThreadHiPriTask);
-		FTaskGraphInterface::Get().WaitUntilTaskCompletes(CompileCompletionFence);
+		FTaskGraphInterface::Get().WaitUntilTasksComplete(CompileCompletionList);
 
 		CompileTime += FPlatformTime::Cycles64();
 

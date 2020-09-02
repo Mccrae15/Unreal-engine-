@@ -1049,7 +1049,7 @@ public:
 
 	ENamedThreads::Type GetDesiredThread()
 	{
-		return CPrio_FCompilePipelineStateTask.Get();
+		return ENamedThreads::AnyNormalThreadNormalTask;
 	}
 
 private:
