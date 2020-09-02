@@ -128,11 +128,6 @@ private:
 	void* ResourceBaseAddress;
 	FName DebugName;
 
-#if NV_AFTERMATH
-	// Note: should be removed, kept for binary compatibility.
-	GFSDK_Aftermath_ContextHandle AftermathHandle;
-#endif
-
 #if UE_BUILD_DEBUG
 	static int64 TotalResourceCount;
 	static int64 NoStateTrackingResourceCount;
@@ -1008,7 +1003,7 @@ public:
 		else
 #endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 		{
-			Barriers.AddUninitialized();
+		Barriers.AddUninitialized();
 			Barrier = &Barriers.Last();
 		}
 
