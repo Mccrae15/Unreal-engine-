@@ -749,6 +749,8 @@ bool FD3D12Viewport::Present(bool bLockToVsync)
 		}
 		DefaultContext.CommandListHandle.FlushResourceBarriers();
 		DefaultContext.FlushCommands();
+
+		DefaultContext.GetCommandListManager().WaitOnExecuteTask();
 	}
 
 #if WITH_MGPU
@@ -976,7 +978,7 @@ struct FRHICommandSignalFrameFence final : public FRHICommand<FRHICommandSignalF
 
 	void Execute(FRHICommandListBase& CmdList)
 	{
-		Fence->Signal(QueueType, Value);
+		Fence->ManualSignal(QueueType, Value);
 		check(Fence->GetLastSignaledFence() == Value);
 	}
 };
