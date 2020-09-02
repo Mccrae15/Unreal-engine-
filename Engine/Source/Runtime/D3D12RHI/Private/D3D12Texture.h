@@ -259,6 +259,7 @@ public:
 		, FD3D12TextureBase(InParent)
 		, Flags(InFlags)
 		, bCubemap(bInCubemap)
+		, bMipOrderDescending(false)
 #if PLATFORM_SUPPORTS_VIRTUAL_TEXTURES
 		, RawTextureMemory(InRawTextureMemory)
 #endif
@@ -270,6 +271,9 @@ public:
 		else
 		{
 			TextureLayout = *InTextureLayout;
+#if PLATFORM_SUPPORTS_VIRTUAL_TEXTURES
+			bMipOrderDescending = InNumMips > 1u && TextureLayout.GetSubresourceOffset(0, 0, 0) > TextureLayout.GetSubresourceOffset(0, 1, 0);
+#endif
 		}
 	}
 
@@ -293,6 +297,8 @@ public:
 	void GetReadBackHeapDesc(D3D12_PLACED_SUBRESOURCE_FOOTPRINT& OutFootprint, uint32 Subresource) const;
 
 	bool IsCubemap() const { return bCubemap; }
+
+	bool IsLastMipFirst() const { return bMipOrderDescending; }
 
 	/** FRHITexture override.  See FRHITexture::GetNativeResource() */
 	virtual void* GetNativeResource() const override final
@@ -343,6 +349,9 @@ private:
 
 	/** Whether the texture is a cube-map. */
 	const uint32 bCubemap : 1;
+
+	/** Whether mips are ordered from the last to the first in memory */
+	uint32 bMipOrderDescending : 1;
 
 #if PLATFORM_SUPPORTS_VIRTUAL_TEXTURES
 	void* RawTextureMemory;
