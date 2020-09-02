@@ -1347,6 +1347,8 @@ void FD3D12CommandContext::CommitComputeResourceTables(FD3D12ComputeShader* InCo
 
 void FD3D12CommandContext::RHIDrawPrimitive(uint32 BaseVertexIndex, uint32 NumPrimitives, uint32 NumInstances)
 {
+	RHI_DRAW_CALL_STATS(StateCache.GetGraphicsPipelinePrimitiveType(), FMath::Max(NumInstances, 1U) * NumPrimitives);
+
 	CommitGraphicsResourceTables();
 	CommitNonComputeShaderConstants();
 
@@ -1372,6 +1374,7 @@ void FD3D12CommandContext::RHIDrawPrimitiveIndirect(FRHIVertexBuffer* ArgumentBu
 	FD3D12VertexBuffer* ArgumentBuffer = RetrieveObject<FD3D12VertexBuffer>(ArgumentBufferRHI);
 
 	numDraws++;
+	RHI_DRAW_CALL_INC();
 	if (bTrackingEvents)
 	{
 		GetParentDevice()->RegisterGPUWork(0);
@@ -1412,6 +1415,7 @@ void FD3D12CommandContext::RHIDrawIndexedIndirect(FRHIIndexBuffer* IndexBufferRH
 	FD3D12StructuredBuffer* ArgumentsBuffer = RetrieveObject<FD3D12StructuredBuffer>(ArgumentsBufferRHI);
 
 	numDraws++;
+	RHI_DRAW_CALL_INC();
 	if (bTrackingEvents)
 	{
 		GetParentDevice()->RegisterGPUWork(1);
@@ -1455,6 +1459,7 @@ void FD3D12CommandContext::RHIDrawIndexedPrimitive(FRHIIndexBuffer* IndexBufferR
 {
 	// called should make sure the input is valid, this avoid hidden bugs
 	ensure(NumPrimitives > 0);
+	RHI_DRAW_CALL_STATS(StateCache.GetGraphicsPipelinePrimitiveType(), FMath::Max(NumInstances, 1U) * NumPrimitives);
 
 	NumInstances = FMath::Max<uint32>(1, NumInstances);
 	numDraws++;
@@ -1493,6 +1498,7 @@ void FD3D12CommandContext::RHIDrawIndexedPrimitiveIndirect(FRHIIndexBuffer* Inde
 	FD3D12VertexBuffer* ArgumentBuffer = RetrieveObject<FD3D12VertexBuffer>(ArgumentBufferRHI);
 
 	numDraws++;
+	RHI_DRAW_CALL_INC();
 	if (bTrackingEvents)
 	{
 		GetParentDevice()->RegisterGPUWork(0);
