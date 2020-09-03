@@ -597,6 +597,8 @@ void FLowLevelMemTracker::InitialiseTrackers()
 
 void FLowLevelMemTracker::UpdateStatsPerFrame(const TCHAR* LogName)
 {
+	// UpdateStatsPerFrame is usually called from the game thread, but can sometimes be called from the async loading thread, so enter a lock for it
+	FScopeLock UpdateScopeLock(&UpdateLock);
 	if (bIsDisabled && !bCanEnable)
 		return;
 
@@ -651,13 +653,13 @@ void FLowLevelMemTracker::UpdateStatsPerFrame(const TCHAR* LogName)
 
 	// calculate memory the platform thinks we have allocated, compared to what we have tracked, including the program memory
 	FPlatformMemoryStats PlatformStats = FPlatformMemory::GetStats();
-#if PLATFORM_ANDROID || PLATFORM_IOS || WITH_SERVER_CODE
+#if PLATFORM_ANDROID || PLATFORM_IOS || UE_SERVER
 	uint64 PlatformProcessMemory = PlatformStats.UsedPhysical;
 #else
 	uint64 PlatformProcessMemory = PlatformStats.TotalPhysical - PlatformStats.AvailablePhysical;
 #endif
 	int64 PlatformTrackedTotal = GetTracker(ELLMTracker::Platform)->GetTagAmount(ELLMTag::PlatformTrackedTotal);
-	int64 PlatformTotalUntracked = PlatformProcessMemory - PlatformTrackedTotal;
+	int64 PlatformTotalUntracked = FMath::Max<int64>(0, PlatformProcessMemory - PlatformTrackedTotal);
 
 	GetTracker(ELLMTracker::Platform)->SetTagAmount(ELLMTag::PlatformTotal, PlatformProcessMemory, false);
 	GetTracker(ELLMTracker::Platform)->SetTagAmount(ELLMTag::PlatformUntracked, PlatformTotalUntracked, false);
@@ -898,7 +900,9 @@ bool FLowLevelMemTracker::IsTagSetActive(ELLMTagSet Set)
 
 bool FLowLevelMemTracker::ShouldReduceThreads()
 {
-	return IsTagSetActive(ELLMTagSet::Assets) || IsTagSetActive(ELLMTagSet::AssetClasses);
+	// Disable ShouldReduceThreads for now; it is currently used by FGenericPlatformMisc::UseRenderThread, which is defunct and crashes if it returns false.
+//	return IsTagSetActive(ELLMTagSet::Assets) || IsTagSetActive(ELLMTagSet::AssetClasses);
+	return false;
 }
 
 static bool IsAssetTagForAssets(ELLMTagSet Set)
@@ -1341,14 +1345,17 @@ void FLLMTracker::TrackFree(const void* Ptr, ELLMTracker Tracker, ELLMAllocType 
 	FLLMTracker::FLowLevelAllocInfo AllocInfo = Values.Value2;
 
 	// track the total quickly
-	FPlatformAtomics::InterlockedAdd(&TrackedMemoryOverFrames, 0 - Size);
+	FPlatformAtomics::InterlockedAdd(&TrackedMemoryOverFrames, 0 - (int64)Size);
 
 	FLLMThreadState* State = GetOrCreateState();
 
 #if LLM_USE_ALLOC_INFO_STRUCT
 	State->TrackFree(Ptr, AllocInfo.Tag, Size, true, Tracker, AllocType);
 	#if LLM_ALLOW_ASSETS_TAGS
+	{
+		FScopeLock SL(&State->TagSection);
 		State->IncrTag(AllocInfo.AssetTag, 0 - Size, false);
+	}
 	#endif
 #else
 	State->TrackFree(Ptr, (int64)AllocInfo, Size, true, Tracker, AllocType);
@@ -1987,7 +1994,7 @@ void FLLMCsvWriter::SetStat(int64 Tag, int64 Value)
 void FLLMCsvWriter::Update(FLLMCustomTag* CustomTags, const int32* ParentTags)
 {
 	double Now = FPlatformTime::Seconds();
-	if (Now - LastWriteTime >= (double)CVarLLMWriteInterval.GetValueOnGameThread())
+	if (Now - LastWriteTime >= (double)CVarLLMWriteInterval.GetValueOnAnyThread())
 	{
 		WriteGraph(CustomTags, ParentTags);
 
@@ -2082,7 +2089,7 @@ void FLLMCsvWriter::WriteGraph(FLLMCustomTag* CustomTags, const int32* ParentTag
 
 	WriteCount++;
 
-	if (CVarLLMWriteInterval.GetValueOnGameThread())
+	if (CVarLLMWriteInterval.GetValueOnAnyThread())
 	{
 		UE_LOG(LogHAL, Log, TEXT("Wrote LLM csv line %d"), WriteCount);
 	}

@@ -11,6 +11,7 @@
 #include "Engine/World.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Async/ParallelFor.h"
+#include "HAL/LowLevelMemStats.h"
 
 #include "TraceFilter.h"
 #include "TraceSourceFiltering.h"
