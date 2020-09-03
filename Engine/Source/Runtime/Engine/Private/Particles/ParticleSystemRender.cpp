@@ -7261,7 +7261,9 @@ FPrimitiveSceneProxy* UParticleSystemComponent::CreateSceneProxy()
 		}
 
 		// Create the dynamic data for rendering this particle system.
+		bParallelRenderThreadUpdate = true;
 		FParticleDynamicData* ParticleDynamicData = CreateDynamicData(GetScene()->GetFeatureLevel());
+		bParallelRenderThreadUpdate = false;
 
 		if (CanBeOccluded())
 		{
