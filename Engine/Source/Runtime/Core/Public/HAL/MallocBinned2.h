@@ -11,6 +11,7 @@
 #include "HAL/CriticalSection.h"
 #include "HAL/PlatformTLS.h"
 #include "HAL/Allocators/CachedOSPageAllocator.h"
+#include "HAL/Allocators/CachedOSVeryLargePageAllocator.h"
 #include "HAL/Allocators/PooledVirtualMemoryAllocator.h"
 #include "HAL/PlatformMath.h"
 #include "HAL/LowLevelMemTracker.h"
@@ -249,16 +250,24 @@ class CORE_API FMallocBinned2 final : public FMalloc
 	uint64 NumPoolsPerPage;
 
 #if !PLATFORM_UNIX
+#if UE_USE_VERYLARGEPAGEALLOCATOR
+	FCachedOSVeryLargePageAllocator CachedOSPageAllocator;
+#else
 	TCachedOSPageAllocator<BINNED2_MAX_CACHED_OS_FREES, BINNED2_MAX_CACHED_OS_FREES_BYTE_LIMIT> CachedOSPageAllocator;
+#endif
 #else
 	FPooledVirtualMemoryAllocator CachedOSPageAllocator;
 #endif
 
 	FCriticalSection Mutex;
 
-	FORCEINLINE static bool IsOSAllocation(const void* Ptr)
+	FORCEINLINE bool IsOSAllocation(const void* Ptr)
 	{
+#if UE_USE_VERYLARGEPAGEALLOCATOR && !PLATFORM_UNIX
+		return !CachedOSPageAllocator.IsPartOf(Ptr);
+#else
 		return IsAligned(Ptr, BINNED2_LARGE_ALLOC);
+#endif
 	}
 
 	struct FBundleNode
@@ -687,6 +696,7 @@ public:
 #if BINNED2_ALLOCATOR_STATS
 	int64 GetTotalAllocatedSmallPoolMemory() const;
 #endif
+	virtual void UpdateStats() override;
 	virtual void GetAllocatorStats( FGenericMemoryStats& out_Stats ) override;
 	/** Dumps current allocator stats to the log. */
 	virtual void DumpAllocatorStats(class FOutputDevice& Ar) override;
