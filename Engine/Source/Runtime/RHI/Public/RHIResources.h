@@ -2047,6 +2047,7 @@ public:
 			ImmutableSamplerState != rhs.ImmutableSamplerState ||
 			PrimitiveType != rhs.PrimitiveType ||
 			bDepthBounds != rhs.bDepthBounds ||
+			ShadingRate != rhs.ShadingRate ||
 			bMultiView != rhs.bMultiView ||
 			bHasFragmentDensityAttachment != rhs.bHasFragmentDensityAttachment ||
 			RenderTargetsEnabled != rhs.RenderTargetsEnabled ||
