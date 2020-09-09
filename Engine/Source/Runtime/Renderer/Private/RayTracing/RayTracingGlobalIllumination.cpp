@@ -553,6 +553,11 @@ IMPLEMENT_GLOBAL_SHADER(FRayTracingGlobalIlluminationFinalGatherRGS, "/Engine/Pr
 
 void FDeferredShadingSceneRenderer::PrepareRayTracingGlobalIllumination(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
+	if (!CVarRayTracingGlobalIllumination.GetValueOnRenderThread())
+	{
+		return;
+	}
+
 	const bool bSortMaterials = CVarRayTracingGlobalIlluminationFinalGatherSortMaterials.GetValueOnRenderThread() != 0;
 
 	// Declare all RayGen shaders that require material closest hit shaders to be bound
