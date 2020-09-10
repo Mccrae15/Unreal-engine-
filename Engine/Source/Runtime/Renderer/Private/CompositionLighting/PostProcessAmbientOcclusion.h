@@ -42,6 +42,36 @@ enum class EGTAOType
 	ENonAsync,
 };
 
+enum EGTAOPass
+{
+	EGTAOPass_None						= 0x0,
+	EGTAOPass_HorizonSearch				= 0x1,
+	EGTAOPass_HorizonSearchIntegrate	= 0x2,
+	EGTAOPass_Integrate					= 0x4,
+	EGTAOPass_SpatialFilter				= 0x8,
+	EGTAOPass_TemporalFilter			= 0x10,
+	EGTAOPass_Upsample					= 0x20,
+};
+
+class FGTAOContext
+{
+public:
+	EGTAOType GTAOType;
+	uint32 FinalPass;
+	uint32 DownsampleFactor;
+
+	bool bUseNormals;
+	bool bHalfRes;
+	bool bHasSpatialFilter;
+	bool bHasTemporalFilter;
+
+	FGTAOContext(EGTAOType Type);
+	FGTAOContext();
+
+	bool IsFinalPass(EGTAOPass);
+};
+
+
 class FSSAOHelper
 {
 public:
@@ -146,11 +176,12 @@ private:
 };
 
 
-class FRCPassPostProcessAmbientOcclusion_HorizonSearch : public TRenderingCompositePassBase<2, 2>
+class FRCPassPostProcessAmbientOcclusion_HorizonSearch : public TRenderingCompositePassBase<2, 1>
 {
 public:
+	
 
-	FRCPassPostProcessAmbientOcclusion_HorizonSearch(const FSceneView& View, uint32 DownScaleFactor, const EGTAOType AOType );
+	FRCPassPostProcessAmbientOcclusion_HorizonSearch(const FSceneView& View,  FGTAOContext &GTAOContext);
 
 	// interface FRenderingCompositePass ---------
 	virtual void Process(FRenderingCompositePassContext& Context) override;
@@ -164,8 +195,8 @@ public:
 	TShaderRef<FShader> SetShaderPS(const FRenderingCompositePassContext& Context, FGraphicsPipelineStateInitializer& GraphicsPSOInit, FIntPoint DestSize);
 
 private:
-	const EGTAOType AOType;
-	uint32		DownScaleFactor;
+	 FGTAOContext GTAOContext;
+
 };
 
 
@@ -173,7 +204,7 @@ class FRCPassPostProcessAmbientOcclusion_GTAOInnerIntegrate : public TRenderingC
 {
 public:
 
-	FRCPassPostProcessAmbientOcclusion_GTAOInnerIntegrate(const FSceneView& View, uint32 DownScaleFactor, bool FinalOutput);
+	FRCPassPostProcessAmbientOcclusion_GTAOInnerIntegrate(const FSceneView& View,  FGTAOContext &GTAOContext);
 
 	// interface FRenderingCompositePass ---------
 	virtual void Process(FRenderingCompositePassContext& Context) override;
@@ -181,15 +212,15 @@ public:
 	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const override;
 
 private:
-	const bool bFinalOutput;
-	uint32		DownScaleFactor;
+	 FGTAOContext GTAOContext;
+
 };
 
-class FRCPassPostProcessAmbientOcclusion_GTAOHorizonSearchIntegrate : public TRenderingCompositePassBase<2, 2>
+class FRCPassPostProcessAmbientOcclusion_GTAOHorizonSearchIntegrate : public TRenderingCompositePassBase<2, 1>
 {
 public:
 
-	FRCPassPostProcessAmbientOcclusion_GTAOHorizonSearchIntegrate(const FSceneView& View, uint32 DownScaleFactor, bool FinalOutput, const EGTAOType AOType);
+	FRCPassPostProcessAmbientOcclusion_GTAOHorizonSearchIntegrate(const FSceneView& View, FGTAOContext &GTAOContext);
 
 	// interface FRenderingCompositePass ---------
 	virtual void Process(FRenderingCompositePassContext& Context) override;
@@ -203,19 +234,17 @@ public:
 	TShaderRef<FShader> SetShaderPS(const FRenderingCompositePassContext& Context, FGraphicsPipelineStateInitializer& GraphicsPSOInit, FIntPoint DestSize);
 
 private:
-	const EGTAOType AOType;
-	const bool bFinalOutput;
-	uint32		DownScaleFactor;
+	 FGTAOContext GTAOContext;
 };
 
 
 
 
-class FRCPassPostProcessAmbientOcclusion_GTAO_TemporalFilter : public TRenderingCompositePassBase<1, 3>
+class FRCPassPostProcessAmbientOcclusion_GTAO_TemporalFilter : public TRenderingCompositePassBase<2, 1>
 {
 public:
 
-	FRCPassPostProcessAmbientOcclusion_GTAO_TemporalFilter(const FSceneView& View, uint32 DownScaleFactor, const FGTAOTAAHistory& InInputHistory, FGTAOTAAHistory* OutOutputHistory, const EGTAOType AOType);
+	FRCPassPostProcessAmbientOcclusion_GTAO_TemporalFilter(const FSceneView& View, const FGTAOTAAHistory& InInputHistory, FGTAOTAAHistory* OutOutputHistory,  FGTAOContext &GTAOContext);
 
 	// interface FRenderingCompositePass ---------
 	virtual void Process(FRenderingCompositePassContext& Context) override;
@@ -226,17 +255,16 @@ public:
 	void DispatchCS(const FRenderingCompositePassContext& Context, FIntRect OutputViewRect, FIntPoint OutputTexSize);
 
 private:
-	const EGTAOType AOType;
 	const FGTAOTAAHistory& InputHistory;
 	FGTAOTAAHistory* OutputHistory;
-	uint32		DownScaleFactor;
+	FGTAOContext GTAOContext;
 };
 
 class FRCPassPostProcessAmbientOcclusion_GTAO_SpatialFilter : public TRenderingCompositePassBase<2, 1>
 {
 public:
 
-	FRCPassPostProcessAmbientOcclusion_GTAO_SpatialFilter(const FSceneView& View, uint32 DownScaleFactor, const EGTAOType AOType);
+	FRCPassPostProcessAmbientOcclusion_GTAO_SpatialFilter(const FSceneView& View,  FGTAOContext &GTAOContext);
 
 	// interface FRenderingCompositePass ---------
 	virtual void Process(FRenderingCompositePassContext& Context) override;
@@ -244,15 +272,14 @@ public:
 	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const override;
 
 private:
-	const EGTAOType AOType;
-	uint32		DownScaleFactor;
+	 FGTAOContext GTAOContext;
 };
 
 class FRCPassPostProcessAmbientOcclusion_GTAO_Upsample : public TRenderingCompositePassBase<2, 1>
 {
 public:
 
-	FRCPassPostProcessAmbientOcclusion_GTAO_Upsample(const FSceneView& View, uint32 DownScaleFactor, const EGTAOType AOType);
+	FRCPassPostProcessAmbientOcclusion_GTAO_Upsample(const FSceneView& View,  FGTAOContext &GTAOContext);
 
 	// interface FRenderingCompositePass ---------
 	virtual void Process(FRenderingCompositePassContext& Context) override;
@@ -260,6 +287,5 @@ public:
 	virtual FPooledRenderTargetDesc ComputeOutputDesc(EPassOutputId InPassOutputId) const override;
 
 private:
-	const EGTAOType AOType;
-	uint32			DownScaleFactor;
+	 FGTAOContext GTAOContext;
 };

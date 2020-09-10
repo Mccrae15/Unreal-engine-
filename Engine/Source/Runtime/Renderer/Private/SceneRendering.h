@@ -746,8 +746,6 @@ struct FGTAOTAAHistory
 	// Render targets holding's pixel history.
 	//  scene color's RGBA are in RT[0].
 	TRefCountPtr<IPooledRenderTarget> RT[kRenderTargetCount];
-	TRefCountPtr<IPooledRenderTarget> Depth[kRenderTargetCount];
-	TRefCountPtr<IPooledRenderTarget> Velocity[kRenderTargetCount];
 
 	// Reference size of RT. Might be different than RT's actual size to handle down res.
 	FIntPoint ReferenceBufferSize;
@@ -760,7 +758,7 @@ struct FGTAOTAAHistory
 		for (uint32 i = 0; i < kRenderTargetCount; i++)
 		{
 			RT[i].SafeRelease();
-			Depth[i].SafeRelease();
+
 		}
 	}
 
