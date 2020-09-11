@@ -167,7 +167,7 @@ protected:
 			else
 			{
 				CurrentProperty = *PropertyIterator;
-				if (!CurrentProperty->IsA<T>())
+				if (CurrentProperty && !CurrentProperty->IsA<T>())
 				{
 					IterateToNextProperty();
 				}
