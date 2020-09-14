@@ -402,7 +402,7 @@ struct FAsyncPackageDesc2
 		SourcePackageName = SerializedSourcePackageName;
 	}
 
-	bool IsTrackingPublicExports() const
+	bool CanBeImported() const
 	{
 		return CustomPackageName.IsNone();
 	}
@@ -1041,13 +1041,28 @@ public:
 	void RemovePackage(UPackage* Package)
 	{
 		check(IsGarbageCollecting());
+		if (!Package->CanBeImported())
+		{
+			return;
+		}
+
 		FPackageId PackageId = Package->GetPackageId();
-		if (!LoadedPackageStore.Remove(PackageId))
+		bool bRemoved = LoadedPackageStore.Remove(PackageId);
+		if (!bRemoved)
 		{
 			FPackageId* RedirectedId = RedirectsPackageMap.Find(PackageId);
 			if (RedirectedId)
 			{
-				LoadedPackageStore.Remove(*RedirectedId);
+				bRemoved = LoadedPackageStore.Remove(*RedirectedId);
+				checkf(bRemoved, TEXT("Redirected package '%s' with disk package id '0x%llX' and source package id '0x%llX') is being destroyed, ")
+					TEXT("and should have been known by LoadedPackageStore. Was it never added, or was it removed too early?"),
+					*Package->GetFullName(), PackageId.Value(), RedirectedId->Value());
+			}
+			else
+			{
+				checkf(bRemoved, TEXT("Normal package '%s' with disk package id '0x%llX' is being destroyed, ")
+					TEXT("and should have been known by LoadedPackageStore. Was it never added, or was it removed too early?"),
+					*Package->GetFullName(), PackageId.Value());
 			}
 		}
 	}
@@ -1163,11 +1178,6 @@ struct FPackageImportStore
 		GlobalImportStore.StoreGlobalObject(PackageId, GlobalIndex, Object);
 	}
 
-	void ClearReferences()
-	{
-		ReleasePackageReferences();
-	}
-
 private:
 	void AddAsyncFlags(UPackage* ImportedPackage)
 	{
@@ -1219,17 +1229,12 @@ private:
 				AddAsyncFlags(PackageRef.GetPackage());
 			}
 		}
-		if (Desc.IsTrackingPublicExports())
+		if (Desc.CanBeImported())
 		{
 			FLoadedPackageRef& PackageRef = GlobalPackageStore.LoadedPackageStore.GetPackageRef(Desc.DiskPackageId);
 			if (PackageRef.AddRef())
 			{
-				// should only happen if someone from outside call LoadPackage with an already loaded package
-				// this could be detected already in CreatePackagesFromQueue,
-				// but requires:
-				// - queuing up package callbacks
-				// - handling request ids properly
-				// - calling AddAsyncFlags(PackageId); (now this is done from create/serialize in the async package)
+				AddAsyncFlags(PackageRef.GetPackage());
 			}
 		}
 	}
@@ -1244,7 +1249,7 @@ private:
 				ClearAsyncFlags(PackageRef.GetPackage());
 			}
 		}
-		if (Desc.IsTrackingPublicExports())
+		if (Desc.CanBeImported())
 		{
 			// clear own reference, and possible all async flags if no remaining ref count
 			FLoadedPackageRef& PackageRef =	GlobalPackageStore.LoadedPackageStore.GetPackageRef(Desc.DiskPackageId);
@@ -3706,7 +3711,7 @@ void FAsyncPackage2::EventDrivenCreateExport(int32 LocalExportIndex)
 	check(Object);
 	PinObjectForGC(Object, bIsNewObject);
 
-	if (Desc.IsTrackingPublicExports() && !Export.GlobalImportIndex.IsNull())
+	if (Desc.CanBeImported() && !Export.GlobalImportIndex.IsNull())
 	{
 		check(Object->HasAnyFlags(RF_Public));
 		ImportStore.StoreGlobalObject(Desc.DiskPackageId, Export.GlobalImportIndex, Object);
@@ -3830,7 +3835,7 @@ EAsyncPackageState::Type FAsyncPackage2::Event_ExportsDone(FAsyncPackage2* Packa
 	UE_ASYNC_PACKAGE_DEBUG(Package->Desc);
 	check(Package->AsyncPackageLoadingState == EAsyncPackageLoadingState2::ExportsDone);
 
-	if (Package->Desc.IsTrackingPublicExports())
+	if (Package->Desc.CanBeImported())
 	{
 		FLoadedPackageRef& PackageRef =
 			Package->AsyncLoadingThread.GlobalPackageStore.LoadedPackageStore.GetPackageRef((Package->Desc.DiskPackageId));
@@ -5158,7 +5163,7 @@ void FAsyncPackage2::ClearConstructedObjects()
 	ConstructedObjects.Empty();
 
 	// the async flag of all GC'able public export objects in non-temp packages are handled by FGlobalImportStore::ClearAsyncFlags
-	const bool bShouldClearAsyncFlagForPublicExports = GUObjectArray.IsDisregardForGC(LinkerRoot) || !Desc.IsTrackingPublicExports();
+	const bool bShouldClearAsyncFlagForPublicExports = GUObjectArray.IsDisregardForGC(LinkerRoot) || !Desc.CanBeImported();
 
 	for (FExportObject& Export : Data.Exports)
 	{
@@ -5261,7 +5266,7 @@ void FAsyncPackage2::CreateUPackage(const FPackageSummary* PackageSummary)
 	// Try to find existing package or create it if not already present.
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(UPackageFind);
-		if (Desc.IsTrackingPublicExports())
+		if (Desc.CanBeImported())
 		{
 			PackageRef = ImportStore.GlobalPackageStore.LoadedPackageStore.FindPackageRef(Desc.DiskPackageId);
 			check(PackageRef);
@@ -5278,6 +5283,7 @@ void FAsyncPackage2::CreateUPackage(const FPackageSummary* PackageSummary)
 		TRACE_CPUPROFILER_EVENT_SCOPE(UPackageCreate);
 		LinkerRoot = NewObject<UPackage>(/*Outer*/nullptr, Desc.GetUPackageName(), RF_Public | RF_WasLoaded);
 		LinkerRoot->FileName = Desc.DiskPackageName;
+		LinkerRoot->SetCanBeImportedFlag(Desc.CanBeImported());
 		LinkerRoot->SetPackageId(Desc.DiskPackageId);
 		LinkerRoot->SetPackageFlagsTo(PackageSummary->PackageFlags);
 		LinkerRoot->LinkerPackageVersion = GPackageFileUE4Version;
@@ -5291,6 +5297,7 @@ void FAsyncPackage2::CreateUPackage(const FPackageSummary* PackageSummary)
 	}
 	else
 	{
+		check(LinkerRoot->CanBeImported() == Desc.CanBeImported());
 		check(LinkerRoot->GetPackageId() == Desc.DiskPackageId);
 		check(LinkerRoot->GetPackageFlags() == PackageSummary->PackageFlags);
 		check(LinkerRoot->LinkerPackageVersion == GPackageFileUE4Version);
