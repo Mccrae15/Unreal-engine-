@@ -51,6 +51,7 @@ enum class EIoErrorCode
 	Cancelled,
 	FileOpenFailed,
 	FileNotOpen,
+	ReadError,
 	WriteError,
 	NotFound,
 	CorruptToc,
