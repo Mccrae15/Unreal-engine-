@@ -46,6 +46,10 @@ DECLARE_LOG_CATEGORY_EXTERN(LogD3D12RHI, Log, All);
 #include "D3D12RHIBasePrivate.h"
 #endif
 
+#if !defined(NV_AFTERMATH)
+	#define NV_AFTERMATH 0
+#endif
+
 #if NV_AFTERMATH
 #define GFSDK_Aftermath_WITH_DX12 1
 #include "GFSDK_Aftermath.h"
