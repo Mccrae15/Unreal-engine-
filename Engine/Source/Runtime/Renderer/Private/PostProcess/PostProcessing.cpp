@@ -451,6 +451,14 @@ void AddPostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, c
 				check(View.ViewState);
 				FTemporalAAHistory& OutputHistory = View.ViewState->PrevFrameViewInfo.TemporalAAHistory;
 				GraphBuilder.QueueTextureExtraction(SceneColor.Texture, &OutputHistory.RT[0]);
+
+				FTAAPassParameters TAAParameters(View);
+				TAAParameters.Pass = View.PrimaryScreenPercentageMethod == EPrimaryScreenPercentageMethod::TemporalUpscale 	? ETAAPassConfig::MainUpsampling : ETAAPassConfig::Main;
+				TAAParameters.SetupViewRect(View);
+				TAAParameters.SceneColorInput = SceneColor.Texture;
+
+				OutputHistory.ViewportRect		  = TAAParameters.OutputViewRect;
+				OutputHistory.ReferenceBufferSize = TAAParameters.GetOutputExtent() * TAAParameters.ResolutionDivisor;
 			}
 		}
 
