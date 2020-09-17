@@ -999,13 +999,6 @@ namespace UnrealBuildTool
 		public bool bPGOOptimize = false;
 
 		/// <summary>
-		/// Whether to allow the use of ASLR (address space layout randomization) if supported. Only
-		/// applies to shipping builds.
-		/// </summary>
-		[XmlConfigFile(Category = "BuildConfiguration")]
-		public bool bAllowASLRInShipping = true;
-
-		/// <summary>
 		/// Whether to support edit and continue.  Only works on Microsoft compilers.
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
@@ -2346,11 +2339,6 @@ namespace UnrealBuildTool
 		public bool bPGOOptimize
 		{
 			get { return Inner.bPGOOptimize; }
-		}
-
-		public bool bAllowASLRInShipping
-		{
-			get { return Inner.bAllowASLRInShipping; }
 		}
 
 		public bool bSupportEditAndContinue
