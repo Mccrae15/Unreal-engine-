@@ -195,6 +195,10 @@
 			<Tag Files="#UE4Editor Win64" Except="$(PluginsExceptions)" With="#UE4Editor Win64 WithExceptions"/>
 
 		</Node>
+
+		<!-- Used as a step gate to prevent inducing unnecessary copy overhead -->
+		<Node Name="UE4Editor Win64 Complete" Requires="Compile UE4Editor Win64">
+		</Node>
 	</Agent>
 
 
@@ -229,6 +233,10 @@
 			</Do>
 
 			<Tag Files="#UE4Editor Mac" Except="$(PluginsExceptions)" With="#UE4Editor Mac WithExceptions"/>
+		</Node>
+
+		<!-- Used as a step gate to prevent inducing unnecessary copy overhead -->
+		<Node Name="UE4Editor Mac Complete" Requires="Compile UE4Editor Mac">
 		</Node>
 	</Agent>
 
@@ -577,6 +585,10 @@
 			<Compile Target="UnrealCEFSubProcess" Configuration="Development" Platform="Win32" Tag="#Build Tools Win32"/>
 			<Compile Target="BootstrapPackagedGame" Configuration="Shipping" Platform="Win32" Tag="#Build Tools Win32"/>
 		</Node>
+
+		<!-- Used as a step gate to prevent inducing unnecessary copy overhead -->
+		<Node Name="Tools Group Win64 Complete" Requires="Build Tools Win64;Build Tools CS">
+		</Node>
 	</Agent>
 
 	<Agent Name="Tools Group Mac" Type="Mac_Licensee">
@@ -595,6 +607,10 @@
 			<Compile Target="DsymExporter" Configuration="Development" Platform="Mac" Tag="#Build Tools Mac"/>
 			<Compile Target="UE4EditorServices" Configuration="Development" Platform="Mac" Tag="#Build Tools Mac"/>
 			<Compile Target="UnrealAtoS" Configuration="Development" Platform="Mac" Tag="#Build Tools Mac"/>
+		</Node>
+
+		<!-- Used as a step gate to prevent inducing unnecessary copy overhead -->
+		<Node Name="Tools Group Mac Complete" Requires="Build Tools Mac">
 		</Node>
 	</Agent>
 
