@@ -384,6 +384,7 @@ struct FAsyncPackageDesc2
 		, CustomPackageId(OldPackage.CustomPackageId)
 		, DiskPackageName(OldPackage.DiskPackageName)
 		, CustomPackageName(OldPackage.CustomPackageName)
+		, SourcePackageName(OldPackage.SourcePackageName)
 	{
 	}
 
@@ -397,7 +398,7 @@ struct FAsyncPackageDesc2
 	void SetDiskPackageName(FName SerializedDiskPackageName, FName SerializedSourcePackageName = FName())
 	{
 		check(DiskPackageName.IsNone() || DiskPackageName == SerializedDiskPackageName);
-		check(SourcePackageName.IsNone());
+		check(SourcePackageName.IsNone() || SourcePackageName == SerializedSourcePackageName);
 		DiskPackageName = SerializedDiskPackageName;
 		SourcePackageName = SerializedSourcePackageName;
 	}
@@ -1085,6 +1086,13 @@ public:
 		FScopeLock Lock(&PackageNameMapsCritical);
 		FPackageStoreEntry* Entry = StoreEntriesMap.FindRef(PackageId);
 		return Entry;
+	}
+
+	inline FPackageId GetRedirectedPackageId(FPackageId PackageId)
+	{
+		FScopeLock Lock(&PackageNameMapsCritical);
+		FPackageId RedirectedId = RedirectsPackageMap.FindRef(PackageId);
+		return RedirectedId;
 	}
 };
 
@@ -5551,6 +5559,16 @@ int32 FAsyncLoadingThread2::LoadPackage(const FString& InName, const FGuid* InGu
 
 		// Add new package request
 		FAsyncPackageDesc2 PackageDesc(RequestID, DiskPackageId, StoreEntry, DiskPackageName, CustomPackageId, CustomPackageName, MoveTemp(CompletionDelegatePtr));
+
+		// Fixup for redirected packages since the slim StoreEntry itself has been stripped from both package names and package ids
+		FPackageId RedirectedDiskPackageId = GlobalPackageStore.GetRedirectedPackageId(DiskPackageId);
+		if (RedirectedDiskPackageId.IsValid())
+		{
+			PackageDesc.DiskPackageId = RedirectedDiskPackageId;
+			PackageDesc.SourcePackageName = PackageDesc.DiskPackageName;
+			PackageDesc.DiskPackageName = FName();
+		}
+
 		QueuePackage(PackageDesc);
 
 		UE_ASYNC_PACKAGE_LOG(Verbose, PackageDesc, TEXT("LoadPackage: QueuePackage"), TEXT("Package added to pending queue."));
