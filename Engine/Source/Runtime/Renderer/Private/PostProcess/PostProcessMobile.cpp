@@ -1008,6 +1008,7 @@ FPooledRenderTargetDesc FRCPassPostProcessSunMaskES2::ComputeOutputDesc(EPassOut
 	Ret.NumMips = 1;
 	Ret.TargetableFlags = TexCreate_RenderTargetable | TexCreate_ShaderResource;
 	Ret.bForceSeparateTargetAndShaderResource = false;
+	// Keep the depth in alpha channel for Depth Of Field Gaussian
 	Ret.Format = InPassOutputId == ePId_Output1 ? PF_FloatR11G11B10 : PF_R16F;
 	Ret.NumSamples = 1;
 	Ret.Extent.X = FMath::Max(1, PrePostSourceViewportSize.X);
@@ -1404,6 +1405,9 @@ public:
 	LAYOUT_FIELD(FShaderParameter, SunColorVignetteIntensity);
 	LAYOUT_FIELD(FShaderParameter, VignetteColor);
 	LAYOUT_FIELD(FShaderParameter, BloomColor);
+	LAYOUT_FIELD(FShaderParameter, BloomDirtMaskTint);
+	LAYOUT_FIELD(FShaderResourceParameter, BloomDirtMaskTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, BloomDirtMaskSampler);
 
 	FPostProcessSunMergePS_ES2(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FGlobalShader(Initializer)
@@ -1412,6 +1416,9 @@ public:
 		SunColorVignetteIntensity.Bind(Initializer.ParameterMap, TEXT("SunColorVignetteIntensity"));
 		VignetteColor.Bind(Initializer.ParameterMap, TEXT("VignetteColor"));
 		BloomColor.Bind(Initializer.ParameterMap, TEXT("BloomColor"));
+		BloomDirtMaskTint.Bind(Initializer.ParameterMap, TEXT("BloomDirtMaskTint"));
+		BloomDirtMaskTexture.Bind(Initializer.ParameterMap, TEXT("BloomDirtMaskTexture"));
+		BloomDirtMaskSampler.Bind(Initializer.ParameterMap, TEXT("BloomDirtMaskSampler"));
 	}
 
 	void SetPS(const FRenderingCompositePassContext& Context)
@@ -1430,6 +1437,12 @@ public:
 
 		// Scaling Bloom1 by extra factor to match filter area difference between PC default and mobile.
 		SetShaderValue(Context.RHICmdList, ShaderRHI, BloomColor, Context.View.FinalPostProcessSettings.Bloom1Tint * Context.View.FinalPostProcessSettings.BloomIntensity * 0.5);
+
+		SetShaderValue(Context.RHICmdList, ShaderRHI, BloomDirtMaskTint, Context.View.FinalPostProcessSettings.BloomDirtMaskTint * Context.View.FinalPostProcessSettings.BloomDirtMaskIntensity);
+
+		FRHITexture* BloomDirtMaskTextureRHI = Context.View.FinalPostProcessSettings.BloomDirtMask != nullptr ? Context.View.FinalPostProcessSettings.BloomDirtMask->Resource->TextureRHI : GBlackTexture->TextureRHI;
+
+		SetTextureParameter(Context.RHICmdList, ShaderRHI, BloomDirtMaskTexture, BloomDirtMaskSampler, TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), BloomDirtMaskTextureRHI);
 	}
 };
 
@@ -2232,13 +2245,10 @@ void FRCPassIntegrateDofES2::Process(FRenderingCompositePassContext& Context)
 {
 	SCOPED_DRAW_EVENT(Context.RHICmdList, PostProcessIntegrateDof);
 
-	FIntRect DstRect;
-	DstRect.Min.X = 0;
-	DstRect.Min.Y = 0;
-	DstRect.Max.X = PrePostSourceViewportSize.X;
-	DstRect.Max.Y = PrePostSourceViewportSize.Y;
-
 	const FSceneRenderTargetItem& DestRenderTarget = PassOutputs[0].RequestSurface(Context);
+
+	const FIntPoint &SrcSize = PrePostSourceViewportSize;
+	const FIntPoint &DstSize = PassOutputs[0].RenderTargetDesc.Extent;
 
 	ERenderTargetLoadAction LoadAction = ERenderTargetLoadAction::EClear;
 	FRHIRenderPassInfo RPInfo(DestRenderTarget.TargetableTexture, MakeRenderTargetActions(LoadAction, ERenderTargetStoreAction::EStore));
@@ -2269,11 +2279,11 @@ void FRCPassIntegrateDofES2::Process(FRenderingCompositePassContext& Context)
 		DrawRectangle(
 			Context.RHICmdList,
 			0, 0,
-			PrePostSourceViewportSize.X, PrePostSourceViewportSize.Y,
+			DstSize.X, DstSize.Y,
 			0, 0,
-			PrePostSourceViewportSize.X, PrePostSourceViewportSize.Y,
-			PrePostSourceViewportSize,
-			PrePostSourceViewportSize,
+			SrcSize.X, SrcSize.Y,
+			DstSize,
+			DstSize,
 			VertexShader,
 			EDRF_UseTriangleOptimization);
 	}

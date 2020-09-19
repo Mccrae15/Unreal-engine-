@@ -936,6 +936,13 @@ void FVulkanDynamicRHI::RHIMapStagingSurface(FRHITexture* TextureRHI, FRHIGPUFen
 	check(TextureRHI2D);
 	FVulkanTexture2D* Texture2D = ResourceCast(TextureRHI2D);
 
+	if (FenceRHI && !FenceRHI->Poll())
+	{
+		Device->SubmitCommandsAndFlushGPU();
+		FVulkanGPUFence* Fence = ResourceCast(FenceRHI);
+		Device->GetImmediateContext().GetCommandBufferManager()->WaitForCmdBuffer(Fence->GetCmdBuffer());
+	}
+
 	int32 Pitch = Texture2D->GetSizeX();
 	if (ensureMsgf(Texture2D->Surface.GetTiling() == VK_IMAGE_TILING_LINEAR, TEXT("RHIMapStagingSurface() called with a %d x %d texture in non-linear tiling %d, the result will likely be garbled."), static_cast<int32>(Texture2D->GetSizeX()), static_cast<int32>(Texture2D->GetSizeY()), static_cast<int32>(Texture2D->Surface.GetTiling())))
 	{
@@ -1337,7 +1344,7 @@ bool FVulkanCommandListContext::FPendingTransition::GatherBarriers(FTransitionAn
 
 			VkImageLayout& Layout = InTransitionAndLayoutManager.FindOrAddLayoutRW(VulkanTexture->Surface.Image, VK_IMAGE_LAYOUT_UNDEFINED);
 			SrcAccess = UpdateAccessFromLayout(SrcAccess, Layout);
-			DestAccess = UpdateAccessFromLayout(DestAccess, Layout);
+			DestAccess = UpdateAccessFromLayout(DestAccess, DestLayout);
 
 
 			VulkanRHI::SetupAndZeroImageBarrierOLD(Barrier, VulkanTexture->Surface, SrcAccess, Layout, DestAccess, DestLayout);

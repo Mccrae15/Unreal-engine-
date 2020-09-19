@@ -182,8 +182,11 @@ void FNiagaraCompileRequestData::VisitReferencedGraphsRecursive(UNiagaraGraph* I
 						bool bHasNumericParams = FunctionGraph->HasNumericParameters();
 						bool bHasNumericInputs = false;
 
-						UPackage* FunctionPackage = FunctionGraph->GetOutermost();
-						bool bFromDifferentPackage = OwningPackage != FunctionPackage;
+						// Any function which is not directly owned by it's outer function call node must be cloned since its graph
+						// will be modified in some way with it's internals function calls replaced with cloned references, or with
+						// numeric fixup.  Currently the only scripts which don't need cloning are scripts used by UNiagaraNodeAssignment
+						// module nodes and UNiagaraNodeCustomHlsl expression dynamic input nodes.
+						bool bRequiresClonedScript = FunctionScript->GetOuter()->IsA<UNiagaraNodeFunctionCall>() == false;
 
 						TArray<UEdGraphPin*> CallOutputs;
 						TArray<UEdGraphPin*> CallInputs;
@@ -216,7 +219,7 @@ void FNiagaraCompileRequestData::VisitReferencedGraphsRecursive(UNiagaraGraph* I
 						if (!PreprocessedFunctions.Contains(FunctionGraph))
 						{
 							UNiagaraScript* DupeScript = nullptr;
-							if (!bFromDifferentPackage && !bHasNumericInputs && !bHasNumericParams)
+							if (bRequiresClonedScript == false)
 							{
 								DupeScript = FunctionScript;
 								ProcessedGraph = FunctionGraph;
@@ -279,7 +282,7 @@ void FNiagaraCompileRequestData::VisitReferencedGraphsRecursive(UNiagaraGraph* I
 							FoundArray->Add(Data);
 							VisitReferencedGraphsRecursive(ProcessedGraph, ConstantResolver, bNeedsCompilation);
 						}
-						else if (bFromDifferentPackage)
+						else if(bRequiresClonedScript)
 						{
 							TArray<FunctionData>* FoundArray = PreprocessedFunctions.Find(FunctionGraph);
 							check(FoundArray != nullptr && FoundArray->Num() != 0);
@@ -313,21 +316,10 @@ const TMap<FName, UNiagaraDataInterface*>& FNiagaraCompileRequestData::GetObject
 
 void FNiagaraCompileRequestData::MergeInEmitterPrecompiledData(FNiagaraCompileRequestDataBase* InEmitterDataBase)
 {
-//	check(EmitterData.Contains(InEmitterDataBase));
-
 	FNiagaraCompileRequestData* InEmitterData = (FNiagaraCompileRequestData*)InEmitterDataBase;
 	if (InEmitterData)
 	{
-		{
-			auto It = InEmitterData->CopiedDataInterfacesByName.CreateIterator();
-			while (It)
-			{
-				FName Name = It.Key();
-				Name = FNiagaraParameterMapHistory::ResolveEmitterAlias(Name, InEmitterData->GetUniqueEmitterName());
-				CopiedDataInterfacesByName.Add(Name, It.Value());
-				++It;
-			}
-		}
+		CopiedDataInterfacesByName.Append(InEmitterData->CopiedDataInterfacesByName);
 	}
 }
 

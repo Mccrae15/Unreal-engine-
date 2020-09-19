@@ -12,6 +12,7 @@ using System.Diagnostics;
 using System.Xml;
 using System.Globalization;
 using Tools.DotNETCommon;
+using System.Linq;
 
 namespace iPhonePackager
 {
@@ -37,25 +38,41 @@ namespace iPhonePackager
 
         public static void CacheMobileProvisions()
         {
+            Program.Log("Caching provisions");
+            string LocalProvisionFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "Library/MobileDevice/Provisioning Profiles");
+            if (!Directory.Exists(LocalProvisionFolder))
+            {
+                Program.Log("Local Provision Folder {0} doesn't exist, creating..", LocalProvisionFolder);
+                Directory.CreateDirectory(LocalProvisionFolder);
+            }
+
             // copy all of the provisions from the game directory to the library
             if (!String.IsNullOrEmpty(Config.ProjectFile))
             {
                 var ProjectFileBuildIOSPath = Path.GetDirectoryName(Config.ProjectFile) + "/Build/" + Config.OSString + "/";
+                Program.Log("Finding provisions in {0}", ProjectFileBuildIOSPath);
                 if (Directory.Exists(ProjectFileBuildIOSPath))
                 {
                     foreach (string Provision in Directory.EnumerateFiles(ProjectFileBuildIOSPath, "*.mobileprovision", SearchOption.AllDirectories))
                     {
-                        if (!File.Exists(Config.ProvisionDirectory + Path.GetFileName(Provision)) || File.GetLastWriteTime(Config.ProvisionDirectory + Path.GetFileName(Provision)) < File.GetLastWriteTime(Provision))
+                        Log.TraceInformation(Provision);
+                        string TargetFile = Config.ProvisionDirectory + Path.GetFileName(Provision);
+                        if (!File.Exists(TargetFile) || File.GetLastWriteTime(TargetFile) < File.GetLastWriteTime(Provision))
                         {
                             FileInfo DestFileInfo;
-                            if (File.Exists(Config.ProvisionDirectory + Path.GetFileName(Provision)))
+                            if (File.Exists(TargetFile))
                             {
-                                DestFileInfo = new FileInfo(Config.ProvisionDirectory + Path.GetFileName(Provision));
+                                DestFileInfo = new FileInfo(TargetFile);
                                 DestFileInfo.Attributes = DestFileInfo.Attributes & ~FileAttributes.ReadOnly;
                             }
-                            File.Copy(Provision, Config.ProvisionDirectory + Path.GetFileName(Provision), true);
-                            DestFileInfo = new FileInfo(Config.ProvisionDirectory + Path.GetFileName(Provision));
+                            Program.Log("Copying {0} -> {1}", Provision, TargetFile);
+                            File.Copy(Provision, TargetFile, true);
+                            DestFileInfo = new FileInfo(TargetFile);
                             DestFileInfo.Attributes = DestFileInfo.Attributes & ~FileAttributes.ReadOnly;
+                            if (!File.Exists(TargetFile))
+                            {
+                                Program.Log("ERROR: Failed to copy {0} -> {1}", Provision, TargetFile);
+                            }
                         }
                     }
                 }
@@ -64,21 +81,29 @@ namespace iPhonePackager
             // copy all of the provisions from the engine directory to the library
             {
                 string ProvisionDirectory = Environment.GetEnvironmentVariable("ProvisionDirectory") ?? Config.EngineBuildDirectory;
+                Program.Log("Finding provisions in {0}", ProvisionDirectory);
                 if (Directory.Exists(ProvisionDirectory))
                 {
                     foreach (string Provision in Directory.EnumerateFiles(ProvisionDirectory, "*.mobileprovision", SearchOption.AllDirectories))
                     {
-                        if (!File.Exists(Config.ProvisionDirectory + Path.GetFileName(Provision)) || File.GetLastWriteTime(Config.ProvisionDirectory + Path.GetFileName(Provision)) < File.GetLastWriteTime(Provision))
+                        Log.TraceInformation(Provision);
+                        string TargetFile = Config.ProvisionDirectory + Path.GetFileName(Provision);
+                        if (!File.Exists(TargetFile) || File.GetLastWriteTime(TargetFile) < File.GetLastWriteTime(Provision))
                         {
                             FileInfo DestFileInfo;
-                            if (File.Exists(Config.ProvisionDirectory + Path.GetFileName(Provision)))
+                            if (File.Exists(TargetFile))
                             {
-                                DestFileInfo = new FileInfo(Config.ProvisionDirectory + Path.GetFileName(Provision));
+                                DestFileInfo = new FileInfo(TargetFile);
                                 DestFileInfo.Attributes = DestFileInfo.Attributes & ~FileAttributes.ReadOnly;
                             }
+                            Program.Log("Copying {0} -> {1}", Provision, TargetFile);
                             File.Copy(Provision, Config.ProvisionDirectory + Path.GetFileName(Provision), true);
-                            DestFileInfo = new FileInfo(Config.ProvisionDirectory + Path.GetFileName(Provision));
+                            DestFileInfo = new FileInfo(TargetFile);
                             DestFileInfo.Attributes = DestFileInfo.Attributes & ~FileAttributes.ReadOnly;
+                            if(!File.Exists(TargetFile))
+                            {
+                                Program.Log("ERROR: Failed to copy {0} -> {1}", Provision, TargetFile);
+                            }
                         }
                     }
                 }
@@ -133,6 +158,11 @@ namespace iPhonePackager
 
             Program.Log("Searching for mobile provisions that match the game '{0}' (distribution: {3}) with CFBundleIdentifier='{1}' in '{2}'", GameName, CFBundleIdentifier, Config.ProvisionDirectory, Config.bForDistribution);
 
+            // first sort all profiles so we look at newer ones first.
+            IEnumerable<string> ProfileKeys = ProvisionLibrary.Select(KV => KV.Key)
+                .OrderByDescending(K => ProvisionLibrary[K].CreationDate)
+                .ToArray();
+
             // check the cache for a provision matching the app id (com.company.Game)
             // First checking for a contains match and then for a wildcard match
             for (int Phase = -1; Phase < 3; ++Phase)
@@ -141,10 +171,10 @@ namespace iPhonePackager
                 {
                     continue;
                 }
-                foreach (KeyValuePair<string, MobileProvision> Pair in ProvisionLibrary)
+                foreach (string Key in ProfileKeys)
                 {
-                    string DebugName = Path.GetFileName(Pair.Key);
-                    MobileProvision TestProvision = Pair.Value;
+                    string DebugName = Path.GetFileName(Key);
+                    MobileProvision TestProvision = ProvisionLibrary[Key];
 
                     // make sure the file is not managed by Xcode
                     if (Path.GetFileName(TestProvision.FileName).ToLower().Equals(TestProvision.UUID.ToLower() + ".mobileprovision"))
@@ -207,9 +237,9 @@ namespace iPhonePackager
 
                     if (Config.bForDistribution)
                     {
-						// Check to see if this is a distribution provision. get-task-allow must be false for distro profiles.
-						// TestProvision.ProvisionedDeviceIDs.Count==0 is not a valid check as ad-hoc distro profiles do list devices.
-						bool bDistroProv = !TestProvision.bDebug;
+                        // Check to see if this is a distribution provision. get-task-allow must be false for distro profiles.
+                        // TestProvision.ProvisionedDeviceIDs.Count==0 is not a valid check as ad-hoc distro profiles do list devices.
+                        bool bDistroProv = !TestProvision.bDebug;
                         if (!bDistroProv)
                         {
                             Program.LogVerbose("  .. Failed distribution check (mode={0}, get-task-allow={1}, #devices={2})", Config.bForDistribution, TestProvision.bDebug, TestProvision.ProvisionedDeviceIDs.Count);
@@ -269,7 +299,7 @@ namespace iPhonePackager
 
                     // Made it past all the tests
                     Program.LogVerbose("  Picked '{0}' with AppID '{1}' and Name '{2}' as a matching provision for the game '{3}'", DebugName, TestProvision.ApplicationIdentifier, TestProvision.ProvisionName, GameName);
-                    return Pair.Key;
+                    return Key;
                 }
             }
 

@@ -2313,8 +2313,6 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 			}
 		}
 
-		check((ShaderMap && Materials) || ProcessIt.Key() == GlobalShaderMapId);
-
 		if (ShaderMap && Materials)
 		{
 			TArray<FString> Errors;
@@ -2455,6 +2453,26 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 				CompilationResults.Empty();
 				ProcessIt.RemoveCurrent();
 			}
+		}
+		else
+		{
+			// CompileID doesn't match GlobalShaderMapId, and doesn't match any currently compiling materials...this is a fatal error
+			UE_LOG(LogShaderCompilers, Error, TEXT("CompileResults: NumJobsQueued %d, FinishedJobs.Num %d, FinalizeJobIndex %d, bAllJobsSucceeded %d"),
+				CompileResults.NumJobsQueued, CompileResults.FinishedJobs.Num(), CompileResults.FinalizeJobIndex, (int32)CompileResults.bAllJobsSucceeded)
+			UE_LOG(LogShaderCompilers, Error, TEXT("ShaderMap: %s"), ShaderMap ? ShaderMap->GetFriendlyName() : TEXT("nullptr"));
+			if (Materials)
+			{
+				UE_LOG(LogShaderCompilers, Error, TEXT("Materials: %d"), Materials->Num());
+				for (FMaterial* Material : *Materials)
+				{
+					UE_LOG(LogShaderCompilers, Error, TEXT("  Material: %s"), Material ? *Material->GetFriendlyName() : TEXT("nullptr"));
+				}
+			}
+			else
+			{
+				UE_LOG(LogShaderCompilers, Error, TEXT("Materials: nullptr"));
+			}
+			UE_LOG(LogShaderCompilers, Fatal, TEXT("Missing ShaderMap/Material for CompileID %d"), ProcessIt.Key());
 		}
 	}
 
@@ -2767,6 +2785,15 @@ void FShaderCompilingManager::CancelCompilation(const TCHAR* MaterialName, const
 	// Lock CompileQueueSection so we can access the input and output queues
 	FScopeLock Lock(&CompileQueueSection);
 
+	for (TMap<TRefCountPtr<FMaterialShaderMap>, TArray<FMaterial*> >::TIterator ShaderMapIt(FMaterialShaderMap::ShaderMapsBeingCompiled); ShaderMapIt; ++ShaderMapIt)
+	{
+		const int32 CompileId = ShaderMapIt.Key()->CompilingId;
+		if (ShaderMapIdsToCancel.Contains(CompileId))
+		{
+			ShaderMapIt.RemoveCurrent();
+		}
+	}
+
 	int32 TotalNumJobsRemoved = 0;
 	for (int32 IdIndex = 0; IdIndex < ShaderMapIdsToCancel.Num(); ++IdIndex)
 	{
@@ -2784,20 +2811,26 @@ void FShaderCompilingManager::CancelCompilation(const TCHAR* MaterialName, const
 					FShaderPipelineCompileJob* PipelineJob = Job->GetShaderPipelineJob();
 					if (PipelineJob)
 					{
-						TotalNumJobsRemoved += PipelineJob->StageJobs.Num();
 						NumJobsRemoved += PipelineJob->StageJobs.Num();
 					}
 					else
 					{
-						++TotalNumJobsRemoved;
 						++NumJobsRemoved;
 					}
+
+					// Note that the NumOutstandingJobs is the number of shaders could be compiled which counts pipeline job as one job.
+					// And the NumJobsQueued is the number of jobs counts through GetNumTotalJobs which counts pipeline stage jobs.
+					++TotalNumJobsRemoved;
+
 					CompileQueue.RemoveAt(JobIndex, 1, false);
 				}
 			}
 
 			ShaderMapJob->NumJobsQueued -= NumJobsRemoved;
-
+			
+			// The shader map job result should be skipped since it is out of date.
+			ShaderMapJob->bSkipResultProcessing = true;
+			
 			if (ShaderMapJob->NumJobsQueued == 0)
 			{
 				//We've removed all the jobs for this shader map so remove it.

@@ -905,14 +905,17 @@ void FOpenGLDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI,FIntRect Rect
 
 void FOpenGLDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect, TArray<FLinearColor>& OutData, FReadSurfaceDataFlags InFlags)
 {
-	VERIFY_GL_SCOPE();
-
 	// Verify requirements, but don't crash
 	// Ignore texture format here, GL will convert it for us in glReadPixels
 	if (!ensure(FOpenGL::SupportsFloatReadSurface()) || !ensure(TextureRHI))
 	{
 		return;
 	}
+	
+	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+	
+	RHITHREAD_GLCOMMAND_PROLOGUE();
+	VERIFY_GL_SCOPE();
 
 	FOpenGLTextureBase* Texture = GetOpenGLTextureFromRHITexture(TextureRHI);
 	if (!ensure(Texture))
@@ -943,6 +946,8 @@ void FOpenGLDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rec
 	glPixelStorei(GL_PACK_ALIGNMENT, 4);
 
 	GetContextStateForCurrentContext().Framebuffer = (GLuint)-1;
+	
+	RHITHREAD_GLCOMMAND_EPILOGUE();
 }
 
 void FOpenGLDynamicRHI::RHIMapStagingSurface(FRHITexture* TextureRHI, FRHIGPUFence* FenceRHI, void*& OutData, int32& OutWidth, int32& OutHeight, uint32 GPUIndex)
@@ -1134,28 +1139,15 @@ void FOpenGLDynamicRHI::BindPendingFramebuffer( FOpenGLContextState& ContextStat
 
 			if ( FOpenGL::SupportsMultipleRenderTargets() )
 			{
-				//if (ContextState.FirstNonzeroRenderTarget != PendingState.FirstNonzeroRenderTarget)
-				//{
-					FOpenGL::ReadBuffer( PendingState.FirstNonzeroRenderTarget >= 0 ? GL_COLOR_ATTACHMENT0 + PendingState.FirstNonzeroRenderTarget : GL_NONE);
-					//ContextState.FirstNonzeroRenderTarget = PendingState.FirstNonzeroRenderTarget;
-				//}
+				FOpenGL::ReadBuffer( PendingState.FirstNonzeroRenderTarget >= 0 ? GL_COLOR_ATTACHMENT0 + PendingState.FirstNonzeroRenderTarget : GL_NONE);
 				GLenum DrawFramebuffers[MaxSimultaneousRenderTargets];
 				const GLint MaxDrawBuffers = GMaxOpenGLDrawBuffers;
 
-				bool bNeedToDrawBuffers = false;
 				for (int32 RenderTargetIndex = 0; RenderTargetIndex < MaxDrawBuffers; ++RenderTargetIndex)
 				{
 					DrawFramebuffers[RenderTargetIndex] = PendingState.RenderTargets[RenderTargetIndex] ? GL_COLOR_ATTACHMENT0 + RenderTargetIndex : GL_NONE;
-					if (ContextState.DrawFramebuffers[RenderTargetIndex] != DrawFramebuffers[RenderTargetIndex])
-					{
-						bNeedToDrawBuffers = true;
-						ContextState.DrawFramebuffers[RenderTargetIndex] = DrawFramebuffers[RenderTargetIndex];
-					}
 				}
-				if (bNeedToDrawBuffers)
-				{
-					FOpenGL::DrawBuffers(MaxDrawBuffers, DrawFramebuffers);
-				}
+				FOpenGL::DrawBuffers(MaxDrawBuffers, DrawFramebuffers);
 			}
 		}
 		else

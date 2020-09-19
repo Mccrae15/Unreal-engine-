@@ -1050,6 +1050,8 @@ namespace WindowsMixedReality
 					int Width, Height;
 					if (HMD->GetDisplayDimensions(Width, Height))
 					{
+						bIsStereoEnabled = HMD->IsStereoEnabled();
+
 						SceneVP->SetViewportSize(
 #if PLATFORM_HOLOLENS
 							Width,
@@ -1060,7 +1062,6 @@ namespace WindowsMixedReality
 
 						Window->SetViewportSizeDrivenByWindow(false);
 
-						bIsStereoEnabled = HMD->IsStereoEnabled();
 						if (bIsStereoEnabled)
 						{
 							HMD->CreateHiddenVisibleAreaMesh();
@@ -1348,8 +1349,23 @@ namespace WindowsMixedReality
 #if PLATFORM_HOLOLENS
 		if (bIsMobileMultiViewEnabled)
 		{
-			ID3D11Texture2D* Texture = static_cast<ID3D11Texture2D*>(CurrentDepthBuffer->GetNativeResource());
-			ensure(HMD->CommitDepthBuffer(Texture));
+			FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
+			IPooledRenderTarget* depthRenderTarget = SceneContext.MobileMultiViewSceneDepthZ.GetReference();
+			if (depthRenderTarget != nullptr)
+			{
+				FTextureRHIRef depthTargetableTexture = depthRenderTarget->GetRenderTargetItem().TargetableTexture;
+				if (depthTargetableTexture != nullptr)
+				{
+					ID3D11Texture2D* Texture = static_cast<ID3D11Texture2D*>(depthTargetableTexture->GetNativeResource());
+					if (Texture != nullptr)
+					{
+						if (mCustomPresent != nullptr)
+						{
+							mCustomPresent->SetDepthTexture(Texture);
+						}
+					}
+				}
+			}
 		}
 		else
 #endif
@@ -1702,7 +1718,10 @@ namespace WindowsMixedReality
 			(ID3D11Texture2D*)remappedDepthTexture->GetNativeResource(),
 			stereoDepthTexture);
 
-		HMD->CommitDepthBuffer(stereoDepthTexture);
+		if (mCustomPresent != nullptr)
+		{
+			mCustomPresent->SetDepthTexture(stereoDepthTexture);
+		}
 		// Third camera depth
 		if (HMD->IsThirdCameraActive() && remappedDepthTexture != nullptr && monoDepthTexture != nullptr)
 		{

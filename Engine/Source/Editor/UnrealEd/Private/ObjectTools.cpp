@@ -95,6 +95,15 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogObjectTools, Log, All);
 
+static TAutoConsoleVariable<bool> CVarUseLegacyGetReferencersForDeletion(
+	TEXT("Editor.UseLegacyGetReferencersForDeletion"),
+	false,
+	TEXT("Choose the algorithm to be used when detecting referencers of any assets/objects being deleted.\n\n")
+	TEXT("0: Use the most optimized version (default)\n")
+	TEXT("1: Use the slower legacy version (for debug/comparison)"),
+	ECVF_Default
+	);
+
 // This function should ONLY be needed by ConsolidateObjects and ForceDeleteObjects
 // Use anywhere else could be dangerous as this involves a map transition and GC
 void ReloadEditorWorldForReferenceReplacementIfNecessary(TArray< TWeakObjectPtr<UObject> >& InOutObjectsToReplace)
@@ -858,6 +867,12 @@ namespace ObjectTools
 				GWarn->StatusUpdate( NumObjsReplaced, ReferencingPropertiesMapKeys.Num(), NSLOCTEXT("UnrealEd", "ConsolidateAssetsUpdate_ReplacingReferences", "Replacing Asset References...") );
 
 				UObject* CurReplaceObj = ReferencingPropertiesMapKeys[Index];
+
+				// This is a hack, permanent fix is to pick up the notification from PreEditChange():
+				if (UBlueprint* BP = CurReplaceObj->GetTypedOuter<UBlueprint>())
+				{
+					BP->Status = BS_Dirty;
+				}
 
 				FArchiveReplaceObjectRef<UObject> ReplaceAr( CurReplaceObj, ReplacementMap, false, true, false );
 			}
@@ -4089,6 +4104,11 @@ namespace ThumbnailTools
 	/** Renders a thumbnail for the specified object */
 	void RenderThumbnail( UObject* InObject, const uint32 InImageWidth, const uint32 InImageHeight, EThumbnailTextureFlushMode::Type InFlushMode, FTextureRenderTargetResource* InTextureRenderTargetResource, FObjectThumbnail* OutThumbnail )
 	{
+		if (!FApp::CanEverRender())
+		{
+			return;
+		}
+
 		// Renderer must be initialized before generating thumbnails
 		check( GIsRHIInitialized );
 

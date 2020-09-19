@@ -188,7 +188,7 @@ FVulkanPipeline::~FVulkanPipeline()
 #endif	
 	if (Pipeline != VK_NULL_HANDLE)
 	{
-		Device->GetDeferredDeletionQueue().EnqueueResource(VulkanRHI::FDeferredDeletionQueue::EType::Pipeline, Pipeline);
+		Device->GetDeferredDeletionQueue().EnqueueResource(VulkanRHI::FDeferredDeletionQueue2::EType::Pipeline, Pipeline);
 		Pipeline = VK_NULL_HANDLE;
 	}
 	/* we do NOT own Layout !*/
@@ -1731,6 +1731,7 @@ void FVulkanPipelineStateCacheManager::NotifyDeletedGraphicsPSO(FRHIGraphicsPipe
 		{
 			check(0);
 		}
+		VkPSO->DeleteVkPipeline(true);
 	}
 }
 
@@ -2217,7 +2218,7 @@ void FVulkanRHIGraphicsPipelineState::DeleteVkPipeline(bool bImmediate)
 		}
 		else
 		{
-			Device->GetDeferredDeletionQueue().EnqueueResource(VulkanRHI::FDeferredDeletionQueue::EType::Pipeline, VulkanPipeline);
+			Device->GetDeferredDeletionQueue().EnqueueResource(VulkanRHI::FDeferredDeletionQueue2::EType::Pipeline, VulkanPipeline);
 		}
 		VulkanPipeline = VK_NULL_HANDLE;
 	}
