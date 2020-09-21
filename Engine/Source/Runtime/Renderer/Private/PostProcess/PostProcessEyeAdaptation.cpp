@@ -693,7 +693,7 @@ FRDGTextureRef AddBasicEyeAdaptationPass(
 	GraphBuilder.SetNameForTemporalEffect(FName(NameForTemporalEffect, View.ViewState ? View.ViewState->UniqueID : 0));
 #endif
 
-	if (View.bUseComputePasses)
+	if (View.bUseComputePasses || CVarEyeAdaptationBasicCompute.GetValueOnRenderThread())
 	{
 		FBasicEyeAdaptationCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FBasicEyeAdaptationCS::FParameters>();
 		PassParameters->Base = PassBaseParameters;
