@@ -755,7 +755,11 @@ void MainVS_ES2(
 	OutTexCoords[3] = OutTexCoord.xy + PostprocessInput0Size.zw * float2( 0, 1);
 
 	// Scale vignette to always be a circle with consistent corner intensity.
-	OutVignetteExposureScale.xy = VignetteSpace(InPosition.xy);
+	float2 ColorViewportPos = UVToScreenPos(OutTexCoord.xy, PostprocessInput0Size.xy);
+
+	// Scale vignette to always be a circle with consistent corner intensity.
+	float2 LensViewportPos = ConvertScreenViewportSpaceToLensViewportSpace(ColorViewportPos);
+	OutVignetteExposureScale.xy = VignetteSpace(LensViewportPos);
 
 	// Compute fringe tex coord offsets
 	BRANCH
@@ -886,9 +890,8 @@ void MainPS_ES2(
 
 		float ExposureScale = InVignetteExposureScale.z;
 		
-		#if USE_32BPP_HDR && USE_VIGNETTE
+		#if USE_VIGNETTE
 			LinearColor.rgb *= ComputeVignetteMask(InVignetteExposureScale.xy, TonemapperParams.x );
-			LinearColor = max(LinearColor, float3(0, 0, 0));
 		#endif
 
 		// It is faster to do vignette as a texture lookup + mad because this is an ALU bound shader.
