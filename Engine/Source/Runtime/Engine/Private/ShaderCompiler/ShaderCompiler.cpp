@@ -3392,6 +3392,10 @@ void GlobalBeginCompileShader(
 		Input.Environment.SetDefine(TEXT("SHADING_PATH_MOBILE"), 1);
 	}
 
+#if WITH_OCULUS_PRIVATE_CODE
+	Input.Environment.SetDefine(TEXT("WITH_OCULUS_PRIVATE_CODE"), 1);
+#endif
+
 	// Set VR definitions
 	{
 		static const auto CVarInstancedStereo = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.InstancedStereo"));

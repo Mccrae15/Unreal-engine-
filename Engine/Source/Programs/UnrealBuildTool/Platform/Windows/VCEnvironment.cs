@@ -144,29 +144,54 @@ namespace UnrealBuildTool
 			Environment.SetEnvironmentVariable("VC_COMPILER_PATH", CompilerPath.FullName, EnvironmentVariableTarget.Process);
 			Environment.SetEnvironmentVariable("VC_COMPILER_DIR", CompilerPath.Directory.FullName, EnvironmentVariableTarget.Process);
 
+			Environment.SetEnvironmentVariable("VC_LINKER_PATH", LinkerPath.FullName, EnvironmentVariableTarget.Process);
+			Environment.SetEnvironmentVariable("VC_LINKER_DIR", LinkerPath.Directory.FullName, EnvironmentVariableTarget.Process);
+
+			Environment.SetEnvironmentVariable("VC_LIBRARY_MANAGER_PATH", LibraryManagerPath.FullName, EnvironmentVariableTarget.Process);
+			Environment.SetEnvironmentVariable("VC_LIBRARY_MANAGER_DIR", LibraryManagerPath.Directory.FullName, EnvironmentVariableTarget.Process);
+
+			Environment.SetEnvironmentVariable("VC_RESOURCE_COMPILER_PATH", ResourceCompilerPath.FullName, EnvironmentVariableTarget.Process);
+			Environment.SetEnvironmentVariable("VC_RESOURCE_COMPILER_DIR", ResourceCompilerPath.Directory.FullName, EnvironmentVariableTarget.Process);
+
+			Environment.SetEnvironmentVariable("VC_INCLUDE_PATHS", string.Join(Path.PathSeparator.ToString(), IncludePaths.Select(x => x.FullName)), EnvironmentVariableTarget.Process);
+			Environment.SetEnvironmentVariable("VC_LIBRARY_PATHS", string.Join(Path.PathSeparator.ToString(), LibraryPaths.Select(x => x.FullName)), EnvironmentVariableTarget.Process);
+
+			Environment.SetEnvironmentVariable("VC_WINDOWS_SDK_DIR", WindowsSdkDir.FullName, EnvironmentVariableTarget.Process);
+
 			// Add both toolchain paths to the PATH environment variable. There are some support DLLs which are only added to one of the paths, but which the toolchain in the other directory
 			// needs to run (eg. mspdbcore.dll).
+			List<DirectoryReference> vcToolPaths = new List<DirectoryReference>();
 			if (Architecture == WindowsArchitecture.x64)
 			{
-				AddDirectoryToPath(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x64));
-				AddDirectoryToPath(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x86));
+				vcToolPaths.Add(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x64));
+				vcToolPaths.Add(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x86));
 			}
 			else if (Architecture == WindowsArchitecture.x86)
 			{
-				AddDirectoryToPath(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x86));
-				AddDirectoryToPath(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x64));
+				vcToolPaths.Add(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x86));
+				vcToolPaths.Add(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x64));
 			}
 			else if (Architecture == WindowsArchitecture.ARM64)
 			{
-				AddDirectoryToPath(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.ARM64));
-				AddDirectoryToPath(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x86));
-				AddDirectoryToPath(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x64));
+				vcToolPaths.Add(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.ARM64));
+				vcToolPaths.Add(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x86));
+				vcToolPaths.Add(GetVCToolPath(ToolChain, ToolChainDir, WindowsArchitecture.x64));
 			}
+
+			foreach (DirectoryReference path in vcToolPaths)
+			{
+				AddDirectoryToPath(path);
+			}
+
+			Environment.SetEnvironmentVariable("VC_TOOL_PATHS", string.Join(Path.PathSeparator.ToString(), vcToolPaths.Select(x => x.FullName)), EnvironmentVariableTarget.Process);
 
 			// Add the Windows SDK directory to the path too, for mt.exe.
 			if (WindowsSdkVersion >= new VersionNumber(10))
 			{
-				AddDirectoryToPath(DirectoryReference.Combine(WindowsSdkDir, "bin", WindowsSdkVersion.ToString(), Architecture.ToString()));
+				var mtPath = FileReference.Combine(WindowsSdkDir, "bin", WindowsSdkVersion.ToString(), Architecture.ToString(), "mt.exe");
+				Environment.SetEnvironmentVariable("VC_MT_PATH", mtPath.FullName, EnvironmentVariableTarget.Process);
+				Environment.SetEnvironmentVariable("VC_MT_DIR", mtPath.Directory.FullName, EnvironmentVariableTarget.Process);
+				AddDirectoryToPath(mtPath.Directory);
 			}
 		}
 

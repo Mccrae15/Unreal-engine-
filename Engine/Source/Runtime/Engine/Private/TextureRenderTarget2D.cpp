@@ -475,8 +475,8 @@ void FTextureRenderTarget2DResource::InitDynamicRHI()
 	if( TargetSizeX > 0 && TargetSizeY > 0 )
 	{
 		// Create the RHI texture. Only one mip is used and the texture is targetable for resolve.
-		uint32 TexCreateFlags = Owner->IsSRGB() ? TexCreate_SRGB : 0;
-		TexCreateFlags |= Owner->bGPUSharedFlag ? TexCreate_Shared : 0;
+		ETextureCreateFlags TexCreateFlags = Owner->IsSRGB() ? TexCreate_SRGB : TexCreate_None;
+		TexCreateFlags |= Owner->bGPUSharedFlag ? TexCreate_Shared : TexCreate_None;
 		FRHIResourceCreateInfo CreateInfo = FRHIResourceCreateInfo(FClearValueBinding(ClearColor));
 		CreateInfo.DebugName = TEXT("TextureRenderTarget2DResource");
 

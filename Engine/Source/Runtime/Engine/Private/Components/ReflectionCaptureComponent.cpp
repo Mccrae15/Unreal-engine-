@@ -629,7 +629,7 @@ public:
 	virtual void InitRHI() override
 	{
 		FRHIResourceCreateInfo CreateInfo;
-		TextureCubeRHI = RHICreateTextureCube(Size, Format, NumMips, 0, CreateInfo);
+		TextureCubeRHI = RHICreateTextureCube(Size, Format, NumMips, TexCreate_None, CreateInfo);
 		TextureRHI = TextureCubeRHI;
 
 		if (SourceData)

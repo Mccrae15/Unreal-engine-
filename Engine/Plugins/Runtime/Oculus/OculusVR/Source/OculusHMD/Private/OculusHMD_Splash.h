@@ -63,6 +63,10 @@ public:
 	void Shutdown();
 
 	void OnPreLoadMap(const FString&);
+	void OnPostLoadMap(UWorld* LoadedWorld);
+#if WITH_EDITOR
+	void OnPieBegin(bool bIsSimulating);
+#endif
 
 	// Called from FOculusHMD
 	void UpdateLoadingScreen_GameThread();
@@ -115,7 +119,11 @@ protected:
 
 	float SystemDisplayInterval;
 	double LastTimeInSeconds;
-	FDelegateHandle LoadLevelDelegate;
+	FDelegateHandle PreLoadLevelDelegate;
+	FDelegateHandle PostLoadLevelDelegate;
+#if WITH_EDITOR
+	FDelegateHandle PieBeginDelegateHandle;
+#endif
 };
 
 typedef TSharedPtr<FSplash> FSplashPtr;

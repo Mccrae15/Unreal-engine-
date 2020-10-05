@@ -299,6 +299,7 @@ namespace AutomationTool
 			this.LogWindow = InParams.LogWindow;
 			this.Stage = InParams.Stage;
 			this.SkipStage = InParams.SkipStage;
+			this.DeploySoToDevice = InParams.DeploySoToDevice;
             this.StageDirectoryParam = InParams.StageDirectoryParam;
 			this.Manifests = InParams.Manifests;
             this.CreateChunkInstall = InParams.CreateChunkInstall;
@@ -473,6 +474,7 @@ namespace AutomationTool
 			bool? SkipPak = null,
             bool? PrePak = null,
             bool? SkipStage = null,
+			bool? DeploySoToDevice = null,
 			bool? Stage = null,
 			bool? Manifests = null,
             bool? CreateChunkInstall = null,
@@ -707,6 +709,7 @@ namespace AutomationTool
 				this.Stage = true;
 			}
 			this.StageDirectoryParam = ParseParamValueIfNotSpecified(Command, StageDirectoryParam, "stagingdirectory", String.Empty, true);
+			this.DeploySoToDevice = GetParamValueIfNotSpecified(Command, DeploySoToDevice, this.DeploySoToDevice, "deploysotodevice");
 			this.bCodeSign = GetOptionalParamValueIfNotSpecified(Command, CodeSign, CommandUtils.IsBuildMachine, "CodeSign", "NoCodeSign");
 			this.bTreatNonShippingBinariesAsDebugFiles = GetParamValueIfNotSpecified(Command, TreatNonShippingBinariesAsDebugFiles, false, "TreatNonShippingBinariesAsDebugFiles");
 			this.bUseExtraFlavor = GetParamValueIfNotSpecified(Command, UseExtraFlavor, false, "UseExtraFlavor");
@@ -1270,6 +1273,12 @@ namespace AutomationTool
 		/// </summary>
 		[Help("skipstage", "uses a stage directory, but assumes everything is already there, implies -stage")]
 		public bool SkipStage { private set; get; }
+
+		/// <summary>
+		/// Shared: true if compiled .so sould be copied directly to device for Oculus. Experimental.
+		/// </summary>
+		[Help("deploysotodevice", "for Oculus, deploy compiled .so directly to device. Requires an installed development apk. Experimental")]
+		public bool DeploySoToDevice { private set; get; }
 
 		/// <summary>
 		/// Shared: true if this build is using streaming install manifests, command line: -manifests
@@ -2851,6 +2860,7 @@ namespace AutomationTool
                 CommandUtils.LogLog("PrePak={0}", PrePak);
                 CommandUtils.LogLog("SkipStage={0}", SkipStage);
 				CommandUtils.LogLog("Stage={0}", Stage);
+				CommandUtils.LogLog("DeploySoToDevice={0}", DeploySoToDevice);
 				CommandUtils.LogLog("bTreatNonShippingBinariesAsDebugFiles={0}", bTreatNonShippingBinariesAsDebugFiles);
 				CommandUtils.LogLog("bUseExtraFlavor={0}", bUseExtraFlavor);
 				CommandUtils.LogLog("NativizeAssets={0}", RunAssetNativization);

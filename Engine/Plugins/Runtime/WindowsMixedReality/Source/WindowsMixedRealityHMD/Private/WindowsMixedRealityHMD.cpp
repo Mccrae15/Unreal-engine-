@@ -1384,8 +1384,8 @@ namespace WindowsMixedReality
 		uint32 sizeY,
 		uint8 format,
 		uint32 numMips,
-		uint32 flags,
-		uint32 targetableTextureFlags,
+		ETextureCreateFlags flags,
+		ETextureCreateFlags targetableTextureFlags,
 		FTexture2DRHIRef& outTargetableTexture,
 		FTexture2DRHIRef& outShaderResourceTexture,
 		uint32 numSamples)
@@ -1450,7 +1450,7 @@ namespace WindowsMixedReality
 		return bNeedReallocateDepthTexture;
 	}
 
-	bool FWindowsMixedRealityHMD::AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 InTexFlags, uint32 TargetableTextureFlags, FTexture2DRHIRef & OutTargetableTexture, FTexture2DRHIRef & OutShaderResourceTexture, uint32 NumSamples)
+	bool FWindowsMixedRealityHMD::AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags InTexFlags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef & OutTargetableTexture, FTexture2DRHIRef & OutShaderResourceTexture, uint32 NumSamples)
 	{
 		FRHIResourceCreateInfo CreateInfo;
 		// This binding is necessary - without it there will be a runtime error.

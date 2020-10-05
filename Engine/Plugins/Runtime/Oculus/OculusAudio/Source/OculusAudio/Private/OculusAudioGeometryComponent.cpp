@@ -333,13 +333,13 @@ ovrAudioContext UOculusAudioGeometryComponent::GetContext(UWorld* World)
 					{
 						CachedContext = FOculusAudioContextManager::CreateContextForAudioDevice(AudioDevice);
 					}
-				}
 
-				OculusAudioSpatializationAudioMixer* Spatializer = static_cast<OculusAudioSpatializationAudioMixer*>(AudioDevice->GetSpatializationPluginInterface().Get());
-				if (Spatializer == nullptr || Spatializer->ClassID != OculusAudioSpatializationAudioMixer::MIXER_CLASS_ID)
-				{
-					UE_LOG(LogAudio, Warning, TEXT("Invalid Spatialization Plugin specified, make sure the Spatialization Plugin is set to OculusAudio and AudioMixer is enabled!"));
-					return nullptr;
+					OculusAudioSpatializationAudioMixer* Spatializer = static_cast<OculusAudioSpatializationAudioMixer*>(AudioDevice->GetSpatializationPluginInterface().Get());
+					if (Spatializer == nullptr || Spatializer->ClassID != OculusAudioSpatializationAudioMixer::MIXER_CLASS_ID)
+					{
+						UE_LOG(LogAudio, Warning, TEXT("Invalid Spatialization Plugin specified, make sure the Spatialization Plugin is set to OculusAudio and AudioMixer is enabled!"));
+						return nullptr;
+					}
 				}
 			}
 		}

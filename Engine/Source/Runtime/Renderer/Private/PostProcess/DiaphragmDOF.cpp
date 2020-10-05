@@ -1851,7 +1851,7 @@ FRDGTextureRef DiaphragmDOF::AddPasses(
 		{
 			FDOFGatherInputDescs ReducedGatherInputDescs = HalfResGatherInputDescs;
 			ReducedGatherInputDescs.SceneColor.NumMips = MipLevelCount;
-			ReducedGatherInputDescs.SceneColor.Flags = (ReducedGatherInputDescs.SceneColor.Flags & ~(TexCreate_FastVRAM)) | GFastVRamConfig.DOFReduce;
+			ReducedGatherInputDescs.SceneColor.Flags = (ReducedGatherInputDescs.SceneColor.Flags & ~(TexCreate_FastVRAM)) | (ETextureCreateFlags)GFastVRamConfig.DOFReduce;
 			
 			// Make sure the mip 0 is a multiple of 2^NumMips so there is no per mip level UV conversion to do in the gathering shader.
 			// Also make sure it is a multiple of group size because reduce shader unconditionally output Mip0.

@@ -14,7 +14,7 @@
 
 DEFINE_LOG_CATEGORY(LogAvatars);
 
-UOvrAvatarManager* UOvrAvatarManager::sAvatarManager = nullptr;
+TUniquePtr<UOvrAvatarManager> UOvrAvatarManager::sAvatarManager = nullptr;
 void* UOvrAvatarManager::OVRAvatarHandle = nullptr;
 
 FSoftObjectPath UOvrAvatarManager::AssetList[] =
@@ -113,27 +113,24 @@ FSoftObjectPath UOvrAvatarManager::AssetList[] =
 	FString(TEXT("/OculusAvatar/Materials/v1/Inst/Projector.Projector"))
 };
 
-TArray<UObject*> UOvrAvatarManager::AssetObjects;
-
 UOvrAvatarManager& UOvrAvatarManager::Get()
 {
-	if (!sAvatarManager)
+	if (!sAvatarManager.IsValid())
 	{
-		sAvatarManager = NewObject<UOvrAvatarManager>();
+		sAvatarManager = TUniquePtr<UOvrAvatarManager>(NewObject<UOvrAvatarManager>());
 		sAvatarManager->AddToRoot();
 	}
 
-	return *sAvatarManager;
+	return *(sAvatarManager.Get());
 }
 
 void UOvrAvatarManager::Destroy()
 {
-	if (sAvatarManager)
+	if (sAvatarManager.IsValid())
 	{
 		sAvatarManager->ShutdownSDK();
-		UOvrAvatarManager* temp_avatar_manager = sAvatarManager;
-		sAvatarManager = nullptr;
-		temp_avatar_manager->RemoveFromRoot();
+		sAvatarManager->RemoveFromRoot();
+		sAvatarManager.Release();
 	}
 
 	if (OVRAvatarHandle)
@@ -148,7 +145,6 @@ UOvrAvatarManager::~UOvrAvatarManager()
 	if (sAvatarManager != nullptr)
 	{
 		UE_LOG(LogAvatars, Log, TEXT("Shutdown ordering error closing down OVRAvatar module."));
-		sAvatarManager = nullptr;
 
 		ShutdownSDK();
 	}
@@ -222,10 +218,12 @@ void UOvrAvatarManager::InitializeSDK()
 			OVRPluginHandle = FOculusHMDModule::GetOVRPluginHandle();
 		}
 
+    // NOTE: These should match the values checked in FOnlineSubsystemOculus::GetAppId() in 
+    // Engine\Plugins\Online\OnlineSubsystemOculus\Source\Private\OnlineSubsystemOculus.cpp
 #if PLATFORM_WINDOWS
 		AVATAR_APP_ID = GConfig->GetStr(TEXT("OnlineSubsystemOculus"), TEXT("RiftAppId"), GEngineIni);
 #elif PLATFORM_ANDROID
-		AVATAR_APP_ID = GConfig->GetStr(TEXT("OnlineSubsystemOculus"), TEXT("GearVRAppId"), GEngineIni);
+		AVATAR_APP_ID = GConfig->GetStr(TEXT("OnlineSubsystemOculus"), TEXT("MobileAppId"), GEngineIni);
 #endif
 
 		if (AVATAR_APP_ID.IsEmpty())
@@ -267,9 +265,6 @@ void UOvrAvatarManager::ShutdownSDK()
 {
 	if (bIsInitialized)
 	{
-#if WITH_EDITORONLY_DATA
-		AssetObjects.Empty();
-#endif
 		ShutdownEvent.Broadcast();
 
 		// This is crashing when cooking content, and not sure why...

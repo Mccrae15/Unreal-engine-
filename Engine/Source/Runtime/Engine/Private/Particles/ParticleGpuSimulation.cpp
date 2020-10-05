@@ -319,7 +319,7 @@ public:
 		const int32 SizeX = GParticleSimulationTextureSizeX;
 		const int32 SizeY = GParticleSimulationTextureSizeY;
 
-		const uint32 ExtraFlags = CVarGPUParticleAFRReinject.GetValueOnRenderThread() == 1 ? TexCreate_AFRManual : 0;
+		const ETextureCreateFlags ExtraFlags = CVarGPUParticleAFRReinject.GetValueOnRenderThread() == 1 ? TexCreate_AFRManual : TexCreate_None;
 
 		FRHIResourceCreateInfo CreateInfo(FClearValueBinding::Transparent);
 		RHICreateTargetableShaderResource2D(

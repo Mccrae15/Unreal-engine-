@@ -231,7 +231,7 @@ static FRDGTextureRef AddClearLightSamplePass(
 	Desc.Depth = 0;
 	Desc.Format = PF_FloatRGBA;
 	Desc.NumMips = 1;
-	Desc.Flags = 0;
+	Desc.Flags = TexCreate_None;
 	Desc.TargetableFlags = TexCreate_UAV | TexCreate_ShaderResource | TexCreate_RenderTargetable;
 	FRDGTextureRef Output = GraphBuilder.CreateTexture(Desc, TEXT("HairLightSample"));
 
@@ -616,7 +616,7 @@ static FMaterialPassOutput AddHairMaterialPass(
 	OutputDesc.Depth = 0;
 	OutputDesc.Format = PF_FloatRGBA;
 	OutputDesc.NumMips = 1;
-	OutputDesc.Flags = 0;
+	OutputDesc.Flags = TexCreate_None;
 	OutputDesc.TargetableFlags = TexCreate_RenderTargetable;
 	FRDGTextureRef OutDummyTexture0 = GraphBuilder.CreateTexture(OutputDesc, TEXT("HairMaterialDummyOutput"));
 

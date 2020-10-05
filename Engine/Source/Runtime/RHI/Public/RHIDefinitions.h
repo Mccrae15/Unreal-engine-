@@ -1187,63 +1187,63 @@ enum ERHIResourceType
 };
 
 /** Flags used for texture creation */
-enum ETextureCreateFlags
+enum ETextureCreateFlags : uint64_t
 {
-	TexCreate_None					= 0,
+	TexCreate_None = 0,
 
 	// Texture can be used as a render target
-	TexCreate_RenderTargetable		= 1<<0,
+	TexCreate_RenderTargetable = 1 << 0,
 	// Texture can be used as a resolve target
-	TexCreate_ResolveTargetable		= 1<<1,
+	TexCreate_ResolveTargetable = 1 << 1,
 	// Texture can be used as a depth-stencil target.
-	TexCreate_DepthStencilTargetable= 1<<2,
+	TexCreate_DepthStencilTargetable = 1 << 2,
 	// Texture can be used as a shader resource.
-	TexCreate_ShaderResource		= 1<<3,
+	TexCreate_ShaderResource = 1 << 3,
 	// Texture is encoded in sRGB gamma space
-	TexCreate_SRGB					= 1<<4,
+	TexCreate_SRGB = 1 << 4,
 	// Texture data is writable by the CPU
-	TexCreate_CPUWritable			= 1<<5,
+	TexCreate_CPUWritable = 1 << 5,
 	// Texture will be created with an un-tiled format
-	TexCreate_NoTiling				= 1<<6,
+	TexCreate_NoTiling = 1 << 6,
 	// Texture will be used for video decode
-	TexCreate_VideoDecode			= 1<<7,
+	TexCreate_VideoDecode = 1 << 7,
 	// Texture that may be updated every frame
-	TexCreate_Dynamic				= 1<<8,
+	TexCreate_Dynamic = 1 << 8,
 	// Texture will be used as a render pass attachment that will be read from
-	TexCreate_InputAttachmentRead	= 1<<9,
+	TexCreate_InputAttachmentRead = 1 << 9,
 	// Disable automatic defragmentation if the initial texture memory allocation fails.
-	TexCreate_DisableAutoDefrag		= 1<<10,
+	TexCreate_DisableAutoDefrag = 1 << 10,
 	// This texture has no GPU or CPU backing. It only exists in tile memory on TBDR GPUs (i.e., mobile).
-	TexCreate_Memoryless			= 1<<11,
+	TexCreate_Memoryless = 1 << 11,
 	// Create the texture with the flag that allows mip generation later, only applicable to D3D11
-	TexCreate_GenerateMipCapable	= 1<<12,
+	TexCreate_GenerateMipCapable = 1 << 12,
 	// The texture can be partially allocated in fastvram
-	TexCreate_FastVRAMPartialAlloc  = 1<<13,
+	TexCreate_FastVRAMPartialAlloc = 1 << 13,
 	// Do not create associated shader resource view, only applicable to D3D11 and D3D12
 	TexCreate_DisableSRVCreation = 1 << 14,
 	// Do not allow Delta Color Compression (DCC) to be used with this texture
-	TexCreate_DisableDCC		    = 1 << 15,
+	TexCreate_DisableDCC = 1 << 15,
 	// UnorderedAccessView (DX11 only)
 	// Warning: Causes additional synchronization between draw calls when using a render target allocated with this flag, use sparingly
 	// See: GCNPerformanceTweets.pdf Tip 37
-	TexCreate_UAV					= 1<<16,
+	TexCreate_UAV = 1 << 16,
 	// Render target texture that will be displayed on screen (back buffer)
-	TexCreate_Presentable			= 1<<17,
+	TexCreate_Presentable = 1 << 17,
 	// Texture data is accessible by the CPU
-	TexCreate_CPUReadback			= 1<<18,
+	TexCreate_CPUReadback = 1 << 18,
 	// Texture was processed offline (via a texture conversion process for the current platform)
-	TexCreate_OfflineProcessed		= 1<<19,
+	TexCreate_OfflineProcessed = 1 << 19,
 	// Texture needs to go in fast VRAM if available (HINT only)
-	TexCreate_FastVRAM				= 1<<20,
+	TexCreate_FastVRAM = 1 << 20,
 	// by default the texture is not showing up in the list - this is to reduce clutter, using the FULL option this can be ignored
-	TexCreate_HideInVisualizeTexture= 1<<21,
+	TexCreate_HideInVisualizeTexture = 1 << 21,
 	// Texture should be created in virtual memory, with no physical memory allocation made
 	// You must make further calls to RHIVirtualTextureSetFirstMipInMemory to allocate physical memory
 	// and RHIVirtualTextureSetFirstMipVisible to map the first mip visible to the GPU
-	TexCreate_Virtual				= 1<<22,
+	TexCreate_Virtual = 1 << 22,
 	// Creates a RenderTargetView for each array slice of the texture
 	// Warning: if this was specified when the resource was created, you can't use SV_RenderTargetArrayIndex to route to other slices!
-	TexCreate_TargetArraySlicesIndependently	= 1<<23,
+	TexCreate_TargetArraySlicesIndependently = 1 << 23,
 	// Texture that may be shared with DX9 or other devices
 	TexCreate_Shared = 1 << 24,
 	// RenderTarget will not use full-texture fast clear functionality.
@@ -1259,8 +1259,35 @@ enum ETextureCreateFlags
 	// Workaround for 128^3 volume textures getting bloated 4x due to tiling mode on PS4
 	TexCreate_ReduceMemoryWithTilingMode = 1 << 30,
 	/** Texture should be allocated from transient memory. */
-	TexCreate_Transient = 1 << 31
+	TexCreate_Transient =  (uint64_t)1 << 31,
+	/** Texture represents a foveation attachment */
+	TexCreate_Foveation = (uint64_t)1 << 32,
 };
+
+inline ETextureCreateFlags operator~(ETextureCreateFlags a)
+{
+	return static_cast<ETextureCreateFlags>(~static_cast<uint64_t>(a));
+}
+
+inline constexpr ETextureCreateFlags operator|(const ETextureCreateFlags &a,const ETextureCreateFlags &b)
+{
+	return static_cast<const ETextureCreateFlags>(static_cast<uint64_t>(a) | static_cast<uint64_t>(b));
+}
+
+inline ETextureCreateFlags operator&(ETextureCreateFlags a, ETextureCreateFlags b)
+{
+	return static_cast<ETextureCreateFlags>(static_cast<uint64_t>(a) & static_cast<uint64_t>(b));
+}
+
+inline ETextureCreateFlags& operator&=(ETextureCreateFlags &a, const ETextureCreateFlags &b)
+{
+	return (ETextureCreateFlags&)((uint64_t&)(a) &= static_cast<uint64_t>(b));
+}
+
+inline ETextureCreateFlags& operator|=(ETextureCreateFlags& a, const ETextureCreateFlags& b)
+{
+	return (ETextureCreateFlags&)((uint64_t&)(a) |= static_cast<uint64_t>(b));
+}
 
 enum EAsyncComputePriority
 {

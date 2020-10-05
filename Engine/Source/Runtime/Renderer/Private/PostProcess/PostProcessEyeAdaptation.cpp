@@ -896,9 +896,10 @@ void FSceneViewState::UpdatePreExposure(FViewInfo& View)
 	if (IsMobilePlatform(View.GetShaderPlatform()))
 	{
 		bEnableAutoExposure &= IsMobileEyeAdaptationEnabled(View);
-		PreExposure = GetEyeAdaptationFixedExposure(View);
+		//TEMP FIX : removing eyeadaptation from mobileLDR for now
+		//PreExposure = GetEyeAdaptationFixedExposure(View);
 	}
-	
+
 	if (bIsPreExposureRelevant && bEnableAutoExposure)
 	{
 		if (UsePreExposureEnabled())

@@ -133,8 +133,15 @@ protected:
 	const FString& GetPBRV2EyeWearMaterial();
 	const FString& GetPBRV2ControllerMaterial();
 
-
-
+	static FVector GetPositionFromVertex(const ovrAvatarMeshVertex& vertex);
+	static FVector GetPositionFromVertex(const ovrAvatarMeshVertexV2& vertex);
+	static FVector GetPositionFromVertex(const ovrAvatarBlendVertex& vertex);
+	static FVector GetNormalFromVertex(const ovrAvatarMeshVertex& vertex);
+	static FVector GetNormalFromVertex(const ovrAvatarMeshVertexV2& vertex);
+	static FVector GetNormalFromVertex(const ovrAvatarBlendVertex& vertex);
+	static FVector GetTangentFromVertex(const ovrAvatarMeshVertex& vertex);
+	static FVector GetTangentFromVertex(const ovrAvatarMeshVertexV2& vertex);
+	static FVector GetTangentFromVertex(const ovrAvatarBlendVertex& vertex);
 	static FColor GetColorFromVertex(const ovrAvatarMeshVertex& vertex);
 	static FColor GetColorFromVertex(const ovrAvatarMeshVertexV2& vertex);
 
@@ -145,7 +152,7 @@ protected:
 	TSet<uint64> AssetIds;
 	TMap<uint64, TWeakObjectPtr<UPoseableMeshComponent>> MeshComponents;
 	TMap<uint64, TWeakObjectPtr<UPoseableMeshComponent>> DepthMeshComponents;
-	TMap <uint64, TArray<FString>> AssetToMaterialStringsMap;	
+	TMap <uint64, TArray<FString>> AssetToMaterialStringsMap;
 
 	ovrAvatar* Avatar = nullptr;
 
@@ -180,7 +187,7 @@ protected:
 	MaterialType BodyMaterial = MaterialType::Masked;
 
 	TArray<FName> BodyBlendShapeNames;
-#if PLATFORM_ANDROID	
+#if PLATFORM_ANDROID
 	bool UseDepthMeshes = false;
 #else
 	bool UseDepthMeshes = true;

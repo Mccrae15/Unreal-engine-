@@ -1243,6 +1243,10 @@ public:
 			ViewUniformShaderParameters);
 	}
 
+#if WITH_LATE_LATCHING_CODE
+	void UpdateLateLatchData();
+#endif
+
 	void SetupDefaultGlobalDistanceFieldUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters) const;
 	void SetupGlobalDistanceFieldUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters) const;
 	void SetupVolumetricFogUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters) const;
@@ -1781,9 +1785,6 @@ protected:
 	/** Renders the scene's distortion */
 	void RenderDistortion(FRHICommandListImmediate& RHICmdList);
 
-	/** Returns the scene color texture multi-view is targeting. */	
-	FRHITexture* GetMultiViewSceneColor(const FSceneRenderTargets& SceneContext) const;
-
 	void UpdatePrimitiveIndirectLightingCacheBuffers();
 
 	void RenderPlanarReflection(class FPlanarReflectionSceneProxy* ReflectionSceneProxy);
@@ -1874,9 +1875,6 @@ protected:
 	/** Creates uniform buffers with the mobile directional light parameters, for each lighting channel. Called by InitViews */
 	void CreateDirectionalLightUniformBuffers(FViewInfo& View);
 
-	/** Copy scene color from the mobile multi-view render target array to side by side stereo scene color */
-	void CopyMobileMultiViewSceneColor(FRHICommandListImmediate& RHICmdList);
-
 	/** On chip pre-tonemap before scene color MSAA resolve (iOS only) */
 	void PreTonemapMSAA(FRHICommandListImmediate& RHICmdList);
 
@@ -1888,6 +1886,11 @@ protected:
 	void UpdateDirectionalLightUniformBuffers(FRHICommandListImmediate& RHICmdList, const FViewInfo& View);
 	void UpdateSkyReflectionUniformBuffer();
 	void UpdateDepthPrepassUniformBuffer(FRHICommandListImmediate& RHICmdList, const FViewInfo& View);
+
+#if	WITH_LATE_LATCHING_CODE
+	void BeginLateLatching(FRHICommandListImmediate& RHICmdList);
+	void EndLateLatching(FRHICommandListImmediate& RHICmdList, const FViewInfo& View);
+#endif
 	
 private:
 	bool bModulatedShadowsInUse;
@@ -1975,58 +1978,58 @@ struct FFastVramConfig
 	void OnCVarUpdated();
 	void OnSceneRenderTargetsAllocated();
 
-	uint32 GBufferA;
-	uint32 GBufferB;
-	uint32 GBufferC;
-	uint32 GBufferD;
-	uint32 GBufferE;
-	uint32 GBufferF;
-	uint32 GBufferVelocity;
-	uint32 HZB;
-	uint32 SceneDepth;
-	uint32 SceneColor;
-	uint32 LPV;
-	uint32 BokehDOF;
-	uint32 CircleDOF;
-	uint32 CombineLUTs;
-	uint32 Downsample;
-	uint32 EyeAdaptation;
-	uint32 Histogram;
-	uint32 HistogramReduce;
-	uint32 VelocityFlat;
-	uint32 VelocityMax;
-	uint32 MotionBlur;
-	uint32 Tonemap;
-	uint32 Upscale;
-	uint32 DistanceFieldNormal;
-	uint32 DistanceFieldAOHistory;
-	uint32 DistanceFieldAOBentNormal;
-	uint32 DistanceFieldAODownsampledBentNormal;
-	uint32 DistanceFieldShadows;
-	uint32 DistanceFieldIrradiance;
-	uint32 DistanceFieldAOConfidence;
-	uint32 Distortion;
-	uint32 ScreenSpaceShadowMask;
-	uint32 VolumetricFog;
-	uint32 SeparateTranslucency;
-	uint32 SeparateTranslucencyModulate;
-	uint32 LightAccumulation;
-	uint32 LightAttenuation;
-	uint32 ScreenSpaceAO;
-	uint32 SSR;
-	uint32 DBufferA;
-	uint32 DBufferB;
-	uint32 DBufferC;
-	uint32 DBufferMask;
-	uint32 DOFSetup;
-	uint32 DOFReduce;
-	uint32 DOFPostfilter;
-	uint32 PostProcessMaterial;
+	ETextureCreateFlags GBufferA;
+	ETextureCreateFlags GBufferB;
+	ETextureCreateFlags GBufferC;
+	ETextureCreateFlags GBufferD;
+	ETextureCreateFlags GBufferE;
+	ETextureCreateFlags GBufferF;
+	ETextureCreateFlags GBufferVelocity;
+	ETextureCreateFlags HZB;
+	ETextureCreateFlags SceneDepth;
+	ETextureCreateFlags SceneColor;
+	ETextureCreateFlags LPV;
+	ETextureCreateFlags BokehDOF;
+	ETextureCreateFlags CircleDOF;
+	ETextureCreateFlags CombineLUTs;
+	ETextureCreateFlags Downsample;
+	ETextureCreateFlags EyeAdaptation;
+	ETextureCreateFlags Histogram;
+	ETextureCreateFlags HistogramReduce;
+	ETextureCreateFlags VelocityFlat;
+	ETextureCreateFlags VelocityMax;
+	ETextureCreateFlags MotionBlur;
+	ETextureCreateFlags Tonemap;
+	ETextureCreateFlags Upscale;
+	ETextureCreateFlags DistanceFieldNormal;
+	ETextureCreateFlags DistanceFieldAOHistory;
+	ETextureCreateFlags DistanceFieldAOBentNormal;
+	ETextureCreateFlags DistanceFieldAODownsampledBentNormal;
+	ETextureCreateFlags DistanceFieldShadows;
+	ETextureCreateFlags DistanceFieldIrradiance;
+	ETextureCreateFlags DistanceFieldAOConfidence;
+	ETextureCreateFlags Distortion;
+	ETextureCreateFlags ScreenSpaceShadowMask;
+	ETextureCreateFlags VolumetricFog;
+	ETextureCreateFlags SeparateTranslucency;
+	ETextureCreateFlags SeparateTranslucencyModulate;
+	ETextureCreateFlags LightAccumulation;
+	ETextureCreateFlags LightAttenuation;
+	ETextureCreateFlags ScreenSpaceAO;
+	ETextureCreateFlags SSR;
+	ETextureCreateFlags DBufferA;
+	ETextureCreateFlags DBufferB;
+	ETextureCreateFlags DBufferC;
+	ETextureCreateFlags DBufferMask;
+	ETextureCreateFlags DOFSetup;
+	ETextureCreateFlags DOFReduce;
+	ETextureCreateFlags DOFPostfilter;
+	ETextureCreateFlags PostProcessMaterial;
 
-	uint32 CustomDepth;
-	uint32 ShadowPointLight;
-	uint32 ShadowPerObject;
-	uint32 ShadowCSM;
+	ETextureCreateFlags CustomDepth;
+	ETextureCreateFlags ShadowPointLight;
+	ETextureCreateFlags ShadowPerObject;
+	ETextureCreateFlags ShadowCSM;
 
 	// Buffers
 	uint32 DistanceFieldCulledObjectBuffers;
@@ -2037,7 +2040,7 @@ struct FFastVramConfig
 	bool bDirty;
 
 private:
-	bool UpdateTextureFlagFromCVar(TAutoConsoleVariable<int32>& CVar, uint32& InOutValue);
+	bool UpdateTextureFlagFromCVar(TAutoConsoleVariable<int32>& CVar, ETextureCreateFlags& InOutValue);
 	bool UpdateBufferFlagFromCVar(TAutoConsoleVariable<int32>& CVar, uint32& InOutValue);
 };
 

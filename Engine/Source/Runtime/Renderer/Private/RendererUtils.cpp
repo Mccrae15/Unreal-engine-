@@ -64,7 +64,7 @@ IMPLEMENT_SHADER_TYPE(template<>, TRTWriteMaskDecodeCS<1>, TEXT("/Engine/Private
 IMPLEMENT_SHADER_TYPE(template<>, TRTWriteMaskDecodeCS<3>, TEXT("/Engine/Private/RTWriteMaskDecode.usf"), TEXT("RTWriteMaskDecodeMain"), SF_Compute);
 
 template <uint32 NumRenderTargets>
-void FRenderTargetWriteMask::Decode(FRHICommandListImmediate& RHICmdList, FGlobalShaderMap* ShaderMap, IPooledRenderTarget* InRenderTargets[NumRenderTargets], TRefCountPtr<IPooledRenderTarget>& OutRTWriteMask, uint32 RTWriteMaskFastVRamConfig, const TCHAR* RTWriteMaskDebugName)
+void FRenderTargetWriteMask::Decode(FRHICommandListImmediate& RHICmdList, FGlobalShaderMap* ShaderMap, IPooledRenderTarget* InRenderTargets[NumRenderTargets], TRefCountPtr<IPooledRenderTarget>& OutRTWriteMask, ETextureCreateFlags RTWriteMaskFastVRamConfig, const TCHAR* RTWriteMaskDebugName)
 {
 	static_assert(NumRenderTargets == 1 || NumRenderTargets == 3, TEXT("FRenderTargetWriteMask::Decode only supports 1 or 3 render targets"));
 	check(RHISupportsRenderTargetWriteMask(GMaxRHIShaderPlatform));
@@ -129,6 +129,6 @@ void FRenderTargetWriteMask::Decode(FRHICommandListImmediate& RHICmdList, FGloba
 	RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, EResourceTransitionPipeline::EComputeToGfx, OutRTWriteMask->GetRenderTargetItem().UAV);
 }
 
-template RENDERER_API void FRenderTargetWriteMask::Decode<1>(FRHICommandListImmediate&, FGlobalShaderMap*, IPooledRenderTarget*[1], TRefCountPtr<IPooledRenderTarget>&, uint32, const TCHAR*);
-template RENDERER_API void FRenderTargetWriteMask::Decode<3>(FRHICommandListImmediate&, FGlobalShaderMap*, IPooledRenderTarget*[3], TRefCountPtr<IPooledRenderTarget>&, uint32, const TCHAR*);
+template RENDERER_API void FRenderTargetWriteMask::Decode<1>(FRHICommandListImmediate&, FGlobalShaderMap*, IPooledRenderTarget*[1], TRefCountPtr<IPooledRenderTarget>&, ETextureCreateFlags, const TCHAR*);
+template RENDERER_API void FRenderTargetWriteMask::Decode<3>(FRHICommandListImmediate&, FGlobalShaderMap*, IPooledRenderTarget*[3], TRefCountPtr<IPooledRenderTarget>&, ETextureCreateFlags, const TCHAR*);
 

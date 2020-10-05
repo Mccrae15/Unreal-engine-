@@ -1383,15 +1383,27 @@ public class AndroidPlatform : Platform
 
             string ApkName = GetFinalApkName(Params, SC.StageExecutables[0], true, DeviceArchitecture, GPUArchitecture);
 
-            // make sure APK is up to date (this is fast if so)
-            var Deploy = AndroidExports.CreateDeploymentHandler(Params.RawProjectPath, Params.ForcePackageData);
-            if (!Params.Prebuilt)
-            {
-                string CookFlavor = SC.FinalCookPlatform.IndexOf("_") > 0 ? SC.FinalCookPlatform.Substring(SC.FinalCookPlatform.IndexOf("_")) : "";
-				string SOName = GetSONameWithoutArchitecture(Params, SC.StageExecutables[0]);
-				Deploy.SetAndroidPluginData(AppArchitectures, CollectPluginDataPaths(SC));
-                Deploy.PrepForUATPackageOrDeploy(Params.RawProjectPath, Params.ShortProjectName, SC.ProjectRoot, SOName, SC.LocalRoot + "/Engine", Params.Distribution, CookFlavor, SC.StageTargets[0].Receipt.Configuration, true, false);
-            }
+			// make sure APK is up to date (this is fast if so)
+			{
+				bool buildApk = true;
+				if (Params.Prebuilt)
+				{
+					buildApk = false;
+				}
+				else if (IsPackagingforOculusMobile(SC) && Params.DeploySoToDevice && File.Exists(ApkName))
+				{
+					buildApk = false;
+				}
+
+				if (buildApk)
+				{
+					var Deploy = AndroidExports.CreateDeploymentHandler(Params.RawProjectPath, Params.ForcePackageData);
+					string CookFlavor = SC.FinalCookPlatform.IndexOf("_") > 0 ? SC.FinalCookPlatform.Substring(SC.FinalCookPlatform.IndexOf("_")) : "";
+					string SOName = GetSONameWithoutArchitecture(Params, SC.StageExecutables[0]);
+					Deploy.SetAndroidPluginData(AppArchitectures, CollectPluginDataPaths(SC));
+					Deploy.PrepForUATPackageOrDeploy(Params.RawProjectPath, Params.ShortProjectName, SC.ProjectRoot, SOName, SC.LocalRoot + "/Engine", Params.Distribution, CookFlavor, SC.StageTargets[0].Receipt.Configuration, true, false);
+				}
+			}
 
             // now we can use the apk to get more info
             string PackageName = GetPackageInfo(ApkName, SC, false);
@@ -1404,34 +1416,37 @@ public class AndroidPlatform : Platform
 			string DevicePatchName = StorageLocation + "/" + GetDevicePatchName(ApkName, SC);
 			string RemoteDir = StorageLocation + "/UE4Game/" + Params.ShortProjectName;
 
-            // determine if APK out of date
-            string APKLastUpdateTime = new FileInfo(ApkName).LastWriteTime.ToString();
-            bool bNeedAPKInstall = true;
-            if (Params.IterativeDeploy)
-            {
-                // Check for apk installed with this package name on the device
-                IProcessResult InstalledResult = RunAdbCommand(Params, DeviceName, "shell pm list packages " + PackageName, null, ERunOptions.AppMustExist);
-                if (InstalledResult.Output.Contains(PackageName))
-                {
-                    // See if apk is up to date on device
-                    InstalledResult = RunAdbCommand(Params, DeviceName, "shell cat " + RemoteDir + "/APKFileStamp.txt", null, ERunOptions.AppMustExist);
-                    if (InstalledResult.Output.StartsWith("APK: "))
-                    {
-                        if (InstalledResult.Output.Substring(5).Trim() == APKLastUpdateTime)
-                            bNeedAPKInstall = false;
+			// determine if APK out of date
+			string APKLastUpdateTime = new FileInfo(ApkName).LastWriteTime.ToString();
+			string SOLastUpdateTime = string.Empty;
 
-                        // Stop the previously running copy (uninstall/install did this before)
-                        InstalledResult = RunAdbCommand(Params, DeviceName, "shell am force-stop " + PackageName, null, ERunOptions.AppMustExist);
-                        if (InstalledResult.Output.Contains("Error"))
-                        {
-                            // force-stop not supported (Android < 3.0) so check if package is actually running
-                            // Note: cannot use grep here since it may not be installed on device
-                            InstalledResult = RunAdbCommand(Params, DeviceName, "shell ps", null, ERunOptions.AppMustExist);
-                            if (InstalledResult.Output.Contains(PackageName))
-                            {
-                                // it is actually running so use the slow way to kill it (uninstall and reinstall)
-                                bNeedAPKInstall = true;
-                            }
+			bool bNeedAPKInstall = true;
+			bool bNeedSoInstall = false;
+			if (Params.IterativeDeploy)
+			{
+				// Check for apk installed with this package name on the device
+				IProcessResult InstalledResult = RunAdbCommand(Params, DeviceName, "shell pm list packages " + PackageName, null, ERunOptions.AppMustExist);
+				if (InstalledResult.Output.Contains(PackageName))
+				{
+					// See if apk is up to date on device
+					InstalledResult = RunAdbCommand(Params, DeviceName, "shell cat " + RemoteDir + "/APKFileStamp.txt", null, ERunOptions.AppMustExist);
+					if (InstalledResult.Output.StartsWith("APK: "))
+					{
+						if (InstalledResult.Output.Substring(5).Trim() == APKLastUpdateTime)
+							bNeedAPKInstall = false;
+
+						// Stop the previously running copy (uninstall/install did this before)
+						InstalledResult = RunAdbCommand(Params, DeviceName, "shell am force-stop " + PackageName, null, ERunOptions.AppMustExist);
+						if (InstalledResult.Output.Contains("Error"))
+						{
+							// force-stop not supported (Android < 3.0) so check if package is actually running
+							// Note: cannot use grep here since it may not be installed on device
+							InstalledResult = RunAdbCommand(Params, DeviceName, "shell ps", null, ERunOptions.AppMustExist);
+							if (InstalledResult.Output.Contains(PackageName))
+							{
+								// it is actually running so use the slow way to kill it (uninstall and reinstall)
+								bNeedAPKInstall = true;
+							}
 
                         }
                     }
@@ -1445,6 +1460,13 @@ public class AndroidPlatform : Platform
                 int SuccessCode = 0;
                 string UninstallCommandline = "uninstall " + PackageName;
                 RunAndLogAdbCommand(Params, DeviceName, UninstallCommandline, out SuccessCode);
+				
+				// Delete filestamp files
+				RunAndLogAdbCommand(Params, DeviceName, "shell rm " + RemoteDir + "/APKFileStamp.txt", out SuccessCode);
+				if (IsPackagingforOculusMobile(SC))
+				{
+					RunAndLogAdbCommand(Params, DeviceName, "shell rm " + RemoteDir + "/SOFileStamp.txt", out SuccessCode);
+				}
 
                 // install the apk
                 string InstallCommandline = "install \"" + ApkName + "\"";
@@ -1480,6 +1502,72 @@ public class AndroidPlatform : Platform
                 }
             }
 
+			if (Params.DeploySoToDevice && !Params.Distribution && !Params.Package && IsPackagingforOculusMobile(SC))
+			{
+				// Determine if .so is newer than apk
+				var soFile = FileReference.FromString(Path.ChangeExtension(ApkName, ".so"));
+				if (new FileInfo(soFile.FullName).LastWriteTime > new FileInfo(ApkName).LastWriteTime)
+				{
+					SOLastUpdateTime = new FileInfo(soFile.FullName).LastWriteTime.ToString();
+					bNeedSoInstall = true;
+
+					// package is installed, already checked 
+					IProcessResult InstalledResult = RunAdbCommand(Params, DeviceName, "shell cat " + RemoteDir + "/SOFileStamp.txt", null, ERunOptions.AppMustExist);
+					if (InstalledResult.Output.StartsWith("SO: "))
+					{
+						if (InstalledResult.Output.Substring(4).Trim() == SOLastUpdateTime)
+							bNeedSoInstall = false;
+					}
+
+					// Copy .so to symbolized directory for debugger
+					string SymbolizedSODirectory = GetFinalSymbolizedSODirectory(ApkName, SC, DeviceArchitecture, GPUArchitecture);
+					string SymbolizedSOPath = Path.Combine(Path.Combine(Path.GetDirectoryName(ApkName), SymbolizedSODirectory), "libUE4.so");
+					var libUE4File = FileReference.FromString(SymbolizedSOPath);
+					if (!File.Exists(libUE4File.FullName) ||
+						File.GetLastWriteTimeUtc(libUE4File.FullName) != File.GetLastWriteTimeUtc(soFile.FullName))
+					{
+						Log.TraceInformation("Copying {0} to libUE4.so for debugger", soFile.GetFileName());
+						CopyFile(soFile.FullName, libUE4File.FullName);
+						File.SetLastWriteTimeUtc(libUE4File.FullName, File.GetLastWriteTimeUtc(libUE4File.FullName));
+					}
+
+					if (bNeedSoInstall)
+					{
+						var strippedSoFile = FileReference.FromString(Path.ChangeExtension(ApkName, ".stripped.so"));
+						if (!File.Exists(strippedSoFile.FullName) ||
+							File.GetLastWriteTimeUtc(strippedSoFile.FullName) < File.GetLastWriteTimeUtc(soFile.FullName))
+						{
+							Log.TraceInformation("Copying and stripping symbols from {0}", soFile.GetFileName());
+							StripSymbols(soFile, strippedSoFile);
+						}
+
+						string destSoPath = string.Format("{0}/{1}", RemoteDir, strippedSoFile.GetFileName());
+						string PushCommandLine = string.Format("push \"{0}\" \"{1}\"", strippedSoFile.FullName, destSoPath);
+						string CopyCommandLine = string.Format("shell run-as {0} cp \"{1}\" ./libUE4.so", PackageName, destSoPath);
+						string ModCommandLine = string.Format("shell run-as {0} chmod +x ./libUE4.so", PackageName);
+						int SuccessCode = 0;
+						RunAndLogAdbCommand(Params, DeviceName, PushCommandLine, out SuccessCode);
+						if (SuccessCode != 0)
+						{
+							LogError("Failed to push .so to device");
+							throw new AutomationException(ExitCode.Error_AppInstallFailed, "Failed to push .so to device");
+						}
+						RunAndLogAdbCommand(Params, DeviceName, CopyCommandLine, out SuccessCode);
+						if (SuccessCode != 0)
+						{
+							LogError("Failed to move .so on device to package path");
+							throw new AutomationException(ExitCode.Error_AppInstallFailed, "Failed to move .so on device to package path");
+						}
+						RunAndLogAdbCommand(Params, DeviceName, ModCommandLine, out SuccessCode);
+						if (SuccessCode != 0)
+						{
+							LogError("Failed to chown .so on device");
+							throw new AutomationException(ExitCode.Error_AppInstallFailed, "Failed to chown .so on device");
+						}
+					}
+				}
+			}
+
             // update the ue4commandline.txt
             // update and deploy ue4commandline.txt
             // always delete the existing commandline text file, so it doesn't reuse an old one
@@ -1494,7 +1582,7 @@ public class AndroidPlatform : Platform
 
                 HashSet<string> EntriesToDeploy = new HashSet<string>();
 
-                if (Params.IterativeDeploy)
+				if (Params.IterativeDeploy)
                 {
                     // always send UE4CommandLine.txt (it was written above after delta checks applied)
                     EntriesToDeploy.Add(IntermediateCmdLineFile.FullName);
@@ -1822,12 +1910,19 @@ public class AndroidPlatform : Platform
                 RunAdbCommand(Params, DeviceName, Commandline);
             }
 
-            // write new timestamp for APK (do it here since RemoteDir will now exist)
-            if (bNeedAPKInstall)
-            {
-                int SuccessCode = 0;
-                RunAndLogAdbCommand(Params, DeviceName, "shell \"echo 'APK: " + APKLastUpdateTime + "' > " + RemoteDir + "/APKFileStamp.txt\"", out SuccessCode);
-            }
+			// write new timestamp for APK (do it here since RemoteDir will now exist)
+			if (!string.IsNullOrEmpty(APKLastUpdateTime))
+			{
+				int SuccessCode = 0;
+				RunAndLogAdbCommand(Params, DeviceName, "shell \"echo 'APK: " + APKLastUpdateTime + "' > " + RemoteDir + "/APKFileStamp.txt\"", out SuccessCode);
+			}
+			// write new timestamp for SO (do it here since RemoteDir will now exist)
+			if (!string.IsNullOrEmpty(SOLastUpdateTime))
+			{
+				int SuccessCode = 0;
+				RunAndLogAdbCommand(Params, DeviceName, "shell \"echo 'SO: " + SOLastUpdateTime + "' > " + RemoteDir + "/SOFileStamp.txt\"", out SuccessCode);
+			}
+
         }
     }
 
@@ -1940,6 +2035,14 @@ public class AndroidPlatform : Platform
 		LogInformation("packageInfo return value: {0}", ReturnValue);
 
 		return ReturnValue;
+	}
+
+	private static bool IsPackagingforOculusMobile(DeploymentContext SC)
+	{
+		ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(SC.RawProjectPath), SC.StageTargetPlatform.PlatformType);
+		var OculusMobileDevices = new List<string>();
+		bool result = Ini.GetArray("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "PackageForOculusMobile", out OculusMobileDevices);
+		return OculusMobileDevices.Count > 0;
 	}
 
 	/** Returns the launch activity name to launch (must call GetPackageInfo first), returns "com.epicgames.ue4.SplashActivity" default if not found */
@@ -2212,6 +2315,35 @@ public class AndroidPlatform : Platform
 			}
 
 			PackageNames.Add(PackageName);
+
+			// If the client needs to talk to the host for UFS or cook server, ports can be mapped
+			// to redirect over the adb connection.
+			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(Params.RawProjectPath), UnrealTargetPlatform.Android);
+			bool bCookOnTheFlyAdbForLaunchOn = false;
+			Ini.GetBool("/Script/UnrealEd.CookerSettings", "bCookOnTheFlyAdbForLaunchOn", out bCookOnTheFlyAdbForLaunchOn);
+			IProcessResult reverseResult = RunAdbCommand(Params, DeviceName, "reverse --list", null, ERunOptions.AppMustExist);
+			if ((Params.CookOnTheFly || Params.CookOnTheFlyStreaming || Params.FileServer) && bCookOnTheFlyAdbForLaunchOn)
+			{
+				if (!reverseResult.Output.Contains("(reverse) tcp:41898 tcp:41898"))
+				{
+					RunAdbCommand(Params, DeviceName, "reverse tcp:41898 tcp:41898");
+				}
+				if (!reverseResult.Output.Contains("(reverse) tcp:41899 tcp:41899"))
+				{
+					RunAdbCommand(Params, DeviceName, "reverse tcp:41899 tcp:41899");
+				}
+			}
+			else
+			{
+				if (reverseResult.Output.Contains("(reverse) tcp:41898 tcp:41898"))
+				{
+					RunAdbCommand(Params, DeviceName, "reverse --remove tcp:41898");
+				}
+				if (reverseResult.Output.Contains("(reverse) tcp:41899 tcp:41899"))
+				{
+					RunAdbCommand(Params, DeviceName, "reverse --remove tcp:41899");
+				}
+			}
 
 			// Message back to the UE4 Editor to correctly set the app id for each device
 			Console.WriteLine("Running Package@Device:{0}@{1}", PackageName, DeviceName);

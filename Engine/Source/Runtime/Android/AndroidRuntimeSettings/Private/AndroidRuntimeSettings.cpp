@@ -201,17 +201,7 @@ void UAndroidRuntimeSettings::PostInitProperties()
 		UpdateDefaultConfigFile();
 	}
 
-	// Upgrade old Oculus packaging settings as necessary.
-	const TCHAR* AndroidSettings = TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings");
-	bool bPackageForGearVR = false;
-	GConfig->GetBool(AndroidSettings, TEXT("bPackageForGearVR"), bPackageForGearVR, GEngineIni);
-	if (bPackageForGearVR)
-	{
-		// Update default config
-		PackageForOculusMobile.Add(EOculusMobileDevice::GearGo);
-		UpdateDefaultConfigFile();
-	}
-
+	// Enable ES2 if no GPU arch is selected. (as can be the case with the removal of ESDeferred) 
 	EnsureValidGPUArch();
 	HandlesRGBHWSupport();
 }

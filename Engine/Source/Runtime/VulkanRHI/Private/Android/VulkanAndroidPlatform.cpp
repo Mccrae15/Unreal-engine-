@@ -175,6 +175,11 @@ bool FVulkanAndroidPlatform::SupportsStandardSwapchain()
 	}
 }
 
+bool FVulkanAndroidPlatform::RequiresRenderingBackBuffer()
+{
+	return !FPlatformMisc::IsStandaloneStereoOnlyDevice();
+}
+
 EPixelFormat FVulkanAndroidPlatform::GetPixelFormatForNonDefaultSwapchain()
 {
 	if (FPlatformMisc::IsStandaloneStereoOnlyDevice())
@@ -225,5 +230,13 @@ void FVulkanAndroidPlatform::SetupMaxRHIFeatureLevelAndShaderPlatform(ERHIFeatur
 		GMaxRHIShaderPlatform = SP_VULKAN_SM5_ANDROID;
 	}
 }
+
+#if WITH_LATE_LATCHING_CODE
+bool FVulkanAndroidPlatform::SupportsUniformBufferPatching()
+{
+	// Only Allow it on ( Oculus + Vulkan + Android ) devices for now to reduce the impact on general system
+	return !UseRealUBsOptimization(true) && FPlatformMisc::IsStandaloneStereoOnlyDevice();
+}
+#endif
 
 #endif

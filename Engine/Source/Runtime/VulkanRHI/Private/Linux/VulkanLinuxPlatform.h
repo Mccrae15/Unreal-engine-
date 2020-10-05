@@ -69,6 +69,10 @@ public:
 
 	static void WriteCrashMarker(const FOptionalVulkanDeviceExtensions& OptionalExtensions, VkCommandBuffer CmdBuffer, VkBuffer DestBuffer, const TArrayView<uint32>& Entries, bool bAdding);
 
+#if WITH_LATE_LATCHING_CODE
+	static bool SupportsUniformBufferPatching() { return false; }
+#endif
+
 protected:
 	static void* VulkanLib;
 	static bool bAttemptedLoad;

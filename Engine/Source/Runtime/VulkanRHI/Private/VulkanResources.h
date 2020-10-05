@@ -283,19 +283,19 @@ public:
 		uint32 ArraySize,
 		uint32 NumMips,
 		uint32 NumSamples,
-		uint32 UEFlags,
+		ETextureCreateFlags UEFlags,
 		VkFormat* OutStorageFormat = nullptr,
 		VkFormat* OutViewFormat = nullptr,
 		bool bForceLinearTexture = false);
 
 	FVulkanSurface(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format,
 					uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize,
-					uint32 NumMips, uint32 NumSamples, uint32 UEFlags, const FRHIResourceCreateInfo& CreateInfo);
+					uint32 NumMips, uint32 NumSamples, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo);
 
 	// Constructor for externally owned Image
 	FVulkanSurface(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format,
 					uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples,
-					VkImage InImage, uint32 UEFlags, const FRHIResourceCreateInfo& CreateInfo);
+					VkImage InImage, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo);
 
 	virtual ~FVulkanSurface();
 
@@ -430,7 +430,7 @@ public:
 	uint32 Width, Height, Depth;
 	// UE format
 	EPixelFormat PixelFormat;
-	uint32 UEFlags;
+	ETextureCreateFlags UEFlags;
 	VkMemoryPropertyFlags MemProps;
 	VkMemoryRequirements MemoryRequirements;
 	uint32 NumArrayLevels;
@@ -494,9 +494,9 @@ struct FVulkanTextureBase : public FVulkanBaseShaderResource
 		return (FVulkanTextureBase*)Texture->GetTextureBaseRHI();
 	}
 
-	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, uint32 UEFlags, const FRHIResourceCreateInfo& CreateInfo);
-	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage InImage, VkDeviceMemory InMem, uint32 UEFlags, const FRHIResourceCreateInfo& CreateInfo = FRHIResourceCreateInfo());
-	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage InImage, VkDeviceMemory InMem, FSamplerYcbcrConversionInitializer& ConversionInitializer, uint32 UEFlags, const FRHIResourceCreateInfo& CreateInfo = FRHIResourceCreateInfo());
+	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo);
+	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage InImage, VkDeviceMemory InMem, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo = FRHIResourceCreateInfo());
+	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage InImage, VkDeviceMemory InMem, FSamplerYcbcrConversionInitializer& ConversionInitializer, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo = FRHIResourceCreateInfo());
 
 	// Aliasing constructor.
 	FVulkanTextureBase(FTextureRHIRef& SrcTextureRHI, const FVulkanTextureBase* SrcTexture, VkImageViewType ResourceType, uint32 SizeX, uint32 SizeY, uint32 sizeZ);
@@ -534,9 +534,9 @@ class FVulkanTexture2D : public FRHITexture2D, public FVulkanTextureBase
 	FName GetResourceFName(){ return GetName(); }
 	virtual FRHIResource* GetRHIResource() { return (FRHITexture2D*)this; }
 public:
-	FVulkanTexture2D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, uint32 UEFlags, const FRHIResourceCreateInfo& CreateInfo);
-	FVulkanTexture2D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, VkImage Image, uint32 UEFlags, const FRHIResourceCreateInfo& CreateInfo);
-	FVulkanTexture2D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, VkImage Image, struct FSamplerYcbcrConversionInitializer& ConversionInitializer, uint32 UEFlags, const FRHIResourceCreateInfo& CreateInfo);
+	FVulkanTexture2D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo);
+	FVulkanTexture2D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, VkImage Image, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo);
+	FVulkanTexture2D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, VkImage Image, struct FSamplerYcbcrConversionInitializer& ConversionInitializer, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo);
 
 	// Aliasing constructor
 	FVulkanTexture2D(FTextureRHIRef& SrcTextureRHI, const FVulkanTexture2D* SrcTexture);
@@ -574,8 +574,8 @@ class FVulkanTexture2DArray : public FRHITexture2DArray, public FVulkanTextureBa
 	FName GetResourceFName() { return GetName(); }
 public:
 	// Constructor, just calls base and Surface constructor
-	FVulkanTexture2DArray(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, uint32 Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
-	FVulkanTexture2DArray(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage Image, uint32 Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
+	FVulkanTexture2DArray(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
+	FVulkanTexture2DArray(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage Image, ETextureCreateFlags Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
 
 	// Aliasing constructor
 	FVulkanTexture2DArray(FTextureRHIRef& SrcTextureRHI, const FVulkanTexture2DArray* SrcTexture);
@@ -611,8 +611,8 @@ class FVulkanTexture3D : public FRHITexture3D, public FVulkanTextureBase
 	FName GetResourceFName() { return GetName(); }
 public:
 	// Constructor, just calls base and Surface constructor
-	FVulkanTexture3D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 NumMips, uint32 Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
-	FVulkanTexture3D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 NumMips, VkImage Image, uint32 Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
+	FVulkanTexture3D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 NumMips, ETextureCreateFlags Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
+	FVulkanTexture3D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 NumMips, VkImage Image, ETextureCreateFlags Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
 	virtual ~FVulkanTexture3D();
 
 	// IRefCountedObject interface.
@@ -644,8 +644,8 @@ class FVulkanTextureCube : public FRHITextureCube, public FVulkanTextureBase
 {
 	FName GetResourceFName() { return GetName(); }
 public:
-	FVulkanTextureCube(FVulkanDevice& Device, EPixelFormat Format, uint32 Size, bool bArray, uint32 ArraySize, uint32 NumMips, uint32 Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
-	FVulkanTextureCube(FVulkanDevice& Device, EPixelFormat Format, uint32 Size, bool bArray, uint32 ArraySize, uint32 NumMips, VkImage Image, uint32 Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
+	FVulkanTextureCube(FVulkanDevice& Device, EPixelFormat Format, uint32 Size, bool bArray, uint32 ArraySize, uint32 NumMips, ETextureCreateFlags Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
+	FVulkanTextureCube(FVulkanDevice& Device, EPixelFormat Format, uint32 Size, bool bArray, uint32 ArraySize, uint32 NumMips, VkImage Image, ETextureCreateFlags Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
 
 	// Aliasing constructor
 	FVulkanTextureCube(FTextureRHIRef& SrcTextureRHI, const FVulkanTextureCube* SrcTexture);
@@ -683,7 +683,7 @@ class FVulkanTextureReference : public FRHITextureReference, public FVulkanTextu
 public:
 	explicit FVulkanTextureReference(FVulkanDevice& Device, FLastRenderTimeContainer* InLastRenderTime)
 	:	FRHITextureReference(InLastRenderTime)
-	,	FVulkanTextureBase(Device, VK_IMAGE_VIEW_TYPE_MAX_ENUM, PF_Unknown, 0, 0, 0, 1, 1, 1, VK_NULL_HANDLE, VK_NULL_HANDLE, 0)
+	,	FVulkanTextureBase(Device, VK_IMAGE_VIEW_TYPE_MAX_ENUM, PF_Unknown, 0, 0, 0, 1, 1, 1, VK_NULL_HANDLE, VK_NULL_HANDLE, TexCreate_None)
 	{}
 
 	// IRefCountedObject interface.
@@ -1060,6 +1060,16 @@ protected:
 struct FVulkanUniformBufferUploader : public VulkanRHI::FDeviceChild
 {
 public:
+#if WITH_LATE_LATCHING_CODE
+	typedef struct FUniformBufferPatchInfo_
+	{
+		const class FVulkanUniformBuffer* SourceBuffer; // Todo replace it with a true buffer handle instead of pointer.
+		uint16 SourceOffsetInFloats;
+		uint16 SizeInFloats;
+		uint8* RESTRICT DestBufferAddress;
+	} FUniformBufferPatchInfo;
+#endif
+
 	FVulkanUniformBufferUploader(FVulkanDevice* InDevice);
 	~FVulkanUniformBufferUploader();
 
@@ -1088,9 +1098,24 @@ public:
 		return CPUBuffer->GetBufferOffset();
 	}
 
+#if WITH_LATE_LATCHING_CODE
+	inline TArray<FUniformBufferPatchInfo>& GetUniformBufferPatchInfo()
+	{
+		return BufferPatchInfos;
+	}
+
+	void ApplyUniformBufferPatching(bool NeedAbort);
+	int32 UniformBufferPatchingFrameNumber;
+	bool EnableUniformBufferPatching;
+	uint64 BeginPatchSubmitCounter;
+#endif
+
 protected:
 	FVulkanRingBuffer* CPUBuffer;
 	friend class FVulkanCommandListContext;
+#if WITH_LATE_LATCHING_CODE
+	TArray<FUniformBufferPatchInfo> BufferPatchInfos;
+#endif
 };
 
 class FVulkanResourceMultiBuffer : public VulkanRHI::FDeviceChild
@@ -1250,6 +1275,14 @@ public:
 	TArray<uint8> ConstantData;
 
 	void UpdateConstantData(const void* Contents, int32 ContentsSize);
+
+#if WITH_LATE_LATCHING_CODE
+	virtual int32 GetPatchingFrameNumber() const override { return PatchingFrameNumber; };
+	virtual void FlagPatchingFrameNumber(int32 FrameNumber) override { PatchingFrameNumber = FrameNumber; };
+
+protected:
+	uint32 PatchingFrameNumber;
+#endif
 };
 
 class FVulkanRealUniformBuffer : public FVulkanUniformBuffer
@@ -1460,6 +1493,35 @@ public:
 	// One buffer is a chunk of bytes
 	typedef TArray<uint8> FPackedBuffer;
 
+#if WITH_LATE_LATCHING_CODE	
+	void LazyInitSrcUniformPatchingResources()
+	{
+		PackedBufferSegmentIndices.AddDefaulted(PackedUniformBuffers.Num());
+		PackedBufferSegmentSources.AddDefaulted(PackedUniformBuffers.Num());
+		PackedBufferSegmentFrameIndex.AddDefaulted(PackedUniformBuffers.Num());
+		CopyInfoRemapping.AddZeroed(EmulatedUBsCopyInfo.Num());
+		for (int32 RangeIndex = 0; RangeIndex < EmulatedUBsCopyRanges.Num(); ++RangeIndex)
+		{
+			uint32 Range = EmulatedUBsCopyRanges[RangeIndex];
+			uint16 Start = (Range >> 16) & 0xffff;
+			uint16 Count = Range & 0xffff;
+			for (int32 Index = Start; Index < Start + Count; ++Index)
+			{
+				const CrossCompiler::FUniformBufferCopyInfo& CopyInfo = EmulatedUBsCopyInfo[Index];
+				int32 PackedUniformBufferIndex = (int32)CopyInfo.DestUBIndex;
+				check(CopyInfo.SourceUBIndex == RangeIndex);
+				CopyInfoRemapping[Index] = PackedBufferSegmentIndices[PackedUniformBufferIndex].Num();
+				PackedBufferSegmentIndices[PackedUniformBufferIndex].Push(Index);
+
+				// Initialize as 0
+				PackedBufferSegmentFrameIndex[PackedUniformBufferIndex].Push(-1);
+				PackedBufferSegmentSources[PackedUniformBufferIndex].Push(NULL);
+			}
+		}
+		SrcUniformPatchingResourceInitialized = true;
+	}
+#endif
+
 	void Init(const FVulkanShaderHeader& InCodeHeader, uint64& OutPackedUniformBufferStagingMask)
 	{
 		PackedUniformBuffers.AddDefaulted(InCodeHeader.PackedUBs.Num());
@@ -1471,6 +1533,9 @@ public:
 		OutPackedUniformBufferStagingMask = ((uint64)1 << (uint64)InCodeHeader.PackedUBs.Num()) - 1;
 		EmulatedUBsCopyInfo = InCodeHeader.EmulatedUBsCopyInfo;
 		EmulatedUBsCopyRanges = InCodeHeader.EmulatedUBCopyRanges;
+#if WITH_LATE_LATCHING_CODE	
+		SrcUniformPatchingResourceInitialized = false;
+#endif
 	}
 
 	inline void SetPackedGlobalParameter(uint32 BufferIndex, uint32 ByteOffset, uint32 NumBytes, const void* RESTRICT NewValue, uint64& InOutPackedUniformBufferStagingDirty)
@@ -1483,16 +1548,21 @@ public:
 		uint32* RESTRICT RawSrcEnd = RawSrc + (NumBytes >> 2);
 
 		bool bChanged = false;
-		while (RawSrc != RawSrcEnd)
+		do
 		{
 			bChanged |= CopyAndReturnNotEqual(*RawDst++, *RawSrc++);
 		}
+		while (RawSrc != RawSrcEnd);
 
 		InOutPackedUniformBufferStagingDirty = InOutPackedUniformBufferStagingDirty | ((uint64)(bChanged ? 1 : 0) << (uint64)BufferIndex);
 	}
 
 	// Copies a 'real' constant buffer into the packed globals uniform buffer (only the used ranges)
+#if WITH_LATE_LATCHING_CODE
+	inline void SetEmulatedUniformBufferIntoPacked(uint32 BindPoint, const TArray<uint8>& ConstantData, const FVulkanUniformBuffer* SrcBuffer, uint64& NEWPackedUniformBufferStagingDirty)
+#else
 	inline void SetEmulatedUniformBufferIntoPacked(uint32 BindPoint, const TArray<uint8>& ConstantData, uint64& NEWPackedUniformBufferStagingDirty)
+#endif	
 	{
 		// Emulated UBs. Assumes UniformBuffersCopyInfo table is sorted by CopyInfo.SourceUBIndex
 		if (BindPoint < (uint32)EmulatedUBsCopyRanges.Num())
@@ -1517,6 +1587,21 @@ public:
 				}
 				while (RawSrc != RawSrcEnd);
 				NEWPackedUniformBufferStagingDirty = NEWPackedUniformBufferStagingDirty | ((uint64)(bChanged ? 1 : 0) << (uint64)CopyInfo.DestUBIndex);
+
+#if WITH_LATE_LATCHING_CODE
+				// For Non-LateLatching Flaged buffer, GetPatchingFrameNumber() == -1
+				int32 PatchingFrameNumber = SrcBuffer->GetPatchingFrameNumber();
+				if (PatchingFrameNumber > 0)
+				{
+					if (!SrcUniformPatchingResourceInitialized)
+						LazyInitSrcUniformPatchingResources();
+					MaskPackedBufferCopyInfoSegmentSource(SrcBuffer, PatchingFrameNumber, Index, CopyInfo.DestUBIndex);
+				}
+				else if (SrcUniformPatchingResourceInitialized)
+				{
+					MaskPackedBufferCopyInfoSegmentSource(NULL, -1, Index, CopyInfo.DestUBIndex);
+				}
+#endif
 			}
 		}
 	}
@@ -1526,12 +1611,69 @@ public:
 		return PackedUniformBuffers[Index];
 	}
 
+#if WITH_LATE_LATCHING_CODE
+	inline void RecordUniformBufferPatch(TArray<FVulkanUniformBufferUploader::FUniformBufferPatchInfo>& PostBindingPatches, int32 FrameNumber, int32 PackedBufferIndex, uint8* RESTRICT OffsetedCPUAddress) const
+	{
+		if (SrcUniformPatchingResourceInitialized)
+		{
+			for (int i = 0; i < PackedBufferSegmentIndices[PackedBufferIndex].Num(); i++)
+			{
+				if (PackedBufferSegmentFrameIndex[PackedBufferIndex][i] == FrameNumber)
+				{
+					// ensure(PackedBufferSegmentSources[PackedBufferIndex][i] != NULL);
+					const CrossCompiler::FUniformBufferCopyInfo& CopyInfo = EmulatedUBsCopyInfo[PackedBufferSegmentIndices[PackedBufferIndex][i]];
+					FVulkanUniformBufferUploader::FUniformBufferPatchInfo PatchInfo;
+					PatchInfo.DestBufferAddress = OffsetedCPUAddress + CopyInfo.DestOffsetInFloats * sizeof(float);
+					PatchInfo.SizeInFloats = CopyInfo.SizeInFloats;
+					PatchInfo.SourceOffsetInFloats = CopyInfo.SourceOffsetInFloats;
+					PatchInfo.SourceBuffer = PackedBufferSegmentSources[PackedBufferIndex][i];
+					PostBindingPatches.Push(PatchInfo);
+				}
+			}
+		}
+	}
+
+	inline void MaskPackedBufferCopyInfoSegmentSource(const FVulkanUniformBuffer* SrcBuffer, const int32 PatchingFrameNumber, int EmulatedUBsCopyInfoIndex, int PackedBufferIndex)
+	{
+		int PackedSegIndex = CopyInfoRemapping[EmulatedUBsCopyInfoIndex];
+		PackedBufferSegmentFrameIndex[PackedBufferIndex][PackedSegIndex] = PatchingFrameNumber;
+		PackedBufferSegmentSources[PackedBufferIndex][PackedSegIndex] = SrcBuffer;
+
+		// Validation
+		// ensureMsgf(PackedSegIndex == PackedBufferSegmentIndices[PackedBufferIndex][PackedSegIndex], TEXT("Mismatch: PackedBufferSegmentIndices %d EmulatedUBsCopyInfoIndex %d"), PackedBufferSegmentIndices[PackedBufferIndex][PackedSegIndex], PackedSegIndex);
+	}
+#endif
 protected:
 	TArray<FPackedBuffer>									PackedUniformBuffers;
 
 	// Copies to Shader Code Header (shaders may be deleted when we use this object again)
 	TArray<CrossCompiler::FUniformBufferCopyInfo>			EmulatedUBsCopyInfo;
 	TArray<uint32>											EmulatedUBsCopyRanges;
+#if WITH_LATE_LATCHING_CODE
+	// Pre-built static structure, Only created in lazy-initialization
+	// Purpose: Translate EmulatedUBsCopyInfoIndex into PackedSegIndex, so given an EmulatedUBsCopyInfoIndex, we know where it goes in the PackedUniformBuffers
+	// It has the same dimension with EmulatedUBsCopyInfo array
+	// Example: if we have an CopyInfoIndex for EmulatedUBsCopyInfo[*], we can found it is corresponding segment postion 
+	// SegIndex = CopyInfoRemapping[CopyInfoIndex] in the packedUniformBuffer
+	// So  PackedBufferSegmentIndices[PackedBufferIndex][SegIndex] is pointing back to CopyInfoIndex
+	//     PackedBufferSegmentSources[PackedBufferIndex][SegIndex] is pointing to the src uniform buffer
+	//     PackedBufferSegmentFrameIndex[PackedBufferIndex][SegIndex] to the frameIndex last time latched
+	// Note: here PackedBufferIndex is the PackedUniformBuffers ( CopyInfo.DestUBIndex )
+	TArray<int>	CopyInfoRemapping;
+
+	// Pre-built static structure, Only created in lazy-initialization from shader compiler meta data
+	// Purpose: A representation of packedUnformBuffer segments, the returned value is used to index EmulatedUBsCopyInfo
+	// Example: for a given PackedUniformBufferIndex, we can iterate through all packed segments by 
+	// iterating PackedBufferSegmentIndices[PackedUniformBufferIndex][*], then
+	// retIndex = PackedBufferSegmentIndices[PackedUniformBufferIndex][*], retIndex can be used to read  EmulatedUBsCopyInfo[retIndex]
+	TArray<TArray<int>>	PackedBufferSegmentIndices;
+
+	// Dynamic: works like a dirty mask for updateDescriptorSet to detect if we need post binding patching
+	// Same dimension with PackedBufferSegmentIndices, they are PackedBuffer point of view data structure as well
+	TArray<TArray<const FVulkanUniformBuffer*>>					PackedBufferSegmentSources;
+	TArray<TArray<int32>>										PackedBufferSegmentFrameIndex;
+	bool SrcUniformPatchingResourceInitialized;
+#endif
 };
 
 class FVulkanStagingBuffer : public FRHIStagingBuffer

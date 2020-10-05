@@ -1,0 +1,13 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "",
+	"Category": "",
+	"Description": "",
+	"Modules": [
+		{
+			"Name": "AndroidPermissions",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

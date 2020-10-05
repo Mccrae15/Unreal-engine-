@@ -1331,7 +1331,7 @@ void FSceneViewport::ResizeFrame(uint32 NewWindowSizeX, uint32 NewWindowSizeY, E
 				IHeadMountedDisplay::MonitorInfo MonitorInfo;
 				if (GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice() && GEngine->XRSystem->GetHMDDevice()->GetHMDMonitorInfo(MonitorInfo))
 				{
-#if PLATFORM_PS4
+#if PLATFORM_PS4 || PLATFORM_ANDROID
 					// Only do the resolution check on PS4/Morpheus. On desktop, this breaks the mirror window logic.
 					if (MonitorInfo.DesktopX > 0 || MonitorInfo.DesktopY > 0 || MonitorInfo.ResolutionX > 0 || MonitorInfo.ResolutionY > 0)
 #else

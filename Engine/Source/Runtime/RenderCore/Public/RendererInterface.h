@@ -73,6 +73,7 @@ public:
 		, AutoWritable(true)
 		, bCreateRenderTargetWriteMask(false)
 		, bCreateRenderTargetFmask(false)
+		, bDisableShaderResourceTexCreation(false)
 	{
 		check(!IsValid());
 	}
@@ -85,8 +86,8 @@ public:
 		FIntPoint InExtent,
 		EPixelFormat InFormat,
 		const FClearValueBinding& InClearValue,
-		uint32 InFlags,
-		uint32 InTargetableFlags,
+		ETextureCreateFlags InFlags,
+		ETextureCreateFlags InTargetableFlags,
 		bool bInForceSeparateTargetAndShaderResource,
 		uint16 InNumMips = 1,
 		bool InAutowritable = true,
@@ -113,6 +114,7 @@ public:
 		NewDesc.AutoWritable = InAutowritable;
 		NewDesc.bCreateRenderTargetWriteMask = InCreateRTWriteMask;
 		NewDesc.bCreateRenderTargetFmask = InCreateFmask;
+		NewDesc.bDisableShaderResourceTexCreation = false;
 		check(NewDesc.Is2DTexture());
 		return NewDesc;
 	}
@@ -127,8 +129,8 @@ public:
 		uint32 InSizeZ,
 		EPixelFormat InFormat,
 		const FClearValueBinding& InClearValue,
-		uint32 InFlags,
-		uint32 InTargetableFlags,
+		ETextureCreateFlags InFlags,
+		ETextureCreateFlags InTargetableFlags,
 		bool bInForceSeparateTargetAndShaderResource,
 		uint16 InNumMips = 1,
 		bool InAutowritable = true)
@@ -163,8 +165,8 @@ public:
 		uint32 InExtent,
 		EPixelFormat InFormat,
 		const FClearValueBinding& InClearValue,
-		uint32 InFlags,
-		uint32 InTargetableFlags,
+		ETextureCreateFlags InFlags,
+		ETextureCreateFlags InTargetableFlags,
 		bool bInForceSeparateTargetAndShaderResource,
 		uint32 InArraySize = 1,
 		uint16 InNumMips = 1,
@@ -201,8 +203,8 @@ public:
 		uint32 InExtent,
 		EPixelFormat InFormat,
 		const FClearValueBinding& InClearValue,
-		uint32 InFlags,
-		uint32 InTargetableFlags,
+		ETextureCreateFlags InFlags,
+		ETextureCreateFlags InTargetableFlags,
 		bool bInForceSeparateTargetAndShaderResource,
 		uint32 InArraySize,
 		uint16 InNumMips = 1,
@@ -255,7 +257,8 @@ public:
 			&& bForceSeparateTargetAndShaderResource == rhs.bForceSeparateTargetAndShaderResource
 			&& bForceSharedTargetAndShaderResource == rhs.bForceSharedTargetAndShaderResource
 			&& ClearValue == rhs.ClearValue
-			&& AutoWritable == rhs.AutoWritable;
+			&& AutoWritable == rhs.AutoWritable
+			&& bDisableShaderResourceTexCreation == rhs.bDisableShaderResourceTexCreation;
 	}
 
 	bool IsCubemap() const
@@ -314,7 +317,7 @@ public:
 
 		FString FlagsString = TEXT("");
 
-		uint32 LocalFlags = Flags | TargetableFlags;
+		ETextureCreateFlags LocalFlags = Flags | TargetableFlags;
 
 		if(LocalFlags & TexCreate_RenderTargetable)
 		{
@@ -404,9 +407,9 @@ public:
 	/** Texture format e.g. PF_B8G8R8A8 */
 	EPixelFormat Format;
 	/** The flags that must be set on both the shader-resource and the targetable texture. bit mask combined from elements of ETextureCreateFlags e.g. TexCreate_UAV */
-	uint32 Flags;
+	ETextureCreateFlags Flags;
 	/** The flags that must be set on the targetable texture. bit mask combined from elements of ETextureCreateFlags e.g. TexCreate_UAV */
-	uint32 TargetableFlags;
+	ETextureCreateFlags TargetableFlags;
 	/** Whether the shader-resource and targetable texture must be separate textures. */
 	bool bForceSeparateTargetAndShaderResource;
 	/** Whether the shader-resource and targetable texture must be the same resource. */
@@ -419,6 +422,8 @@ public:
 	bool bCreateRenderTargetWriteMask;
 	/** create render target fmask (supported only on specific platforms) */
 	bool bCreateRenderTargetFmask;
+	/** disables creation of the shaderresource texture in an MSAA case */
+	bool bDisableShaderResourceTexCreation;
 };
 
 

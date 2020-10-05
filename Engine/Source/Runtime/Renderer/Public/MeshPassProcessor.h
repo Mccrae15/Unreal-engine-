@@ -205,7 +205,7 @@ class FGraphicsMinimalPipelineStateInitializer
 public:
 	// Can't use TEnumByte<EPixelFormat> as it changes the struct to be non trivially constructible, breaking memset
 	using TRenderTargetFormats = TStaticArray<uint8/*EPixelFormat*/, MaxSimultaneousRenderTargets>;
-	using TRenderTargetFlags = TStaticArray<uint32, MaxSimultaneousRenderTargets>;
+	using TRenderTargetFlags = TStaticArray<uint64/*ETextureCreateFlags*/, MaxSimultaneousRenderTargets>;
 
 	FGraphicsMinimalPipelineStateInitializer()
 		: BlendState(nullptr)
@@ -258,7 +258,7 @@ public:
 			, FGraphicsPipelineStateInitializer::TRenderTargetFormats(PF_Unknown)
 			, FGraphicsPipelineStateInitializer::TRenderTargetFlags(0)
 			, PF_Unknown
-			, 0
+			, TexCreate_None
 			, ERenderTargetLoadAction::ENoAction
 			, ERenderTargetStoreAction::ENoAction
 			, ERenderTargetLoadAction::ENoAction

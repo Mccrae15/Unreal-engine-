@@ -1426,6 +1426,7 @@ namespace VulkanRHI
 #if VULKAN_SUPPORTS_MAINTENANCE_LAYER2
 		DepthReadStencilAttachment,
 #endif
+		FoveationAttachment,
 	};
 
 	inline EImageLayoutBarrier GetImageLayoutFromVulkanLayout(VkImageLayout Layout)
@@ -1463,6 +1464,9 @@ namespace VulkanRHI
 
 		case VK_IMAGE_LAYOUT_GENERAL:
 			return EImageLayoutBarrier::PixelGeneralRW;
+
+		case VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT:
+			return EImageLayoutBarrier::FoveationAttachment;
 
 		default:
 			checkf(0, TEXT("Unknown VkImageLayout %d"), (int32)Layout);
@@ -1543,6 +1547,12 @@ namespace VulkanRHI
 			AccessFlags = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 			StageFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 			Layout = VK_IMAGE_LAYOUT_GENERAL;
+			break;
+
+		case EImageLayoutBarrier::FoveationAttachment:
+			AccessFlags = VK_ACCESS_FRAGMENT_DENSITY_MAP_READ_BIT_EXT;
+			StageFlags = VK_PIPELINE_STAGE_FRAGMENT_DENSITY_PROCESS_BIT_EXT;
+			Layout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
 			break;
 
 		default:

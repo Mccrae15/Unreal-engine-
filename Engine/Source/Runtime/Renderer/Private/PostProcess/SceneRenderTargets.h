@@ -191,7 +191,8 @@ protected:
 		bHMDAllocatedDepthTarget(false),
 		bKeepDepthContent(true),
 		bAllocatedFoveationTexture(false),
-		bAllowTangentGBuffer(false)
+		bAllowTangentGBuffer(false),
+		bRequireMultiview(false)
 		{
 			FMemory::Memset(LargestDesiredSizes, 0);
 #if PREVENT_RENDERTARGET_SIZE_THRASHING
@@ -600,10 +601,6 @@ public:
 	TArray<TRefCountPtr<IPooledRenderTarget>, TInlineAllocator<NumTranslucentVolumeRenderTargetSets>> TranslucencyLightingVolumeAmbient;
 	TArray<TRefCountPtr<IPooledRenderTarget>, TInlineAllocator<NumTranslucentVolumeRenderTargetSets>> TranslucencyLightingVolumeDirectional;
 
-	/** Color and depth texture arrays for mobile multi-view */
-	TRefCountPtr<IPooledRenderTarget> MobileMultiViewSceneColor;
-	TRefCountPtr<IPooledRenderTarget> MobileMultiViewSceneDepthZ;
-
 	/** Color and opacity for editor primitives (i.e editor gizmos). */
 	TRefCountPtr<IPooledRenderTarget> EditorPrimitivesColor;
 
@@ -687,12 +684,6 @@ private:
 
 	/** Determine the appropriate render target dimensions. */
 	FIntPoint ComputeDesiredSize(const FSceneViewFamily& ViewFamily);
-
-	/** Allocates the mobile multi-view scene color texture array render target. */
-	void AllocMobileMultiViewSceneColor(FRHICommandList& RHICmdList, const int32 ScaleFactor);
-
-	/** Allocates the mobile multi-view depth (no stencil) texture array render target. */
-	void AllocMobileMultiViewDepth(FRHICommandList& RHICmdList, const int32 ScaleFactor);
 
 	// internal method, used by AdjustGBufferRefCount()
 	void ReleaseGBufferTargets();
@@ -820,6 +811,9 @@ private:
 
 	/** True if base pass is allowed to emit tangent vector */
 	bool bAllowTangentGBuffer;
+
+	/** True if scenecolor and depth should be multiview-allocated */
+	bool bRequireMultiview;
 
 	/** CAUTION: When adding new data, make sure you copy it in the snapshot constructor! **/
 
