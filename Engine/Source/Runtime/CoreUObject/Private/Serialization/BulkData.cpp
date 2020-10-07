@@ -892,7 +892,7 @@ bool FUntypedBulkData::NeedsOffsetFixup() const
 	return (BulkDataFlags & BULKDATA_NoOffsetFixUp) == 0;
 }
 
-void FUntypedBulkData::Serialize( FArchive& Ar, UObject* Owner, int32 Idx, bool bAttemptFileMapping)
+void FUntypedBulkData::Serialize( FArchive& Ar, UObject* Owner, int32 Idx, bool bAttemptFileMapping, EDataShufflePattern ShufflePattern)
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FUntypedBulkData::Serialize"), STAT_UBD_Serialize, STATGROUP_Memory);
 
@@ -1301,6 +1301,7 @@ void FUntypedBulkData::Serialize( FArchive& Ar, UObject* Owner, int32 Idx, bool 
 				BulkStore.BulkDataSizeOnDiskPos = SavedBulkDataSizeOnDiskPos;
 				BulkStore.BulkDataFlagsPos = SavedBulkDataFlagsPos;
 				BulkStore.BulkDataFlags = BulkDataFlags;
+				BulkStore.BulkDataShufflePattern = ShufflePattern;
 				BulkStore.BulkData = this;
 
 				// If having flag BULKDATA_DuplicateNonOptionalPayload, duplicate bulk data in optional storage (.uptnl)
@@ -1345,6 +1346,7 @@ void FUntypedBulkData::Serialize( FArchive& Ar, UObject* Owner, int32 Idx, bool 
 					DupeBulkStore.BulkDataSizeOnDiskPos = SavedDupeBulkDataSizeOnDiskPos;
 					DupeBulkStore.BulkDataFlagsPos = SavedDupeBulkDataFlagsPos;
 					DupeBulkStore.BulkDataFlags = SavedDupeBulkDataFlags;
+					DupeBulkStore.BulkDataShufflePattern = ShufflePattern;
 					DupeBulkStore.BulkData = this;
 				}
 				
@@ -1359,7 +1361,16 @@ void FUntypedBulkData::Serialize( FArchive& Ar, UObject* Owner, int32 Idx, bool 
 				int64 SavedBulkDataStartPos = Ar.Tell();
 
 				// Serialize bulk data.
+				if (ShufflePattern != EDataShufflePattern::None)
+				{
+					Ar.PushShufflePattern(ShufflePattern);
+				}
 				SerializeBulkData( Ar, BulkData.Get() );
+				if (ShufflePattern != EDataShufflePattern::None)
+				{
+					Ar.PopShufflePattern();
+				}
+
 				// store the payload endpos
 				int64 SavedBulkDataEndPos = Ar.Tell();
 

@@ -373,11 +373,11 @@ enum class EAsyncWriteOptions
 };
 ENUM_CLASS_FLAGS(EAsyncWriteOptions)
 
-static void AsyncWriteFile(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, FLargeMemoryPtr Data, const int64 DataSize, const TCHAR* Filename, EAsyncWriteOptions Options)
+static void AsyncWriteFile(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, FLargeMemoryPtr Data, const int64 DataSize, const TCHAR* Filename, EAsyncWriteOptions Options, TArrayView<const FFileRegion> InFileRegions)
 {
 	OutstandingAsyncWrites.Increment();
 	FString OutputFilename(Filename);
-	AsyncWriteAndHashSequence.AddWork([Data = MoveTemp(Data), DataSize, OutputFilename = MoveTemp(OutputFilename), Options](FMD5& State) mutable
+	AsyncWriteAndHashSequence.AddWork([Data = MoveTemp(Data), DataSize, OutputFilename = MoveTemp(OutputFilename), Options, FileRegions = TArray<FFileRegion>(InFileRegions)](FMD5& State) mutable
 	{
 		if (EnumHasAnyFlags(Options, EAsyncWriteOptions::ComputeHash))
 		{
@@ -389,15 +389,24 @@ static void AsyncWriteFile(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, 
 			WriteToFile(OutputFilename, Data.Get(), DataSize);
 		}
 
+		if (FileRegions.Num() > 0)
+		{
+			TArray<uint8> Memory;
+			FMemoryWriter Ar(Memory);
+			FFileRegion::SerializeFileRegions(Ar, FileRegions);
+
+			WriteToFile(OutputFilename + FFileRegion::RegionsFileExtension, Memory.GetData(), Memory.Num());
+		}
+
 		OutstandingAsyncWrites.Decrement();
 	});
 }
 
-static void AsyncWriteFileWithSplitExports(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, FLargeMemoryPtr Data, const int64 DataSize, const int64 HeaderSize, const TCHAR* Filename, EAsyncWriteOptions Options)
+static void AsyncWriteFileWithSplitExports(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, FLargeMemoryPtr Data, const int64 DataSize, const int64 HeaderSize, const TCHAR* Filename, EAsyncWriteOptions Options, TArrayView<const FFileRegion> InFileRegions)
 {
 	OutstandingAsyncWrites.Increment();
 	FString OutputFilename(Filename);
-	AsyncWriteAndHashSequence.AddWork([Data = MoveTemp(Data), DataSize, HeaderSize, OutputFilename = MoveTemp(OutputFilename), Options](FMD5& State) mutable
+	AsyncWriteAndHashSequence.AddWork([Data = MoveTemp(Data), DataSize, HeaderSize, OutputFilename = MoveTemp(OutputFilename), Options, FileRegions = TArray<FFileRegion>(InFileRegions)](FMD5& State) mutable
 	{
 		if (EnumHasAnyFlags(Options, EAsyncWriteOptions::ComputeHash))
 		{
@@ -412,6 +421,21 @@ static void AsyncWriteFileWithSplitExports(TAsyncWorkSequence<FMD5>& AsyncWriteA
 			// Write .uexp file
 			const FString FilenameExports = FPaths::ChangeExtension(OutputFilename, TEXT(".uexp"));
 			WriteToFile(FilenameExports, Data.Get() + HeaderSize, DataSize - HeaderSize);
+
+			if (FileRegions.Num() > 0)
+			{
+				// Adjust regions so they are relative to the start of the uexp file
+				for (FFileRegion& Region : FileRegions)
+				{
+					Region.Offset -= HeaderSize;
+				}
+
+				TArray<uint8> Memory;
+				FMemoryWriter Ar(Memory);
+				FFileRegion::SerializeFileRegions(Ar, FileRegions);
+
+				WriteToFile(FilenameExports + FFileRegion::RegionsFileExtension, Memory.GetData(), Memory.Num());
+			}
 		}
 
 		OutstandingAsyncWrites.Decrement();
@@ -5393,7 +5417,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 							{
 								WriteOptions |= EAsyncWriteOptions::WriteFileToDisk;
 							}
-							AsyncWriteFile(AsyncWriteAndHashSequence, MoveTemp(DataPtr), Size, *Writer.GetArchiveName(), WriteOptions);
+							AsyncWriteFile(AsyncWriteAndHashSequence, MoveTemp(DataPtr), Size, *Writer.GetArchiveName(), WriteOptions, {});
 						}
 					}
 					AdditionalFilesFromExports.Empty();
@@ -5685,6 +5709,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 									FPackageStoreWriter::ExportsInfo ExportsInfo;
 									ExportsInfo.LooseFilePath	= Filename;
 									ExportsInfo.PackageName		= InOuter->GetFName();
+									ExportsInfo.RegionsOffset   = HeaderSize;
 
 									const uint8* ExportsData = IoBuffer.Data() + HeaderSize;
 									const int32 ExportCount = Linker->ExportMap.Num();
@@ -5696,7 +5721,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 										ExportsInfo.Exports.Add(FIoBuffer(IoBuffer.Data() + Export.SerialOffset, Export.SerialSize, IoBuffer));
 									}
 
-									SavePackageContext->PackageStoreWriter->WriteExports(ExportsInfo, FIoBuffer(ExportsData, DataSize - HeaderSize, IoBuffer));
+									SavePackageContext->PackageStoreWriter->WriteExports(ExportsInfo, FIoBuffer(ExportsData, DataSize - HeaderSize, IoBuffer), Linker->FileRegions);
 								}
 								else
 								{
@@ -5705,7 +5730,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 									{
 										WriteOptions |= EAsyncWriteOptions::ComputeHash;
 									}
-									AsyncWriteFileWithSplitExports(AsyncWriteAndHashSequence, FLargeMemoryPtr(Writer->ReleaseOwnership()), DataSize, Linker->Summary.TotalHeaderSize, *NewPathToSave, WriteOptions);
+									AsyncWriteFileWithSplitExports(AsyncWriteAndHashSequence, FLargeMemoryPtr(Writer->ReleaseOwnership()), DataSize, Linker->Summary.TotalHeaderSize, *NewPathToSave, WriteOptions, Linker->FileRegions);
 								}
 							}
 							else
@@ -5715,7 +5740,7 @@ FSavePackageResultStruct UPackage::Save(UPackage* InOuter, UObject* Base, EObjec
 								{
 									WriteOptions |= EAsyncWriteOptions::ComputeHash;
 								}
-								AsyncWriteFile(AsyncWriteAndHashSequence, FLargeMemoryPtr(Writer->ReleaseOwnership()), DataSize, *NewPathToSave, WriteOptions);
+								AsyncWriteFile(AsyncWriteAndHashSequence, FLargeMemoryPtr(Writer->ReleaseOwnership()), DataSize, *NewPathToSave, WriteOptions, Linker->FileRegions);
 							}
 						}
 						Linker->CloseAndDestroySaver();
@@ -6116,9 +6141,19 @@ void SaveBulkData(FLinkerSave* Linker, const UPackage* InOuter, const TCHAR* Fil
 
 		FScopedSlowTask BulkDataFeedback(Linker->BulkDataToAppend.Num());
 
-		TUniquePtr<FLargeMemoryWriter> BulkArchive;
-		TUniquePtr<FLargeMemoryWriter> OptionalBulkArchive;
-		TUniquePtr<FLargeMemoryWriter> MappedBulkArchive;
+		class FLargeMemoryWriterWithRegions : public FLargeMemoryWriter
+		{
+		public:
+			FLargeMemoryWriterWithRegions()
+				: FLargeMemoryWriter(0, /* IsPersistent */ true)
+			{}
+
+			TArray<FFileRegion> FileRegions;
+		};
+
+		TUniquePtr<FLargeMemoryWriterWithRegions> BulkArchive;
+		TUniquePtr<FLargeMemoryWriterWithRegions> OptionalBulkArchive;
+		TUniquePtr<FLargeMemoryWriterWithRegions> MappedBulkArchive;
 
 		uint32 ExtraBulkDataFlags = 0;
 
@@ -6144,9 +6179,9 @@ void SaveBulkData(FLinkerSave* Linker, const UPackage* InOuter, const TCHAR* Fil
 		{
 			ExtraBulkDataFlags = BULKDATA_PayloadInSeperateFile;
 
-			BulkArchive.Reset(new FLargeMemoryWriter(0, /* IsPersistent */ true));
-			OptionalBulkArchive.Reset(new FLargeMemoryWriter(0, /* IsPersistent */ true));
-			MappedBulkArchive.Reset(new FLargeMemoryWriter(0, /* IsPersistent */ true));
+			BulkArchive.Reset(new FLargeMemoryWriterWithRegions);
+			OptionalBulkArchive.Reset(new FLargeMemoryWriterWithRegions);
+			MappedBulkArchive.Reset(new FLargeMemoryWriterWithRegions);
 		}
 
 		// If we are not allowing BulkData to go to the IoStore and we will be saving the BulkData to a separate file then 
@@ -6160,11 +6195,13 @@ void SaveBulkData(FLinkerSave* Linker, const UPackage* InOuter, const TCHAR* Fil
 		}
 
 		bool bAlignBulkData = false;
+		bool bUseFileRegions = false;
 		int64 BulkDataAlignment = 0;
 
 		if (TargetPlatform)
 		{
 			bAlignBulkData = TargetPlatform->SupportsFeature(ETargetPlatformFeatures::MemoryMappedFiles);
+			bUseFileRegions = TargetPlatform->SupportsFeature(ETargetPlatformFeatures::CookFileRegionMetadata);
 			BulkDataAlignment = TargetPlatform->GetMemoryMappingAlignment();
 		}
 
@@ -6189,25 +6226,28 @@ void SaveBulkData(FLinkerSave* Linker, const UPackage* InOuter, const TCHAR* Fil
 			BulkDataStorageInfo.BulkData->ClearBulkDataFlags(0xFFFFFFFF);
 			BulkDataStorageInfo.BulkData->SetBulkDataFlags(ModifiedBulkDataFlags);
 
+			TArray<FFileRegion>* TargetRegions = &Linker->FileRegions;
 			FArchive* TargetArchive = Linker;
 
 			if (bShouldUseSeparateBulkFile)
 			{
-				check(MappedBulkArchive && OptionalBulkArchive && BulkArchive);
-
 				if (bBulkItemIsOptional)
 				{
 					TargetArchive = OptionalBulkArchive.Get();
+					TargetRegions = &OptionalBulkArchive->FileRegions;
 				}
 				else if (bBulkItemIsMapped)
 				{
 					TargetArchive = MappedBulkArchive.Get();
+					TargetRegions = &MappedBulkArchive->FileRegions;
 				}
 				else
 				{
 					TargetArchive = BulkArchive.Get();
+					TargetRegions = &BulkArchive->FileRegions;
 				}
 			}
+			check(TargetArchive && TargetRegions);
 
 			// Pad archive for proper alignment for memory mapping
 			if (bBulkItemIsMapped && BulkDataAlignment > 0)
@@ -6290,6 +6330,11 @@ void SaveBulkData(FLinkerSave* Linker, const UPackage* InOuter, const TCHAR* Fil
 				SavePackageContext->BulkDataManifest->AddFileAccess(Filename, Type, StoredBulkStartOffset, BulkStartOffset, SizeOnDisk);
 			}
 			
+			if (bUseFileRegions && BulkDataStorageInfo.BulkDataShufflePattern != EDataShufflePattern::None && SizeOnDisk > 0)
+			{
+				TargetRegions->Add(FFileRegion(BulkStartOffset, SizeOnDisk, BulkDataStorageInfo.BulkDataShufflePattern));
+			}
+
 			Linker->Seek(LinkerEndOffset);
 
 			// Restore BulkData flags to before serialization started
@@ -6319,17 +6364,17 @@ void SaveBulkData(FLinkerSave* Linker, const UPackage* InOuter, const TCHAR* Fil
 				BulkInfo.LooseFilePath = Filename;
 				BulkInfo.BulkdataType = FPackageStoreWriter::FBulkDataInfo::Standard;
 
-				SavePackageContext->PackageStoreWriter->WriteBulkdata(BulkInfo, AddSizeAndConvertToIoBuffer(BulkArchive.Get()));
+				SavePackageContext->PackageStoreWriter->WriteBulkdata(BulkInfo, AddSizeAndConvertToIoBuffer(BulkArchive.Get()), BulkArchive->FileRegions);
 
 				BulkInfo.BulkdataType = FPackageStoreWriter::FBulkDataInfo::Optional;
-				SavePackageContext->PackageStoreWriter->WriteBulkdata(BulkInfo, AddSizeAndConvertToIoBuffer(OptionalBulkArchive.Get()));
+				SavePackageContext->PackageStoreWriter->WriteBulkdata(BulkInfo, AddSizeAndConvertToIoBuffer(OptionalBulkArchive.Get()), OptionalBulkArchive->FileRegions);
 
 				BulkInfo.BulkdataType = FPackageStoreWriter::FBulkDataInfo::Mmap;
-				SavePackageContext->PackageStoreWriter->WriteBulkdata(BulkInfo, AddSizeAndConvertToIoBuffer(MappedBulkArchive.Get()));
+				SavePackageContext->PackageStoreWriter->WriteBulkdata(BulkInfo, AddSizeAndConvertToIoBuffer(MappedBulkArchive.Get()), MappedBulkArchive->FileRegions);
 			}
 			else
 			{
-				auto WriteBulkData = [&](FLargeMemoryWriter* Archive, const TCHAR* BulkFileExtension)
+				auto WriteBulkData = [&](FLargeMemoryWriterWithRegions* Archive, const TCHAR* BulkFileExtension)
 				{
 					if (const int64 DataSize = Archive->TotalSize())
 					{
@@ -6350,7 +6395,7 @@ void SaveBulkData(FLinkerSave* Linker, const UPackage* InOuter, const TCHAR* Fil
 							{
 								WriteOptions |= EAsyncWriteOptions::WriteFileToDisk;
 							}
-							AsyncWriteFile(AsyncWriteAndHashSequence, MoveTemp(DataPtr), DataSize, *ArchiveFilename, WriteOptions);
+							AsyncWriteFile(AsyncWriteAndHashSequence, MoveTemp(DataPtr), DataSize, *ArchiveFilename, WriteOptions, Archive->FileRegions);
 						}
 					}
 				};
@@ -6440,14 +6485,30 @@ void FLooseFileWriter::WriteHeader(const FLooseFileWriter::HeaderInfo& Info, con
 	WriteToFile(Info.LooseFilePath, HeaderData.Data(), HeaderData.DataSize());
 }
 
-void FLooseFileWriter::WriteExports(const FLooseFileWriter::ExportsInfo& Info, const FIoBuffer& ExportsData)
+void FLooseFileWriter::WriteExports(const FLooseFileWriter::ExportsInfo& Info, const FIoBuffer& ExportsData, const TArray<FFileRegion>& FileRegions)
 {
 	const FString ArchiveFilename = FPaths::ChangeExtension(Info.LooseFilePath, TEXT(".uexp"));
 
 	WriteToFile(ArchiveFilename, ExportsData.Data(), ExportsData.DataSize());
+
+	if (FileRegions.Num() > 0)
+	{
+		// Adjust regions so they are relative to the start of the uexp file
+		TArray<FFileRegion> FileRegionsCopy = FileRegions;
+		for (FFileRegion& Region : FileRegionsCopy)
+		{
+			Region.Offset -= Info.RegionsOffset;
+		}
+
+		TArray<uint8> Memory;
+		FMemoryWriter Ar(Memory);
+		FFileRegion::SerializeFileRegions(Ar, FileRegionsCopy);
+
+		WriteToFile(ArchiveFilename + FFileRegion::RegionsFileExtension, Memory.GetData(), Memory.Num());
+	}
 }
 
-void FLooseFileWriter::WriteBulkdata(const FLooseFileWriter::FBulkDataInfo& Info, const FIoBuffer& BulkData)
+void FLooseFileWriter::WriteBulkdata(const FLooseFileWriter::FBulkDataInfo& Info, const FIoBuffer& BulkData, const TArray<FFileRegion>& FileRegions)
 {
 	if (BulkData.DataSize() == 0)
 		return;
@@ -6475,6 +6536,15 @@ void FLooseFileWriter::WriteBulkdata(const FLooseFileWriter::FBulkDataInfo& Info
 	const FString ArchiveFilename = FPaths::ChangeExtension(Info.LooseFilePath, BulkFileExtension);
 
 	WriteToFile(ArchiveFilename, BulkData.Data(), BulkData.DataSize());
+
+	if (FileRegions.Num() > 0)
+	{
+		TArray<uint8> Memory;
+		FMemoryWriter Ar(Memory);
+		FFileRegion::SerializeFileRegions(Ar, const_cast<TArray<FFileRegion>&>(FileRegions));
+
+		WriteToFile(ArchiveFilename + FFileRegion::RegionsFileExtension, Memory.GetData(), Memory.Num());
+	}
 }
 
 FSavePackageContext::~FSavePackageContext()
