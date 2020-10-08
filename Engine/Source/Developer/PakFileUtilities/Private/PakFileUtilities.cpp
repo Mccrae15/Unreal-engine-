@@ -23,6 +23,7 @@
 #include "DerivedDataCacheInterface.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#include "Serialization/FileRegions.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
 
 IMPLEMENT_MODULE(FDefaultModuleImpl, PakFileUtilities);
