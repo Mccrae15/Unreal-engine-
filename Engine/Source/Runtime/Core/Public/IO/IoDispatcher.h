@@ -14,6 +14,7 @@
 #include "Misc/SecureHash.h"
 #include "Misc/AES.h"
 #include "Misc/IEngineCrypto.h"
+#include "Serialization/FileRegions.h"
 
 #if __cplusplus >= 201703L
 #	define UE_NODISCARD		[[nodiscard]]
