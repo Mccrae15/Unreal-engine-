@@ -22,6 +22,7 @@
 #include "Misc/RedirectCollector.h"
 #include "AssetRegistryModule.h"
 #include "Serialization/LargeMemoryReader.h"
+#include "HAL/PlatformMisc.h"
 
 #if WITH_EDITOR
 #include "IDirectoryWatcher.h"
@@ -778,6 +779,8 @@ bool UAssetRegistryImpl::EnumerateAssets(const FARFilter& InFilter, TFunctionRef
 				{
 					return true;
 				}
+
+				FPlatformMisc::PumpEssentialAppMessages();
 			}
 		}
 	}
