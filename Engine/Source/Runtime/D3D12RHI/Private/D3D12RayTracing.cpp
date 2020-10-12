@@ -57,30 +57,6 @@ static FAutoConsoleVariableRef CVarRayTracingShaderRecordCache(
 	TEXT("This mode assumes that contents of uniform buffers does not change during ray tracing resource binding.")
 );
 
-// #dxr_todo: Temporary debugging mechanism. Remove once workaround is no longer required.
-static int32 GRayTracingSerialCreateStateObject = 0;
-static FAutoConsoleVariableRef CVarRayTracingSerialCreateStateObject(
-	TEXT("r.D3D12.DXR.SerialCreateStateObject"),
-	GRayTracingSerialCreateStateObject,
-	TEXT("Forces a critical section around CreateStateObject call. Useful for diagnosing driver bugs and other RTPSO issues.")
-);
-
-// #dxr_todo: Temporary debugging mechanism. Remove once workaround is no longer required.
-static int32 GRayTracingStateObjectCollections = 1;
-static FAutoConsoleVariableRef CVarRayTracingStateObjectCollections(
-	TEXT("r.D3D12.DXR.StateObjectCollections"),
-	GRayTracingStateObjectCollections,
-	TEXT("Whether to use state object collections or always create a monolithic RTPSO. Useful for diagnosing driver bugs and other RTPSO issues.")
-);
-
-// #dxr_todo: Temporary debugging mechanism. Remove once workaround is no longer required.
-static int32 GRayTracingRenameExports = 1;
-static FAutoConsoleVariableRef CVarRayTracingRenameExports(
-	TEXT("r.D3D12.DXR.RenameExports"),
-	GRayTracingRenameExports,
-	TEXT("Whether to rename DXIL library exports when creating RTPSOs. If disabled, assumes that no name collisions will be present (functions are renamed during compilation). Useful for diagnosing driver bugs and other RTPSO issues.")
-);
-
 // Ray tracing stat counters
 
 DECLARE_STATS_GROUP(TEXT("D3D12RHI: Ray Tracing"), STATGROUP_D3D12RayTracing, STATCAT_Advanced);
@@ -168,41 +144,34 @@ struct FDXILLibrary
 	{
 		check(NumEntryNames != 0);
 		check(InEntryNames);
+		check(InExportNames);
 
 		EntryNames.SetNum(NumEntryNames);
 		ExportNames.SetNum(NumEntryNames);
+		ExportDesc.SetNum(NumEntryNames);
 
-		if (InExportNames && GRayTracingRenameExports)
+		for (uint32 EntryIndex = 0; EntryIndex < NumEntryNames; ++EntryIndex)
 		{
-			ExportDesc.SetNum(NumEntryNames);
+			EntryNames[EntryIndex] = InEntryNames[EntryIndex];
+			ExportNames[EntryIndex] = InExportNames[EntryIndex];
 
-			for (uint32 EntryIndex = 0; EntryIndex < NumEntryNames; ++EntryIndex)
-			{
-				EntryNames[EntryIndex] = InEntryNames[EntryIndex];
-				ExportNames[EntryIndex] = InExportNames[EntryIndex];
-
-				ExportDesc[EntryIndex].ExportToRename = *(EntryNames[EntryIndex]);
-				ExportDesc[EntryIndex].Flags = D3D12_EXPORT_FLAG_NONE;
-				ExportDesc[EntryIndex].Name = *(ExportNames[EntryIndex]);
-			}
+			ExportDesc[EntryIndex].ExportToRename = *(EntryNames[EntryIndex]);
+			ExportDesc[EntryIndex].Flags = D3D12_EXPORT_FLAG_NONE;
+			ExportDesc[EntryIndex].Name = *(ExportNames[EntryIndex]);
 		}
 
 		Desc.DXILLibrary.pShaderBytecode = Bytecode;
 		Desc.DXILLibrary.BytecodeLength = BytecodeLength;
-
-		if (InExportNames && GRayTracingRenameExports)
-		{
-			Desc.NumExports = ExportDesc.Num();
-			Desc.pExports = ExportDesc.GetData();
-		}
+		Desc.NumExports = ExportDesc.Num();
+		Desc.pExports = ExportDesc.GetData();
 	}
 
-	void InitFromDXIL(const D3D12_SHADER_BYTECODE& ShaderBytecode, const LPCWSTR* InEntryNames, const LPCWSTR* InExportNames, uint32 NumEntryNames)
+	void InitFromDXIL(const D3D12_SHADER_BYTECODE& ShaderBytecode, LPCWSTR* InEntryNames, LPCWSTR* InExportNames, uint32 NumEntryNames)
 	{
 		InitFromDXIL(ShaderBytecode.pShaderBytecode, ShaderBytecode.BytecodeLength, InEntryNames, InExportNames, NumEntryNames);
 	}
 
-	void InitFromDXIL(const FD3D12ShaderBytecode& ShaderBytecode, const LPCWSTR* InEntryNames, const LPCWSTR* InExportNames, uint32 NumEntryNames)
+	void InitFromDXIL(const FD3D12ShaderBytecode& ShaderBytecode, LPCWSTR* InEntryNames, LPCWSTR* InExportNames, uint32 NumEntryNames)
 	{
 		InitFromDXIL(ShaderBytecode.GetShaderBytecode(), InEntryNames, InExportNames, NumEntryNames);
 	}
@@ -355,19 +324,7 @@ static TRefCountPtr<ID3D12StateObject> CreateRayTracingStateObject(
 	Desc.pSubobjects = &Subobjects[0];
 	Desc.Type = StateObjectType;
 
-	static FCriticalSection CS;
-	const bool bShouldLock = !!GRayTracingSerialCreateStateObject;
-	if (bShouldLock)
-	{
-		CS.Lock();
-	}
-
 	VERIFYD3D12RESULT(RayTracingDevice->CreateStateObject(&Desc, IID_PPV_ARGS(Result.GetInitReference())));
-
-	if (bShouldLock)
-	{
-		CS.Unlock();
-	}
 
 	INC_DWORD_STAT(STAT_D3D12RayTracingCreatedPipelines);
 	INC_DWORD_STAT_BY(STAT_D3D12RayTracingCompiledShaders, NumExports);
@@ -389,39 +346,12 @@ inline FString GenerateShaderName(const TCHAR* Prefix, uint64 Hash)
 	return FString::Printf(TEXT("%s_%016llx"), Prefix, Hash);
 }
 
-inline FString GenerateExportName(const FString& OriginalName, const TCHAR* Prefix, uint64 Hash)
-{
-	return GRayTracingRenameExports ? FString::Printf(TEXT("%s_%016llx"), Prefix, Hash) : OriginalName;
-}
-
 inline FString GenerateShaderName(FRHIRayTracingShader* ShaderRHI)
 {
 	const FD3D12RayTracingShader* Shader = FD3D12DynamicRHI::ResourceCast(ShaderRHI);
 	uint64 ShaderHash = GetShaderHash64(ShaderRHI);
 	return GenerateShaderName(*(Shader->EntryPoint), ShaderHash);
 }
-
-struct FRTPSOInputs
-{
-	static constexpr uint32 MaxEntryPoints = 3; // CHS+AHS+IS for HitGroup or just a single entry point for other collection types
-
-	FRTPSOInputs(
-		const FD3D12ShaderBytecode& ShaderBytecode, const LPCWSTR* InEntryNames, const LPCWSTR* InExportNames, uint32 NumEntryNames,
-		D3D12_HIT_GROUP_DESC InHitGroupDesc,
-		ID3D12RootSignature* InLocalRootSignature,
-		TArrayView<LPCWSTR> InRenamedEntryPoints)
-		: HitGroupDesc(InHitGroupDesc)
-		, LocalRootSignature(InLocalRootSignature)
-		, RenamedEntryPoints(InRenamedEntryPoints)
-	{
-		Library.InitFromDXIL(ShaderBytecode.GetShaderBytecode(), InEntryNames, InExportNames, NumEntryNames);
-	}
-
-	FDXILLibrary Library;
-	D3D12_HIT_GROUP_DESC HitGroupDesc;
-	ID3D12RootSignature* LocalRootSignature;
-	TArray<LPCWSTR, TFixedAllocator<MaxEntryPoints>> RenamedEntryPoints;
-};
 
 // Cache for ray tracing pipeline collection objects, containing single shaders that can be linked into full pipelines.
 class FD3D12RayTracingPipelineCache
@@ -500,8 +430,6 @@ public:
 
 		TRefCountPtr<FD3D12RayTracingShader> Shader;
 
-		TUniquePtr<FRTPSOInputs> StateObjectInputs;
-
 		TRefCountPtr<ID3D12StateObject> StateObject;
 		FGraphEventRef CompileEvent;
 
@@ -561,8 +489,7 @@ public:
 
 			FD3D12RayTracingShader* Shader = Entry.Shader;
 
-			static constexpr uint32 MaxEntryPoints = FRTPSOInputs::MaxEntryPoints;
-
+			static constexpr uint32 MaxEntryPoints = 3; // CHS+AHS+IS for HitGroup or just a single entry point for other collection types
 			TArray<LPCWSTR, TFixedAllocator<MaxEntryPoints>> OriginalEntryPoints;
 			TArray<LPCWSTR, TFixedAllocator<MaxEntryPoints>> RenamedEntryPoints;
 
@@ -581,7 +508,7 @@ public:
 				HitGroupDesc.Type = Shader->IntersectionEntryPoint.IsEmpty() ? D3D12_HIT_GROUP_TYPE_TRIANGLES : D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE;
 
 				{
-					const FString& ExportName = Entry.ExportNames.Add_GetRef(GenerateExportName(Shader->EntryPoint, TEXT("CHS"), ShaderHash));
+					const FString& ExportName = Entry.ExportNames.Add_GetRef(GenerateShaderName(TEXT("CHS"), ShaderHash));
 
 					HitGroupDesc.ClosestHitShaderImport = *ExportName;
 
@@ -591,7 +518,7 @@ public:
 
 				if (!Shader->AnyHitEntryPoint.IsEmpty())
 				{
-					const FString& ExportName = Entry.ExportNames.Add_GetRef(GenerateExportName(Shader->AnyHitEntryPoint, TEXT("AHS"), ShaderHash));
+					const FString& ExportName = Entry.ExportNames.Add_GetRef(GenerateShaderName(TEXT("AHS"), ShaderHash));
 
 					HitGroupDesc.AnyHitShaderImport = *ExportName;
 
@@ -601,7 +528,7 @@ public:
 
 				if (!Shader->IntersectionEntryPoint.IsEmpty())
 				{
-					const FString& ExportName = Entry.ExportNames.Add_GetRef(GenerateExportName(Shader->IntersectionEntryPoint, TEXT("IS"), ShaderHash));
+					const FString& ExportName = Entry.ExportNames.Add_GetRef(GenerateShaderName(TEXT("IS"), ShaderHash));
 
 					HitGroupDesc.IntersectionShaderImport = *ExportName;
 
@@ -632,35 +559,22 @@ public:
 			check(Entry.ExportDescs.Num() <= Entry.MaxExports);
 			check(Entry.ExportDescs.Num() != 0);
 
-			if (GRayTracingStateObjectCollections)
-			{
-				FDXILLibrary Library;
-				Library.InitFromDXIL(Shader->ShaderBytecode, OriginalEntryPoints.GetData(), RenamedEntryPoints.GetData(), OriginalEntryPoints.Num());
+			FDXILLibrary Library;
+			Library.InitFromDXIL(Shader->ShaderBytecode, OriginalEntryPoints.GetData(), RenamedEntryPoints.GetData(), OriginalEntryPoints.Num());
 
-				const FDXILLibrary* LibraryPtr = &Library;
+			const FDXILLibrary* LibraryPtr = &Library;
 
-				Entry.StateObject = CreateRayTracingStateObject(
-					RayTracingDevice,
-					MakeArrayView(&LibraryPtr, 1),
-					RenamedEntryPoints,
-					MaxPayloadSizeInBytes,
-					MakeArrayView(&HitGroupDesc, NumHitGroups),
-					GlobalRootSignature,
-					MakeArrayView(&LocalRootSignature, 1),
-					{}, // LocalRootSignatureAssociations (single RS will be used for all exports since this is null)
-					{}, // ExistingCollections
-					D3D12_STATE_OBJECT_TYPE_COLLECTION);
-			}
-			else
-			{
-				// Save PSO inputs to be used later
-				Entry.StateObjectInputs = MakeUnique<FRTPSOInputs>(
-						Shader->ShaderBytecode, OriginalEntryPoints.GetData(), RenamedEntryPoints.GetData(), OriginalEntryPoints.Num(),
-						HitGroupDesc,
-						LocalRootSignature,
-						RenamedEntryPoints
-				);
-			}
+			Entry.StateObject = CreateRayTracingStateObject(
+				RayTracingDevice,
+				MakeArrayView(&LibraryPtr, 1),
+				RenamedEntryPoints,
+				MaxPayloadSizeInBytes,
+				MakeArrayView(&HitGroupDesc, NumHitGroups),
+				GlobalRootSignature,
+				MakeArrayView(&LocalRootSignature, 1),
+				{}, // LocalRootSignatureAssociations (single RS will be used for all exports since this is null)
+				{}, // ExistingCollections
+				D3D12_STATE_OBJECT_TYPE_COLLECTION);
 		}
 
 		FORCEINLINE TStatId GetStatId() const
@@ -731,14 +645,7 @@ public:
 			Entry.Shader = Shader;
 
 			// Generate primary export name, which is immediately required on the PSO creation thread.
-			if (CollectionType == ECollectionType::HitGroup)
-			{
-				Entry.ExportNames.Add(GenerateShaderName(GetCollectionTypeName(CollectionType), ShaderHash));
-			}
-			else
-			{
-				Entry.ExportNames.Add(GenerateExportName(Shader->EntryPoint, GetCollectionTypeName(CollectionType), ShaderHash));
-			}
+			Entry.ExportNames.Add(GenerateShaderName(GetCollectionTypeName(CollectionType), ShaderHash));
 			checkf(Entry.ExportNames.Num() == 1, TEXT("Primary export name must always be first."));
 
 			// Defer actual compilation to another task, as there may be many shaders that may be compiled in parallel.
@@ -1783,75 +1690,29 @@ public:
 
 		CompileTime += FPlatformTime::Cycles64();
 
-		if (GRayTracingStateObjectCollections)
+
+		TArray<D3D12_EXISTING_COLLECTION_DESC> UniqueShaderCollectionDescs;
+		UniqueShaderCollectionDescs.Reserve(MaxTotalShaders);
+		for (FD3D12RayTracingPipelineCache::FEntry* Entry : UniqueShaderCollections)
 		{
-			TArray<D3D12_EXISTING_COLLECTION_DESC> UniqueShaderCollectionDescs;
-			UniqueShaderCollectionDescs.Reserve(MaxTotalShaders);
-			for (FD3D12RayTracingPipelineCache::FEntry* Entry : UniqueShaderCollections)
-			{
-				UniqueShaderCollectionDescs.Add(Entry->GetCollectionDesc());
-			}
-
-			// Link final RTPSO from shader collections
-
-			LinkTime -= FPlatformTime::Cycles64();
-			StateObject = CreateRayTracingStateObject(
-				RayTracingDevice,
-				{}, // Libraries,
-				{}, // LibraryExports,
-				Initializer.MaxPayloadSizeInBytes,
-				{}, // HitGroups
-				GlobalRootSignature,
-				{}, // LocalRootSignatures
-				{}, // LocalRootSignatureAssociations,
-				UniqueShaderCollectionDescs,
-				D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE);
-			LinkTime += FPlatformTime::Cycles64();
+			UniqueShaderCollectionDescs.Add(Entry->GetCollectionDesc());
 		}
-		else
-		{
-			// #dxr_todo: remove this code path once workaround is no longer required.
-			// Debug code path: create the full RTPSO as a single monolithic step, instead of separate compilation and final linking.
-			
-			TArray<const FDXILLibrary*> Libraries;
-			TArray<LPCWSTR> LibraryExports;
-			TArray<D3D12_HIT_GROUP_DESC> HitGroups;
-			TArray<ID3D12RootSignature*> LocalRootSignatures;
-			TArray<uint32> LocalRootSignatureAssociations;
 
-			for (FD3D12RayTracingPipelineCache::FEntry* Entry : UniqueShaderCollections)
-			{
-				const auto& Inputs = *Entry->StateObjectInputs;
-				Libraries.Add(&Inputs.Library);
+		// Link final RTPSO from shader collections
 
-				if (Inputs.HitGroupDesc.HitGroupExport)
-				{
-					HitGroups.Add(Inputs.HitGroupDesc);
-					LibraryExports.Add(Inputs.HitGroupDesc.HitGroupExport);
-				}
-				else
-				{
-					LibraryExports.Add(Inputs.RenamedEntryPoints[0]);
-				}
-
-				LocalRootSignatureAssociations.Add(LocalRootSignatures.Num());
-				LocalRootSignatures.Add(Inputs.LocalRootSignature);
-			}
-
-			LinkTime -= FPlatformTime::Cycles64();
-			StateObject = CreateRayTracingStateObject(
-				RayTracingDevice,
-				Libraries,
-				LibraryExports,
-				Initializer.MaxPayloadSizeInBytes,
-				HitGroups,
-				GlobalRootSignature,
-				LocalRootSignatures,
-				LocalRootSignatureAssociations,
-				{}, // ExistingCollections
-				D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE);
-			LinkTime += FPlatformTime::Cycles64();
-		}
+		LinkTime -= FPlatformTime::Cycles64();
+		StateObject = CreateRayTracingStateObject(
+			RayTracingDevice,
+			{}, // Libraries,
+			{}, // LibraryExports,
+			Initializer.MaxPayloadSizeInBytes,
+			{}, // HitGroups
+			GlobalRootSignature,
+			{}, // LocalRootSignatures
+			{}, // LocalRootSignatureAssociations,
+			UniqueShaderCollectionDescs,
+			D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE);
+		LinkTime += FPlatformTime::Cycles64();
 
 		HRESULT QueryInterfaceResult = StateObject->QueryInterface(IID_PPV_ARGS(PipelineProperties.GetInitReference()));
 		checkf(SUCCEEDED(QueryInterfaceResult), TEXT("Failed to query pipeline properties from the ray tracing pipeline state object. Result=%08x"), QueryInterfaceResult);
