@@ -216,7 +216,7 @@ TUniformBufferRef<FRaytracingLightDataPacked> CreateLightDataPackedUniformBuffer
 	FRHIResourceCreateInfo CreateInfo;
 	CreateInfo.ResourceArray = &LightDataArray;
 
-	OutLightDataBuffer = RHICreateStructuredBuffer(sizeof(FRTLightingData), LightDataArray.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
+	OutLightDataBuffer = RHICreateStructuredBuffer(sizeof(FUintVector4), LightDataArray.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 	OutLightDataSRV = RHICreateShaderResourceView(OutLightDataBuffer);
 
 	LightData.LightDataBuffer = OutLightDataSRV;
