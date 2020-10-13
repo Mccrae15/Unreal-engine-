@@ -1518,7 +1518,7 @@ public:
 			? Initializer.GetHitGroupTable()
 			: DefaultHitGroupTable;
 
-		FRHIRayTracingShader* DefaultMissShader = GetBuildInRayTracingShader<FDefaultMainMS>();
+		FRHIRayTracingShader* DefaultMissShader = GetBuildInRayTracingShader<FDefaultPayloadMS>();
 		FRHIRayTracingShader* DefaultMissTable[] = { DefaultMissShader };
 
 		TArrayView<FRHIRayTracingShader*> InitializerMissShaders = Initializer.GetMissTable().Num()
@@ -1842,7 +1842,7 @@ public:
 			FRHIRayTracingShader* OcclusionRGSTable[] = { GetBuildInRayTracingShader<FOcclusionMainRG>() };
 			OcclusionInitializer.SetRayGenShaderTable(OcclusionRGSTable);
 
-			FRHIRayTracingShader* OcclusionMSTable[] = { GetBuildInRayTracingShader<FDefaultMainMS>() };
+			FRHIRayTracingShader* OcclusionMSTable[] = { GetBuildInRayTracingShader<FDefaultPayloadMS>() };
 			OcclusionInitializer.SetMissShaderTable(OcclusionMSTable);
 
 			OcclusionInitializer.bAllowHitGroupIndexing = false;
@@ -1857,7 +1857,7 @@ public:
 			FRHIRayTracingShader* IntersectionRGSTable[] = { GetBuildInRayTracingShader<FIntersectionMainRG>() };
 			IntersectionInitializer.SetRayGenShaderTable(IntersectionRGSTable);
 
-			FRHIRayTracingShader* IntersectionMSTable[] = { GetBuildInRayTracingShader<FDefaultMainMS>() };
+			FRHIRayTracingShader* IntersectionMSTable[] = { GetBuildInRayTracingShader<FDefaultPayloadMS>() };
 			IntersectionInitializer.SetMissShaderTable(IntersectionMSTable);
 
 			FRHIRayTracingShader* IntersectionHitTable[] = { GetBuildInRayTracingShader<FIntersectionMainCHS>() };
