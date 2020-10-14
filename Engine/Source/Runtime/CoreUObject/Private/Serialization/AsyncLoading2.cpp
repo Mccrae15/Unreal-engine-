@@ -1221,6 +1221,8 @@ private:
 				Object->SetInternalFlags(EInternalObjectFlags::Async);
 			}
 		}, /* bIncludeNestedObjects*/ true);
+		checkf(!ImportedPackage->HasAnyInternalFlags(EInternalObjectFlags::Async), TEXT("%s"), *ImportedPackage->GetFullName());
+		ImportedPackage->SetInternalFlags(EInternalObjectFlags::Async);
 	}
 
 	void ClearAsyncFlags(UPackage* ImportedPackage)
@@ -1241,6 +1243,8 @@ private:
 				Object->AtomicallyClearInternalFlags(EInternalObjectFlags::Async);
 			}
 		}, /* bIncludeNestedObjects*/ true);
+		checkf(ImportedPackage->HasAnyInternalFlags(EInternalObjectFlags::Async), TEXT("%s"), *ImportedPackage->GetFullName());
+		ImportedPackage->AtomicallyClearInternalFlags(EInternalObjectFlags::Async);
 	}
 
 	void AddPackageReferences()
@@ -5182,8 +5186,7 @@ void FAsyncPackage2::ClearConstructedObjects()
 	{
 		if (Object->HasAnyFlags(RF_WasLoaded))
 		{
-			// the upackage itself is handled in FinishUObject,
-			// while package exports are are handled below
+			// exports and the upackage itself are are handled below
 			continue;
 		}
 		Object->AtomicallyClearInternalFlags(EInternalObjectFlags::AsyncLoading | EInternalObjectFlags::Async);
@@ -5211,6 +5214,18 @@ void FAsyncPackage2::ClearConstructedObjects()
 		else
 		{
 			Object->AtomicallyClearInternalFlags(EInternalObjectFlags::AsyncLoading);
+		}
+	}
+
+	if (LinkerRoot)
+	{
+		if (bShouldClearAsyncFlagForPublicExports)
+		{
+			LinkerRoot->AtomicallyClearInternalFlags(EInternalObjectFlags::AsyncLoading | EInternalObjectFlags::Async);
+		}
+		else
+		{
+			LinkerRoot->AtomicallyClearInternalFlags(EInternalObjectFlags::AsyncLoading);
 		}
 	}
 }
@@ -5415,7 +5430,6 @@ void FAsyncPackage2::FinishUPackage()
 {
 	if (LinkerRoot)
 	{
-		LinkerRoot->AtomicallyClearInternalFlags(EInternalObjectFlags::AsyncLoading | EInternalObjectFlags::Async);
 		if (!bLoadHasFailed)
 		{
 			// Mark package as having been fully loaded and update load time.
