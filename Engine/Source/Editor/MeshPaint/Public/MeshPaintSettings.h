@@ -73,6 +73,10 @@ public:
 	/** Whether back-facing triangles should be ignored */
 	UPROPERTY(EditAnywhere, Category = Brush, meta = (DisplayName = "Ignore Back-Facing"))
 	bool bOnlyFrontFacingTriangles;
+
+	/** Angle tolerance between brush normal and vertex normal */
+	UPROPERTY(EditAnywhere, Category = Brush, meta = (UIMin = "0.0", UIMax = "180.0", ClampMin = "0.0", ClampMax = "180.0"))
+	float AngleTolerance;
 	
 	/** Color view mode used to display Vertex Colors */
 	UPROPERTY(EditAnywhere, Category = View)

@@ -100,6 +100,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = Brush, meta = (DisplayName = "Ignore Back-Facing"))
 	bool bOnlyFrontFacingTriangles;
 
+	/** Angle tolerance between brush normal and vertex normal */
+	UPROPERTY(EditAnywhere, Category = Brush)
+	float AngleTolerance;
+
 	/** Size of vertex points drawn when mesh painting is active. */
 	UPROPERTY(EditAnywhere, Category = "VertexPainting|Visualization")
 	float VertexPreviewSize;

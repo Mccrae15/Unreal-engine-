@@ -55,7 +55,8 @@ UMeshVertexPaintingToolProperties::UMeshVertexPaintingToolProperties()
 	PaintColor(FLinearColor::White),
 	EraseColor(FLinearColor::Black),
 	bEnableFlow(false),
-	VertexPreviewSize(6.0f)
+	VertexPreviewSize(6.0f),
+	AngleTolerance(90.0f)
 {
 }
 
@@ -399,7 +400,7 @@ bool UMeshVertexPaintingTool::PaintInternal(const TArrayView<TPair<FVector, FVec
 				{
 					InfluencedVertices.Reset();
 					Args.HitResult = PaintRayResults[PaintRayResultId].BestTraceResult;
-					bPaintApplied |= UMeshPaintingToolset::GetPerVertexPaintInfluencedVertices(Args, InfluencedVertices, ToolDir);
+					bPaintApplied |= UMeshPaintingToolset::GetPerVertexPaintInfluencedVertices(Args, InfluencedVertices, ToolDir, VertexProperties->AngleTolerance);
 
 					if (InfluencedVertices.Num() == 0)
 					{

@@ -91,6 +91,7 @@ public:
 	bool bOnlyFrontFacingTriangles;
 
 
+
 	virtual void SaveProperties(UInteractiveTool* SaveFromTool) override;
 	virtual void RestoreProperties(UInteractiveTool* RestoreToTool) override;
 
