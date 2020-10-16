@@ -1126,7 +1126,7 @@ FColor UMeshPaintingToolset::PickVertexColorFromTextureData(const uint8* MipData
 	return VertexColor;
 }
 
-bool UMeshPaintingToolset::GetPerVertexPaintInfluencedVertices(FPerVertexPaintActionArgs& InArgs, TSet<int32>& InfluencedVertices)
+bool UMeshPaintingToolset::GetPerVertexPaintInfluencedVertices(FPerVertexPaintActionArgs& InArgs, TSet<int32>& InfluencedVertices, const FVector& MainDir)
 {
 	// Retrieve components world matrix
 	const FMatrix& ComponentToWorldMatrix = InArgs.Adapter->GetComponentToWorldMatrix();
@@ -1141,7 +1141,7 @@ bool UMeshPaintingToolset::GetPerVertexPaintInfluencedVertices(FPerVertexPaintAc
 	const float ComponentSpaceSquaredBrushRadius = ComponentSpaceBrushRadius * ComponentSpaceBrushRadius;
 
 	// Get a list of unique vertices indexed by the influenced triangles
-	InArgs.Adapter->GetInfluencedVertexIndices(ComponentSpaceSquaredBrushRadius, ComponentSpaceBrushPosition, ComponentSpaceCameraPosition, InArgs.BrushProperties->bOnlyFrontFacingTriangles, InfluencedVertices);
+	InArgs.Adapter->GetInfluencedVertexIndices(ComponentSpaceSquaredBrushRadius, ComponentSpaceBrushPosition, ComponentSpaceCameraPosition, InArgs.BrushProperties->bOnlyFrontFacingTriangles, InfluencedVertices, MainDir);
 
 	return (InfluencedVertices.Num() > 0);
 }

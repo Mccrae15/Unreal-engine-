@@ -221,6 +221,7 @@ protected:
 	bool bStampPending;
 	bool bInDrag;
 	FRay PendingStampRay;
+	FVector ToolDir;
 
 private:
 	bool PaintInternal(const TArrayView<TPair<FVector, FVector>>& Rays, EMeshPaintModeAction PaintAction, float PaintStrength);

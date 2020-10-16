@@ -77,7 +77,7 @@ void FBaseMeshPaintComponentAdapter::GetVertexPosition(int32 VertexIndex, FVecto
 	OutVertex = MeshVertices[VertexIndex];
 }
 
-TArray<uint32> FBaseMeshPaintComponentAdapter::SphereIntersectTriangles(const float ComponentSpaceSquaredBrushRadius, const FVector& ComponentSpaceBrushPosition, const FVector& ComponentSpaceCameraPosition, const bool bOnlyFrontFacing) const
+TArray<uint32> FBaseMeshPaintComponentAdapter::SphereIntersectTriangles(const float ComponentSpaceSquaredBrushRadius, const FVector& ComponentSpaceBrushPosition, const FVector& ComponentSpaceCameraPosition, const bool bOnlyFrontFacing, const FVector& MainDir) const
 {
 	TArray<uint32> OutTriangles;
 
@@ -90,7 +90,13 @@ TArray<uint32> FBaseMeshPaintComponentAdapter::SphereIntersectTriangles(const fl
 		// Check to see if the triangle is front facing
 		const FMeshPaintTriangle & CurrentTri = TriIt.GetCurrentElement();
 		const float SignedPlaneDist = FVector::PointPlaneDist(ComponentSpaceCameraPosition, CurrentTri.Vertices[0], CurrentTri.Normal);
-		if (!bOnlyFrontFacing || SignedPlaneDist < 0.0f)
+		bool InAngleRange = true;
+		if (MainDir != FVector::ZeroVector)
+		{
+			float DotProd = FVector::DotProduct(CurrentTri.Normal, MainDir) ;
+			InAngleRange = DotProd < -0.8f;
+		}
+		if ((!bOnlyFrontFacing || SignedPlaneDist < 0.0f) && InAngleRange)
 		{
 			OutTriangles.Add(CurrentTri.Index);
 		}
@@ -99,14 +105,15 @@ TArray<uint32> FBaseMeshPaintComponentAdapter::SphereIntersectTriangles(const fl
 	return OutTriangles;
 }
 
-void FBaseMeshPaintComponentAdapter::GetInfluencedVertexIndices(const float ComponentSpaceSquaredBrushRadius, const FVector& ComponentSpaceBrushPosition, const FVector& ComponentSpaceCameraPosition, const bool bOnlyFrontFacing, TSet<int32> &InfluencedVertices) const
+void FBaseMeshPaintComponentAdapter::GetInfluencedVertexIndices(const float ComponentSpaceSquaredBrushRadius, const FVector& ComponentSpaceBrushPosition, const FVector& ComponentSpaceCameraPosition, const bool bOnlyFrontFacing, TSet<int32> &InfluencedVertices, const FVector& MainDir) const
 {
 	// Get a list of (optionally front-facing) triangles that are within a reasonable distance to the brush
 	const TArray<uint32> InfluencedTriangles = SphereIntersectTriangles(
 		ComponentSpaceSquaredBrushRadius,
 		ComponentSpaceBrushPosition,
 		ComponentSpaceCameraPosition,
-		bOnlyFrontFacing);
+		bOnlyFrontFacing,
+		MainDir);
 
 	// Make sure we're dealing with triangle lists
 	const int32 NumIndexBufferIndices = MeshIndices.Num();
@@ -156,10 +163,10 @@ void FBaseMeshPaintComponentAdapter::GetInfluencedVertexData(const float Compone
 	}
 }
 
-TArray<FVector> FBaseMeshPaintComponentAdapter::SphereIntersectVertices(const float ComponentSpaceSquaredBrushRadius, const FVector& ComponentSpaceBrushPosition, const FVector& ComponentSpaceCameraPosition, const bool bOnlyFrontFacing) const
+TArray<FVector> FBaseMeshPaintComponentAdapter::SphereIntersectVertices(const float ComponentSpaceSquaredBrushRadius, const FVector& ComponentSpaceBrushPosition, const FVector& ComponentSpaceCameraPosition, const bool bOnlyFrontFacing, const FVector& MainDir) const
 {
 	// Get list of intersecting triangles with given sphere data
-	const TArray<uint32> IntersectedTriangles = SphereIntersectTriangles(ComponentSpaceSquaredBrushRadius, ComponentSpaceBrushPosition, ComponentSpaceCameraPosition, bOnlyFrontFacing);
+	const TArray<uint32> IntersectedTriangles = SphereIntersectTriangles(ComponentSpaceSquaredBrushRadius, ComponentSpaceBrushPosition, ComponentSpaceCameraPosition, bOnlyFrontFacing, MainDir);
 	// Get a list of unique vertices indexed by the influenced triangles
 	TSet<int32> InfluencedVertices;
 	InfluencedVertices.Reserve(IntersectedTriangles.Num());
