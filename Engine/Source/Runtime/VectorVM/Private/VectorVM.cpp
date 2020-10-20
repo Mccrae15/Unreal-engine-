@@ -1139,7 +1139,6 @@ struct FVectorKernelRandom : public TUnaryVectorKernel<FVectorKernelRandom>
 {
 	static void VM_FORCEINLINE DoKernel(FVectorVMContext& Context, VectorRegister* RESTRICT Dst, VectorRegister Src0)
 	{
-		const float rm = RAND_MAX;
 		//EEK!. Improve this. Implement GPU style seeded rand instead of this.
 		VectorRegister Result = MakeVectorRegister(Context.RandStream.GetFraction(),
 			Context.RandStream.GetFraction(),
@@ -1154,7 +1153,6 @@ struct FVectorKernelRandomGauss : public TBinaryVectorKernel<FVectorKernelRandom
 {
 	static void VM_FORCEINLINE DoKernel(FVectorVMContext& Context, VectorRegister* RESTRICT Dst, VectorRegister Src0, VectorRegister Src1)
 	{
-		const float rm = RAND_MAX;
 		VectorRegister Result = MakeVectorRegister(Context.RandStream.GetFraction(),
 			Context.RandStream.GetFraction(),
 			Context.RandStream.GetFraction(),
@@ -1936,7 +1934,6 @@ struct FScalarIntKernelRandom : public TUnaryScalarIntKernel<FScalarIntKernelRan
 {
 	static void VM_FORCEINLINE DoKernel(FVectorVMContext& Context, int32* RESTRICT Dst, int32 Src0)
 	{
-		const float rm = RAND_MAX;
 		//EEK!. Improve this. Implement GPU style seeded rand instead of this.
 		*Dst = static_cast<int32>(Context.RandStream.GetFraction() * Src0);
 	}
