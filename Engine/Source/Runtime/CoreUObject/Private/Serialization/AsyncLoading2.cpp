@@ -611,6 +611,7 @@ class FLoadedPackageRef
 	int32 RefCount = 0;
 	bool bAreAllPublicExportsLoaded = false;
 	bool bIsMissing = false;
+	bool bHasBeenLoadedDebug = false;
 
 public:
 	inline int32 GetRefCount() const
@@ -625,12 +626,23 @@ public:
 		return RefCount == 1 && Package;
 	}
 
-	inline bool ReleaseRef()
+	inline bool ReleaseRef(FPackageId FromPackageId, FPackageId ToPackageId)
 	{
 		check(RefCount > 0);
 		--RefCount;
+
+		ensureMsgf(bAreAllPublicExportsLoaded || bIsMissing,
+			TEXT("LoadedPackageRef from None (0x%llX) to %s (0x%llX) should not have been released when the package is not complete.")
+			TEXT("RefCount=%d, AreAllExportsLoaded=%d, IsMissing=%d, HasBeenLoaded=%d"),
+			FromPackageId.Value(),
+			Package ? *Package->GetName() : TEXT("None"),
+			ToPackageId.Value(),
+			RefCount,
+			bAreAllPublicExportsLoaded,
+			bIsMissing,
+			bHasBeenLoadedDebug);
+
 #if DO_CHECK
-		check(bAreAllPublicExportsLoaded || bIsMissing);
 		if (bAreAllPublicExportsLoaded)
 		{
 			check(!bIsMissing);
@@ -679,6 +691,7 @@ public:
 		check(Package);
 		bIsMissing = false;
 		bAreAllPublicExportsLoaded = true;
+		bHasBeenLoadedDebug = true;
 	}
 
 	inline void ClearAllPublicExportsLoaded()
@@ -1286,7 +1299,7 @@ private:
 		for (const FPackageId& ImportedPackageId : Desc.StoreEntry->ImportedPackages)
 		{
 			FLoadedPackageRef& PackageRef = GlobalPackageStore.LoadedPackageStore.GetPackageRef(ImportedPackageId);
-			if (PackageRef.ReleaseRef())
+			if (PackageRef.ReleaseRef(Desc.DiskPackageId, ImportedPackageId))
 			{
 				ClearAsyncFlags(PackageRef.GetPackage());
 			}
@@ -1295,7 +1308,7 @@ private:
 		{
 			// clear own reference, and possible all async flags if no remaining ref count
 			FLoadedPackageRef& PackageRef =	GlobalPackageStore.LoadedPackageStore.GetPackageRef(Desc.DiskPackageId);
-			if (PackageRef.ReleaseRef())
+			if (PackageRef.ReleaseRef(Desc.DiskPackageId, Desc.DiskPackageId))
 			{
 				ClearAsyncFlags(PackageRef.GetPackage());
 			}
@@ -5026,6 +5039,9 @@ void FAsyncLoadingThread2::NotifyUnreachableObjects(const TArrayView<FUObjectIte
 		check(Object);
 		if (Object->HasAllFlags(RF_WasLoaded | RF_Public))
 		{
+			ensureMsgf(!Object->HasAnyInternalFlags(EInternalObjectFlags::Async),
+				TEXT("%s (flags=0x%X, internalflags=0x%X) is still referenced by loader and should not have been marked unreachable."),
+				*Object->GetFullName(), Object->GetFlags(), Object->GetInternalFlags());
 			if (Object->GetOuter())
 			{
 				// TRACE_CPUPROFILER_EVENT_SCOPE(PackageStoreRemovePublicExport);
