@@ -5468,6 +5468,7 @@ void FAsyncPackage2::CallCompletionCallbacks(EAsyncLoadingResult::Type LoadingRe
 	{
 		CompletionCallback->ExecuteIfBound(Desc.GetUPackageName(), LoadedPackage, LoadingResult);
 	}
+	CompletionCallbacks.Empty();
 }
 
 UPackage* FAsyncPackage2::GetLoadedPackage()
