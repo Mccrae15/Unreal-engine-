@@ -16,9 +16,7 @@ static TAutoConsoleVariable<int32> CVarRayTracingLightingMissShader(
 
 bool CanUseRayTracingLightingMissShader(EShaderPlatform ShaderPlatform)
 {
-	return GRHISupportsRayTracingMissShaderBindings
-		&& CVarRayTracingLightingMissShader.GetValueOnRenderThread() != 0
-		&& FDataDrivenShaderPlatformInfo::GetSupportsRayTracingMissShaderBindings(ShaderPlatform);
+	return CVarRayTracingLightingMissShader.GetValueOnRenderThread() != 0;
 }
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FRaytracingLightDataPacked, "RaytracingLightsDataPacked");
@@ -237,8 +235,7 @@ class FRayTracingLightingMS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileRayTracingShadersForProject(Parameters.Platform)
-			&& FDataDrivenShaderPlatformInfo::GetSupportsRayTracingMissShaderBindings(Parameters.Platform);
+		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
 	}
 };
 

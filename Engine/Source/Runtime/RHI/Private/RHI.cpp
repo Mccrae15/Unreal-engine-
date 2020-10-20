@@ -552,7 +552,6 @@ bool GRHISupportsBaseVertexIndex = true;
 bool GRHISupportsFirstInstance = false;
 bool GRHISupportsDynamicResolution = false;
 bool GRHISupportsRayTracing = false;
-bool GRHISupportsRayTracingMissShaderBindings = false;
 bool GRHISupportsRayTracingAsyncBuildAccelerationStructure = false;
 bool GRHISupportsWaveOperations = false;
 int32 GRHIMinimumWaveSize = 4; // Minimum supported value in SM 6.0
@@ -1251,7 +1250,6 @@ void FGenericDataDrivenShaderPlatformInfo::ParseDataDrivenShaderInfo(const FConf
 	Info.bSupports4ComponentUAVReadWrite = GetSectionBool(Section, "bSupports4ComponentUAVReadWrite");
 	Info.bSupportsRenderTargetWriteMask = GetSectionBool(Section, "bSupportsRenderTargetWriteMask");
 	Info.bSupportsRayTracing = GetSectionBool(Section, "bSupportsRayTracing");
-	Info.bSupportsRayTracingMissShaderBindings = GetSectionBool(Section, "bSupportsRayTracingMissShaderBindings");
 	Info.bSupportsRayTracingIndirectInstanceData = GetSectionBool(Section, "bSupportsRayTracingIndirectInstanceData");
 	Info.bSupportsGPUSkinCache = GetSectionBool(Section, "bSupportsGPUSkinCache");
 	Info.bSupportsByteBufferComputeShaders = GetSectionBool(Section, "bSupportsByteBufferComputeShaders");
