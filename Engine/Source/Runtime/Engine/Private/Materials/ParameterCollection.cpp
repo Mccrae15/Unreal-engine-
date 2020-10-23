@@ -680,7 +680,15 @@ void FMaterialParameterCollectionInstanceResource::GameThread_Destroy()
 	ENQUEUE_RENDER_COMMAND(DestroyCollectionCommand)(
 		[Resource](FRHICommandListImmediate& RHICmdList)
 		{
-			delete Resource;
+			Resource->UniformBuffer.SafeRelease();
+
+			// FRHIUniformBuffer instances take raw pointers to the layout struct.
+			// Delete the resource instance (and its layout) on the RHI thread to avoid deleting the layout
+			// whilst the RHI is using it, and also avoid having to completely flush the RHI thread.
+			RHICmdList.EnqueueLambda([Resource](FRHICommandListImmediate&)
+			{
+				delete Resource;
+			});
 		}
 	);
 }
@@ -692,8 +700,7 @@ FMaterialParameterCollectionInstanceResource::FMaterialParameterCollectionInstan
 
 FMaterialParameterCollectionInstanceResource::~FMaterialParameterCollectionInstanceResource()
 {
-	check(IsInRenderingThread());
-	UniformBuffer.SafeRelease();
+	check(!UniformBuffer.IsValid());
 }
 
 void FMaterialParameterCollectionInstanceResource::UpdateContents(const FGuid& InId, const TArray<FVector4>& Data, const FName& InOwnerName, bool bRecreateUniformBuffer)
