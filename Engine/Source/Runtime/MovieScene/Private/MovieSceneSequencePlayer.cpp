@@ -648,9 +648,19 @@ void UMovieSceneSequencePlayer::Initialize(UMovieSceneSequence* InSequence, cons
 		FFrameTime SpecifiedStartOffset = PlaybackSettings.StartTime * DisplayRate;
 
 		// Setup the starting time
-		FFrameTime StartingTimeOffset = PlaybackSettings.bRandomStartTime
-			? FFrameTime(FMath::Rand() % GetFrameDuration())
-			: FMath::Clamp<FFrameTime>(SpecifiedStartOffset, 0, GetFrameDuration()-1);
+		FFrameTime StartingTimeOffset;
+		if (GetFrameDuration() == 0)
+		{
+			 StartingTimeOffset = PlaybackSettings.bRandomStartTime
+				? FFrameTime(FMath::Rand() % 1 )
+				: FMath::Clamp<FFrameTime>(SpecifiedStartOffset, 0, GetFrameDuration() - 1);
+		}
+		else
+		{
+			 StartingTimeOffset = PlaybackSettings.bRandomStartTime
+				? FFrameTime(FMath::Rand() % GetFrameDuration())
+				: FMath::Clamp<FFrameTime>(SpecifiedStartOffset, 0, GetFrameDuration() - 1);
+		}
 
 		StartTimeWithOffset = StartTime + StartingTimeOffset;
 
