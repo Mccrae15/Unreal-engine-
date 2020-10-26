@@ -1240,7 +1240,7 @@ bool FPluginManager::LoadModulesForEnabledPlugins( const ELoadingPhase::Type Loa
 	FScopedSlowTask SlowTask(AllPlugins.Num());
 
 	// Load plugins!
-	for( const TPair<FString, TSharedRef< FPlugin >> PluginPair : AllPlugins )
+	for( const TPair<FString, TSharedRef< FPlugin >>& PluginPair : AllPlugins )
 	{
 		const TSharedRef<FPlugin> &Plugin = PluginPair.Value;
 		SlowTask.EnterProgressFrame(1);

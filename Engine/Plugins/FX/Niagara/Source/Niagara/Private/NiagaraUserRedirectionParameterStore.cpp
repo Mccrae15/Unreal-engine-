@@ -44,7 +44,7 @@ void FNiagaraUserRedirectionParameterStore::RecreateRedirections()
 {
 	UserParameterRedirects.Reset();
 
-	for (const FNiagaraVariable& Var : GetSortedParameterOffsets())
+	for (const FNiagaraVariableWithOffset& Var : GetSortedParameterOffsets())
 	{
 		if (IsUserParameter(Var))
 		{
