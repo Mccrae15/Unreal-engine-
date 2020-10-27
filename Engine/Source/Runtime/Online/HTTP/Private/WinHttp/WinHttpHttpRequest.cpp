@@ -83,7 +83,7 @@ FString FWinHttpHttpRequest::GetVerb() const
 
 void FWinHttpHttpRequest::SetVerb(const FString& InVerb)
 {
-	if (State != EHttpRequestStatus::NotStarted)
+	if (State == EHttpRequestStatus::Processing)
 	{
 		UE_LOG(LogHttp, Warning, TEXT("Attempted to set verb on a request that is inflight"));
 		return;
@@ -94,7 +94,7 @@ void FWinHttpHttpRequest::SetVerb(const FString& InVerb)
 
 void FWinHttpHttpRequest::SetURL(const FString& InURL)
 {
-	if (State != EHttpRequestStatus::NotStarted)
+	if (State == EHttpRequestStatus::Processing)
 	{
 		UE_LOG(LogHttp, Warning, TEXT("Attempted to set URL on a request that is inflight"));
 		return;
@@ -105,7 +105,7 @@ void FWinHttpHttpRequest::SetURL(const FString& InURL)
 
 void FWinHttpHttpRequest::SetContent(const TArray<uint8>& ContentPayload)
 {
-	if (State != EHttpRequestStatus::NotStarted)
+	if (State == EHttpRequestStatus::Processing)
 	{
 		UE_LOG(LogHttp, Warning, TEXT("Attempted to set content on a request that is inflight"));
 		return;
@@ -116,7 +116,7 @@ void FWinHttpHttpRequest::SetContent(const TArray<uint8>& ContentPayload)
 
 void FWinHttpHttpRequest::SetContentAsString(const FString& ContentString)
 {
-	if (State != EHttpRequestStatus::NotStarted)
+	if (State == EHttpRequestStatus::Processing)
 	{
 		UE_LOG(LogHttp, Warning, TEXT("Attempted to set content on a request that is inflight"));
 		return;
@@ -132,7 +132,7 @@ void FWinHttpHttpRequest::SetContentAsString(const FString& ContentString)
 
 bool FWinHttpHttpRequest::SetContentAsStreamedFile(const FString& Filename)
 {
-	if (State != EHttpRequestStatus::NotStarted)
+	if (State == EHttpRequestStatus::Processing)
 	{
 		UE_LOG(LogHttp, Warning, TEXT("Attempted to set content on a request that is inflight"));
 		return false;
@@ -153,7 +153,7 @@ bool FWinHttpHttpRequest::SetContentAsStreamedFile(const FString& Filename)
 
 bool FWinHttpHttpRequest::SetContentFromStream(TSharedRef<FArchive, ESPMode::ThreadSafe> Stream)
 {
-	if (State != EHttpRequestStatus::NotStarted)
+	if (State == EHttpRequestStatus::Processing)
 	{
 		UE_LOG(LogHttp, Warning, TEXT("Attempted to set content on a request that is inflight"));
 		return false;
@@ -165,7 +165,7 @@ bool FWinHttpHttpRequest::SetContentFromStream(TSharedRef<FArchive, ESPMode::Thr
 
 void FWinHttpHttpRequest::SetHeader(const FString& HeaderName, const FString& HeaderValue)
 {
-	if (State != EHttpRequestStatus::NotStarted)
+	if (State == EHttpRequestStatus::Processing)
 	{
 		UE_LOG(LogHttp, Warning, TEXT("Attempted to set a header on a request that is inflight"));
 		return;
@@ -182,7 +182,7 @@ void FWinHttpHttpRequest::SetHeader(const FString& HeaderName, const FString& He
 
 void FWinHttpHttpRequest::AppendToHeader(const FString& HeaderName, const FString& AdditionalHeaderValue)
 {
-	if (State != EHttpRequestStatus::NotStarted)
+	if (State == EHttpRequestStatus::Processing)
 	{
 		UE_LOG(LogHttp, Warning, TEXT("Attempted to append a header on a request that is inflight"));
 		return;
