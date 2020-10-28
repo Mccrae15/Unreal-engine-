@@ -284,28 +284,8 @@ bool FWinHttpHttpRequest::ProcessRequest()
 	}));
 
 	// Store our request so it doesn't die if the requester doesn't store it (common use case)
-	FHttpModule::Get().GetHttpManager().AddRequest(LocalStrongThis);
+	FHttpModule::Get().GetHttpManager().AddThreadedRequest(LocalStrongThis);
 	return true;
-}
-
-FHttpRequestCompleteDelegate& FWinHttpHttpRequest::OnProcessRequestComplete()
-{
-	return RequestCompleteDelegate;
-}
-
-FHttpRequestProgressDelegate& FWinHttpHttpRequest::OnRequestProgress()
-{
-	return RequestProgressDelegate;
-}
-
-FHttpRequestHeaderReceivedDelegate& FWinHttpHttpRequest::OnHeaderReceived()
-{
-	return HeaderReceivedDelegate;
-}
-
-FHttpRequestWillRetryDelegate& FWinHttpHttpRequest::OnRequestWillRetry()
-{
-	return RequestWillRetryDelegate;
 }
 
 void FWinHttpHttpRequest::CancelRequest()
@@ -378,6 +358,56 @@ float FWinHttpHttpRequest::GetElapsedTime() const
 	return FPlatformTime::Seconds() - RequestStartTimeSeconds.GetValue();
 }
 
+bool FWinHttpHttpRequest::StartThreadedRequest()
+{
+	// No-op, our request is already started
+	return true;
+}
+
+bool FWinHttpHttpRequest::IsThreadedRequestComplete()
+{
+	return EHttpRequestStatus::IsFinished(State);
+}
+
+void FWinHttpHttpRequest::TickThreadedRequest(float DeltaSeconds)
+{
+	TSharedPtr<FWinHttpConnectionHttp, ESPMode::ThreadSafe> LocalConnection = Connection;
+	if (LocalConnection.IsValid())
+	{
+		LocalConnection->PumpStates();
+		// Connection is not guaranteed to be valid anymore here, be sure to check again if it gets used again below
+	}
+}
+
+void FWinHttpHttpRequest::FinishRequest()
+{
+	if (RequestFinishTimeSeconds.IsSet())
+	{
+		// Already finished
+		return;
+	}
+	RequestFinishTimeSeconds = FPlatformTime::Seconds();
+
+	// Set our final state if it's not set yet
+	if (!EHttpRequestStatus::IsFinished(State))
+	{
+		State = EHttpRequestStatus::Failed;
+	}
+
+	// Shutdown our connection
+	if (Connection.IsValid())
+	{
+		if (!Connection->IsComplete())
+		{
+			Connection->CancelRequest();
+		}
+		Connection.Reset();
+	}
+
+	TSharedRef<IHttpRequest> KeepAlive = AsShared();
+	OnProcessRequestComplete().ExecuteIfBound(KeepAlive, Response, Response.IsValid());
+}
+
 void FWinHttpHttpRequest::HandleDataTransferred(int32 BytesSent, int32 BytesReceived)
 {
 	check(IsInGameThread());
@@ -412,36 +442,6 @@ void FWinHttpHttpRequest::HandleRequestComplete(EHttpRequestStatus::Type Complet
 	}
 
 	FinishRequest();
-}
-
-void FWinHttpHttpRequest::FinishRequest()
-{
-	if (RequestFinishTimeSeconds.IsSet())
-	{
-		// Already finished
-		return;
-	}
-	RequestFinishTimeSeconds = FPlatformTime::Seconds();
-
-	// Set our final state if it's not set yet
-	if (!EHttpRequestStatus::IsFinished(State))
-	{
-		State = EHttpRequestStatus::Failed;
-	}
-
-	// Shutdown our connection
-	if (Connection.IsValid())
-	{
-		if (!Connection->IsComplete())
-		{
-			Connection->CancelRequest();
-		}
-		Connection.Reset();
-	}
-
-	TSharedRef<IHttpRequest> KeepAlive = AsShared();
-	FHttpModule::Get().GetHttpManager().RemoveRequest(KeepAlive);
-	OnProcessRequestComplete().ExecuteIfBound(KeepAlive, Response, Response.IsValid());
 }
 
 #endif // WITH_WINHTTP

@@ -5,8 +5,8 @@
 #if WITH_WINHTTP
 
 #include "CoreMinimal.h"
-#include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
+#include "IHttpThreadedRequest.h"
 
 class FRequestPayload;
 class FWinHttpHttpResponse;
@@ -15,7 +15,7 @@ class IWinHttpConnection;
 using FStringKeyValueMap = TMap<FString, FString>;
 
 class FWinHttpHttpRequest
-	: public IHttpRequest
+	: public IHttpThreadedRequest
 {
 public:
 	FWinHttpHttpRequest();
@@ -42,10 +42,6 @@ public:
 	virtual void SetHeader(const FString& HeaderName, const FString& HeaderValue) override;
 	virtual void AppendToHeader(const FString& HeaderName, const FString& AdditionalHeaderValue) override;
 	virtual bool ProcessRequest() override;
-	virtual FHttpRequestCompleteDelegate& OnProcessRequestComplete() override;
-	virtual FHttpRequestProgressDelegate& OnRequestProgress() override;
-	virtual FHttpRequestHeaderReceivedDelegate& OnHeaderReceived() override;
-	virtual FHttpRequestWillRetryDelegate& OnRequestWillRetry() override;
 	virtual void CancelRequest() override;
 	virtual EHttpRequestStatus::Type GetStatus() const override;
 	virtual const FHttpResponsePtr GetResponse() const override;
@@ -53,12 +49,22 @@ public:
 	virtual float GetElapsedTime() const override;
 	//~ End IHttpRequest Interface
 
+	//~ Begin IHttpRequestThreaded Interface
+	/** Called on HTTP thread */
+	virtual bool StartThreadedRequest() override;
+	/** Called on HTTP thread */
+	virtual bool IsThreadedRequestComplete() override;
+	/** Called on HTTP thread */
+	virtual void TickThreadedRequest(float DeltaSeconds) override;
+
+	/** Called on Game thread */
+	virtual void FinishRequest() override;
+	//~ End IHttpRequestThreaded Interface
+
 protected:
 	void HandleDataTransferred(int32 BytesSent, int32 BytesReceived);
 	void HandleHeaderReceived(const FString& HeaderKey, const FString& HeaderValue);
 	void HandleRequestComplete(EHttpRequestStatus::Type CompletionStatus, EHttpResponseCodes::Type HttpStatusCode, FStringKeyValueMap& Headers, TArray<uint8>& Contents);
-
-	void FinishRequest();
 
 private:
 	struct FWinHttpHttpRequestData
@@ -89,18 +95,6 @@ private:
 
 	/** Current status of request being processed */
 	EHttpRequestStatus::Type State = EHttpRequestStatus::NotStarted;
-
-	/** Delegate that will get called once request completes or on any error */
-	FHttpRequestCompleteDelegate RequestCompleteDelegate;
-
-	/** Delegate that will get called once per tick with bytes downloaded so far */
-	FHttpRequestProgressDelegate RequestProgressDelegate;
-
-	/** Delegate that will get called for each new header received */
-	FHttpRequestHeaderReceivedDelegate HeaderReceivedDelegate;
-	
-	/** Delegate that will get called when request will be retried */
-	FHttpRequestWillRetryDelegate RequestWillRetryDelegate;
 
 	/** */
 	TSharedPtr<IWinHttpConnection, ESPMode::ThreadSafe> Connection;
