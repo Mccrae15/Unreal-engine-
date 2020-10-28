@@ -6,7 +6,6 @@
 
 #if RHI_RAYTRACING
 
-
 static bool IsSupportedDynamicVertexFactoryType(const FVertexFactoryType* VertexFactoryType)
 {
 	return VertexFactoryType == FindVertexFactoryType(FName(TEXT("FNiagaraSpriteVertexFactory"), FNAME_Find))
@@ -28,7 +27,7 @@ public:
 		PassUniformBuffer.Bind(Initializer.ParameterMap, FSceneTexturesUniformParameters::StaticStructMetadata.GetShaderVariableName());
 
 		RWVertexPositions.Bind(Initializer.ParameterMap, TEXT("VertexPositions"));
-		VertexBufferSize.Bind(Initializer.ParameterMap, TEXT("VertexBufferSize"));
+		UsingIndirectDraw.Bind(Initializer.ParameterMap, TEXT("UsingIndirectDraw"));
 		NumVertices.Bind(Initializer.ParameterMap, TEXT("NumVertices"));
 		MinVertexIndex.Bind(Initializer.ParameterMap, TEXT("MinVertexIndex"));
 		PrimitiveId.Bind(Initializer.ParameterMap, TEXT("PrimitiveId"));
@@ -72,7 +71,7 @@ public:
 	}
 
 	LAYOUT_FIELD(FRWShaderParameter, RWVertexPositions);
-	LAYOUT_FIELD(FShaderParameter, VertexBufferSize);
+	LAYOUT_FIELD(FShaderParameter, UsingIndirectDraw);
 	LAYOUT_FIELD(FShaderParameter, NumVertices);
 	LAYOUT_FIELD(FShaderParameter, MinVertexIndex);
 	LAYOUT_FIELD(FShaderParameter, PrimitiveId);
@@ -94,8 +93,6 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 )
 {
 	FRayTracingGeometry& Geometry = *UpdateParams.Geometry;
-	bool bUsingIndirectDraw = UpdateParams.bUsingIndirectDraw;
-	uint32 NumMaxVertices = UpdateParams.NumVertices;
 	FRWBuffer& Buffer = *UpdateParams.Buffer;
 
 	for (const FMeshBatch& MeshBatch : UpdateParams.MeshBatches)
@@ -135,14 +132,17 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 		FMeshMaterialShader::GetElementShaderBindings(Shader, Scene, View, MeshBatch.VertexFactory, EVertexInputStreamType::Default, Scene->GetFeatureLevel(), PrimitiveSceneProxy, MeshBatch, MeshBatch.Elements[0], ShaderElementData, SingleShaderBindings, DummyArray);
 
 		DispatchCmd.TargetBuffer = &Buffer;
-		DispatchCmd.NumMaxVertices = UpdateParams.NumVertices;
-		DispatchCmd.NumCPUVertices = !bUsingIndirectDraw ? UpdateParams.NumVertices : 0;
 		DispatchCmd.PrimitiveId = PrimitiveId;
 		if (MeshBatch.Elements[0].MinVertexIndex < MeshBatch.Elements[0].MaxVertexIndex)
 		{
-			DispatchCmd.NumCPUVertices = MeshBatch.Elements[0].MaxVertexIndex - MeshBatch.Elements[0].MinVertexIndex;
+			DispatchCmd.NumCPUVertices = 1 + MeshBatch.Elements[0].MaxVertexIndex - MeshBatch.Elements[0].MinVertexIndex;
+		}
+		else
+		{
+			DispatchCmd.NumCPUVertices = UpdateParams.NumVertices;
 		}
 		DispatchCmd.MinVertexIndex = MeshBatch.Elements[0].MinVertexIndex;
+		DispatchCmd.bUsingIndirectDraw = UpdateParams.bUsingIndirectDraw;
 
 #if MESH_DRAW_COMMAND_DEBUG_DATA
 		FMeshProcessorShaders ShadersForDebug = Shaders.GetUntypedShaders();
@@ -230,21 +230,19 @@ void FRayTracingDynamicGeometryCollection::DispatchUpdates(FRHIComputeCommandLis
 
 			for (FMeshComputeDispatchCommand& Cmd : *DispatchCommands)
 			{
-				{
-					const TShaderRef<FRayTracingDynamicGeometryConverterCS>& Shader = Cmd.MaterialShader;
+				const TShaderRef<FRayTracingDynamicGeometryConverterCS>& Shader = Cmd.MaterialShader;
 
-					RHICmdList.SetComputeShader(Shader.GetComputeShader());
+				RHICmdList.SetComputeShader(Shader.GetComputeShader());
 
-					Cmd.ShaderBindings.SetOnCommandList(RHICmdList, Shader.GetComputeShader());
-					Shader->RWVertexPositions.SetBuffer(RHICmdList, Shader.GetComputeShader(), *Cmd.TargetBuffer);
-					SetShaderValue(RHICmdList, Shader.GetComputeShader(), Shader->VertexBufferSize, Cmd.TargetBuffer->NumBytes / sizeof(FVector));
-					SetShaderValue(RHICmdList, Shader.GetComputeShader(), Shader->NumVertices, Cmd.NumCPUVertices);
-					SetShaderValue(RHICmdList, Shader.GetComputeShader(), Shader->MinVertexIndex, Cmd.MinVertexIndex);
-					SetShaderValue(RHICmdList, Shader.GetComputeShader(), Shader->PrimitiveId, Cmd.PrimitiveId);
-					RHICmdList.DispatchComputeShader(FMath::DivideAndRoundUp<uint32>(Cmd.NumMaxVertices, 64), 1, 1);
+				Cmd.ShaderBindings.SetOnCommandList(RHICmdList, Shader.GetComputeShader());
+				Shader->RWVertexPositions.SetBuffer(RHICmdList, Shader.GetComputeShader(), *Cmd.TargetBuffer);
+				SetShaderValue(RHICmdList, Shader.GetComputeShader(), Shader->UsingIndirectDraw, Cmd.bUsingIndirectDraw ? 1 : 0);
+				SetShaderValue(RHICmdList, Shader.GetComputeShader(), Shader->NumVertices, Cmd.NumCPUVertices);
+				SetShaderValue(RHICmdList, Shader.GetComputeShader(), Shader->MinVertexIndex, Cmd.MinVertexIndex);
+				SetShaderValue(RHICmdList, Shader.GetComputeShader(), Shader->PrimitiveId, Cmd.PrimitiveId);
+				RHICmdList.DispatchComputeShader(FMath::DivideAndRoundUp<uint32>(Cmd.NumCPUVertices, 64), 1, 1);
 
-					Shader->RWVertexPositions.UnsetUAV(RHICmdList, Shader.GetComputeShader());
-				}
+				Shader->RWVertexPositions.UnsetUAV(RHICmdList, Shader.GetComputeShader());
 			}
 
 			RHICmdList.TransitionResources(EResourceTransitionAccess::EReadable, EResourceTransitionPipeline::EComputeToGfx, BuffersToTransition.GetData(), BuffersToTransition.Num());

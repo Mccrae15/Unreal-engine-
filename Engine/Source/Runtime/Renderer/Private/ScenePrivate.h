@@ -2489,7 +2489,7 @@ struct FMeshComputeDispatchCommand
 	FMeshDrawShaderBindings ShaderBindings;
 	TShaderRef<class FRayTracingDynamicGeometryConverterCS> MaterialShader;
 
-	uint32 NumMaxVertices;
+	bool bUsingIndirectDraw;
 	uint32 NumCPUVertices;
 	uint32 MinVertexIndex;
 	uint32 PrimitiveId;
