@@ -613,6 +613,7 @@ class FLoadedPackageRef
 	int32 RefCount = 0;
 	bool bAreAllPublicExportsLoaded = false;
 	bool bIsMissing = false;
+	bool bHasFailed = false;
 	bool bHasBeenLoadedDebug = false;
 
 public:
@@ -633,15 +634,16 @@ public:
 		check(RefCount > 0);
 		--RefCount;
 
-		ensureMsgf(bAreAllPublicExportsLoaded || bIsMissing,
+		ensureMsgf(bAreAllPublicExportsLoaded || bIsMissing || bHasFailed,
 			TEXT("LoadedPackageRef from None (0x%llX) to %s (0x%llX) should not have been released when the package is not complete.")
-			TEXT("RefCount=%d, AreAllExportsLoaded=%d, IsMissing=%d, HasBeenLoaded=%d"),
+			TEXT("RefCount=%d, AreAllExportsLoaded=%d, IsMissing=%d, HasFailed=%d, HasBeenLoaded=%d"),
 			FromPackageId.Value(),
 			Package ? *Package->GetName() : TEXT("None"),
 			ToPackageId.Value(),
 			RefCount,
 			bAreAllPublicExportsLoaded,
 			bIsMissing,
+			bHasFailed,
 			bHasBeenLoadedDebug);
 
 #if DO_CHECK
@@ -680,6 +682,7 @@ public:
 		check(!bIsMissing);
 		check(!Package);
 		Package = InPackage;
+		bHasFailed = false;
 	}
 
 	inline bool AreAllPublicExportsLoaded() const
@@ -690,6 +693,7 @@ public:
 	inline void SetAllPublicExportsLoaded()
 	{
 		check(!bIsMissing);
+		check(!bHasFailed);
 		check(Package);
 		bIsMissing = false;
 		bAreAllPublicExportsLoaded = true;
@@ -723,6 +727,11 @@ public:
 		check(!Package);
 		bIsMissing = false;
 		bAreAllPublicExportsLoaded = false;
+	}
+
+	inline void SetHasFailed()
+	{
+		bHasFailed = true;
 	}
 };
 
@@ -2781,7 +2790,7 @@ void FAsyncLoadingThread2::StartBundleIoRequests()
 			}
 			else
 			{
-				UE_ASYNC_PACKAGE_LOG(Fatal, Package->Desc, TEXT("StartBundleIoRequests: FailedRead"),
+				UE_ASYNC_PACKAGE_LOG(Warning, Package->Desc, TEXT("StartBundleIoRequests: FailedRead"),
 					TEXT("Failed reading chunk for package: %s"), *Result.Status().ToString());
 				Package->bLoadHasFailed = true;
 			}
@@ -3334,7 +3343,16 @@ EAsyncPackageState::Type FAsyncPackage2::Event_ProcessPackageSummary(FAsyncPacka
 
 	FScopedAsyncPackageEvent2 Scope(Package);
 
-	if (!Package->bLoadHasFailed)
+	if (Package->bLoadHasFailed)
+	{
+		if (Package->Desc.CanBeImported())
+		{
+			FLoadedPackageRef* PackageRef = Package->ImportStore.GlobalPackageStore.LoadedPackageStore.FindPackageRef(Package->Desc.DiskPackageId);
+			check(PackageRef);
+			PackageRef->SetHasFailed();
+		}
+	}
+	else
 	{
 		check(Package->ExportBundleEntryIndex == 0);
 
@@ -3893,7 +3911,7 @@ EAsyncPackageState::Type FAsyncPackage2::Event_ExportsDone(FAsyncPackage2* Packa
 	UE_ASYNC_PACKAGE_DEBUG(Package->Desc);
 	check(Package->AsyncPackageLoadingState == EAsyncPackageLoadingState2::ExportsDone);
 
-	if (Package->Desc.CanBeImported())
+	if (!Package->bLoadHasFailed && Package->Desc.CanBeImported())
 	{
 		FLoadedPackageRef& PackageRef =
 			Package->AsyncLoadingThread.GlobalPackageStore.LoadedPackageStore.GetPackageRef((Package->Desc.DiskPackageId));
@@ -4402,7 +4420,10 @@ EAsyncPackageState::Type FAsyncLoadingThread2::ProcessLoadedPackagesFromGameThre
 			{
 				FScopeLock LockAsyncPackages(&AsyncPackagesCritical);
 				AsyncPackageLookup.Remove(Package->Desc.GetAsyncPackageId());
-				Package->ClearConstructedObjects();
+				if (!Package->bLoadHasFailed)
+				{
+					Package->ClearConstructedObjects();
+				}
 			}
 
 			// Remove the package from the list before we trigger the callbacks, 
