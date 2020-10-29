@@ -371,7 +371,7 @@ bool FWinHttpHttpRequest::IsThreadedRequestComplete()
 
 void FWinHttpHttpRequest::TickThreadedRequest(float DeltaSeconds)
 {
-	TSharedPtr<FWinHttpConnectionHttp, ESPMode::ThreadSafe> LocalConnection = Connection;
+	TSharedPtr<IWinHttpConnection, ESPMode::ThreadSafe> LocalConnection = Connection;
 	if (LocalConnection.IsValid())
 	{
 		LocalConnection->PumpStates();
