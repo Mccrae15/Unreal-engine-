@@ -1141,7 +1141,8 @@ bool FDeferredShadingSceneRenderer::DispatchRayTracingWorldUpdates(FRHICommandLi
 
 		View.RayTracingSubSurfaceProfileSRV = RHICreateShaderResourceView(View.RayTracingSubSurfaceProfileTexture->GetRenderTargetItem().ShaderResourceTexture, 0);
 
-		View.RayTracingLightingDataUniformBuffer = CreateLightDataPackedUniformBuffer(Scene->Lights, View,
+		View.RayTracingLightingDataUniformBuffer = CreateLightDataPackedUniformBuffer(
+			RHICmdList, Scene->Lights, View,
 			EUniformBufferUsage::UniformBuffer_SingleFrame,
 			View.RayTracingLightingDataBuffer,
 			View.RayTracingLightingDataSRV);

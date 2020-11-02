@@ -65,12 +65,14 @@ struct FRTLightingData
 static_assert(sizeof(FRTLightingData) == 128, "Unexpected FRTLightingData size.");
 
 void SetupRaytracingLightDataPacked(
+	FRHICommandListImmediate& RHICmdList,
 	const TSparseArray<FLightSceneInfoCompact>& Lights,
 	const FViewInfo& View,
 	FRaytracingLightDataPacked* LightData,
 	TResourceArray<FRTLightingData>& LightDataArray);
 
 TUniformBufferRef<FRaytracingLightDataPacked> CreateLightDataPackedUniformBuffer(
+	FRHICommandListImmediate& RHICmdList,
 	const TSparseArray<FLightSceneInfoCompact>& Lights,
 	const class FViewInfo& View, EUniformBufferUsage Usage,
 	FStructuredBufferRHIRef& OutLightDataBuffer,

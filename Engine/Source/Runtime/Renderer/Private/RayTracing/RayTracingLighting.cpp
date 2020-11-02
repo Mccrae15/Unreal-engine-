@@ -22,6 +22,7 @@ bool CanUseRayTracingLightingMissShader(EShaderPlatform ShaderPlatform)
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FRaytracingLightDataPacked, "RaytracingLightsDataPacked");
 
 void SetupRaytracingLightDataPacked(
+	FRHICommandListImmediate& RHICmdList,
 	const TSparseArray<FLightSceneInfoCompact>& Lights,
 	const FViewInfo& View,
 	FRaytracingLightDataPacked* LightData,
@@ -187,11 +188,12 @@ void SetupRaytracingLightDataPacked(
 			IESProfilesArray[It->Value] = It->Key;
 		}
 
-		View.IESLightProfileResource->BuildIESLightProfilesTexture(IESProfilesArray);
+		View.IESLightProfileResource->BuildIESLightProfilesTexture(RHICmdList, IESProfilesArray);
 	}
 }
 
 TUniformBufferRef<FRaytracingLightDataPacked> CreateLightDataPackedUniformBuffer(
+	FRHICommandListImmediate& RHICmdList,
 	const TSparseArray<FLightSceneInfoCompact>& Lights,
 	const class FViewInfo& View, EUniformBufferUsage Usage,
 	FStructuredBufferRHIRef& OutLightDataBuffer,
@@ -200,7 +202,7 @@ TUniformBufferRef<FRaytracingLightDataPacked> CreateLightDataPackedUniformBuffer
 	FRaytracingLightDataPacked LightData;
 	TResourceArray<FRTLightingData> LightDataArray;
 
-	SetupRaytracingLightDataPacked(Lights, View, &LightData, LightDataArray);
+	SetupRaytracingLightDataPacked(RHICmdList, Lights, View, &LightData, LightDataArray);
 
 	check(LightData.Count == LightDataArray.Num());
 
