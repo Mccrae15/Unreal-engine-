@@ -288,7 +288,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 	static auto CVarReflectionCaptures          = IConsoleManager::Get().FindConsoleVariable(TEXT("r.RayTracing.Reflections.ReflectionCaptures"));
 
 	CommonParameters.ShouldDoDirectLighting              = CVarDirectLighting && CVarDirectLighting->GetBool();
-	CommonParameters.ShouldDoEmissiveAndIndirectLighting = CVarEmissiveAndIndirectLighting && CVarDirectLighting->GetBool();
+	CommonParameters.ShouldDoEmissiveAndIndirectLighting = CVarEmissiveAndIndirectLighting && CVarEmissiveAndIndirectLighting->GetBool();
 	CommonParameters.ShouldDoReflectionCaptures          = CVarReflectionCaptures && CVarReflectionCaptures->GetBool();
 
 	CommonParameters.TLAS                    = View.RayTracingScene.RayTracingSceneRHI->GetShaderResourceView();
