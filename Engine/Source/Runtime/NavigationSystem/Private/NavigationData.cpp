@@ -241,7 +241,7 @@ void  ANavigationData::RemovedObservedPath(const UObject* RemoveForThis)
 				{
 					FString name = Path2->GetQuerier()->GetName();
 					FString LookedForName = RemoveForThis->GetName();
-					UE_LOG(LogTemp, Log, TEXT("Comparing %s with %s"),*name,*LookedForName)
+					//UE_LOG(LogTemp, Log, TEXT("Comparing %s with %s"),*name,*LookedForName)
 					if (name.Equals(LookedForName))
 					{
 						ObservedPaths.RemoveAtSwap(PathIndex, 1, /*bAllowShrinking=*/false);
