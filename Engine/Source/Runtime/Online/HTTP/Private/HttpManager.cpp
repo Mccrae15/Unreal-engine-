@@ -137,6 +137,8 @@ void FHttpManager::Flush(bool bShutdown)
 	bool bAlwaysCancelRequestsOnFlush = false; // Default to not immediately cancelling
 	GConfig->GetBool(TEXT("HTTP"), TEXT("bAlwaysCancelRequestsOnFlush"), bAlwaysCancelRequestsOnFlush, GEngineIni);
 
+	float SecondsToSleepForOutstandingRequests = 0.5f;
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("RequestCleanupDelaySec"), SecondsToSleepForOutstandingRequests, GEngineIni);
 	if (bShutdown)
 	{
 		if (Requests.Num())
@@ -157,6 +159,7 @@ void FHttpManager::Flush(bool bShutdown)
 	// block until all active requests have completed
 	double BeginWaitTime = FPlatformTime::Seconds();
 	double LastTime = BeginWaitTime;
+	UE_LOG(LogHttp, Display, TEXT("cleaning up %d outstanding Http requests."), Requests.Num());
 	while (Requests.Num() > 0)
 	{
 		const double AppTime = FPlatformTime::Seconds();
@@ -188,11 +191,11 @@ void FHttpManager::Flush(bool bShutdown)
 		{
 			if (FPlatformProcess::SupportsMultithreading())
 			{
-				UE_LOG(LogHttp, Display, TEXT("Sleeping 0.5s to wait for %d outstanding Http requests."), Requests.Num());
-				FPlatformProcess::Sleep(0.5f);
+				UE_LOG(LogHttp, Display, TEXT("Sleeping %.3fs to wait for %d outstanding Http requests."), SecondsToSleepForOutstandingRequests, Requests.Num());
+				FPlatformProcess::Sleep(SecondsToSleepForOutstandingRequests);
 			}
 			else if (Thread)
-			{
+			{				
 				Thread->Tick();
 			}
 			else
