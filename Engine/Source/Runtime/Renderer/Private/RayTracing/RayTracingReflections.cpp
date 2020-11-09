@@ -498,6 +498,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingReflections(
 			GraphBuilder,
 			SceneTextures,
 			View,
+			ResolutionFraction,
 			OutDenoiserInputs);
 		return;
 	}

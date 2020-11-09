@@ -530,6 +530,7 @@ private:
 		FRDGBuilder& GraphBuilder,
 		const FSceneTextureParameters& SceneTextures,
 		const FViewInfo& View,
+		float ResolutionFraction,
 		IScreenSpaceDenoiser::FReflectionsInputs* OutDenoiserInputs);
 
 	void RenderRayTracingShadows(

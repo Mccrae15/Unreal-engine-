@@ -696,11 +696,6 @@ void FDeferredShadingSceneRenderer::RenderDeferredReflectionsAndSkyLighting(FRHI
 				RayTracingConfig.RayCountPerPixel = 0;
 #endif
 
-				if (!bDenoise)
-				{
-					RayTracingConfig.ResolutionFraction = 1.0f;
-				}
-
 				RenderRayTracingReflections(
 					GraphBuilder,
 					SceneTextures,
