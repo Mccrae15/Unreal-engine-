@@ -870,8 +870,15 @@ void FDeferredShadingSceneRenderer::RenderDeferredReflectionsAndSkyLighting(FRHI
 
 			// Bind hair data
 			const bool bCheckerboardSubsurfaceRendering = IsSubsurfaceCheckerboardFormat(SceneContext.GetSceneColorFormat());
+
+			// ScreenSpace and Deferred ray traced reflections use the same reflection environment shader,
+			// but main RT reflection shader requires a custom path as it evaluates the clear coat BRDF differently.
+			static auto CVarExperimentalDeferredReflections = IConsoleManager::Get().FindConsoleVariable(TEXT("r.RayTracing.Reflections.ExperimentalDeferred"));
+			const bool bExperimentalDeferredReflections = CVarExperimentalDeferredReflections && CVarExperimentalDeferredReflections->GetBool();
+			const bool bRequiresSpecializedReflectionEnvironmentShader = bRayTracedReflections && !bExperimentalDeferredReflections;
+
 			auto PermutationVector = FReflectionEnvironmentSkyLightingPS::BuildPermutationVector(
-				View, bHasBoxCaptures, bHasSphereCaptures, DynamicBentNormalAO != NULL, bSkyLight, bDynamicSkyLight, bApplySkyShadowing, bRayTracedReflections);
+				View, bHasBoxCaptures, bHasSphereCaptures, DynamicBentNormalAO != NULL, bSkyLight, bDynamicSkyLight, bApplySkyShadowing, bRequiresSpecializedReflectionEnvironmentShader);
 
 			TShaderMapRef<FReflectionEnvironmentSkyLightingPS> PixelShader(View.ShaderMap, PermutationVector);
 			ClearUnusedGraphResources(PixelShader, PassParameters);
