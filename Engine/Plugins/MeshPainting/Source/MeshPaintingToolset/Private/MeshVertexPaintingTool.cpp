@@ -55,7 +55,8 @@ UMeshVertexPaintingToolProperties::UMeshVertexPaintingToolProperties()
 	PaintColor(FLinearColor::White),
 	EraseColor(FLinearColor::Black),
 	bEnableFlow(false),
-	VertexPreviewSize(6.0f)
+	VertexPreviewSize(6.0f),
+	AngleTolerance(90.0f)
 {
 }
 
@@ -128,6 +129,7 @@ void UMeshVertexPaintingTool::Render(IToolsContextRenderAPI* RenderAPI)
 		const float PointDrawSize = VertexProperties->VertexPreviewSize;
 		// Draw trace surface normal
 		const FVector NormalLineEnd(LastBestHitResult.Location + LastBestHitResult.Normal * NormalLineSize);
+		ToolDir = LastBestHitResult.Normal;
 		Draw.DrawLine(FVector(LastBestHitResult.Location), NormalLineEnd, NormalLineColor, WidgetLineThickness);
 
 		for (UMeshComponent* CurrentComponent : MeshToolManager->GetPaintableMeshComponents())
@@ -146,7 +148,7 @@ void UMeshVertexPaintingTool::Render(IToolsContextRenderAPI* RenderAPI)
 				const float ComponentSpaceBrushRadius = ComponentToWorldMatrix.InverseTransformVector(FVector(BrushProperties->BrushRadius, 0.0f, 0.0f)).Size();
 				const float ComponentSpaceSquaredBrushRadius = ComponentSpaceBrushRadius * ComponentSpaceBrushRadius;
 
-				const TArray<FVector>& InRangeVertices = MeshAdapter->SphereIntersectVertices(ComponentSpaceSquaredBrushRadius, ComponentSpaceBrushPosition, ComponentSpaceCameraPosition, VertexProperties->bOnlyFrontFacingTriangles);
+				const TArray<FVector>& InRangeVertices = MeshAdapter->SphereIntersectVertices(ComponentSpaceSquaredBrushRadius, ComponentSpaceBrushPosition, ComponentSpaceCameraPosition, VertexProperties->bOnlyFrontFacingTriangles, LastBestHitResult.Normal);
 
 				for (const FVector& Vertex : InRangeVertices)
 				{
@@ -398,7 +400,7 @@ bool UMeshVertexPaintingTool::PaintInternal(const TArrayView<TPair<FVector, FVec
 				{
 					InfluencedVertices.Reset();
 					Args.HitResult = PaintRayResults[PaintRayResultId].BestTraceResult;
-					bPaintApplied |= UMeshPaintingToolset::GetPerVertexPaintInfluencedVertices(Args, InfluencedVertices);
+					bPaintApplied |= UMeshPaintingToolset::GetPerVertexPaintInfluencedVertices(Args, InfluencedVertices, ToolDir, VertexProperties->AngleTolerance);
 
 					if (InfluencedVertices.Num() == 0)
 					{

@@ -601,6 +601,11 @@ void FWindowsPlatformMisc::PlatformInit()
 	FWindowsPlatformStackWalk::RegisterOnModulesChanged();
 }
 
+int32 FWindowsPlatformMisc::getRAMinGB()
+{
+	const FPlatformMemoryConstants& MemoryConstants = FPlatformMemory::GetConstants();
+	return MemoryConstants.TotalPhysicalGB;
+}
 
 /**
  * Handler called for console events like closure, CTRL-C, ...

@@ -1,0 +1,78 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|ORBIS">
+      <Configuration>Release</Configuration>
+      <Platform>ORBIS</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{78B079BD-9FC7-4B9E-B4A6-96DA0F00248B}</ProjectGuid>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+	<OutDir>..\Lib\</OutDir>
+    <TargetName>libfreetype26</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions);FT2_BUILD_LIBRARY</PreprocessorDefinitions>
+      <OptimizationLevel>Level2</OptimizationLevel>
+      <AdditionalIncludeDirectories>..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Include</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\autofit\autofit.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\bdf\bdf.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\cff\cff.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftbase.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftbitmap.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\cache\ftcache.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftfstype.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftgasp.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftglyph.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\gzip\ftgzip.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftinit.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\lzw\ftlzw.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftstroke.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftsystem.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\smooth\smooth.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftbbox.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftfntfmt.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftmm.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftpfr.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftsynth.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\fttype1.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftwinfnt.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftlcdfil.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftgxval.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftotval.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\base\ftpatent.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\pcf\pcf.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\pfr\pfr.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\psaux\psaux.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\pshinter\pshinter.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\psnames\psmodule.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\raster\raster.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\sfnt\sfnt.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\truetype\truetype.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\type1\type1.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\cid\type1cid.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\type42\type42.c" />
+    <ClCompile Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Src\winfonts\winfnt.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Include\ft2build.h" />
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Include\config\ftconfig.h" />
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Include\config\ftheader.h" />
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Include\config\ftmodule.h" />
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Include\config\ftoption.h" />
+    <ClInclude Include="..\..\..\..\..\..\..\Source\ThirdParty\FreeType2\FreeType2-2.6\Include\config\ftstdlib.h" />
+  </ItemGroup>
+  <Import Condition="'$(ConfigurationType)' == 'Makefile' and Exists('$(VCTargetsPath)\Platforms\$(Platform)\SCE.Makefile.$(Platform).targets')" Project="$(VCTargetsPath)\Platforms\$(Platform)\SCE.Makefile.$(Platform).targets" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -11,6 +11,7 @@ UPaintBrushSettings::UPaintBrushSettings(const FObjectInitializer& ObjectInitial
 	BrushFalloffAmount(0.5f),
 	bEnableFlow(true),
 	bOnlyFrontFacingTriangles(true),
+	AngleTolerance(90.0f),
 	ColorViewMode(EMeshPaintColorViewMode::Normal)	
 {
 	const FName ClampMin("ClampMin");

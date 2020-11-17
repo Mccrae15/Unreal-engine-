@@ -37,6 +37,7 @@ struct CORE_API FWindowsPlatformMisc
 {
 	static void PlatformPreInit();
 	static void PlatformInit();
+	static int32 getRAMinGB();
 	static void SetGracefulTerminationHandler();
 	static int32 GetMaxPathLength();
 

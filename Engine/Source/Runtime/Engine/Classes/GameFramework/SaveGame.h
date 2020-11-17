@@ -27,4 +27,9 @@ class ENGINE_API USaveGame : public UObject
 	 */
 
 	GENERATED_UCLASS_BODY()
+
+public:
+
+	UFUNCTION(BlueprintCallable, category = SaveGame)
+		virtual void GameLoaded(){}
 };

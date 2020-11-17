@@ -843,16 +843,22 @@ FSteamVRInputDevice* USteamVRInputDeviceFunctionLibrary::GetSteamVRInputDevice()
 	for (auto MotionController : MotionControllers)
 	{
 		FSteamVRInputDevice* TestSteamVRDevice = static_cast<FSteamVRInputDevice*>(MotionController);
-		if (TestSteamVRDevice != nullptr && TestSteamVRDevice->DeviceSignature == 2019)
+		if (TestSteamVRDevice != nullptr)
 		{
-			if (TestSteamVRDevice->SteamVRHMDModule && TestSteamVRDevice->SteamVRHMDModule->GetVRSystem())
-			{
-				return TestSteamVRDevice;
-			}
-			else
-			{
-				return nullptr;
-			}
+		//	if (!FGenericPlatformMath::IsNaN(TestSteamVRDevice->GetDeviceSignature()))
+		//	{
+				if (TestSteamVRDevice->GetDeviceSignature() == 2019)
+				{
+					if (TestSteamVRDevice->SteamVRHMDModule && TestSteamVRDevice->SteamVRHMDModule->GetVRSystem())
+					{
+						return TestSteamVRDevice;
+					}
+					else
+					{
+						return nullptr;
+					}
+				}
+		//	}
 		}
 	}
 	return nullptr;

@@ -1,0 +1,118 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/** Decodes one or more cmask planes into a one-channel texture. Used to skip unnecessary pixel shader work. */
+
+// This macro tells the compiler that this shader has to be compiled for neo and base.
+COMPILE_FOR_NEO
+
+RWTexture2D<uint>	OutCombinedRTWriteMask;
+Buffer<uint> RTWriteMaskInputs[NUM_RENDER_TARGETS];
+
+struct
+{
+	uint TilesWide;
+} PlatformData;
+
+// The following two functions were adapted from SDK source in gpu_address\metadata.h
+
+uint GetPipeIndexOfTile(uint x, uint y)
+{
+	uint pipe = 0;
+	pipe |= (((x >> 0) ^ (y >> 0) ^ (x >> 1)) & 0x1) << 0;
+	pipe |= (((x >> 1) ^ (y >> 1)) & 0x1) << 1;
+	pipe |= (((x >> 2) ^ (y >> 2)) & 0x1) << 2;
+#if PS4_NEO_PROFILE
+	pipe |= (((x >> 3) ^ (y >> 2)) & 0x1) << 3;
+#endif
+
+	return pipe;
+}
+
+// Given an 8*8 tile index, returns the byte index and shift required to access that tile's cmask nybble.
+void ComputeCmaskIndexAndShift(uint2 TileIndex, out uint Byte, out uint Shift)
+{
+	const bool isLinear = false;
+
+#if PS4_NEO_PROFILE
+	const uint num_pipes = 16;
+#else
+	const uint num_pipes = 8;
+#endif
+
+	const uint pipe_interleave = 256;
+	const uint cl_size = 256; // 256 BYTES per PIPE in a CACHELINE
+	
+	const uint macro_shift = (16 - num_pipes) >> 3;
+	const uint cl_width = 64;
+	const uint cl_height = num_pipes << 2;
+	const uint cl_x = TileIndex.x / cl_width;
+	const uint cl_y = TileIndex.y / cl_height;
+	const uint surf_pitch_cl = (PlatformData.TilesWide + cl_width - 1) / cl_width;
+	const uint cl_offset = isLinear ? 0 : ((cl_x + surf_pitch_cl * cl_y) * cl_size);
+
+	const uint macro_x = (isLinear ? TileIndex.x : (TileIndex.x % cl_width)) / 4;
+	const uint macro_y = (isLinear ? TileIndex.y : (TileIndex.y % cl_height)) / 4;
+	const uint macro_pitch = (isLinear ? PlatformData.TilesWide : cl_width) / 4;
+	uint macro_offset = (macro_x + macro_y * macro_pitch) << macro_shift;
+
+	macro_offset &= ~3;
+	macro_offset |= (((TileIndex.x >> 1) ^ (TileIndex.y >> 0)) & 1) << 0;
+	macro_offset |= (((TileIndex.x >> 1)) & 1) << 1;
+
+	const uint tile_number = cl_offset + macro_offset;
+	const uint device_address = tile_number >> 1;
+	const uint pipe = GetPipeIndexOfTile(TileIndex.x, TileIndex.y);
+	const uint final_address = (device_address % pipe_interleave) + (pipe * pipe_interleave) + (device_address / pipe_interleave) * pipe_interleave * num_pipes;
+
+	Byte = final_address;
+	Shift = (tile_number & 1) * 4;
+}
+
+// 1 thread per 8*8 cmask tile <==> 1 thread per texel in the write mask texture
+[numthreads(THREADGROUP_SIZEX, THREADGROUP_SIZEY, 1)]
+void RTWriteMaskDecodeMain(uint3 DispatchThreadId : SV_DispatchThreadID) 
+{
+	uint Byte, Shift;
+	ComputeCmaskIndexAndShift(DispatchThreadId.xy, Byte, Shift);
+
+	uint Result = 0;
+
+	UNROLL
+	for (uint Index = 0; Index < NUM_RENDER_TARGETS; ++Index)
+	{
+		uint Nybble = (RTWriteMaskInputs[Index].Load(Byte) >> Shift);
+
+		//
+		// For a given 8*8 texel region in the main texture plane,
+		// the cmask bits are ordered as follows:
+		//           
+		//   x x x x | y y y y
+		//   x x x x | y y y y
+		//   x x x x | y y y y
+		//   x x x x | y y y y
+		//   ------------------
+		//   z z z z | w w w w
+		//   z z z z | w w w w
+		//   z z z z | w w w w
+		//   z z z z | w w w w
+		//           
+		//            8  4  2  1
+		//  Nybble = (w, z, y, x)
+		//
+		// With multiple render targets, the bits of each quadrant are stored adjacent to each other.
+		// For example, with 3 render targets:
+		//
+		// RT Index:           |2 1 0|2 1 0|2 1 0|2 1 0
+		//           ----------|-----|-----|-----|------
+		// Quad Bit: 0b 0 0 0 0|w w w|z z z|y y y|x x x (16 bits)
+		//
+
+		Result |=
+			((Nybble & 0b0001) << (((NUM_RENDER_TARGETS * 0) - 0) + Index)) |
+			((Nybble & 0b0010) << (((NUM_RENDER_TARGETS * 1) - 1) + Index)) |
+			((Nybble & 0b0100) << (((NUM_RENDER_TARGETS * 2) - 2) + Index)) |
+			((Nybble & 0b1000) << (((NUM_RENDER_TARGETS * 3) - 3) + Index));
+	}
+	
+	OutCombinedRTWriteMask[DispatchThreadId.xy] = Result;
+}

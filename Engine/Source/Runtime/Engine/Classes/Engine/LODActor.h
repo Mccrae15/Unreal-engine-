@@ -49,10 +49,18 @@ private:
 	FName Key;
 
 	/** what distance do you want this to show up instead of SubActors */
-	UPROPERTY(Category = LODActor, VisibleAnywhere)
+	UPROPERTY(Category = LODActor, EditAnywhere)
 	float LODDrawDistance;
 
 public:
+
+	/**
+	 *	Specifies which mesh LOD to use as occluder geometry for software occlusion
+	 *  Set to -1 to not use this mesh as occluder
+	 */
+	UPROPERTY(EditAnywhere, Category = StaticMesh, AdvancedDisplay, meta = (DisplayName = "LOD For Occluder Mesh"))
+		int32 LODForOccluderMesh = -1;
+
 	/** The hierarchy level of this actor; the first tier of HLOD is level 1, the second tier is level 2 and so on. */
 	UPROPERTY(Category=LODActor, VisibleAnywhere)
 	int32 LODLevel;
@@ -82,6 +90,15 @@ public:
 	void PauseDitherTransition();
 	/** Makes the actor tickable and according to r.HLOD.DitherPauseTime sets the MinDrawDistance back to non-zero */
 	void StartDitherTransition();
+
+	UFUNCTION(BlueprintCallable, Category = LODActor)
+		void setLodDrawDistance(float NewValue) { LODDrawDistance = NewValue; }
+	
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = LODActor)
+		UStaticMesh* getStaticMesh();
+
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = LODActor)
+		int32  getLODForOccluderMesh() { return LODForOccluderMesh; }
 
 	/** Sets StaticMesh and IsPreviewActor to true if InStaticMesh equals nullptr */
 	void SetStaticMesh(UStaticMesh* InStaticMesh);

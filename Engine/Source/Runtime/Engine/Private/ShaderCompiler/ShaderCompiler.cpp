@@ -2313,8 +2313,6 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 			}
 		}
 
-		check((ShaderMap && Materials) || ProcessIt.Key() == GlobalShaderMapId);
-
 		if (ShaderMap && Materials)
 		{
 			TArray<FString> Errors;
@@ -2455,6 +2453,26 @@ void FShaderCompilingManager::ProcessCompiledShaderMaps(
 				CompilationResults.Empty();
 				ProcessIt.RemoveCurrent();
 			}
+		}
+		else
+		{
+			// CompileID doesn't match GlobalShaderMapId, and doesn't match any currently compiling materials...this is a fatal error
+			UE_LOG(LogShaderCompilers, Error, TEXT("CompileResults: NumJobsQueued %d, FinishedJobs.Num %d, FinalizeJobIndex %d, bAllJobsSucceeded %d"),
+				CompileResults.NumJobsQueued, CompileResults.FinishedJobs.Num(), CompileResults.FinalizeJobIndex, (int32)CompileResults.bAllJobsSucceeded)
+			UE_LOG(LogShaderCompilers, Error, TEXT("ShaderMap: %s"), ShaderMap ? ShaderMap->GetFriendlyName() : TEXT("nullptr"));
+			if (Materials)
+			{
+				UE_LOG(LogShaderCompilers, Error, TEXT("Materials: %d"), Materials->Num());
+				for (FMaterial* Material : *Materials)
+				{
+					UE_LOG(LogShaderCompilers, Error, TEXT("  Material: %s"), Material ? *Material->GetFriendlyName() : TEXT("nullptr"));
+				}
+			}
+			else
+			{
+				UE_LOG(LogShaderCompilers, Error, TEXT("Materials: nullptr"));
+			}
+			UE_LOG(LogShaderCompilers, Fatal, TEXT("Missing ShaderMap/Material for CompileID %d"), ProcessIt.Key());
 		}
 	}
 
@@ -2825,6 +2843,43 @@ void FShaderCompilingManager::CancelCompilation(const TCHAR* MaterialName, const
 	// Using atomics to update NumOutstandingJobs since it is read outside of the critical section
 	FPlatformAtomics::InterlockedAdd(&NumOutstandingJobs, -TotalNumJobsRemoved);
 }
+
+void FShaderCompilingManager::CancelAllCompilations()
+{
+	check(!FPlatformProperties::RequiresCookedData());
+	UE_LOG(LogShaders, Log, TEXT("Cancel All Compilations"));
+
+	// Lock CompileQueueSection so we can access the input and output queues
+	FScopeLock Lock(&CompileQueueSection);
+
+	const int32 TotalNumJobsRemoved = CompileQueue.Num();
+	for (int i = 0; i < CompileQueue.Num(); i++) 
+		
+		if (FShaderMapCompileResults* ShaderMapJob = ShaderMapJobs.Find(CompileQueue[i]->Id))
+		{
+			int32 NumJobsRemoved = 0;
+			if (FShaderPipelineCompileJob* PipelineJob = CompileQueue[i]->GetShaderPipelineJob())
+			{
+				NumJobsRemoved += PipelineJob->StageJobs.Num();
+			}
+			else
+			{
+				++NumJobsRemoved;
+			}
+
+			ShaderMapJob->NumJobsQueued -= NumJobsRemoved;
+			if (ShaderMapJob->NumJobsQueued == 0)
+			{
+				//We've removed all the jobs for this shader map so remove it.
+				ShaderMapJobs.Remove(CompileQueue[i]->Id);
+			}
+		}
+	CompileQueue.Empty();
+	// Using atomics to update NumOutstandingJobs since it is read outside of the critical section
+	FPlatformAtomics::InterlockedAdd(&NumOutstandingJobs, -TotalNumJobsRemoved);
+}
+
+
 
 void FShaderCompilingManager::FinishCompilation(const TCHAR* MaterialName, const TArray<int32>& ShaderMapIdsToFinishCompiling)
 {

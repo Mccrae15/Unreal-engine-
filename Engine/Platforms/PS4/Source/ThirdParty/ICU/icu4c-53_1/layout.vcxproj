@@ -1,0 +1,291 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+	<ItemGroup Label="ProjectConfigurations">
+		<ProjectConfiguration Include="Debug|ORBIS">
+			<Configuration>Debug</Configuration>
+			<Platform>ORBIS</Platform>
+		</ProjectConfiguration>
+		<ProjectConfiguration Include="Release|ORBIS">
+			<Configuration>Release</Configuration>
+			<Platform>ORBIS</Platform>
+		</ProjectConfiguration>
+	</ItemGroup>
+	<PropertyGroup Label="Globals">
+		<ProjectGuid>{C920062A-0647-4553-A3B2-37C58065664B}</ProjectGuid>
+		<ApplicationEnvironment>title</ApplicationEnvironment>
+	</PropertyGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'" Label="Configuration">
+		<ConfigurationType>StaticLibrary</ConfigurationType>
+		<UseOfMfc>false</UseOfMfc>
+		<CharacterSet>MultiByte</CharacterSet>
+		<PlatformToolset>v110</PlatformToolset>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'" Label="Configuration">
+		<ConfigurationType>StaticLibrary</ConfigurationType>
+		<UseOfMfc>false</UseOfMfc>
+		<CharacterSet>MultiByte</CharacterSet>
+		<PlatformToolset>v110</PlatformToolset>
+	</PropertyGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+	<ImportGroup Label="ExtensionSettings">
+	</ImportGroup>
+	<ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'" Label="PropertySheets">
+		<Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+		<Import Project="$(VCTargetsPath)Microsoft.CPP.UpgradeFromVC71.props" />
+	</ImportGroup>
+	<ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'" Label="PropertySheets">
+		<Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+		<Import Project="$(VCTargetsPath)Microsoft.CPP.UpgradeFromVC71.props" />
+	</ImportGroup>
+	<PropertyGroup Label="UserMacros" />
+	<PropertyGroup>
+		<_ProjectFileVersion>10.0.30319.1</_ProjectFileVersion>
+		<LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">true</LinkIncremental>
+		<LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">false</LinkIncremental>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+		<TargetName>libsiculed</TargetName>
+		<OutDir>.\lib\</OutDir>
+		<IntDir>$(Platform)_$(Configuration)\$(ProjectName)\</IntDir>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+		<TargetName>libsicule</TargetName>
+		<OutDir>.\lib\</OutDir>
+		<IntDir>$(Platform)_$(Configuration)\$(ProjectName)\</IntDir>
+	</PropertyGroup>
+	<ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+		<ClCompile>
+			<Optimization>Disabled</Optimization>
+			<AdditionalIncludeDirectories>include;..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\include;..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+			<PreprocessorDefinitions>U_STATIC_IMPLEMENTATION; UCONFIG_NO_TRANSLITERATION=1; U_USING_ICU_NAMESPACE=0;U_STATIC_IMPLEMENTATION;U_NO_DEFAULT_INCLUDE_UTF_HEADERS=1;UNISTR_FROM_CHAR_EXPLICIT=explicit;UNISTR_FROM_STRING_EXPLICIT=explicit;U_ATTRIBUTE_DEPRECATED=;_DEBUG;U_COMMON_IMPLEMENTATION;U_PLATFORM_EXTERNAL=1;__BSD_VISIBLE;U_HAVE_NL_LANGINFO_CODESET=0;U_ENABLE_DYLOAD=0;ICU_NO_USER_DATA_OVERRIDE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+			<BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+			<RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+			<BufferSecurityCheck>true</BufferSecurityCheck>
+			<DisableLanguageExtensions>true</DisableLanguageExtensions>
+			<TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
+			<BrowseInformation>true</BrowseInformation>
+			<WarningLevel>Level3</WarningLevel>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+			<CompileAs>Default</CompileAs>
+			<AdditionalOptions>-frtti %(AdditionalOptions)</AdditionalOptions>
+			<MultiProcessorCompilation>true</MultiProcessorCompilation>
+		</ClCompile>
+		<Link>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<GenerateDebugInformation>true</GenerateDebugInformation>
+		</Link>
+	</ItemDefinitionGroup>
+	<ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+		<ClCompile>
+			<AdditionalIncludeDirectories>include;..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\include;..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+			<PreprocessorDefinitions>U_STATIC_IMPLEMENTATION; UCONFIG_NO_TRANSLITERATION=1; U_USING_ICU_NAMESPACE=0;U_STATIC_IMPLEMENTATION;U_NO_DEFAULT_INCLUDE_UTF_HEADERS=1;UNISTR_FROM_CHAR_EXPLICIT=explicit;UNISTR_FROM_STRING_EXPLICIT=explicit;U_ATTRIBUTE_DEPRECATED=;_DEBUG;U_COMMON_IMPLEMENTATION;U_PLATFORM_EXTERNAL=1;__BSD_VISIBLE;U_HAVE_NL_LANGINFO_CODESET=0;U_ENABLE_DYLOAD=0;ICU_NO_USER_DATA_OVERRIDE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+			<StringPooling>true</StringPooling>
+			<RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+			<FunctionLevelLinking>true</FunctionLevelLinking>
+			<DisableLanguageExtensions>true</DisableLanguageExtensions>
+			<TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
+			<WarningLevel>Level3</WarningLevel>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<CompileAs>Default</CompileAs>
+			<AdditionalOptions>-frtti %(AdditionalOptions)</AdditionalOptions>
+			<OptimizationLevel>Level2</OptimizationLevel>
+			<MultiProcessorCompilation>true</MultiProcessorCompilation>
+		</ClCompile>
+		<Link>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+		</Link>
+	</ItemDefinitionGroup>
+	<ItemGroup>
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\AlternateSubstSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\AnchorTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ArabicLayoutEngine.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ArabicShaping.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\CanonData.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\CanonShaping.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ClassDefinitionTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ContextualGlyphInsertionProc2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ContextualGlyphSubstProc.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ContextualGlyphSubstProc2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ContextualSubstSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\CoverageTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\CursiveAttachmentSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\DeviceTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ExtensionSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\Features.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GDEFMarkFilter.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphDefinitionTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphIterator.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphLookupTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphPositionAdjustments.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphPositioningTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphPosnLookupProc.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphSubstitutionTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphSubstLookupProc.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GXLayoutEngine.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GXLayoutEngine2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\HangulLayoutEngine.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\HanLayoutEngine.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\IndicClassTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\IndicLayoutEngine.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\IndicRearrangementProcessor.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\IndicRearrangementProcessor2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\IndicReordering.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\KernTable.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\KhmerLayoutEngine.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\KhmerReordering.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LayoutEngine.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LEFontInstance.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LEGlyphStorage.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LEInsertionList.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LigatureSubstProc.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LigatureSubstProc2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LigatureSubstSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\loengine.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LookupProcessor.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\Lookups.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LookupTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MarkArrays.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MarkToBasePosnSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MarkToLigaturePosnSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MarkToMarkPosnSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MirroredCharData.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MorphTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MorphTables2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MPreFixups.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MultipleSubstSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\NonContextualGlyphSubstProc.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\NonContextualGlyphSubstProc2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\OpenTypeLayoutEngine.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\OpenTypeUtilities.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\PairPositioningSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ScriptAndLanguage.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ScriptAndLanguageTags.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SegmentArrayProcessor.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SegmentArrayProcessor2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SegmentSingleProcessor.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SegmentSingleProcessor2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ShapingTypeData.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SimpleArrayProcessor.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SimpleArrayProcessor2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SinglePositioningSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SingleSubstitutionSubtables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SingleTableProcessor.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SingleTableProcessor2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\StateTableProcessor.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\StateTableProcessor2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SubstitutionLookups.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SubtableProcessor.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SubtableProcessor2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ThaiLayoutEngine.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ThaiShaping.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ThaiStateTables.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\TibetanLayoutEngine.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\TibetanReordering.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\TrimmedArrayProcessor.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\TrimmedArrayProcessor2.cpp" />
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ValueRecords.cpp" />
+	</ItemGroup>
+	<ItemGroup>
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\AlternateSubstSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\AnchorTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ArabicLayoutEngine.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ArabicShaping.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\AttachmentPosnSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\CanonShaping.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\CharSubstitutionFilter.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ClassDefinitionTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ContextualGlyphInsertion.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ContextualGlyphInsertionProc2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ContextualGlyphSubstitution.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ContextualGlyphSubstProc.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ContextualGlyphSubstProc2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ContextualSubstSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\CoverageTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\CursiveAttachmentSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\DefaultCharMapper.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\DeviceTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ExtensionSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GDEFMarkFilter.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphDefinitionTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphIterator.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphLookupTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphPositionAdjustments.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphPositioningTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphPosnLookupProc.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphSubstitutionTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GlyphSubstLookupProc.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GXLayoutEngine.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\GXLayoutEngine2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\HangulLayoutEngine.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\HanLayoutEngine.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ICUFeatures.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\IndicLayoutEngine.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\IndicRearrangement.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\IndicRearrangementProcessor.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\IndicRearrangementProcessor2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\IndicReordering.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\KernTable.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\KhmerLayoutEngine.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\KhmerReordering.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LayoutTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LigatureSubstitution.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LigatureSubstProc.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LigatureSubstProc2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LigatureSubstSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LookupProcessor.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\Lookups.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\LookupTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MarkArrays.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MarkToBasePosnSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MarkToLigaturePosnSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MarkToMarkPosnSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MorphStateTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MorphTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MPreFixups.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\MultipleSubstSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\NonContextualGlyphSubst.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\NonContextualGlyphSubstProc.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\NonContextualGlyphSubstProc2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\OpenTypeLayoutEngine.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\OpenTypeTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\OpenTypeUtilities.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\PairPositioningSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ScriptAndLanguage.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ScriptAndLanguageTags.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SegmentArrayProcessor.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SegmentArrayProcessor2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SegmentSingleProcessor.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SegmentSingleProcessor2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SimpleArrayProcessor.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SimpleArrayProcessor2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SinglePositioningSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SingleSubstitutionSubtables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SingleTableProcessor.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SingleTableProcessor2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\StateTableProcessor.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\StateTableProcessor2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\StateTables.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SubstitutionLookups.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SubtableProcessor.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\SubtableProcessor2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ThaiLayoutEngine.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ThaiShaping.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\TibetanLayoutEngine.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\TibetanReordering.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\TrimmedArrayProcessor.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\TrimmedArrayProcessor2.h" />
+		<ClInclude Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\layout\ValueRecords.h" />
+	</ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="common.vcxproj">
+			<Project>{73c0a65b-d1f2-4de1-b3a6-15dad2c23f3d}</Project>
+			<ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+		</ProjectReference>
+	</ItemGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+	<ImportGroup Label="ExtensionTargets">
+	</ImportGroup>
+</Project>

@@ -1,0 +1,8 @@
+include("${CMAKE_SOURCE_DIR}/PS4/Orbis.cmake")
+
+## Settings (hacks) specific to this project
+set(CMAKE_C_FLAGS " -DHB_NO_PRAGMA_GCC_DIAGNOSTIC_ERROR ${CMAKE_C_FLAGS}")
+set(CMAKE_CXX_FLAGS " -DHB_NO_PRAGMA_GCC_DIAGNOSTIC_ERROR ${CMAKE_CXX_FLAGS}")
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}" CACHE STRING "c flags")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}" CACHE STRING "c++ flags")

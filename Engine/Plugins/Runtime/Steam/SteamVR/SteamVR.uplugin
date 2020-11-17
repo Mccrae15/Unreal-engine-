@@ -57,7 +57,7 @@
 		{
 			"Name": "SteamVREditor",
 			"Type": "Editor",
-			"LoadingPhase": "PostEngineInit",
+			"LoadingPhase": "Default",
 			"WhitelistPlatforms": [
 				"Win64",
 				"Win32",

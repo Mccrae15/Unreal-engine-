@@ -447,7 +447,7 @@ void FDestructibleMeshEditorViewportClient::ImportFBXChunks()
 			UnFbx::FBXImportOptions* ImportOptions = FFbxImporter->GetImportOptions();
 			ImportOptions->ImportType = FBXIT_StaticMesh;
 			ImportOptions->bImportScene = false;
-			ImportOptions->bAutoGenerateCollision = false;
+			//ImportOptions->bAutoGenerateCollision = false;
 			ImportOptions->bBakePivotInVertex = false;
 			ImportOptions->bCanShowDialog = false;
 			ImportOptions->bCombineToSingle = false;

@@ -21,6 +21,10 @@ class UEnvQueryTest_Overlap : public UEnvQueryTest
 	UPROPERTY(EditDefaultsOnly, Category=Overlap)
 	FEnvOverlapData OverlapData;
 
+	/** context: Actors to Ignore */
+	UPROPERTY(EditDefaultsOnly, Category = Pathfinding)
+	TSubclassOf<UEnvQueryContext> ActorToIgnore;
+
 	virtual void RunTest(FEnvQueryInstance& QueryInstance) const override;
 
 	virtual FText GetDescriptionTitle() const override;

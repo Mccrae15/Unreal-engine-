@@ -1,0 +1,120 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+	<ItemGroup Label="ProjectConfigurations">
+		<ProjectConfiguration Include="Debug|ORBIS">
+			<Configuration>Debug</Configuration>
+			<Platform>ORBIS</Platform>
+		</ProjectConfiguration>
+		<ProjectConfiguration Include="Release|ORBIS">
+			<Configuration>Release</Configuration>
+			<Platform>ORBIS</Platform>
+		</ProjectConfiguration>
+	</ItemGroup>
+	<PropertyGroup Label="Globals">
+		<ProjectGuid>{203EC78A-0531-43F0-A636-285439BDE025}</ProjectGuid>
+		<ApplicationEnvironment>title</ApplicationEnvironment>
+	</PropertyGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'" Label="Configuration">
+		<ConfigurationType>StaticLibrary</ConfigurationType>
+		<UseOfMfc>false</UseOfMfc>
+		<CharacterSet>MultiByte</CharacterSet>
+		<PlatformToolset>v110</PlatformToolset>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'" Label="Configuration">
+		<ConfigurationType>StaticLibrary</ConfigurationType>
+		<UseOfMfc>false</UseOfMfc>
+		<CharacterSet>MultiByte</CharacterSet>
+		<PlatformToolset>v110</PlatformToolset>
+	</PropertyGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+	<ImportGroup Label="ExtensionSettings">
+	</ImportGroup>
+	<ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'" Label="PropertySheets">
+		<Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+		<Import Project="$(VCTargetsPath)Microsoft.CPP.UpgradeFromVC71.props" />
+	</ImportGroup>
+	<ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'" Label="PropertySheets">
+		<Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+		<Import Project="$(VCTargetsPath)Microsoft.CPP.UpgradeFromVC71.props" />
+	</ImportGroup>
+	<PropertyGroup Label="UserMacros" />
+	<PropertyGroup>
+		<_ProjectFileVersion>10.0.30319.1</_ProjectFileVersion>
+		<LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">false</LinkIncremental>
+		<GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">false</GenerateManifest>
+		<GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">false</GenerateManifest>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+		<TargetName>libsicudt</TargetName>
+		<OutDir>.\lib\</OutDir>
+		<IntDir>$(Platform)_$(Configuration)\$(ProjectName)\</IntDir>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+		<TargetName>libsicudtd</TargetName>
+		<OutDir>.\lib\</OutDir>
+		<IntDir>$(Platform)_$(Configuration)\$(ProjectName)\</IntDir>
+	</PropertyGroup>
+	<ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ORBIS'">
+		<ClCompile>
+			<AdditionalIncludeDirectories>include;..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+			<PreprocessorDefinitions>U_STATIC_IMPLEMENTATION; UCONFIG_NO_TRANSLITERATION=1; U_USING_ICU_NAMESPACE=0;U_STATIC_IMPLEMENTATION;U_NO_DEFAULT_INCLUDE_UTF_HEADERS=1;UNISTR_FROM_CHAR_EXPLICIT=explicit;UNISTR_FROM_STRING_EXPLICIT=explicit;U_ATTRIBUTE_DEPRECATED=;_DEBUG;U_COMMON_IMPLEMENTATION;U_PLATFORM_EXTERNAL=1;__BSD_VISIBLE;U_HAVE_NL_LANGINFO_CODESET=0;U_ENABLE_DYLOAD=0;ICU_NO_USER_DATA_OVERRIDE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+			<StringPooling>true</StringPooling>
+			<ExceptionHandling>
+			</ExceptionHandling>
+			<RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+			<FunctionLevelLinking>true</FunctionLevelLinking>
+			<DisableLanguageExtensions>true</DisableLanguageExtensions>
+			<TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
+			<WarningLevel>Level3</WarningLevel>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<CompileAs>Default</CompileAs>
+			<AdditionalOptions>-frtti %(AdditionalOptions)</AdditionalOptions>
+			<OptimizationLevel>Level2</OptimizationLevel>
+			<MultiProcessorCompilation>true</MultiProcessorCompilation>
+		</ClCompile>
+		<PreLinkEvent>
+			<Command>echo "File with stubdata build time, used as a dependency to trigger fresh data build, since stubdata dll will overwrite the real one." &gt; "$(ProjectDir)stubdatabuilt.txt"</Command>
+		</PreLinkEvent>
+		<Link>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<IgnoreAllDefaultLibraries>true</IgnoreAllDefaultLibraries>
+			<NoEntryPoint>true</NoEntryPoint>
+			<SetChecksum>true</SetChecksum>
+			<TurnOffAssemblyGeneration>true</TurnOffAssemblyGeneration>
+			<LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+		</Link>
+	</ItemDefinitionGroup>
+	<ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ORBIS'">
+		<ClCompile>
+			<Optimization>Disabled</Optimization>
+			<AdditionalIncludeDirectories>include;..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+			<PreprocessorDefinitions>U_STATIC_IMPLEMENTATION; UCONFIG_NO_TRANSLITERATION=1; U_USING_ICU_NAMESPACE=0;U_STATIC_IMPLEMENTATION;U_NO_DEFAULT_INCLUDE_UTF_HEADERS=1;UNISTR_FROM_CHAR_EXPLICIT=explicit;UNISTR_FROM_STRING_EXPLICIT=explicit;U_ATTRIBUTE_DEPRECATED=;_DEBUG;U_COMMON_IMPLEMENTATION;U_PLATFORM_EXTERNAL=1;__BSD_VISIBLE;U_HAVE_NL_LANGINFO_CODESET=0;U_ENABLE_DYLOAD=0;ICU_NO_USER_DATA_OVERRIDE=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+			<BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+			<RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+			<BufferSecurityCheck>true</BufferSecurityCheck>
+			<DisableLanguageExtensions>true</DisableLanguageExtensions>
+			<TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
+			<WarningLevel>Level3</WarningLevel>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<CompileAs>Default</CompileAs>
+			<AdditionalOptions>-frtti %(AdditionalOptions)</AdditionalOptions>
+			<MultiProcessorCompilation>true</MultiProcessorCompilation>
+		</ClCompile>
+		<PreLinkEvent>
+			<Command>echo "File with stubdata build time, used as a dependency to trigger fresh data build, since stubdata dll will overwrite the real one." &gt; "$(ProjectDir)stubdatabuilt.txt"</Command>
+		</PreLinkEvent>
+		<Link>
+			<SuppressStartupBanner>true</SuppressStartupBanner>
+			<NoEntryPoint>true</NoEntryPoint>
+			<SetChecksum>true</SetChecksum>
+			<TurnOffAssemblyGeneration>true</TurnOffAssemblyGeneration>
+		</Link>
+	</ItemDefinitionGroup>
+	<ItemGroup>
+		<ClCompile Include="..\..\..\..\..\..\Source\ThirdParty\ICU\icu4c-53_1\source\stubdata\stubdata.c" />
+	</ItemGroup>
+	<Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+	<ImportGroup Label="ExtensionTargets">
+	</ImportGroup>
+</Project>

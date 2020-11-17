@@ -383,3 +383,8 @@ FVector UNavLinkCustomComponent::GetEndPoint() const
 {
 	return GetOwner()->GetTransform().TransformPosition(LinkRelativeEnd);
 }
+
+int UNavLinkCustomComponent::GetSmartLinkID()
+{
+	return NavLinkUserId;
+}
