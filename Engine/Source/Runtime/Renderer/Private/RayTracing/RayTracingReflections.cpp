@@ -489,6 +489,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingReflections(
 	const FViewInfo& View,
 	int32 SamplePerPixel,
 	float ResolutionFraction,
+	int DenoiserMode,
 	IScreenSpaceDenoiser::FReflectionsInputs* OutDenoiserInputs)
 #if RHI_RAYTRACING
 {
@@ -499,6 +500,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingReflections(
 			SceneTextures,
 			View,
 			ResolutionFraction,
+			DenoiserMode,
 			OutDenoiserInputs);
 		return;
 	}

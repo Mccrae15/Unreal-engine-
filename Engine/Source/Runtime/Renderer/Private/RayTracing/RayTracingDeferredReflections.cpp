@@ -70,13 +70,21 @@ static TAutoConsoleVariable<float> CVarRayTracingReflectionsMipBias(
 	ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarRayTracingReflectionsSpatialResolve(
+	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.SpatialResolve"),
+	1,
+	TEXT("Whether to use a basic spatial resolve (denoising) filter on reflection output. Not compatible with regular screen space denoiser. (default: 1)"),
+	ECVF_RenderThreadSafe
+);
+
 namespace 
 {
 	struct FSortedReflectionRay
 	{
 		float  Origin[3];
 		uint32 PixelCoordinates; // X in low 16 bits, Y in high 16 bits
-		float  Direction[3];
+		uint32 Direction[2]; // FP16
+		float  Pdf;
 		float  Roughness; // Only technically need 8 bits, the rest could be repurposed
 	};
 
@@ -139,6 +147,43 @@ class FGenerateReflectionRaysCS : public FGlobalShader
 };
 IMPLEMENT_GLOBAL_SHADER(FGenerateReflectionRaysCS, "/Engine/Private/RayTracing/RayTracingReflectionsGenerateRaysCS.usf", "GenerateReflectionRaysCS", SF_Compute);
 
+class FRayTracingReflectionResolveCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FRayTracingReflectionResolveCS);
+	SHADER_USE_PARAMETER_STRUCT(FRayTracingReflectionResolveCS, FGlobalShader);
+
+	using FPermutationDomain = TShaderPermutationDomain<>;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(FIntPoint, RayTracingBufferSize)
+		SHADER_PARAMETER(int, UpscaleFactor)
+		SHADER_PARAMETER(float, ReflectionMaxRoughness)
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, RawReflectionColor)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ReflectionDenoiserData)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, ColorOutput)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+	}
+
+	static FIntPoint GetGroupSize()
+	{
+		return FIntPoint(8, 8);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_X"), GetGroupSize().X);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE_Y"), GetGroupSize().Y);
+	}
+};
+IMPLEMENT_GLOBAL_SHADER(FRayTracingReflectionResolveCS, "/Engine/Private/RayTracing/RayTracingReflectionResolve.usf", "RayTracingReflectionResolveCS", SF_Compute);
+
 class FRayTracingDeferredReflectionsRGS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FRayTracingDeferredReflectionsRGS)
@@ -162,6 +207,7 @@ class FRayTracingDeferredReflectionsRGS : public FGlobalShader
 		SHADER_PARAMETER(int, ShouldDoDirectLighting)
 		SHADER_PARAMETER(int, ShouldDoEmissiveAndIndirectLighting)
 		SHADER_PARAMETER(int, ShouldDoReflectionCaptures)
+		SHADER_PARAMETER(int, DenoisingOutputFormat)
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FSortedReflectionRay>, RayBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FRayIntersectionBookmark>, BookmarkBuffer)
@@ -171,7 +217,7 @@ class FRayTracingDeferredReflectionsRGS : public FGlobalShader
 		SHADER_PARAMETER_SRV(StructuredBuffer<FRTLightingData>, LightDataBuffer)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SSProfilesTexture)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, ColorOutput)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, RayHitDistanceOutput)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, ReflectionDenoiserData)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FReflectionUniformParameters, ReflectionStruct)
 		SHADER_PARAMETER_STRUCT_REF(FRaytracingLightDataPacked, LightDataPacked)
@@ -242,6 +288,36 @@ void FDeferredShadingSceneRenderer::PrepareRayTracingDeferredReflections(const F
 	}
 }
 
+static void AddReflectionResolvePass(
+	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View,
+	const FRayTracingDeferredReflectionsRGS::FParameters& CommonParameters,
+	FRDGTextureRef RawReflectionColor,
+	FRDGTextureRef ReflectionDenoiserData,
+	FIntPoint RayTracingBufferSize,
+	FIntPoint ResolvedOutputSize,
+	FRDGTextureRef ColorOutput)
+{
+	auto* PassParameters = GraphBuilder.AllocParameters<FRayTracingReflectionResolveCS::FParameters>();
+	PassParameters->RayTracingBufferSize    = RayTracingBufferSize;
+	PassParameters->UpscaleFactor           = CommonParameters.UpscaleFactor;
+	PassParameters->ReflectionMaxRoughness  = CommonParameters.ReflectionMaxRoughness;
+	PassParameters->ViewUniformBuffer       = CommonParameters.ViewUniformBuffer;
+	PassParameters->SceneTextures           = CommonParameters.SceneTextures;
+	PassParameters->RawReflectionColor      = RawReflectionColor;
+	PassParameters->ReflectionDenoiserData  = ReflectionDenoiserData;
+	PassParameters->ColorOutput             = GraphBuilder.CreateUAV(ColorOutput);
+
+	auto ComputeShader = View.ShaderMap->GetShader<FRayTracingReflectionResolveCS>();
+	ClearUnusedGraphResources(ComputeShader, PassParameters);
+
+	FIntVector GroupCount;
+	GroupCount.X = FMath::DivideAndRoundUp(ResolvedOutputSize.X, FRayTracingReflectionResolveCS::GetGroupSize().X);
+	GroupCount.Y = FMath::DivideAndRoundUp(ResolvedOutputSize.Y, FRayTracingReflectionResolveCS::GetGroupSize().Y);
+	GroupCount.Z = 1;
+	FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("RayTracingReflectionResolve"), ComputeShader, PassParameters, GroupCount);
+}
+
 static void AddGenerateReflectionRaysPass(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
@@ -280,10 +356,14 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 	const FSceneTextureParameters& SceneTextures,
 	const FViewInfo& View,
 	float ResolutionFraction,
+	int DenoiserMode,
 	IScreenSpaceDenoiser::FReflectionsInputs* OutDenoiserInputs)
 {
 	const bool bGenerateRaysWithRGS = CVarRayTracingReflectionsGenerateRaysWithRGS.GetValueOnRenderThread()==1;
 	const bool bMissShaderLighting = CanUseRayTracingLightingMissShader(View.GetShaderPlatform());
+
+	const bool bExternalDenoiser = DenoiserMode != 0;
+	const bool bSpatialResolve   = !bExternalDenoiser && CVarRayTracingReflectionsSpatialResolve.GetValueOnRenderThread() == 1;
 
 	int32 UpscaleFactor = int32(1.0f / ResolutionFraction);
 	ensure(ResolutionFraction == 1.0 / UpscaleFactor);
@@ -296,9 +376,20 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 		TexCreate_None, TexCreate_ShaderResource | TexCreate_UAV,
 		false);
 
-	OutDenoiserInputs->Color          = GraphBuilder.CreateTexture(OutputDesc, TEXT("RayTracingReflections"));
-	OutputDesc.Format                 = PF_R16F;
-	OutDenoiserInputs->RayHitDistance = GraphBuilder.CreateTexture(OutputDesc, TEXT("RayTracingReflectionsHitDistance"));
+	OutDenoiserInputs->Color = GraphBuilder.CreateTexture(OutputDesc, TEXT("RayTracingReflections"));
+
+	FRDGTextureRef ReflectionDenoiserData;
+	if (bSpatialResolve)
+	{
+		OutputDesc.Format      = PF_FloatRGBA;
+		ReflectionDenoiserData = GraphBuilder.CreateTexture(OutputDesc, TEXT("RayTracingReflectionsSpatialResolveData"));
+	}
+	else
+	{
+		OutputDesc.Format                  = PF_R16F;
+		ReflectionDenoiserData             = GraphBuilder.CreateTexture(OutputDesc, TEXT("RayTracingReflectionsHitDistance"));
+		OutDenoiserInputs->RayHitDistance  = ReflectionDenoiserData;
+	}
 
 	const uint32 SortTileSize             = 64; // Ray sort tile is 32x32, material sort tile is 64x64, so we use 64 here (tile size is not configurable).
 	const FIntPoint TileAlignedResolution = FIntPoint::DivideAndRoundUp(RayTracingResolution, SortTileSize) * SortTileSize;
@@ -320,6 +411,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 	CommonParameters.ShouldDoDirectLighting              = CVarDirectLighting && CVarDirectLighting->GetBool();
 	CommonParameters.ShouldDoEmissiveAndIndirectLighting = CVarEmissiveAndIndirectLighting && CVarEmissiveAndIndirectLighting->GetBool();
 	CommonParameters.ShouldDoReflectionCaptures          = CVarReflectionCaptures && CVarReflectionCaptures->GetBool();
+	CommonParameters.DenoisingOutputFormat               = bSpatialResolve ? 1 : 0;
 
 	CommonParameters.TLAS                    = View.RayTracingScene.RayTracingSceneRHI->GetShaderResourceView();
 	CommonParameters.SceneTextures           = SceneTextures;
@@ -354,12 +446,12 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 
 	{
 		FRayTracingDeferredReflectionsRGS::FParameters& PassParameters = *GraphBuilder.AllocParameters<FRayTracingDeferredReflectionsRGS::FParameters>();
-		PassParameters                      = CommonParameters;
-		PassParameters.MaterialBuffer       = GraphBuilder.CreateUAV(DeferredMaterialBuffer);
-		PassParameters.RayBuffer            = GraphBuilder.CreateUAV(SortedRayBuffer);
-		PassParameters.BookmarkBuffer       = GraphBuilder.CreateUAV(BookmarkBuffer);
-		PassParameters.ColorOutput          = GraphBuilder.CreateUAV(OutDenoiserInputs->Color);
-		PassParameters.RayHitDistanceOutput = GraphBuilder.CreateUAV(OutDenoiserInputs->RayHitDistance);
+		PassParameters                        = CommonParameters;
+		PassParameters.MaterialBuffer         = GraphBuilder.CreateUAV(DeferredMaterialBuffer);
+		PassParameters.RayBuffer              = GraphBuilder.CreateUAV(SortedRayBuffer);
+		PassParameters.BookmarkBuffer         = GraphBuilder.CreateUAV(BookmarkBuffer);
+		PassParameters.ColorOutput            = GraphBuilder.CreateUAV(OutDenoiserInputs->Color);
+		PassParameters.ReflectionDenoiserData = GraphBuilder.CreateUAV(ReflectionDenoiserData);
 
 		FRayTracingDeferredReflectionsRGS::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FDeferredMaterialMode>(EDeferredMaterialMode::Gather);
@@ -391,12 +483,12 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 
 	{
 		FRayTracingDeferredReflectionsRGS::FParameters& PassParameters = *GraphBuilder.AllocParameters<FRayTracingDeferredReflectionsRGS::FParameters>();
-		PassParameters                      = CommonParameters;
-		PassParameters.MaterialBuffer       = GraphBuilder.CreateUAV(DeferredMaterialBuffer);
-		PassParameters.RayBuffer            = GraphBuilder.CreateUAV(SortedRayBuffer);
-		PassParameters.BookmarkBuffer       = GraphBuilder.CreateUAV(BookmarkBuffer);
-		PassParameters.ColorOutput          = GraphBuilder.CreateUAV(OutDenoiserInputs->Color);
-		PassParameters.RayHitDistanceOutput = GraphBuilder.CreateUAV(OutDenoiserInputs->RayHitDistance);
+		PassParameters                        = CommonParameters;
+		PassParameters.MaterialBuffer         = GraphBuilder.CreateUAV(DeferredMaterialBuffer);
+		PassParameters.RayBuffer              = GraphBuilder.CreateUAV(SortedRayBuffer);
+		PassParameters.BookmarkBuffer         = GraphBuilder.CreateUAV(BookmarkBuffer);
+		PassParameters.ColorOutput            = GraphBuilder.CreateUAV(OutDenoiserInputs->Color);
+		PassParameters.ReflectionDenoiserData = GraphBuilder.CreateUAV(ReflectionDenoiserData);
 
 		FRayTracingDeferredReflectionsRGS::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FDeferredMaterialMode>(EDeferredMaterialMode::Shade);
@@ -418,6 +510,27 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 			RHICmdList.RayTraceDispatch(View.RayTracingMaterialPipeline, RayGenShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, TileAlignedNumRays, 1);
 		});
 	}
+
+	// Apply basic reflection spatial resolve filter to reduce noise
+	if (bSpatialResolve)
+	{
+		FRDGTextureDesc ResolvedOutputDesc = FPooledRenderTargetDesc::Create2DDesc(
+			SceneTextures.SceneDepthBuffer->Desc.Extent, // full res buffer
+			PF_FloatRGBA, FClearValueBinding(FLinearColor(0, 0, 0, 0)),
+			TexCreate_None, TexCreate_ShaderResource | TexCreate_UAV,
+			false);
+
+		FRDGTextureRef RawReflectionColor = OutDenoiserInputs->Color;
+		OutDenoiserInputs->Color = GraphBuilder.CreateTexture(ResolvedOutputDesc, TEXT("RayTracingReflections"));
+
+		AddReflectionResolvePass(GraphBuilder, View, CommonParameters, 
+			RawReflectionColor,
+			ReflectionDenoiserData,
+			RayTracingBufferSize,
+			View.ViewRect.Size(),
+			OutDenoiserInputs->Color);
+	}
+
 }
 #else // RHI_RAYTRACING
 void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(

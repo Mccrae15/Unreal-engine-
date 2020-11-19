@@ -700,7 +700,9 @@ void FDeferredShadingSceneRenderer::RenderDeferredReflectionsAndSkyLighting(FRHI
 					GraphBuilder,
 					SceneTextures,
 					View,
-					RayTracingConfig.RayCountPerPixel, RayTracingConfig.ResolutionFraction,
+					RayTracingConfig.RayCountPerPixel, 
+					RayTracingConfig.ResolutionFraction,
+					DenoiserMode,
 					&DenoiserInputs);
 			}
 			else if (bScreenSpaceReflections)

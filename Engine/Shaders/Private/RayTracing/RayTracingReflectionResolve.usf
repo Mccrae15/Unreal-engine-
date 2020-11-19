@@ -1,0 +1,160 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../DeferredShadingCommon.ush"
+#include "../SceneTextureParameters.ush"
+#include "../ScreenSpaceDenoise/SSDPublic.ush"
+#include "../MortonCode.ush"
+#include "../BRDF.ush"
+
+#include "RayTracingCommon.ush"
+#include "RayTracingReflectionsCommon.ush"
+#include "RayTracingDeferredReflections.ush"
+
+#ifndef THREADGROUP_SIZE_X
+#define THREADGROUP_SIZE_X 8
+#endif // THREADGROUP_SIZE_X
+
+#ifndef THREADGROUP_SIZE_Y
+#define THREADGROUP_SIZE_Y 8
+#endif // THREADGROUP_SIZE_Y
+
+// Config
+
+#define NUM_SAMPLES 8
+#define USE_TONEMAP 1
+#define USE_RAY_PDF 1
+
+// Inputs
+
+int2 RayTracingBufferSize;
+int UpscaleFactor;
+float ReflectionMaxRoughness;
+
+Texture2D RawReflectionColor;
+Texture2D ReflectionDenoiserData; // xyz: camera-relative reflection hit position, w: 1/pdf
+
+// Outputs
+
+RWTexture2D<float4> ColorOutput;
+
+float3 FastTonemap(float3 c)
+{
+	return c * rcp(max3(c.r, c.g, c.b) + 1.0);
+}
+
+float3 InvFastTonemap(float3 c)
+{
+	return c * rcp(1.0 - max3(c.r, c.g, c.b));
+}
+
+#if USE_TONEMAP
+#	define TONEMAP(x) FastTonemap(x)
+#	define INV_TONEMAP(x) InvFastTonemap(x)
+#else // USE_TONEMAP
+#	define TONEMAP(x) (x)
+#	define INV_TONEMAP(x) (x)
+#endif // USE_TONEMAP
+
+[numthreads(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y, 1)]
+void RayTracingReflectionResolveCS(
+	uint2 DispatchThreadId : SV_DispatchThreadID,
+	uint2 GroupThreadId : SV_GroupThreadID,
+	uint2 GroupId : SV_GroupID)
+{
+	if (any(DispatchThreadId.xy >= View.ViewSizeAndInvSize.xy))
+	{
+		return;
+	}
+
+	const float2 BufferUV = (float2(DispatchThreadId.xy + View.ViewRectMin.xy) + 0.5) * View.BufferSizeAndInvSize.zw;
+	const float2 ViewportUV = BufferUVToViewportUV(BufferUV);
+
+	const float2 ScreenPos = ViewportUVToScreenPos(ViewportUV);
+	const uint2 PixelRandomSeed = Rand3DPCG16(int3(DispatchThreadId.xy, View.StateFrameIndexMod8)).xy;
+
+	const int2 ReflectionPixelPos = int2(BufferUV * RayTracingBufferSize);
+
+	FGBufferData GBuffer = GetGBufferDataFromSceneTextures(BufferUV);
+	GBuffer.Roughness = GetRayTracingClearCoatApproximateRoughness(GBuffer);
+
+	float RoughnessFade = GetRoughnessFade(GBuffer.Roughness, ReflectionMaxRoughness);
+	if (RoughnessFade <= 0)
+	{
+		ColorOutput[View.ViewRectMin.xy + DispatchThreadId] = (float4)0;
+		return;
+	}
+
+	const float SceneDepth = GBuffer.Depth;
+	const float3 PositionTranslatedWorld = mul(float4(ScreenPos * SceneDepth, SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
+	const float3 V = normalize(View.TranslatedWorldCameraOrigin - PositionTranslatedWorld);
+	const float3 N = GBuffer.WorldNormal;
+
+	// Filter size is empirically chosen to be a good compromise between quality and performance.
+	// Low values result in blockiness, high values result in poor cache use.
+	const float MinFilterSize = UpscaleFactor; // Always want a bit of blur (more when input is lower res)
+	const float MaxFilterSize = 8.0;
+
+	// Filter footprint is based on center pixel roughness to reduce mirror reflection blurriness.
+	const float FilterSize = lerp(MinFilterSize, MaxFilterSize, saturate(GBuffer.Roughness * 8));
+	const float NoV = max(0, dot(N, V));
+
+	const float a2 = max(1e-5, Pow4(GBuffer.Roughness));
+
+	float4 ReflectionColor = (float4)0;
+	float WeightSum = 0;
+
+	// All sample coordinates must fall into these inclusive bounds of the view rect.
+	const int4 ViewRectBounds = int4(int2(View.ViewRectMin.xy), int2(View.ViewRectMin.xy + View.ViewSizeAndInvSize.xy - 1));
+
+	for (uint i = 0; i < NUM_SAMPLES; ++i)
+	{
+		float2 HammersleySample = Hammersley16(i, NUM_SAMPLES, PixelRandomSeed);
+		//float2 DiskSample = HammersleySample * 2.0 - 1.0; // cheapest, but may produce noticeable rectangular block artifacts
+		float2 DiskSample = UniformSampleDisk(HammersleySample); // slightly more expensive, but maybe slightly better? the jury is out...
+		//float2 DiskSample = UniformSampleDisk(RandomFloat2(PixelRandomSeed));
+
+		int2 SampleOffset = (int2)(DiskSample * FilterSize);
+		int2 SamplePixelId = clamp(ReflectionPixelPos + SampleOffset, ViewRectBounds.xy, ViewRectBounds.zw);
+
+		float4 DenoiserData = ReflectionDenoiserData.Load(uint3(SamplePixelId, 0));
+		float InvRayPdf = DenoiserData.w;
+
+	#if 0 // #yuriy_todo: switch method using dynamic branch (requires different data to be written from reflection shader)
+		// Parallax-correct. A bit sharper, but tiny bit more expensive and results in some light leaking.
+		float3 SampleL = normalize(DenoiserData.xyz - PositionTranslatedWorld);
+	#else
+		// Parallax-incorrect. A bit faster and less leaky, but more blurry.
+		float3 SampleL = DenoiserData.xyz;
+	#endif
+
+		float4 SampleColor = RawReflectionColor.Load(uint3(SamplePixelId, 0));
+
+		float3 SampleH = normalize(V + SampleL);
+
+		float SampleNoH = max(0, dot(N, SampleH));
+		float SampleNoL = max(0, dot(N, SampleL));
+
+		float LocalBRDF = D_GGX(a2, SampleNoH) * Vis_Smith(a2, NoV, SampleNoL) * SampleNoL;
+
+		// Clamping PDF like this avoids some of the artifacts on mirror-like surfaces
+		InvRayPdf = lerp(1e-5, InvRayPdf, GBuffer.Roughness);
+
+	#if USE_RAY_PDF
+		float Weight = LocalBRDF * InvRayPdf; // more accurate, but some objectionable halos around some objects / light leaking
+	#else // USE_RAY_PDF
+		float Weight = LocalBRDF; // hacky / incorrect, loses definition of roughness maps, but significantly reduces light leaking
+	#endif // USE_RAY_PDF
+
+		ReflectionColor.rgb += TONEMAP(SampleColor.rgb) * Weight;
+		ReflectionColor.a += SampleColor.a * Weight;
+
+		WeightSum += Weight;
+	}
+
+	ReflectionColor.rgb = INV_TONEMAP(ReflectionColor.rgb / WeightSum);
+	ReflectionColor.a = ReflectionColor.a / WeightSum;
+
+	ColorOutput[View.ViewRectMin.xy + DispatchThreadId] = max(0, ReflectionColor);
+}
+

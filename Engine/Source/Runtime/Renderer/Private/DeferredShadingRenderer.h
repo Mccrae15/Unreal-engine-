@@ -524,6 +524,7 @@ private:
 		const FViewInfo& View,
 		int32 SamplePerPixel,
 		float ResolutionFraction,
+		int DenoiserMode,
 		IScreenSpaceDenoiser::FReflectionsInputs* OutDenoiserInputs);
 
 	void RenderRayTracingDeferredReflections(
@@ -531,6 +532,7 @@ private:
 		const FSceneTextureParameters& SceneTextures,
 		const FViewInfo& View,
 		float ResolutionFraction,
+		int DenoiserMode,
 		IScreenSpaceDenoiser::FReflectionsInputs* OutDenoiserInputs);
 
 	void RenderRayTracingShadows(
