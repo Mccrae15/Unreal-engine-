@@ -267,23 +267,19 @@ RAY_TRACING_ENTRY_RAYGEN(RayTracingDeferredReflectionsRGS)
 
 	ColorOutput[PixelPos] = ResultColor;
 
-	if (DenoisingOutputFormat == 0)
-	{
-		ReflectionDenoiserData[PixelPos] = (float4)ResultDistance;
-	}
-	else if (DenoisingOutputFormat == 1)
-	{
-		float4 RayParams;
-	#if 0 // #yuriy_todo: switch method using dynamic branch (requires different data interpretation in resolve shader)
-		RayParams.xyz = RayHitWorldPos - View.WorldCameraOrigin;
-		float Len = min(length(RayParams.xyz), 65504.0); // clamp relative position to fit into FP16
-		RayParams.xyz = normalize(RayParams.xyz) * Len;
-	#else
-		RayParams.xyz = ReflectionRay.GetDirection();
-	#endif
-		RayParams.w   = ReflectionRay.Pdf > 0 ? 1.0 / ReflectionRay.Pdf : 0;
-		ReflectionDenoiserData[PixelPos] = RayParams;
-	}
+	float4 RayParams = (float4)0;
+
+#if 0 // #yuriy_todo: switch method using dynamic branch (requires different data interpretation in resolve shader)
+	RayParams.xyz = RayHitWorldPos - View.WorldCameraOrigin;
+	float Len = min(length(RayParams.xyz), 65504.0); // clamp relative position to fit into FP16
+	RayParams.xyz = normalize(RayParams.xyz) * Len;
+#else
+	RayParams.xyz = ReflectionRay.GetDirection();
+#endif
+	RayParams.w   = ReflectionRay.Pdf > 0 ? 1.0 / ReflectionRay.Pdf : 0;
+
+	// NOTE: Written a ternary operator to work around shader compiler crash as of 2020-11-19
+	ReflectionDenoiserData[PixelPos] = DenoisingOutputFormat == 1 ? RayParams : (float4)ResultDistance;
 
 #endif // DIM_DEFERRED_MATERIAL_MODE
 }
