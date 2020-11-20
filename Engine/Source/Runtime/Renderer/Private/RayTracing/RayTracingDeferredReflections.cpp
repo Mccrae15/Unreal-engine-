@@ -538,6 +538,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 	const FSceneTextureParameters& SceneTextures,
 	const FViewInfo& View,
 	float ResolutionFraction,
+	int DenoiserMode,
 	IScreenSpaceDenoiser::FReflectionsInputs* OutDenoiserInputs)
 {
 	checkNoEntry();
