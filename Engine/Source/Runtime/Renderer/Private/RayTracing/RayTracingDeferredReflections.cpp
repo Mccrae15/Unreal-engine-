@@ -94,7 +94,7 @@ static TAutoConsoleVariable<float> CVarRayTracingReflectionsSpatialResolveMaxRad
 static TAutoConsoleVariable<int32> CVarRayTracingReflectionsSpatialResolveNumSamples(
 	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.SpatialResolve.NumSamples"),
 	8,
-	TEXT("Maximum number of screen space samples to take during spatial resolve step. More samples produces smoother output at higher GPU cost. (default: 8)"),
+	TEXT("Maximum number of screen space samples to take during spatial resolve step. More samples produces smoother output at higher GPU cost. Specialized shader is used for 4, 8, 12 and 16 samples. (default: 8)"),
 	ECVF_RenderThreadSafe
 );
 
@@ -173,7 +173,10 @@ class FRayTracingReflectionResolveCS : public FGlobalShader
 	DECLARE_GLOBAL_SHADER(FRayTracingReflectionResolveCS);
 	SHADER_USE_PARAMETER_STRUCT(FRayTracingReflectionResolveCS, FGlobalShader);
 
-	using FPermutationDomain = TShaderPermutationDomain<>;
+	// Static 
+	class FNumSamples : SHADER_PERMUTATION_SPARSE_INT("DIM_NUM_SAMPLES", 0, 4, 8, 12, 16);
+
+	using FPermutationDomain = TShaderPermutationDomain<FNumSamples>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(FIntPoint, RayTracingBufferSize)
@@ -336,7 +339,19 @@ static void AddReflectionResolvePass(
 	PassParameters->ReflectionDenoiserData   = ReflectionDenoiserData;
 	PassParameters->ColorOutput              = GraphBuilder.CreateUAV(ColorOutput);
 
-	auto ComputeShader = View.ShaderMap->GetShader<FRayTracingReflectionResolveCS>();
+	FRayTracingReflectionResolveCS::FPermutationDomain PermutationVector;
+	if ((PassParameters->SpatialResolveNumSamples % 4 == 0) && PassParameters->SpatialResolveNumSamples <= 16)
+	{
+		// Static unrolled loop
+		PermutationVector.Set<FRayTracingReflectionResolveCS::FNumSamples>(PassParameters->SpatialResolveNumSamples);
+	}
+	else
+	{
+		// Dynamic loop
+		PermutationVector.Set<FRayTracingReflectionResolveCS::FNumSamples>(0);
+	}
+
+	auto ComputeShader = View.ShaderMap->GetShader<FRayTracingReflectionResolveCS>(PermutationVector);
 	ClearUnusedGraphResources(ComputeShader, PassParameters);
 
 	FIntVector GroupCount;
