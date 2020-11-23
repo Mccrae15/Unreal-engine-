@@ -21,15 +21,17 @@
 
 // Config
 
-#define NUM_SAMPLES 8
 #define USE_TONEMAP 1
 #define USE_RAY_PDF 1
 
 // Inputs
 
-int2 RayTracingBufferSize;
-int UpscaleFactor;
+int2  RayTracingBufferSize;
+int   UpscaleFactor;
 float ReflectionMaxRoughness;
+float SpatialResolveMaxRadius;
+int   SpatialResolveNumSamples;
+int   SpatialResolveParallax;
 
 Texture2D RawReflectionColor;
 Texture2D ReflectionDenoiserData; // xyz: camera-relative reflection hit position, w: 1/pdf
@@ -93,7 +95,7 @@ void RayTracingReflectionResolveCS(
 	// Filter size is empirically chosen to be a good compromise between quality and performance.
 	// Low values result in blockiness, high values result in poor cache use.
 	const float MinFilterSize = UpscaleFactor; // Always want a bit of blur (more when input is lower res)
-	const float MaxFilterSize = 8.0;
+	const float MaxFilterSize = SpatialResolveMaxRadius;
 
 	// Filter footprint is based on center pixel roughness to reduce mirror reflection blurriness.
 	const float FilterSize = lerp(MinFilterSize, MaxFilterSize, saturate(GBuffer.Roughness * 8));
@@ -107,9 +109,9 @@ void RayTracingReflectionResolveCS(
 	// All sample coordinates must fall into these inclusive bounds of the view rect.
 	const int4 ViewRectBounds = int4(int2(View.ViewRectMin.xy), int2(View.ViewRectMin.xy + View.ViewSizeAndInvSize.xy - 1));
 
-	for (uint i = 0; i < NUM_SAMPLES; ++i)
+	for (uint i = 0; i < SpatialResolveNumSamples; ++i)
 	{
-		float2 HammersleySample = Hammersley16(i, NUM_SAMPLES, PixelRandomSeed);
+		float2 HammersleySample = Hammersley16(i, SpatialResolveNumSamples, PixelRandomSeed);
 		//float2 DiskSample = HammersleySample * 2.0 - 1.0; // cheapest, but may produce noticeable rectangular block artifacts
 		float2 DiskSample = UniformSampleDisk(HammersleySample); // slightly more expensive, but maybe slightly better? the jury is out...
 		//float2 DiskSample = UniformSampleDisk(RandomFloat2(PixelRandomSeed));
@@ -120,13 +122,12 @@ void RayTracingReflectionResolveCS(
 		float4 DenoiserData = ReflectionDenoiserData.Load(uint3(SamplePixelId, 0));
 		float InvRayPdf = DenoiserData.w;
 
-	#if 0 // #yuriy_todo: switch method using dynamic branch (requires different data to be written from reflection shader)
-		// Parallax-correct. A bit sharper, but tiny bit more expensive and results in some light leaking.
-		float3 SampleL = normalize(DenoiserData.xyz - PositionTranslatedWorld);
-	#else
-		// Parallax-incorrect. A bit faster and less leaky, but more blurry.
 		float3 SampleL = DenoiserData.xyz;
-	#endif
+		if (SpatialResolveParallax)
+		{
+			// NOTE: Different data must be written from reflection shader for parallax correction.
+			SampleL = normalize(DenoiserData.xyz - PositionTranslatedWorld);
+		}
 
 		float4 SampleColor = RawReflectionColor.Load(uint3(SamplePixelId, 0));
 

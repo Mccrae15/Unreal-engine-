@@ -77,6 +77,27 @@ static TAutoConsoleVariable<int32> CVarRayTracingReflectionsSpatialResolve(
 	ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarRayTracingReflectionsSpatialResolveParallax(
+	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.SpatialResolve.Parallax"),
+	0,
+	TEXT("Whether to use parallax correction during spatial resolve reflection denoising step. Can produce more realistic reflection contact hardening, but produces light leaks in some cases. (default: 0)"),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarRayTracingReflectionsSpatialResolveMaxRadius(
+	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.SpatialResolve.MaxRadius"),
+	8.0f,
+	TEXT("Maximum radius in pixels of the native reflection image. Actual radius depends on output pixel roughness, rougher reflections using larger radius. (default: 8)"),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<int32> CVarRayTracingReflectionsSpatialResolveNumSamples(
+	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.SpatialResolve.NumSamples"),
+	8,
+	TEXT("Maximum number of screen space samples to take during spatial resolve step. More samples produces smoother output at higher GPU cost. (default: 8)"),
+	ECVF_RenderThreadSafe
+);
+
 namespace 
 {
 	struct FSortedReflectionRay
@@ -157,6 +178,9 @@ class FRayTracingReflectionResolveCS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(FIntPoint, RayTracingBufferSize)
 		SHADER_PARAMETER(int, UpscaleFactor)
+		SHADER_PARAMETER(int, SpatialResolveParallax)
+		SHADER_PARAMETER(float, SpatialResolveMaxRadius)
+		SHADER_PARAMETER(int, SpatialResolveNumSamples)
 		SHADER_PARAMETER(float, ReflectionMaxRoughness)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
@@ -208,6 +232,7 @@ class FRayTracingDeferredReflectionsRGS : public FGlobalShader
 		SHADER_PARAMETER(int, ShouldDoEmissiveAndIndirectLighting)
 		SHADER_PARAMETER(int, ShouldDoReflectionCaptures)
 		SHADER_PARAMETER(int, DenoisingOutputFormat)
+		SHADER_PARAMETER(int, SpatialResolveParallax)
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FSortedReflectionRay>, RayBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FRayIntersectionBookmark>, BookmarkBuffer)
@@ -299,14 +324,17 @@ static void AddReflectionResolvePass(
 	FRDGTextureRef ColorOutput)
 {
 	auto* PassParameters = GraphBuilder.AllocParameters<FRayTracingReflectionResolveCS::FParameters>();
-	PassParameters->RayTracingBufferSize    = RayTracingBufferSize;
-	PassParameters->UpscaleFactor           = CommonParameters.UpscaleFactor;
-	PassParameters->ReflectionMaxRoughness  = CommonParameters.ReflectionMaxRoughness;
-	PassParameters->ViewUniformBuffer       = CommonParameters.ViewUniformBuffer;
-	PassParameters->SceneTextures           = CommonParameters.SceneTextures;
-	PassParameters->RawReflectionColor      = RawReflectionColor;
-	PassParameters->ReflectionDenoiserData  = ReflectionDenoiserData;
-	PassParameters->ColorOutput             = GraphBuilder.CreateUAV(ColorOutput);
+	PassParameters->RayTracingBufferSize     = RayTracingBufferSize;
+	PassParameters->UpscaleFactor            = CommonParameters.UpscaleFactor;
+	PassParameters->SpatialResolveParallax   = CommonParameters.SpatialResolveParallax;
+	PassParameters->SpatialResolveMaxRadius  = FMath::Clamp<float>(CVarRayTracingReflectionsSpatialResolveMaxRadius.GetValueOnRenderThread(), 0.0f, 32.0f);
+	PassParameters->SpatialResolveNumSamples = FMath::Clamp<int32>(CVarRayTracingReflectionsSpatialResolveNumSamples.GetValueOnRenderThread(), 1, 32);
+	PassParameters->ReflectionMaxRoughness   = CommonParameters.ReflectionMaxRoughness;
+	PassParameters->ViewUniformBuffer        = CommonParameters.ViewUniformBuffer;
+	PassParameters->SceneTextures            = CommonParameters.SceneTextures;
+	PassParameters->RawReflectionColor       = RawReflectionColor;
+	PassParameters->ReflectionDenoiserData   = ReflectionDenoiserData;
+	PassParameters->ColorOutput              = GraphBuilder.CreateUAV(ColorOutput);
 
 	auto ComputeShader = View.ShaderMap->GetShader<FRayTracingReflectionResolveCS>();
 	ClearUnusedGraphResources(ComputeShader, PassParameters);
@@ -412,6 +440,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 	CommonParameters.ShouldDoEmissiveAndIndirectLighting = CVarEmissiveAndIndirectLighting && CVarEmissiveAndIndirectLighting->GetBool();
 	CommonParameters.ShouldDoReflectionCaptures          = CVarReflectionCaptures && CVarReflectionCaptures->GetBool();
 	CommonParameters.DenoisingOutputFormat               = bSpatialResolve ? 1 : 0;
+	CommonParameters.SpatialResolveParallax              = CVarRayTracingReflectionsSpatialResolveParallax.GetValueOnRenderThread() ? 1 : 0;
 
 	CommonParameters.TLAS                    = View.RayTracingScene.RayTracingSceneRHI->GetShaderResourceView();
 	CommonParameters.SceneTextures           = SceneTextures;
