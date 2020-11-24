@@ -144,8 +144,8 @@ namespace InternalEditorMeshLibrary
 		return true;
 	}
 }
-void UEditorStaticMeshLibrary::SetLODProps(UStaticMesh* StaticMesh, int32 Android_LOD, int32 PS4_LOD, int32 LODForOccluderMesh) {
-	FPerPlatformInt newValue;
+void UEditorStaticMeshLibrary::SetLODProps(UStaticMesh* StaticMesh, int32 Android_LOD, int32 PS4_LOD, int32 DefaultValue, int32 LODForOccluderMesh) {
+	FPerPlatformInt newValue = FPerPlatformInt(FMath::Max(DefaultValue , 0));
 	if (Android_LOD > -1) {
 		newValue.PerPlatform.Add(FName("Android"), Android_LOD);
 	}
