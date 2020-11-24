@@ -52,7 +52,7 @@ uint2 UnpackPixelCoordinates(uint PixelCoordinates)
 
 float ApplySmoothBias(float Roughness, float SmoothBias)
 {
-	if (SmoothBias > 0)
+	if (SmoothBias >= 0)
 	{
 		// SmoothStep-like function up to SmoothBias, original value above
 		float X = saturate(Roughness / SmoothBias);
@@ -60,7 +60,8 @@ float ApplySmoothBias(float Roughness, float SmoothBias)
 	}
 	else
 	{
-		return Roughness;
+		// Negative value forces mirror-like reflections
+		return 0;
 	}
 }
 
@@ -83,7 +84,7 @@ float GetRayTracingClearCoatApproximateRoughness(FGBufferData GBuffer)
 	}
 }
 
-FSortedReflectionRay GenerateDeferredReflectionRay(uint2 PixelPos, uint2 UpscaleFactor, float ReflectionMaxNormalBias, float SmoothBias, bool bGlossyReflections)
+FSortedReflectionRay GenerateDeferredReflectionRay(uint2 PixelPos, uint2 UpscaleFactor, float ReflectionMaxNormalBias, float SmoothBias)
 {
 	// NOTE: GetPixelCoord() helper is currently intentionally not used here, as it introduces noticeable jitter when upscale factor is used.
 	// Subpixels could potentially be taken into account at a later point, if denoiser can compensate for the jitter.
@@ -127,11 +128,12 @@ FSortedReflectionRay GenerateDeferredReflectionRay(uint2 PixelPos, uint2 Upscale
 
 	float3 L = (float3)0;
 
-	if (bGlossyReflections)
+	float SampleRoughness = ApplySmoothBias(GBuffer.Roughness, SmoothBias);
+
+	if (SampleRoughness > 0)
 	{
 		// Biased roughness is used for GGX sampling, but original value is still used to compute roughness threshold / fade.
 		// This means that biased roughness will never cause more rays to be traced, so will never cause performance drop.
-		float SampleRoughness = ApplySmoothBias(GBuffer.Roughness, SmoothBias);
 		float a2 = Pow4(SampleRoughness);
 		float4 BRDFSample = ImportanceSampleVisibleGGX(UniformSampleDisk(E), a2, TangentV);
 		float3 H = mul(BRDFSample.xyz, TangentBasis);

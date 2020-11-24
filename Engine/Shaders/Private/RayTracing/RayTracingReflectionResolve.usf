@@ -29,6 +29,7 @@
 int2  RayTracingBufferSize;
 int   UpscaleFactor;
 float ReflectionMaxRoughness;
+float ReflectionSmoothBias;
 float SpatialResolveMaxRadius;
 int   SpatialResolveNumSamples;
 int   SpatialResolveParallax;
@@ -89,6 +90,7 @@ void RayTracingReflectionResolveCS(
 
 	FGBufferData GBuffer = GetGBufferDataFromSceneTextures(BufferUV);
 	GBuffer.Roughness = GetRayTracingClearCoatApproximateRoughness(GBuffer);
+	GBuffer.Roughness = ApplySmoothBias(GBuffer.Roughness, ReflectionSmoothBias);
 
 	float RoughnessFade = GetRoughnessFade(GBuffer.Roughness, ReflectionMaxRoughness);
 	if (RoughnessFade <= 0)
