@@ -116,7 +116,7 @@ public:
 	 static int32 SetLodFromStaticMesh(UStaticMesh* DestinationStaticMesh, int32 DestinationLodIndex, UStaticMesh* SourceStaticMesh, int32 SourceLodIndex, bool bReuseExistingMaterialSlots);
 
 	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
-		 static void SetLODProps(UStaticMesh* StaticMesh, int32 Android_LOD = 2, int32 PS4_LOD = 1, int32 LODForOccluderMesh = -1);
+		 static void SetLODProps(UStaticMesh* StaticMesh, int32 Android_LOD = 2, int32 PS4_LOD = 1, int32 DefaultValue = 0, int32 LODForOccluderMesh = -1);
 
 	 UFUNCTION(BlueprintCallable, Category = "Editor Scripting | AnimationAsset")
 	 static void SetPreviewMeshForAnimAsset(USkeletalMesh * PreviewMesh, UAnimationAsset* AnimationAsset);
