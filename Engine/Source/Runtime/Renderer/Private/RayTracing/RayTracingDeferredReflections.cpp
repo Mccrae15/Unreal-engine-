@@ -98,6 +98,13 @@ static TAutoConsoleVariable<int32> CVarRayTracingReflectionsSpatialResolveNumSam
 	ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<float> CVarRayTracingReflectionsHorizontalResolutionScale(
+	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.HorizontalResolutionScale"),
+	1.0,
+	TEXT("Reflection resolution scaling for the X axis between 0.25 and 4.0. Can only be used when spatial resolve is enabled. (default: 1)"),
+	ECVF_RenderThreadSafe
+);
+
 namespace 
 {
 	struct FSortedReflectionRay
@@ -129,7 +136,7 @@ class FGenerateReflectionRaysCS : public FGlobalShader
 	SHADER_PARAMETER(float, ReflectionMaxNormalBias)
 	SHADER_PARAMETER(float, ReflectionMaxRoughness)
 	SHADER_PARAMETER(float, ReflectionSmoothBias)
-	SHADER_PARAMETER(int, UpscaleFactor)
+	SHADER_PARAMETER(FVector2D, UpscaleFactor)
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 	SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FSortedReflectionRay>, RayBuffer)
@@ -179,7 +186,7 @@ class FRayTracingReflectionResolveCS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(FIntPoint, RayTracingBufferSize)
-		SHADER_PARAMETER(int, UpscaleFactor)
+		SHADER_PARAMETER(FVector2D, UpscaleFactor)
 		SHADER_PARAMETER(int, SpatialResolveParallax)
 		SHADER_PARAMETER(float, SpatialResolveMaxRadius)
 		SHADER_PARAMETER(int, SpatialResolveNumSamples)
@@ -229,7 +236,7 @@ class FRayTracingDeferredReflectionsRGS : public FGlobalShader
 		SHADER_PARAMETER(float, ReflectionSmoothBias)
 		SHADER_PARAMETER(float, AnyHitMaxRoughness)
 		SHADER_PARAMETER(float, TextureMipBias)
-		SHADER_PARAMETER(int, UpscaleFactor)
+		SHADER_PARAMETER(FVector2D, UpscaleFactor)
 		SHADER_PARAMETER(int, ShouldDoDirectLighting)
 		SHADER_PARAMETER(int, ShouldDoEmissiveAndIndirectLighting)
 		SHADER_PARAMETER(int, ShouldDoReflectionCaptures)
@@ -407,10 +414,31 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 	const bool bExternalDenoiser = DenoiserMode != 0;
 	const bool bSpatialResolve   = !bExternalDenoiser && CVarRayTracingReflectionsSpatialResolve.GetValueOnRenderThread() == 1;
 
-	int32 UpscaleFactor = int32(1.0f / ResolutionFraction);
-	ensure(ResolutionFraction == 1.0 / UpscaleFactor);
-	FIntPoint RayTracingResolution = FIntPoint::DivideAndRoundUp(View.ViewRect.Size(), UpscaleFactor);
-	FIntPoint RayTracingBufferSize = SceneTextures.SceneDepthBuffer->Desc.Extent / UpscaleFactor;
+	FVector2D UpscaleFactor = FVector2D(1.0f);
+	FIntPoint RayTracingResolution = View.ViewRect.Size();
+	FIntPoint RayTracingBufferSize = SceneTextures.SceneDepthBuffer->Desc.Extent;
+
+	if (bSpatialResolve && (ResolutionFraction != 1.0f || CVarRayTracingReflectionsHorizontalResolutionScale.GetValueOnAnyThread() != 1.0))
+	{
+		float ResolutionFractionX = FMath::Clamp(CVarRayTracingReflectionsHorizontalResolutionScale.GetValueOnAnyThread(), 0.25f, 4.0f);
+		FVector2D ResolutionFloat = FMath::Max(FVector2D(4.0f), FVector2D(RayTracingResolution) * FVector2D(ResolutionFractionX, 1.0f) * ResolutionFraction);
+		FVector2D BufferSizeFloat = FMath::Max(FVector2D(4.0f), FVector2D(RayTracingBufferSize) * FVector2D(ResolutionFractionX, 1.0f) * ResolutionFraction);
+
+		RayTracingResolution.X = (int32)FMath::CeilToFloat(ResolutionFloat.X);
+		RayTracingResolution.Y = (int32)FMath::CeilToFloat(ResolutionFloat.Y);
+
+		RayTracingBufferSize.X = (int32)FMath::CeilToFloat(BufferSizeFloat.X);
+		RayTracingBufferSize.Y = (int32)FMath::CeilToFloat(BufferSizeFloat.Y);
+
+		UpscaleFactor = FVector2D(View.ViewRect.Size()) / FVector2D(RayTracingResolution);
+	}
+	else
+	{
+		int32 UpscaleFactorInt = int32(1.0f / ResolutionFraction);
+		RayTracingResolution = FIntPoint::DivideAndRoundUp(RayTracingResolution, UpscaleFactorInt);
+		RayTracingBufferSize = RayTracingBufferSize / UpscaleFactorInt;
+		UpscaleFactor = FVector2D((float)UpscaleFactorInt);
+	}
 
 	FRDGTextureDesc OutputDesc = FPooledRenderTargetDesc::Create2DDesc(
 		RayTracingBufferSize,
@@ -418,7 +446,10 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 		TexCreate_None, TexCreate_ShaderResource | TexCreate_UAV,
 		false);
 
-	OutDenoiserInputs->Color = GraphBuilder.CreateTexture(OutputDesc, TEXT("RayTracingReflections"));
+	OutDenoiserInputs->Color = GraphBuilder.CreateTexture(OutputDesc,
+		bSpatialResolve
+		? TEXT("RayTracingReflectionsRaw")
+		: TEXT("RayTracingReflections"));
 
 	FRDGTextureRef ReflectionDenoiserData;
 	if (bSpatialResolve)

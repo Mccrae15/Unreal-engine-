@@ -27,7 +27,7 @@
 // Inputs
 
 int2  RayTracingBufferSize;
-int   UpscaleFactor;
+float2 UpscaleFactor;
 float ReflectionMaxRoughness;
 float ReflectionSmoothBias;
 float SpatialResolveMaxRadius;
@@ -106,11 +106,11 @@ void RayTracingReflectionResolveCS(
 
 	// Filter size is empirically chosen to be a good compromise between quality and performance.
 	// Low values result in blockiness, high values result in poor cache use.
-	const float MinFilterSize = UpscaleFactor; // Always want a bit of blur (more when input is lower res)
-	const float MaxFilterSize = SpatialResolveMaxRadius;
+	const float2 MinFilterSize = UpscaleFactor; // Always want a bit of blur (more when input is lower res)
+	const float2 MaxFilterSize = SpatialResolveMaxRadius;
 
 	// Filter footprint is based on center pixel roughness to reduce mirror reflection blurriness.
-	const float FilterSize = lerp(MinFilterSize, MaxFilterSize, saturate(GBuffer.Roughness * 8));
+	const float2 FilterSize = lerp(MinFilterSize, MaxFilterSize, saturate(GBuffer.Roughness * 8));
 	const float NoV = max(0, dot(N, V));
 
 	const float a2 = max(1e-5, Pow4(GBuffer.Roughness));
@@ -119,7 +119,7 @@ void RayTracingReflectionResolveCS(
 	float WeightSum = 0;
 
 	// All sample coordinates must fall into these inclusive bounds of the view rect.
-	const int4 ViewRectBounds = int4(int2(View.ViewRectMin.xy), int2(View.ViewRectMin.xy + View.ViewSizeAndInvSize.xy - 1));
+	const int4 ViewRectBounds = int4(float4(float2(View.ViewRectMin.xy), float2(View.ViewRectMin.xy + View.ViewSizeAndInvSize.xy - 1)) / UpscaleFactor.xyxy);
 
 	SAMPLE_LOOP_UNROLL
 	for (uint i = 0; i < NUM_SAMPLES; ++i)
