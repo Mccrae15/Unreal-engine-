@@ -58,8 +58,6 @@ int   ShouldDoDirectLighting;
 int   ShouldDoEmissiveAndIndirectLighting;
 int   ShouldDoReflectionCaptures;
 int   DenoisingOutputFormat; // 0: hit distance, 1: spatial resolve params (see RayTracingReflectionResolve.usf)
-int   SpatialResolveParallax;
-
 RWStructuredBuffer<FSortedReflectionRay>        RayBuffer;
 RWStructuredBuffer<FDeferredMaterialPayload>    MaterialBuffer;
 RWTexture2D<float4>                             ColorOutput;
@@ -269,16 +267,10 @@ RAY_TRACING_ENTRY_RAYGEN(RayTracingDeferredReflectionsRGS)
 
 	float4 RayParams = (float4)0;
 
-	// NOTE: Parallax correction mode requires different data interpretation in the resolve shader
-
-	float3 RelativePosition = RayHitWorldPos - View.WorldCameraOrigin;
-	float ClampedLength = min(length(RelativePosition), 65504.0); // Clamp relative position to fit into FP16
-
-	RayParams.xyz = SpatialResolveParallax // Written as ternary operator to work around shader compiler crash
-		? normalize(RelativePosition) * ClampedLength
-		: ReflectionRay.GetDirection();
-
-	RayParams.w = ReflectionRay.Pdf > 0 ? 1.0 / ReflectionRay.Pdf : 0;
+	const float FP16Max = 65504.0;
+	float ClampedHitDistance = min(ResultDistance, FP16Max); // Clamp to fit into FP16
+	RayParams.xyz = ReflectionRay.GetDirection() * ClampedHitDistance;
+	RayParams.w  = ReflectionRay.Pdf > 0 ? min(1.0 / ReflectionRay.Pdf, FP16Max) : 0;
 
 	// NOTE: Written a ternary operator to work around shader compiler crash as of 2020-11-19
 	ReflectionDenoiserData[PixelPos] = DenoisingOutputFormat == 1 ? RayParams : (float4)ResultDistance;

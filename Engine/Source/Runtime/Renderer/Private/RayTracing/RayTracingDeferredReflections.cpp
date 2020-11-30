@@ -77,13 +77,6 @@ static TAutoConsoleVariable<int32> CVarRayTracingReflectionsSpatialResolve(
 	ECVF_RenderThreadSafe
 );
 
-static TAutoConsoleVariable<int32> CVarRayTracingReflectionsSpatialResolveParallax(
-	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.SpatialResolve.Parallax"),
-	0,
-	TEXT("Whether to use parallax correction during spatial resolve reflection denoising step. Can produce more realistic reflection contact hardening, but produces light leaks in some cases. (default: 0)"),
-	ECVF_RenderThreadSafe
-);
-
 static TAutoConsoleVariable<float> CVarRayTracingReflectionsSpatialResolveMaxRadius(
 	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.SpatialResolve.MaxRadius"),
 	8.0f,
@@ -95,6 +88,13 @@ static TAutoConsoleVariable<int32> CVarRayTracingReflectionsSpatialResolveNumSam
 	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.SpatialResolve.NumSamples"),
 	8,
 	TEXT("Maximum number of screen space samples to take during spatial resolve step. More samples produces smoother output at higher GPU cost. Specialized shader is used for 4, 8, 12 and 16 samples. (default: 8)"),
+	ECVF_RenderThreadSafe
+);
+
+static TAutoConsoleVariable<float> CVarRayTracingReflectionsTemporalWeight(
+	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.SpatialResolve.TemporalWeight"),
+	0.95f, // Up to 95% of the reflection can come from history buffer, at least 5% always from current frame
+	TEXT("Defines whether to perform temporal accumulation during reflection spatial resolve and how much weight to give to history. Valid values in range [0..1]. (default: 0.90)"),
 	ECVF_RenderThreadSafe
 );
 
@@ -187,13 +187,15 @@ class FRayTracingReflectionResolveCS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(FIntPoint, RayTracingBufferSize)
 		SHADER_PARAMETER(FVector2D, UpscaleFactor)
-		SHADER_PARAMETER(int, SpatialResolveParallax)
 		SHADER_PARAMETER(float, SpatialResolveMaxRadius)
 		SHADER_PARAMETER(int, SpatialResolveNumSamples)
 		SHADER_PARAMETER(float, ReflectionMaxRoughness)
 		SHADER_PARAMETER(float, ReflectionSmoothBias)
+		SHADER_PARAMETER(float, ReflectionHistoryWeight)
+		SHADER_PARAMETER(FVector4, HistoryScreenPositionScaleBias)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ReflectionHistory)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, RawReflectionColor)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ReflectionDenoiserData)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, ColorOutput)
@@ -241,7 +243,6 @@ class FRayTracingDeferredReflectionsRGS : public FGlobalShader
 		SHADER_PARAMETER(int, ShouldDoEmissiveAndIndirectLighting)
 		SHADER_PARAMETER(int, ShouldDoReflectionCaptures)
 		SHADER_PARAMETER(int, DenoisingOutputFormat)
-		SHADER_PARAMETER(int, SpatialResolveParallax)
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FSortedReflectionRay>, RayBuffer)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FRayIntersectionBookmark>, BookmarkBuffer)
@@ -326,6 +327,7 @@ static void AddReflectionResolvePass(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	const FRayTracingDeferredReflectionsRGS::FParameters& CommonParameters,
+	FRDGTextureRef ReflectionHistory, float ReflectionHistoryWeight, const FVector4& HistoryScreenPositionScaleBias,
 	FRDGTextureRef RawReflectionColor,
 	FRDGTextureRef ReflectionDenoiserData,
 	FIntPoint RayTracingBufferSize,
@@ -333,18 +335,20 @@ static void AddReflectionResolvePass(
 	FRDGTextureRef ColorOutput)
 {
 	auto* PassParameters = GraphBuilder.AllocParameters<FRayTracingReflectionResolveCS::FParameters>();
-	PassParameters->RayTracingBufferSize     = RayTracingBufferSize;
-	PassParameters->UpscaleFactor            = CommonParameters.UpscaleFactor;
-	PassParameters->SpatialResolveParallax   = CommonParameters.SpatialResolveParallax;
-	PassParameters->SpatialResolveMaxRadius  = FMath::Clamp<float>(CVarRayTracingReflectionsSpatialResolveMaxRadius.GetValueOnRenderThread(), 0.0f, 32.0f);
-	PassParameters->SpatialResolveNumSamples = FMath::Clamp<int32>(CVarRayTracingReflectionsSpatialResolveNumSamples.GetValueOnRenderThread(), 1, 32);
-	PassParameters->ReflectionMaxRoughness   = CommonParameters.ReflectionMaxRoughness;
-	PassParameters->ReflectionSmoothBias     = CommonParameters.ReflectionSmoothBias;
-	PassParameters->ViewUniformBuffer        = CommonParameters.ViewUniformBuffer;
-	PassParameters->SceneTextures            = CommonParameters.SceneTextures;
-	PassParameters->RawReflectionColor       = RawReflectionColor;
-	PassParameters->ReflectionDenoiserData   = ReflectionDenoiserData;
-	PassParameters->ColorOutput              = GraphBuilder.CreateUAV(ColorOutput);
+	PassParameters->RayTracingBufferSize           = RayTracingBufferSize;
+	PassParameters->UpscaleFactor                  = CommonParameters.UpscaleFactor;
+	PassParameters->SpatialResolveMaxRadius        = FMath::Clamp<float>(CVarRayTracingReflectionsSpatialResolveMaxRadius.GetValueOnRenderThread(), 0.0f, 32.0f);
+	PassParameters->SpatialResolveNumSamples       = FMath::Clamp<int32>(CVarRayTracingReflectionsSpatialResolveNumSamples.GetValueOnRenderThread(), 1, 32);
+	PassParameters->ReflectionMaxRoughness         = CommonParameters.ReflectionMaxRoughness;
+	PassParameters->ReflectionSmoothBias           = CommonParameters.ReflectionSmoothBias;
+	PassParameters->ReflectionHistoryWeight        = ReflectionHistoryWeight;
+	PassParameters->HistoryScreenPositionScaleBias = HistoryScreenPositionScaleBias;
+	PassParameters->ViewUniformBuffer              = CommonParameters.ViewUniformBuffer;
+	PassParameters->SceneTextures                  = CommonParameters.SceneTextures;
+	PassParameters->ReflectionHistory              = ReflectionHistory;
+	PassParameters->RawReflectionColor             = RawReflectionColor;
+	PassParameters->ReflectionDenoiserData         = ReflectionDenoiserData;
+	PassParameters->ColorOutput                    = GraphBuilder.CreateUAV(ColorOutput);
 
 	FRayTracingReflectionResolveCS::FPermutationDomain PermutationVector;
 	if ((PassParameters->SpatialResolveNumSamples % 4 == 0) && PassParameters->SpatialResolveNumSamples <= 16)
@@ -413,6 +417,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 
 	const bool bExternalDenoiser = DenoiserMode != 0;
 	const bool bSpatialResolve   = !bExternalDenoiser && CVarRayTracingReflectionsSpatialResolve.GetValueOnRenderThread() == 1;
+	const bool bTemporalResolve  = bSpatialResolve && CVarRayTracingReflectionsTemporalWeight.GetValueOnRenderThread() > 0;
 
 	FVector2D UpscaleFactor = FVector2D(1.0f);
 	FIntPoint RayTracingResolution = View.ViewRect.Size();
@@ -484,7 +489,6 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 	CommonParameters.ShouldDoEmissiveAndIndirectLighting = CVarEmissiveAndIndirectLighting && CVarEmissiveAndIndirectLighting->GetBool();
 	CommonParameters.ShouldDoReflectionCaptures          = CVarReflectionCaptures && CVarReflectionCaptures->GetBool();
 	CommonParameters.DenoisingOutputFormat               = bSpatialResolve ? 1 : 0;
-	CommonParameters.SpatialResolveParallax              = CVarRayTracingReflectionsSpatialResolveParallax.GetValueOnRenderThread() ? 1 : 0;
 
 	CommonParameters.TLAS                    = View.RayTracingScene.RayTracingSceneRHI->GetShaderResourceView();
 	CommonParameters.SceneTextures           = SceneTextures;
@@ -596,12 +600,51 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 		FRDGTextureRef RawReflectionColor = OutDenoiserInputs->Color;
 		OutDenoiserInputs->Color = GraphBuilder.CreateTexture(ResolvedOutputDesc, TEXT("RayTracingReflections"));
 
-		AddReflectionResolvePass(GraphBuilder, View, CommonParameters, 
+		const FScreenSpaceDenoiserHistory& ReflectionsHistory = View.PrevViewInfo.ReflectionsHistory;
+
+		const bool bValidHistory = ReflectionsHistory.IsValid() && !View.bCameraCut && bTemporalResolve;
+
+		FRDGTextureRef ReflectionHistoryTexture = GraphBuilder.RegisterExternalTexture(
+			bValidHistory 
+			? ReflectionsHistory.RT[0] 
+			: GSystemTextures.BlackDummy);
+
+		const float HistoryWeight = bValidHistory
+			? FMath::Clamp(CVarRayTracingReflectionsTemporalWeight.GetValueOnRenderThread(), 0.0f, 0.99f)
+			: 0.0;
+
+		FIntPoint ViewportOffset = View.ViewRect.Min;
+		FIntPoint ViewportExtent = View.ViewRect.Size();
+		FIntPoint BufferSize     = SceneTextures.SceneDepthBuffer->Desc.Extent;
+
+		if (bValidHistory)
+		{
+			ViewportOffset = ReflectionsHistory.Scissor.Min;
+			ViewportExtent = ReflectionsHistory.Scissor.Size();
+			BufferSize     = ReflectionsHistory.RT[0]->GetDesc().Extent;
+		}
+
+		FVector2D InvBufferSize(1.0f / float(BufferSize.X), 1.0f / float(BufferSize.Y));
+
+		FVector4 HistoryScreenPositionScaleBias = FVector4(
+			ViewportExtent.X * 0.5f * InvBufferSize.X,
+			-ViewportExtent.Y * 0.5f * InvBufferSize.Y,
+			(ViewportExtent.X * 0.5f + ViewportOffset.X) * InvBufferSize.X,
+			(ViewportExtent.Y * 0.5f + ViewportOffset.Y) * InvBufferSize.Y);
+
+		AddReflectionResolvePass(GraphBuilder, View, CommonParameters,
+			ReflectionHistoryTexture, HistoryWeight, HistoryScreenPositionScaleBias,
 			RawReflectionColor,
 			ReflectionDenoiserData,
 			RayTracingBufferSize,
 			View.ViewRect.Size(),
 			OutDenoiserInputs->Color);
+
+		if (bTemporalResolve && View.ViewState)
+		{
+			GraphBuilder.QueueTextureExtraction(OutDenoiserInputs->Color, &View.ViewState->PrevFrameViewInfo.ReflectionsHistory.RT[0]);
+			View.ViewState->PrevFrameViewInfo.ReflectionsHistory.Scissor = View.ViewRect;
+		}
 	}
 
 }

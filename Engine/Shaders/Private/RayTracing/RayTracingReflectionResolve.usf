@@ -31,9 +31,11 @@ float2 UpscaleFactor;
 float ReflectionMaxRoughness;
 float ReflectionSmoothBias;
 float SpatialResolveMaxRadius;
+float ReflectionHistoryWeight;
 int   SpatialResolveNumSamples;
-int   SpatialResolveParallax;
+float4 HistoryScreenPositionScaleBias;
 
+Texture2D ReflectionHistory;
 Texture2D RawReflectionColor;
 Texture2D ReflectionDenoiserData; // xyz: camera-relative reflection hit position, w: 1/pdf
 
@@ -69,22 +71,44 @@ float3 InvFastTonemap(float3 c)
 #	define SAMPLE_LOOP_UNROLL
 #endif // DIM_NUM_SAMPLES
 
+float2 GetReprojectedBufferUV(float2 ScreenPos, float SceneDepth, float2 EncodedVelocity)
+{
+	float DeviceZ = ConvertToDeviceZ(SceneDepth);
+	float4 ThisClip = float4(ScreenPos, DeviceZ, 1);
+	float4 PrevClip = mul(ThisClip, View.ClipToPrevClip);
+	float2 PrevScreenPos = PrevClip.xy / PrevClip.w;
+	if (EncodedVelocity.x > 0.0)
+	{
+		PrevScreenPos = ThisClip.xy - DecodeVelocityFromTexture(EncodedVelocity);
+	}
+
+	PrevScreenPos.xy = clamp(PrevScreenPos.xy, (float2)-1, (float2)1);
+
+	return PrevScreenPos.xy * HistoryScreenPositionScaleBias.xy + HistoryScreenPositionScaleBias.zw;
+}
+
+float RgbLuma(float3 Color)
+{
+	float3 LumaVec = float3(0.299, 0.587, 0.114);
+	return dot(Color, LumaVec);
+}
+
+groupshared float4 SharedColorSamples[THREADGROUP_SIZE_X][THREADGROUP_SIZE_Y];
+
 [numthreads(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y, 1)]
 void RayTracingReflectionResolveCS(
 	uint2 DispatchThreadId : SV_DispatchThreadID,
 	uint2 GroupThreadId : SV_GroupThreadID,
 	uint2 GroupId : SV_GroupID)
 {
-	if (any(DispatchThreadId.xy >= View.ViewSizeAndInvSize.xy))
-	{
-		return;
-	}
+	const uint2 ViewSize = uint2(View.ViewSizeAndInvSize.xy);
+	const bool bValidThread = all(DispatchThreadId < ViewSize);
 
-	const float2 BufferUV = (float2(DispatchThreadId.xy + View.ViewRectMin.xy) + 0.5) * View.BufferSizeAndInvSize.zw;
+	const float2 BufferUV = (float2(DispatchThreadId + View.ViewRectMin.xy) + 0.5) * View.BufferSizeAndInvSize.zw;
 	const float2 ViewportUV = BufferUVToViewportUV(BufferUV);
 
 	const float2 ScreenPos = ViewportUVToScreenPos(ViewportUV);
-	const uint2 PixelRandomSeed = Rand3DPCG16(int3(DispatchThreadId.xy, View.StateFrameIndexMod8)).xy;
+	const uint2 PixelRandomSeed = Rand3DPCG16(int3(DispatchThreadId, View.StateFrameIndexMod8)).xy;
 
 	const int2 ReflectionPixelPos = int2(BufferUV * RayTracingBufferSize);
 
@@ -92,83 +116,162 @@ void RayTracingReflectionResolveCS(
 	GBuffer.Roughness = GetRayTracingClearCoatApproximateRoughness(GBuffer);
 	GBuffer.Roughness = ApplySmoothBias(GBuffer.Roughness, ReflectionSmoothBias);
 
-	float RoughnessFade = GetRoughnessFade(GBuffer.Roughness, ReflectionMaxRoughness);
-	if (RoughnessFade <= 0)
-	{
-		ColorOutput[View.ViewRectMin.xy + DispatchThreadId] = (float4)0;
-		return;
-	}
-
 	const float SceneDepth = GBuffer.Depth;
-	const float3 PositionTranslatedWorld = mul(float4(ScreenPos * SceneDepth, SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
-	const float3 V = normalize(View.TranslatedWorldCameraOrigin - PositionTranslatedWorld);
-	const float3 N = GBuffer.WorldNormal;
 
-	// Filter size is empirically chosen to be a good compromise between quality and performance.
-	// Low values result in blockiness, high values result in poor cache use.
-	const float2 MinFilterSize = UpscaleFactor; // Always want a bit of blur (more when input is lower res)
-	const float2 MaxFilterSize = SpatialResolveMaxRadius;
+	const float RoughnessFade = GetRoughnessFade(GBuffer.Roughness, ReflectionMaxRoughness);
+	const bool bValidPixel = RoughnessFade > 0;
 
-	// Filter footprint is based on center pixel roughness to reduce mirror reflection blurriness.
-	const float2 FilterSize = lerp(MinFilterSize, MaxFilterSize, saturate(GBuffer.Roughness * 8));
-	const float NoV = max(0, dot(N, V));
-
-	const float a2 = max(1e-5, Pow4(GBuffer.Roughness));
-
+	// NOTE: Reflection image uses premultiplied alpha, so we must handle all 4 components during spatial filtering
 	float4 ReflectionColor = (float4)0;
-	float WeightSum = 0;
+	float ReflectionHitDistance = 0;
 
-	// All sample coordinates must fall into these inclusive bounds of the view rect.
-	const int4 ViewRectBounds = int4(float4(float2(View.ViewRectMin.xy), float2(View.ViewRectMin.xy + View.ViewSizeAndInvSize.xy - 1)) / UpscaleFactor.xyxy);
-
-	SAMPLE_LOOP_UNROLL
-	for (uint i = 0; i < NUM_SAMPLES; ++i)
+	if (bValidPixel && bValidThread)
 	{
-		float2 HammersleySample = Hammersley16(i, NUM_SAMPLES, PixelRandomSeed);
-		//float2 DiskSample = HammersleySample * 2.0 - 1.0; // cheapest, but may produce noticeable rectangular block artifacts
-		float2 DiskSample = UniformSampleDisk(HammersleySample); // slightly more expensive, but maybe slightly better? the jury is out...
-		//float2 DiskSample = UniformSampleDisk(RandomFloat2(PixelRandomSeed));
+		const float3 PositionTranslatedWorld = mul(float4(ScreenPos * SceneDepth, SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
+		const float3 V = normalize(View.TranslatedWorldCameraOrigin - PositionTranslatedWorld);
+		const float3 N = GBuffer.WorldNormal;
 
-		int2 SampleOffset = (int2)(DiskSample * FilterSize);
-		int2 SamplePixelId = clamp(ReflectionPixelPos + SampleOffset, ViewRectBounds.xy, ViewRectBounds.zw);
+		// Filter size is empirically chosen to be a good compromise between quality and performance.
+		// Low values result in blockiness, high values result in poor cache use.
+		const float2 MinFilterSize = UpscaleFactor; // Always want a bit of blur (more when input is lower res)
+		const float2 MaxFilterSize = SpatialResolveMaxRadius;
 
-		float4 DenoiserData = ReflectionDenoiserData.Load(uint3(SamplePixelId, 0));
-		float InvRayPdf = DenoiserData.w;
+		// Filter footprint is based on center pixel roughness to reduce mirror reflection blurriness.
+		const float2 FilterSize = lerp(MinFilterSize, MaxFilterSize, saturate(GBuffer.Roughness * 8));
+		const float NoV = max(0, dot(N, V));
 
-		float3 SampleL = DenoiserData.xyz;
-		if (SpatialResolveParallax)
+		const float a2 = max(1e-5, Pow4(GBuffer.Roughness));
+
+		float WeightSum = 0;
+
+		// All sample coordinates must fall into these inclusive bounds of the view rect.
+		const int4 ViewRectBounds = int4(float4(float2(View.ViewRectMin.xy), float2(View.ViewRectMin.xy + View.ViewSizeAndInvSize.xy - 1)) / UpscaleFactor.xyxy);
+
+		SAMPLE_LOOP_UNROLL
+		for (int i = 0; i < NUM_SAMPLES; ++i)
 		{
-			// NOTE: Different data must be written from reflection shader for parallax correction.
-			SampleL = normalize(DenoiserData.xyz - PositionTranslatedWorld);
+			float2 HammersleySample = Hammersley16(i, NUM_SAMPLES, PixelRandomSeed);
+			//float2 DiskSample = HammersleySample * 2.0 - 1.0; // cheapest, but may produce noticeable rectangular block artifacts
+			float2 DiskSample = UniformSampleDisk(HammersleySample); // slightly more expensive, but maybe slightly better? the jury is out...
+			//float2 DiskSample = UniformSampleDisk(RandomFloat2(PixelRandomSeed));
+			float2 SampleOffset = DiskSample * FilterSize;
+
+			const int2 SamplePixelId = clamp(int2(ReflectionPixelPos + SampleOffset), ViewRectBounds.xy, ViewRectBounds.zw);
+
+			const float4 DenoiserData = ReflectionDenoiserData.Load(uint3(SamplePixelId, 0));
+			float InvRayPdf = DenoiserData.w;
+
+			const float3 RayOriginRelativeHitPosition = DenoiserData.xyz;
+			const float RayLength = length(RayOriginRelativeHitPosition);
+
+			ReflectionHitDistance += RayLength;
+
+			const float3 SampleL = RayOriginRelativeHitPosition * rcp(RayLength);
+
+			const float4 SampleColor = RawReflectionColor.Load(uint3(SamplePixelId, 0));
+
+			const float3 SampleH = normalize(V + SampleL);
+
+			const float SampleNoH = max(0, dot(N, SampleH));
+			const float SampleNoL = max(0, dot(N, SampleL));
+
+			const float LocalBRDF = D_GGX(a2, SampleNoH) * Vis_Smith(a2, NoV, SampleNoL) * SampleNoL;
+
+			// Clamping PDF like this avoids some of the artifacts on mirror-like surfaces
+			InvRayPdf = lerp(1e-5, InvRayPdf, GBuffer.Roughness);
+
+		#if USE_RAY_PDF
+			const float Weight = LocalBRDF * InvRayPdf; // more accurate, but some objectionable halos around some objects / light leaking
+		#else // USE_RAY_PDF
+			const float Weight = LocalBRDF; // hacky / incorrect, loses definition of roughness maps, but significantly reduces light leaking
+		#endif // USE_RAY_PDF
+
+			ReflectionColor.rgb += TONEMAP(SampleColor.rgb) * Weight;
+			ReflectionColor.a += SampleColor.a * Weight;
+
+			WeightSum += Weight;
 		}
 
-		float4 SampleColor = RawReflectionColor.Load(uint3(SamplePixelId, 0));
+		ReflectionHitDistance = ReflectionHitDistance / (float)NUM_SAMPLES;
 
-		float3 SampleH = normalize(V + SampleL);
-
-		float SampleNoH = max(0, dot(N, SampleH));
-		float SampleNoL = max(0, dot(N, SampleL));
-
-		float LocalBRDF = D_GGX(a2, SampleNoH) * Vis_Smith(a2, NoV, SampleNoL) * SampleNoL;
-
-		// Clamping PDF like this avoids some of the artifacts on mirror-like surfaces
-		InvRayPdf = lerp(1e-5, InvRayPdf, GBuffer.Roughness);
-
-	#if USE_RAY_PDF
-		float Weight = LocalBRDF * InvRayPdf; // more accurate, but some objectionable halos around some objects / light leaking
-	#else // USE_RAY_PDF
-		float Weight = LocalBRDF; // hacky / incorrect, loses definition of roughness maps, but significantly reduces light leaking
-	#endif // USE_RAY_PDF
-
-		ReflectionColor.rgb += TONEMAP(SampleColor.rgb) * Weight;
-		ReflectionColor.a += SampleColor.a * Weight;
-
-		WeightSum += Weight;
+		ReflectionColor.rgb = INV_TONEMAP(ReflectionColor.rgb / WeightSum);
+		ReflectionColor.a = ReflectionColor.a / WeightSum;
 	}
 
-	ReflectionColor.rgb = INV_TONEMAP(ReflectionColor.rgb / WeightSum);
-	ReflectionColor.a = ReflectionColor.a / WeightSum;
+	if (ReflectionHistoryWeight > 0)
+	{
+		SharedColorSamples[GroupThreadId.x][GroupThreadId.y] = ReflectionColor;
+		GroupMemoryBarrierWithGroupSync();
+	}
 
-	ColorOutput[View.ViewRectMin.xy + DispatchThreadId] = max(0, ReflectionColor);
+	if (ReflectionHistoryWeight > 0 && bValidPixel && bValidThread)
+	{
+		// Compute neighborhood color bounds (as mean and variance)
+
+		// NOTE: Reflection image uses premultiplied alpha, so we must handle all 4 components during temporal filtering
+		float4 ColorM1 = (float4)0.0;
+		float4 ColorM2 = (float4)0.0;
+
+		// Technically this is incorrect and may introduce artifacts (discontinuities) on borders between thread groups.
+		// Can be seen quite clearly when screen percentage is very low, but not obvious or objectionable at typical resolutions.
+		// Per-frame thread offsetting is also very effective at masking the issue over time (see USE_THREAD_WRAPPING).
+		const int4 ValidTapBounds = int4(0, 0, THREADGROUP_SIZE_X-1, THREADGROUP_SIZE_Y-1);
+
+		int Count = 0;
+		for (int y = -1; y <= 1; ++y)
+		{
+			for (int x = -1; x <= 1; ++x)
+			{
+				int2 TapOffset = int2(x, y);
+				int2 TapPos = clamp(int2(GroupThreadId) + TapOffset, ValidTapBounds.xy, ValidTapBounds.zw);
+				float4 SampleColor = SharedColorSamples[TapPos.x][TapPos.y];
+
+				// Welford's online algorithm for variance.
+				// More numerically stable than accumulating squares.
+				// https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+				Count += 1;
+				float4 Delta1 = SampleColor - ColorM1;
+				ColorM1 += Delta1 / Count;
+				float4 Delta2 = SampleColor - ColorM1;
+				ColorM2 += Delta1 * Delta2;
+			}
+		}
+		ColorM2 /= (Count - 1); // normalization step to get final variance
+
+		float4 ColorStdDev = sqrt(ColorM2);
+		float4 ColorMin = ColorM1 - ColorStdDev;
+		float4 ColorMax = ColorM1 + ColorStdDev;
+
+		// Dual source reprojection as per DD2018: Tomasz Stachowiak - Stochastic all the things
+
+		float2 EncodedVelocity = Texture2DSampleLevel(SceneVelocityBuffer, GlobalPointClampedSampler, BufferUV, 0).rg;
+
+		float2 BufferUV1 = GetReprojectedBufferUV(ScreenPos, SceneDepth, EncodedVelocity);
+		float2 BufferUV2 = GetReprojectedBufferUV(ScreenPos, SceneDepth + ReflectionHitDistance, EncodedVelocity);
+
+		float HistoryWeight = ReflectionHistoryWeight;
+
+		// NOTE: Bilinear sampling is intentionally used to sample the history buffer.
+		// If point filter is used, the rounding of texture coordinates can introduce a noticeable distortion artifact.
+		// Bilinaer filter will introduce blur, but it's less noticeable than the distortion.
+		// #yuriy_todo: can try to stochastically jitter the UV by 0.5 texel and still use point filter.
+		float4 HistoryColor1 = ReflectionHistory.SampleLevel(GlobalBilinearClampedSampler, BufferUV1, 0);
+		float4 HistoryColor2 = ReflectionHistory.SampleLevel(GlobalBilinearClampedSampler, BufferUV2, 0);
+
+		float ColorDistance1 = abs(RgbLuma(ColorM1.rgb) - RgbLuma(HistoryColor1.rgb));
+		float ColorDistance2 = abs(RgbLuma(ColorM1.rgb) - RgbLuma(HistoryColor2.rgb));
+
+		float4 HistoryColor = ColorDistance1 < ColorDistance2 ? HistoryColor1 : HistoryColor2;
+
+		HistoryColor = clamp(HistoryColor, ColorMin, ColorMax);
+
+		float4 SpatialReflectionColor = ReflectionColor;
+		ReflectionColor = lerp(ReflectionColor, HistoryColor, HistoryWeight);
+	}
+
+	if (bValidThread)
+	{
+		ColorOutput[View.ViewRectMin.xy + DispatchThreadId] = max(0, ReflectionColor);
+	}
 }
 
