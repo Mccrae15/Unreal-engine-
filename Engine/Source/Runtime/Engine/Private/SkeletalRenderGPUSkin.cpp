@@ -446,6 +446,12 @@ void FSkeletalMeshObjectGPUSkin::UpdateDynamicData_RenderThread(FGPUSkinCache* G
 				// Flush pending resource barriers before BVH is built for the first time
 				GPUSkinCache->TransitionAllToReadable(RHICmdList);
 
+				if(LODModel.RayTracingData.Num())
+				{
+					Initializer.OfflineData = &LODModel.RayTracingData;
+					Initializer.bDiscardOfflineData = false; // The RayTracingData can be used for multiple SkeletalMeshObjects , so we need to keep it around
+				}
+
 				RayTracingGeometry.SetInitializer(Initializer);
 				RayTracingGeometry.UpdateRHI();
 			}

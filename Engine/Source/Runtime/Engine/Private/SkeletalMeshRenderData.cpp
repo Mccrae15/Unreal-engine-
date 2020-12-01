@@ -59,7 +59,7 @@ static void SerializeLODInfoForDDC(USkeletalMesh* SkeletalMesh, FString& KeySuff
 // differences, etc.) replace the version GUID below with a new one.
 // In case of merge conflicts with DDC versions, you MUST generate a new GUID
 // and set this new GUID as the version.
-#define SKELETALMESH_DERIVEDDATA_VER TEXT("BAD8180EFB1543D79AA1D10F3F5945A2")
+#define SKELETALMESH_DERIVEDDATA_VER TEXT("bb44bc1173be488fbfe266f1f9a1a162")
 
 static const FString& GetSkeletalMeshDerivedDataVersion()
 {
@@ -71,7 +71,7 @@ static const FString& GetSkeletalMeshDerivedDataVersion()
 	return CachedVersionString;
 }
 
-static FString BuildSkeletalMeshDerivedDataKey(const ITargetPlatform* TargetPlatform, USkeletalMesh* SkelMesh)
+FString BuildSkeletalMeshDerivedDataKey(const ITargetPlatform* TargetPlatform, USkeletalMesh* SkelMesh)
 {
 	FString KeySuffix(TEXT(""));
 
@@ -123,6 +123,8 @@ static FString BuildSkeletalMeshDerivedDataKey(const ITargetPlatform* TargetPlat
 		KeySuffix += TEXT("0zzzzzzzzzzzzzzzz");
 	}
 
+	IMeshBuilderModule::GetForPlatform(TargetPlatform).AppendToDDCKey(KeySuffix);
+
 	return FDerivedDataCacheInterface::BuildCacheKey(
 		TEXT("SKELETALMESH"),
 		*GetSkeletalMeshDerivedDataVersion(),
@@ -134,11 +136,6 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkel
 {
 	check(Owner);
 
-	if (Owner->GetOutermost()->HasAnyPackageFlags(PKG_FilterEditorOnly))
-	{
-		// Don't cache for cooked packages, source data will not be present
-		return;
-	}
 
 	check(LODRenderData.Num() == 0); // Should only be called on new, empty RenderData
 
@@ -146,7 +143,7 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkel
 	{
 		COOK_STAT(auto Timer = SkeletalMeshCookStats::UsageStats.TimeSyncWork());
 		int32 T0 = FPlatformTime::Cycles();
-		FString DerivedDataKey = BuildSkeletalMeshDerivedDataKey(TargetPlatform, Owner);
+		DerivedDataKey = BuildSkeletalMeshDerivedDataKey(TargetPlatform, Owner);
 
 		TArray<uint8> DerivedData;
 		if (GetDerivedDataCacheRef().GetSynchronous(*DerivedDataKey, DerivedData, Owner->GetPathName()))
@@ -327,6 +324,10 @@ void FSkeletalMeshRenderData::Cache(const ITargetPlatform* TargetPlatform, USkel
 					}
 				}
 			}
+
+			IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForPlatform(TargetPlatform);
+
+			MeshBuilderModule.PostBuildSkeletalMesh(this, Owner);
 
 			//Serialize the render data
 			Serialize(Ar, Owner);

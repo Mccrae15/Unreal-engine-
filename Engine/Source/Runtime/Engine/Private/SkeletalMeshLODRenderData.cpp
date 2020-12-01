@@ -904,6 +904,7 @@ void FSkeletalMeshLODRenderData::SerializeStreamedData(FArchive& Ar, USkeletalMe
 		SkinWeightProfilesData.OverrideBaseBufferSkinWeightData(Owner, LODIdx);
 #endif
 	}
+	Ar << RayTracingData;
 }
 
 void FSkeletalMeshLODRenderData::SerializeAvailabilityInfo(FArchive& Ar, USkeletalMesh* Owner, int32 LODIdx, bool bAdjacencyDataStripped, bool bNeedsCPUAccess)

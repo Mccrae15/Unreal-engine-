@@ -1473,6 +1473,39 @@ bool USkeletalMesh::IsReadyForFinishDestroy()
 	return ReleaseResourcesFence.IsFenceComplete();
 }
 
+#if WITH_EDITOR
+FString BuildSkeletalMeshDerivedDataKey(const ITargetPlatform* TargetPlatform, USkeletalMesh* SkelMesh);
+
+static FSkeletalMeshRenderData& GetPlatformSkeletalMeshRenderData(USkeletalMesh* Mesh, const ITargetPlatform* TargetPlatform)
+{
+	FString PlatformDerivedDataKey = BuildSkeletalMeshDerivedDataKey(TargetPlatform, Mesh);
+	FSkeletalMeshRenderData* PlatformRenderData = Mesh->GetResourceForRendering();
+	if (Mesh->GetOutermost()->bIsCookedForEditor)
+	{
+		check(PlatformRenderData);
+		return *PlatformRenderData;
+	}
+
+	while (PlatformRenderData && PlatformRenderData->DerivedDataKey != PlatformDerivedDataKey)
+	{
+		PlatformRenderData = PlatformRenderData->NextCachedRenderData.Get();
+	}
+
+	if (PlatformRenderData == NULL)
+	{
+		// Cache render data for this platform and insert it in to the linked list.
+		PlatformRenderData = new FSkeletalMeshRenderData();
+		PlatformRenderData->Cache(TargetPlatform, Mesh);
+		check(PlatformRenderData->DerivedDataKey == PlatformDerivedDataKey);
+		Swap(PlatformRenderData->NextCachedRenderData, Mesh->GetResourceForRendering()->NextCachedRenderData);
+		Mesh->GetResourceForRendering()->NextCachedRenderData = TUniquePtr<FSkeletalMeshRenderData>(PlatformRenderData);
+	}
+	check(PlatformRenderData->DerivedDataKey == PlatformDerivedDataKey);
+	check(PlatformRenderData);
+	return *PlatformRenderData;
+}
+#endif
+
 void USkeletalMesh::Serialize( FArchive& Ar )
 {
 	LLM_SCOPE(ELLMTag::SkeletalMesh);
@@ -1527,9 +1560,13 @@ void USkeletalMesh::Serialize( FArchive& Ar )
 			}
 			else if (Ar.IsSaving())
 			{
+				FSkeletalMeshRenderData* LocalSkeletalMeshRenderData = SkeletalMeshRenderData.Get();
+#if WITH_EDITORONLY_DATA
+				LocalSkeletalMeshRenderData = &GetPlatformSkeletalMeshRenderData(this, Ar.CookingTarget());
+#endif
 				if (bCooked)
 				{
-					int32 MaxBonesPerChunk = SkeletalMeshRenderData->GetMaxBonesPerSection();
+					int32 MaxBonesPerChunk = LocalSkeletalMeshRenderData->GetMaxBonesPerSection();
 
 					TArray<FName> DesiredShaderFormats;
 					Ar.CookingTarget()->GetAllTargetedShaderFormats(DesiredShaderFormats);
@@ -1549,8 +1586,8 @@ void USkeletalMesh::Serialize( FArchive& Ar )
 						}
 					}
 				}
+				LocalSkeletalMeshRenderData->Serialize(Ar, this);
 
-				SkeletalMeshRenderData->Serialize(Ar, this);
 			}
 		}
 	}
