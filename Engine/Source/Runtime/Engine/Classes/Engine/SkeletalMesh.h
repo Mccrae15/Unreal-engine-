@@ -849,6 +849,12 @@ public:
 
 #endif // WITH_EDITORONLY_DATA
 
+	/**
+	 * If true, a ray tracing acceleration structure will be built for this mesh and it may be used in ray tracing effects
+	 */
+	UPROPERTY(EditAnywhere, Category = RayTracing)
+	uint8 bSupportRayTracing : 1;
+
 	UPROPERTY(Category=Mesh, BlueprintReadWrite)
 	TArray<UMorphTarget*> MorphTargets;
 

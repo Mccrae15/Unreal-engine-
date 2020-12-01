@@ -390,6 +390,7 @@ USkeletalMesh::USkeletalMesh(const FObjectInitializer& ObjectInitializer)
 #endif
 	MinLod.Default = 0;
 	DisableBelowMinLodStripping.Default = false;
+	bSupportRayTracing = true;
 }
 
 USkeletalMesh::USkeletalMesh(FVTableHelper& Helper)

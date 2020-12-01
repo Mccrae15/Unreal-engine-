@@ -399,7 +399,7 @@ void FSkeletalMeshObjectGPUSkin::UpdateDynamicData_RenderThread(FGPUSkinCache* G
 	}
 
 #if RHI_RAYTRACING
-	if (IsRayTracingEnabled())
+	if (IsRayTracingEnabled() && SkeletalMeshRenderData->bSupportRayTracing)
 	{
 		if (GEnableGPUSkinCache && SkinCacheEntry)
 		{

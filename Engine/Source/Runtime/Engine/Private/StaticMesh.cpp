@@ -291,7 +291,8 @@ uint8 FStaticMeshLODResources::GenerateClassStripFlags(FArchive& Ar, UStaticMesh
 		&& (CVarStripMinLodDataDuringCooking.GetValueOnAnyThread() != 0)
 		&& OwnerStaticMesh
 		&& GetPlatformMinLODIdx(Ar.CookingTarget(), OwnerStaticMesh) > Index;
-	const bool bWantToStripRayTracingResources = Ar.IsCooking() && !Ar.CookingTarget()->UsesRayTracing();
+	const bool bSupportRayTracing = OwnerStaticMesh ? OwnerStaticMesh->bSupportRayTracing : false;
+	const bool bWantToStripRayTracingResources = Ar.IsCooking() && (!Ar.CookingTarget()->UsesRayTracing() || !bSupportRayTracing);
 
 	return
 		(bWantToStripTessellation ? AdjacencyDataStripFlag : 0) |
@@ -1229,7 +1230,7 @@ void FStaticMeshLODResources::InitResources(UStaticMesh* Parent)
 	}
 
 #if RHI_RAYTRACING
-	if (IsRayTracingEnabled())
+	if (IsRayTracingEnabled() && Parent->bSupportRayTracing)
 	{
 		ENQUEUE_RENDER_COMMAND(InitStaticMeshRayTracingGeometry)(
 			[this](FRHICommandListImmediate& RHICmdList)
@@ -2620,6 +2621,9 @@ UStaticMesh::UStaticMesh(const FObjectInitializer& ObjectInitializer)
 	MinLOD.Default = 0;
 
 	bSupportUniformlyDistributedSampling = false;
+
+	bSupportRayTracing = true;
+
 	bIsBuiltAtRuntime = false;
 	bRenderingResourcesInitialized = false;
 #if WITH_EDITOR
