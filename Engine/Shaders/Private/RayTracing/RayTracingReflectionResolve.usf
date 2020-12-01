@@ -35,6 +35,7 @@ float ReflectionHistoryWeight;
 int   SpatialResolveNumSamples;
 float4 HistoryScreenPositionScaleBias;
 
+Texture2D DepthBufferHistory;
 Texture2D ReflectionHistory;
 Texture2D RawReflectionColor;
 Texture2D ReflectionDenoiserData; // xyz: camera-relative reflection hit position, w: 1/pdf
@@ -239,8 +240,6 @@ void RayTracingReflectionResolveCS(
 		ColorM2 /= (Count - 1); // normalization step to get final variance
 
 		float4 ColorStdDev = sqrt(ColorM2);
-		float4 ColorMin = ColorM1 - ColorStdDev;
-		float4 ColorMax = ColorM1 + ColorStdDev;
 
 		// Dual source reprojection as per DD2018: Tomasz Stachowiak - Stochastic all the things
 
@@ -263,6 +262,18 @@ void RayTracingReflectionResolveCS(
 
 		float4 HistoryColor = ColorDistance1 < ColorDistance2 ? HistoryColor1 : HistoryColor2;
 
+		// Detect disocclusion and clamp history color closer to current neighborhood mean
+		const float2 HistoryUV = ColorDistance1 < ColorDistance2 ? BufferUV1 : BufferUV2;
+		const float DeviceZ = ConvertToDeviceZ(SceneDepth);
+		const float PrevDeviceZ = DepthBufferHistory.SampleLevel(GlobalPointClampedSampler, HistoryUV, 0).r;
+		if (abs(PrevDeviceZ - DeviceZ) > 0.001)
+		{
+			ColorStdDev *= 0.25;
+		}
+
+		// Basic color box clamp -- #yuriy_todo: try box clipping instead
+		float4 ColorMin = ColorM1 - ColorStdDev;
+		float4 ColorMax = ColorM1 + ColorStdDev;
 		HistoryColor = clamp(HistoryColor, ColorMin, ColorMax);
 
 		float4 SpatialReflectionColor = ReflectionColor;

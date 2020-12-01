@@ -195,6 +195,7 @@ class FRayTracingReflectionResolveCS : public FGlobalShader
 		SHADER_PARAMETER(FVector4, HistoryScreenPositionScaleBias)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DepthBufferHistory)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ReflectionHistory)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, RawReflectionColor)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ReflectionDenoiserData)
@@ -327,6 +328,7 @@ static void AddReflectionResolvePass(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	const FRayTracingDeferredReflectionsRGS::FParameters& CommonParameters,
+	FRDGTextureRef DepthBufferHistory,
 	FRDGTextureRef ReflectionHistory, float ReflectionHistoryWeight, const FVector4& HistoryScreenPositionScaleBias,
 	FRDGTextureRef RawReflectionColor,
 	FRDGTextureRef ReflectionDenoiserData,
@@ -345,6 +347,7 @@ static void AddReflectionResolvePass(
 	PassParameters->HistoryScreenPositionScaleBias = HistoryScreenPositionScaleBias;
 	PassParameters->ViewUniformBuffer              = CommonParameters.ViewUniformBuffer;
 	PassParameters->SceneTextures                  = CommonParameters.SceneTextures;
+	PassParameters->DepthBufferHistory             = DepthBufferHistory;
 	PassParameters->ReflectionHistory              = ReflectionHistory;
 	PassParameters->RawReflectionColor             = RawReflectionColor;
 	PassParameters->ReflectionDenoiserData         = ReflectionDenoiserData;
@@ -604,6 +607,11 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 
 		const bool bValidHistory = ReflectionsHistory.IsValid() && !View.bCameraCut && bTemporalResolve;
 
+		FRDGTextureRef DepthBufferHistoryTexture = GraphBuilder.RegisterExternalTexture(
+			bValidHistory && View.PrevViewInfo.DepthBuffer.IsValid()
+			? View.PrevViewInfo.DepthBuffer
+			: GSystemTextures.BlackDummy);
+
 		FRDGTextureRef ReflectionHistoryTexture = GraphBuilder.RegisterExternalTexture(
 			bValidHistory 
 			? ReflectionsHistory.RT[0] 
@@ -633,6 +641,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 			(ViewportExtent.Y * 0.5f + ViewportOffset.Y) * InvBufferSize.Y);
 
 		AddReflectionResolvePass(GraphBuilder, View, CommonParameters,
+			DepthBufferHistoryTexture,
 			ReflectionHistoryTexture, HistoryWeight, HistoryScreenPositionScaleBias,
 			RawReflectionColor,
 			ReflectionDenoiserData,
@@ -642,6 +651,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 
 		if (bTemporalResolve && View.ViewState)
 		{
+			GraphBuilder.QueueTextureExtraction(SceneTextures.SceneDepthBuffer, &View.ViewState->PrevFrameViewInfo.DepthBuffer);
 			GraphBuilder.QueueTextureExtraction(OutDenoiserInputs->Color, &View.ViewState->PrevFrameViewInfo.ReflectionsHistory.RT[0]);
 			View.ViewState->PrevFrameViewInfo.ReflectionsHistory.Scissor = View.ViewRect;
 		}
