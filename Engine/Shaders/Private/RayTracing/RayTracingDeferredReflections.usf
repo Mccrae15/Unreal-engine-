@@ -268,7 +268,7 @@ RAY_TRACING_ENTRY_RAYGEN(RayTracingDeferredReflectionsRGS)
 	float4 RayParams = (float4)0;
 
 	const float FP16Max = 65504.0;
-	float ClampedHitDistance = min(ResultDistance, FP16Max); // Clamp to fit into FP16
+	float ClampedHitDistance = (ResultDistance == DENOISER_MISS_HIT_DISTANCE) ? FP16Max : min(ResultDistance, FP16Max); // Clamp to fit into FP16
 	RayParams.xyz = ReflectionRay.GetDirection() * ClampedHitDistance;
 	RayParams.w  = ReflectionRay.Pdf > 0 ? min(1.0 / ReflectionRay.Pdf, FP16Max) : 0;
 
