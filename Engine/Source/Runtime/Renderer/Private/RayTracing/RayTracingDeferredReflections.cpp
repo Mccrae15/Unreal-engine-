@@ -98,6 +98,16 @@ static TAutoConsoleVariable<float> CVarRayTracingReflectionsTemporalWeight(
 	ECVF_RenderThreadSafe
 );
 
+static TAutoConsoleVariable<int32> CVarRayTracingReflectionsTemporalQuality(
+	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.SpatialResolve.TemporalQuality"),
+	2,
+	TEXT("0: Disable temporal accumulation\n")
+	TEXT("1: Tile-based temporal accumulation (low quality)\n")
+	TEXT("2: Tile-based temporal accumulation with randomized tile offsets per frame (medium quality)\n")
+	TEXT("(default: 2)"),
+	ECVF_RenderThreadSafe
+);
+
 static TAutoConsoleVariable<float> CVarRayTracingReflectionsHorizontalResolutionScale(
 	TEXT("r.RayTracing.Reflections.ExperimentalDeferred.HorizontalResolutionScale"),
 	1.0,
@@ -193,6 +203,7 @@ class FRayTracingReflectionResolveCS : public FGlobalShader
 		SHADER_PARAMETER(float, ReflectionSmoothBias)
 		SHADER_PARAMETER(float, ReflectionHistoryWeight)
 		SHADER_PARAMETER(FVector4, HistoryScreenPositionScaleBias)
+		SHADER_PARAMETER(uint32, ThreadIdOffset)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DepthBufferHistory)
@@ -353,6 +364,12 @@ static void AddReflectionResolvePass(
 	PassParameters->ReflectionDenoiserData         = ReflectionDenoiserData;
 	PassParameters->ColorOutput                    = GraphBuilder.CreateUAV(ColorOutput);
 
+	// 
+	const uint32 FrameIndex = View.ViewState ? View.ViewState->GetFrameIndex() : 0;
+	static const uint32 Offsets[8] = { 7, 2, 0, 5, 3, 1, 4, 6 }; // Just a randomized list of offsets (added to DispatchThreadId in the shader)
+	PassParameters->ThreadIdOffset = ReflectionHistoryWeight > 0 && CVarRayTracingReflectionsTemporalQuality.GetValueOnRenderThread() == 2 
+		? Offsets[FrameIndex % UE_ARRAY_COUNT(Offsets)] : 0;
+
 	FRayTracingReflectionResolveCS::FPermutationDomain PermutationVector;
 	if ((PassParameters->SpatialResolveNumSamples % 4 == 0) && PassParameters->SpatialResolveNumSamples <= 16)
 	{
@@ -420,7 +437,9 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 
 	const bool bExternalDenoiser = DenoiserMode != 0;
 	const bool bSpatialResolve   = !bExternalDenoiser && CVarRayTracingReflectionsSpatialResolve.GetValueOnRenderThread() == 1;
-	const bool bTemporalResolve  = bSpatialResolve && CVarRayTracingReflectionsTemporalWeight.GetValueOnRenderThread() > 0;
+	const bool bTemporalResolve  = bSpatialResolve 
+		&& CVarRayTracingReflectionsTemporalQuality.GetValueOnRenderThread() > 0
+		&& CVarRayTracingReflectionsTemporalWeight.GetValueOnRenderThread() > 0;
 
 	FVector2D UpscaleFactor = FVector2D(1.0f);
 	FIntPoint RayTracingResolution = View.ViewRect.Size();

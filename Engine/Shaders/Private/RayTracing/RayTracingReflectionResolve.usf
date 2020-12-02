@@ -34,6 +34,7 @@ float SpatialResolveMaxRadius;
 float ReflectionHistoryWeight;
 int   SpatialResolveNumSamples;
 float4 HistoryScreenPositionScaleBias;
+uint ThreadIdOffset;
 
 Texture2D DepthBufferHistory;
 Texture2D ReflectionHistory;
@@ -104,6 +105,11 @@ void RayTracingReflectionResolveCS(
 {
 	const uint2 ViewSize = uint2(View.ViewSizeAndInvSize.xy);
 	const bool bValidThread = all(DispatchThreadId < ViewSize);
+
+	// Temporal accumulation uses neighborhood colors in groupshared memory and clamps the lookup index, sometimes creating a discontinuity between 8x8 tiles.
+	// We can offset and wrap the thread ID every frame to move the tile border, hiding this discontinuity.
+	DispatchThreadId = (DispatchThreadId + ThreadIdOffset);
+	DispatchThreadId = DispatchThreadId < ViewSize ? DispatchThreadId : DispatchThreadId - ViewSize; // faster than mod
 
 	const float2 BufferUV = (float2(DispatchThreadId + View.ViewRectMin.xy) + 0.5) * View.BufferSizeAndInvSize.zw;
 	const float2 ViewportUV = BufferUVToViewportUV(BufferUV);
@@ -215,7 +221,7 @@ void RayTracingReflectionResolveCS(
 
 		// Technically this is incorrect and may introduce artifacts (discontinuities) on borders between thread groups.
 		// Can be seen quite clearly when screen percentage is very low, but not obvious or objectionable at typical resolutions.
-		// Per-frame thread offsetting is also very effective at masking the issue over time (see USE_THREAD_WRAPPING).
+		// Per-frame thread offsetting is effective at masking the issue over time (enabled using SpatialResolve.TemporalQuality=2)
 		const int4 ValidTapBounds = int4(0, 0, THREADGROUP_SIZE_X-1, THREADGROUP_SIZE_Y-1);
 
 		int Count = 0;
