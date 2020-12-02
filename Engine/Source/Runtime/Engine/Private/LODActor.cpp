@@ -179,6 +179,7 @@ ALODActor::ALODActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, LODDrawDistance(5000)
 	, bHasActorTriedToRegisterComponents(false)
+	, ForceIsBuilt(false)
 {
 	SetCanBeDamaged(false);
 
@@ -578,6 +579,10 @@ void ALODActor::SetDrawDistance(float InDistance)
 
 const bool ALODActor::IsBuilt(bool bInForce/*=false*/) const
 {
+	if (ForceIsBuilt)
+	{
+		return true;
+	}
 	auto IsBuiltHelper = [this]()
 	{
 		// Ensure all subactors are linked to a LOD static mesh component.

@@ -68,6 +68,9 @@ public:
 	UPROPERTY(Category=LODActor, VisibleAnywhere)
 	TArray<AActor*> SubActors;
 	
+	UPROPERTY(Category = LODActor, EditAnywhere, BlueprintReadWrite)
+	bool ForceIsBuilt;
+
 	UPROPERTY()
 	uint8 CachedNumHLODLevels;
 
