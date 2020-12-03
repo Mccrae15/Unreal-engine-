@@ -29,9 +29,6 @@ public:
 			/** Whether or not switching to stereo is allowed */
 			uint64 bHMDEnabled : 1;
 
-			/** Chromatic aberration correction on/off */
-			uint64 bChromaAbCorrectionEnabled : 1;
-
 			/** Turns on/off updating view's orientation/position on a RenderThread. When it is on,
 				latency should be significantly lower.
 				See 'HMD UPDATEONRT ON|OFF' console command.
@@ -51,12 +48,6 @@ public:
 			/** HQ Distortion */
 			uint64				bHQDistortion : 1;
 
-			/* plugin-allocated multiview buffer (GL_TEXTURE_2D_ARRAY) for mobile is required */
-			uint64				bDirectMultiview : 1;
-
-			/* eye buffer is currently a multiview buffer */
-			uint64				bIsUsingDirectMultiview : 1;
-
 			/** Send the depth buffer to the compositor */
 			uint64				bCompositeDepth : 1;
 
@@ -69,11 +60,14 @@ public:
 			/** Dynamically update pixel density to maintain framerate */
 			uint64				bPixelDensityAdaptive : 1;
 
-			/** Recenters the HMD too when the controller recenter button is pressed on Go and GearVR */
-			uint64				bRecenterHMDWithController : 1;
-
 			/** All future eye buffers will need to be created with TexSRGB_Create flag due to the current feature level (ES31) */
 			uint64				bsRGBEyeBuffer : 1;
+
+			/** Supports Focus Aware state on Quest */
+			uint64				bFocusAware : 1;
+
+			/** Requires the Oculus system keyboard */
+			uint64				bRequiresSystemKeyboard : 1;
 		};
 		uint64 Raw;
 	} Flags;
@@ -99,8 +93,20 @@ public:
 	float VsyncToNextVsync;
 
 	EFixedFoveatedRenderingLevel FFRLevel;
+	bool FFRDynamic;
 	int CPULevel;
 	int GPULevel;
+
+	bool bEnableSpecificColorGamut;
+	EColorSpace ColorSpace;
+
+	EHandTrackingSupport HandTrackingSupport;
+
+#if WITH_LATE_LATCHING_CODE
+	bool bLateLatching;
+#endif
+
+	bool bPhaseSync;
 
 	ovrpVector4f ColorScale, ColorOffset;
 	bool bApplyColorScaleAndOffsetToAllLayers;

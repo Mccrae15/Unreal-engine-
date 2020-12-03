@@ -396,6 +396,23 @@ void FTransitionAndLayoutManager::BeginRealRenderPass(FVulkanCommandListContext&
 		}
 	}
 
+	FRHITexture* FoveationTexture = RPInfo.FoveationTexture;
+	if (FoveationTexture)
+	{
+		FVulkanSurface& Surface = FVulkanTextureBase::Cast(FoveationTexture)->Surface;
+		VkImageLayout& DSLayout = Layouts.FindOrAdd(Surface.Image);
+		VkImageLayout FinalLayout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
+
+		// transition foveation textures to the foveation layout for rendering
+		if (DSLayout != FinalLayout)
+		{
+			VulkanRHI::EImageLayoutBarrier SrcLayout = VulkanRHI::GetImageLayoutFromVulkanLayout(DSLayout);
+			VulkanRHI::EImageLayoutBarrier DstLayout = VulkanRHI::GetImageLayoutFromVulkanLayout(FinalLayout);
+			VulkanRHI::ImagePipelineBarrier(CmdBuffer->GetHandle(), Surface.Image, SrcLayout, DstLayout, SetupImageSubresourceRange());
+			DSLayout = FinalLayout;
+		}
+	}
+
 	ensure(ClearValueIndex <= RenderPass->GetNumUsedClearValues());
 
 	Barrier.Execute(CmdBuffer);
@@ -1561,7 +1578,8 @@ void FVulkanCommandListContext::TransitionResources(const FPendingTransition& Pe
 				VkImageLayout FinalLayout;
 				if ((AspectMask & VK_IMAGE_ASPECT_COLOR_BIT) != 0)
 				{
-					FinalLayout = (Surface.UEFlags & TexCreate_RenderTargetable) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
+					FinalLayout = (Surface.UEFlags & TexCreate_RenderTargetable) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL :
+						((Surface.UEFlags & TexCreate_Foveation) ? VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT : VK_IMAGE_LAYOUT_GENERAL);
 				}
 				else
 				{
@@ -1854,7 +1872,7 @@ struct FRenderPassCompatibleHashableStruct
 	}
 
 	uint8						NumAttachments;
-	uint8						bIsMultiview;
+	uint8						MultiviewCount;
 	uint8						NumSamples;
 	uint8						SubpassHint;
 	// +1 for DepthStencil, +1 for Fragment Density
@@ -1889,7 +1907,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 	, bHasFragmentDensityAttachment(false)
 	, NumSamples(0)
 	, NumUsedClearValues(0)
-	, bIsMultiView(0)
+	, MultiviewCount(0)
 {
 	FMemory::Memzero(ColorReferences);
 	FMemory::Memzero(DepthStencilReference);
@@ -2098,7 +2116,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 	CompatibleHashInfo.SubpassHint = 0;
 
 	CompatibleHashInfo.NumSamples = NumSamples;
-	CompatibleHashInfo.bIsMultiview = bIsMultiView;
+	CompatibleHashInfo.MultiviewCount = MultiviewCount;
 
 	RenderPassCompatibleHash = FCrc::MemCrc32(&CompatibleHashInfo, sizeof(CompatibleHashInfo));
 	RenderPassFullHash = FCrc::MemCrc32(&FullHashInfo, sizeof(FullHashInfo), RenderPassCompatibleHash);
@@ -2115,7 +2133,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 	, bHasFragmentDensityAttachment(false)
 	, NumSamples(0)
 	, NumUsedClearValues(0)
-	, bIsMultiView(RPInfo.bMultiviewPass)
+	, MultiviewCount(RPInfo.MultiViewCount)
 {
 	FMemory::Memzero(ColorReferences);
 	FMemory::Memzero(DepthStencilReference);
@@ -2328,9 +2346,9 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 	CompatibleHashInfo.SubpassHint = (uint8)RPInfo.SubpassHint;
 
 	CompatibleHashInfo.NumSamples = NumSamples;
-	CompatibleHashInfo.bIsMultiview = bIsMultiView;
+	CompatibleHashInfo.MultiviewCount = MultiviewCount;
 
-	if (bIsMultiView && !bMultiviewRenderTargets)
+	if (MultiviewCount > 1 && !bMultiviewRenderTargets)
 	{
 		UE_LOG(LogVulkan, Error, TEXT("Non multiview textures on a multiview layout!"));
 	}
@@ -2349,7 +2367,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(const FGraphicsPipelineStat
 	, bHasFragmentDensityAttachment(false)
 	, NumSamples(0)
 	, NumUsedClearValues(0)
-	, bIsMultiView(0)
+	, MultiviewCount(0)
 {
 	FMemory::Memzero(ColorReferences);
 	FMemory::Memzero(DepthStencilReference);
@@ -2364,7 +2382,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(const FGraphicsPipelineStat
 
 	bool bSetExtent = false;
 	bool bFoundClearOp = false;
-	bIsMultiView = Initializer.bMultiView;
+	MultiviewCount = Initializer.MultiviewCount;
 	NumSamples = Initializer.NumSamples;
 	for (uint32 Index = 0; Index < Initializer.RenderTargetsEnabled; ++Index)
 	{
@@ -2500,7 +2518,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(const FGraphicsPipelineStat
 	CompatibleHashInfo.SubpassHint = (uint8)Initializer.SubpassHint;
 
 	CompatibleHashInfo.NumSamples = NumSamples;
-	CompatibleHashInfo.bIsMultiview = bIsMultiView;
+	CompatibleHashInfo.MultiviewCount = MultiviewCount;
 
 	RenderPassCompatibleHash = FCrc::MemCrc32(&CompatibleHashInfo, sizeof(CompatibleHashInfo));
 	RenderPassFullHash = FCrc::MemCrc32(&FullHashInfo, sizeof(FullHashInfo), RenderPassCompatibleHash);

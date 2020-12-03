@@ -262,6 +262,14 @@ static TAutoConsoleVariable<int32> CVarEnableMultiGPUForkAndJoin(
 	ECVF_Default
 	);
 
+#if WITH_LATE_LATCHING_CODE
+static TAutoConsoleVariable<int32> CVarDisableLateLatching(
+	TEXT("r.ForceDisableLateLatching"),
+	0,
+	TEXT("Force Disable LateLatching dynamiclly."),
+	ECVF_RenderThreadSafe | ECVF_Scalability);
+#endif
+
 /*-----------------------------------------------------------------------------
 	FParallelCommandListSet
 -----------------------------------------------------------------------------*/
@@ -551,7 +559,7 @@ void FFastVramConfig::Update()
 	bDirty |= UpdateBufferFlagFromCVar(CVarFastVRam_GlobalDistanceFieldCullGridBuffers, GlobalDistanceFieldCullGridBuffers);
 }
 
-bool FFastVramConfig::UpdateTextureFlagFromCVar(TAutoConsoleVariable<int32>& CVar, uint32& InOutValue)
+bool FFastVramConfig::UpdateTextureFlagFromCVar(TAutoConsoleVariable<int32>& CVar, ETextureCreateFlags& InOutValue)
 {
 	uint32 OldValue = InOutValue;
 	int32 CVarValue = CVar.GetValueOnRenderThread();
@@ -1752,6 +1760,30 @@ void FViewInfo::SetupUniformBufferParameters(
 	ViewUniformShaderParameters.VTFeedbackBuffer = SceneContext.GetVirtualTextureFeedbackUAV();
 	ViewUniformShaderParameters.QuadOverdraw = SceneContext.GetQuadOverdrawBufferUAV();
 }
+
+#if WITH_LATE_LATCHING_CODE
+void FViewInfo::UpdateLateLatchData()
+{
+	FBox VolumeBounds[TVC_MAX];
+	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(FRHICommandListExecutor::GetImmediateCommandList());
+	SetupUniformBufferParameters(
+		SceneContext,
+		VolumeBounds,
+		TVC_MAX,
+		*CachedViewUniformShaderParameters);
+
+	ViewUniformBuffer.UpdateUniformBufferImmediate(*CachedViewUniformShaderParameters);
+
+	FVector PreViewOrigin = CachedViewUniformShaderParameters->PrevPreViewTranslation;
+	FVector CurrentOrigin = CachedViewUniformShaderParameters->PreViewTranslation;
+
+	// Refresh for next frame
+	if (this->ViewState)
+	{
+		this->ViewState->PrevFrameViewInfo.ViewMatrices = ViewMatrices;
+	}
+}
+#endif
 
 void FViewInfo::InitRHIResources()
 {
@@ -3214,6 +3246,7 @@ void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 
 				FIntRect ViewRect = bMobileCustomDepthDownSample ? FIntRect::DivideAndRoundUp(View.ViewRect, 2) : View.ViewRect;
 
+				FInstancedViewUniformShaderParameters LocalInstancedViewUniformShaderParameters;
 				if (!View.IsInstancedStereoPass())
 				{
 					RHICmdList.SetViewport(ViewRect.Min.X, ViewRect.Min.Y, 0.0f, ViewRect.Max.X, ViewRect.Max.Y, 1.0f);
@@ -3267,7 +3300,7 @@ void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 
 						const FViewInfo& InstancedView = static_cast<const FViewInfo&>(View.Family->GetStereoEyeView(StereoPassIndex));
 
-						CustomDepthViewUniformBufferParameters = *InstancedView.CachedViewUniformShaderParameters;
+						FViewUniformShaderParameters InstancedCustomDepthViewUniformBufferParameters = *InstancedView.CachedViewUniformShaderParameters;
 						ModifiedViewMatrices = InstancedView.ViewMatrices;
 						ModifiedViewMatrices.HackRemoveTemporalAAProjectionJitter();
 
@@ -3277,9 +3310,11 @@ void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 							ModifiedViewMatrices,
 							VolumeBounds,
 							TVC_MAX,
-							CustomDepthViewUniformBufferParameters);
+							InstancedCustomDepthViewUniformBufferParameters);
 
-						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(CustomDepthViewUniformBufferParameters));
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, CustomDepthViewUniformBufferParameters, 0);
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, InstancedCustomDepthViewUniformBufferParameters, 1);
+						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(LocalInstancedViewUniformShaderParameters);
 					}
 				}
 				else
@@ -3288,12 +3323,16 @@ void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 					if ((View.IsInstancedStereoPass() || View.bIsMobileMultiViewEnabled) && View.Family->Views.Num() > 0)
 					{
 						const FViewInfo& InstancedView = Scene->UniformBuffers.GetInstancedView(View);
-						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(*InstancedView.CachedViewUniformShaderParameters));
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 0);
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *InstancedView.CachedViewUniformShaderParameters, 1);
+						Scene->UniformBuffers.InstancedViewUniformBuffer.UpdateUniformBufferImmediate(LocalInstancedViewUniformShaderParameters);
 					}
 					else
 					{
 						// If we don't render this pass in stereo we simply update the buffer with the same view uniform parameters.
-						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(*View.CachedViewUniformShaderParameters));
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 0);
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 1);
+						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(LocalInstancedViewUniformShaderParameters);
 					}
 				}
 	
@@ -4287,20 +4326,6 @@ void FSceneRenderer::ResolveSceneColor(FRHICommandList& RHICmdList)
 
 		// The destination texture must be made readable after the resolve.
 		RHICmdList.TransitionResource(EResourceTransitionAccess::EReadable, SceneContext.GetSceneColorTexture());
-	}
-}
-
-FRHITexture* FSceneRenderer::GetMultiViewSceneColor(const FSceneRenderTargets& SceneContext) const
-{
-	const FViewInfo& View = Views[0];
-
-	if (View.bIsMobileMultiViewEnabled && !View.bIsMobileMultiViewDirectEnabled)
-	{
-		return SceneContext.MobileMultiViewSceneColor->GetRenderTargetItem().TargetableTexture;
-	}
-	else
-	{
-		return static_cast<FTextureRHIRef>(ViewFamily.RenderTarget->GetRenderTargetTexture());
 	}
 }
 

@@ -81,10 +81,13 @@ namespace EOculusMobileDevice
 {
 	enum Type
 	{
-		/** Package for Oculus Go / Gear VR */
-		GearGo UMETA(DisplayName = "Oculus Go / Gear VR"),
+		// 0 was the deprecated OculusGo
+
 		/** Package for Oculus Quest */
-		Quest UMETA(DisplayName = "Oculus Quest"),
+		Quest = 1 UMETA(DisplayName = "Oculus Quest"),
+
+		/** Package for Oculus Quest 2*/
+		Quest2 = 2 UMETA(DisplayName = "Oculus Quest 2"),
 	};
 }
 
@@ -343,7 +346,7 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Package for Oculus Mobile devices"))
 	TArray<TEnumAsByte<EOculusMobileDevice::Type>> PackageForOculusMobile;
 
-	// Removes Oculus Signature Files (osig) from APK if Gear VR APK signed for distribution and enables entitlement checker
+	// Removes Oculus Signature Files (osig) from APK if Quest/Go APK signed for distribution and enables entitlement checker
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Remove Oculus Signature Files from Distribution APK"))
 	bool bRemoveOSIG;
 

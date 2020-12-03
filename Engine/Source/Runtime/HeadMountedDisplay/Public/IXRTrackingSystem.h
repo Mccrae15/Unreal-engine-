@@ -73,6 +73,15 @@ public:
 	 */
 	virtual bool DoesSupportLateUpdate() const { return true; }
 
+#if WITH_LATE_LATCHING_CODE
+	/**
+	 * Return true if platform and HMD support late latching
+	 * Please override to enable it.
+	 */
+
+	virtual bool LateLatchingEnabled() const { return false; }
+#endif
+
 	/**
 	 * If the system currently has valid tracking positions. If not supported at all, returns false.
 	 */

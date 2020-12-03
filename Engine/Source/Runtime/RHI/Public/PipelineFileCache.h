@@ -128,7 +128,7 @@ struct RHI_API FPipelineCacheFileFormatPSO
 		FDepthStencilStateInitializerRHI DepthStencilState;
 		
 		EPixelFormat RenderTargetFormats[MaxSimultaneousRenderTargets];
-		uint32 RenderTargetFlags[MaxSimultaneousRenderTargets];
+		ETextureCreateFlags RenderTargetFlags[MaxSimultaneousRenderTargets];
 		uint32 RenderTargetsActive;
 		uint32 MSAASamples;
 		
@@ -141,9 +141,14 @@ struct RHI_API FPipelineCacheFileFormatPSO
 		
 		EPrimitiveType PrimitiveType;
 		
+		uint8 DepthStencilAccess;
+
 		uint8 SubpassHint;	
 		uint8 SubpassIndex;
-		
+
+		uint8 MultiViewCount;
+		bool HasFragmentDensityAttachment;
+
 		FString ToString() const;
 		static FString HeaderLine();
 		bool FromString(const FStringView& Src);
@@ -288,20 +293,21 @@ public:
 	static bool SavePipelineFileCache(FString const& Name, SaveMode Mode);
 	static void ClosePipelineFileCache();
 	
-	static void CacheGraphicsPSO(uint32 RunTimeHash, FGraphicsPipelineStateInitializer const& Initializer);
-	static void CacheComputePSO(uint32 RunTimeHash, FRHIComputeShader const* Initializer);
-	static FPipelineStateStats* RegisterPSOStats(uint32 RunTimeHash);
+	static void CachePSO(const FPipelineCacheFileFormatPSO& PSOEntry);
+	static FPipelineStateStats* RegisterPSOStats(const FPipelineCacheFileFormatPSO& PSOEntry);
 	
+	static FPipelineStateStats* CacheGraphicsPSO(FGraphicsPipelineStateInitializer const& Initializer);
+	static FPipelineStateStats* CacheComputePSO(FRHIComputeShader const* Initializer);
 	/*
 	 * This PSO has failed compile and is invalid - this cache should not return this invalid PSO from subsequent calls for PreCompile requests.
 	 * Note: Not implementated for Compute that has no flag to say it came from this cache - don't want to consume failures that didn't propagate from this cache.
 	 */
-	static void RegisterPSOCompileFailure(uint32 RunTimeHash, FGraphicsPipelineStateInitializer const& Initializer);
+	static void RegisterPSOCompileFailure(FGraphicsPipelineStateInitializer const& Initializer);
 	
 	/**
 	 * Event signature for being notified that a new PSO has been logged
 	 */
-	DECLARE_MULTICAST_DELEGATE_OneParam(FPipelineStateLoggedEvent, FPipelineCacheFileFormatPSO&);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FPipelineStateLoggedEvent, const FPipelineCacheFileFormatPSO&);
 
 	/**
 	 * Gets the event delegate to register for pipeline state logging events.
@@ -328,15 +334,15 @@ public:
 	static void PreCompileComplete();
 private:
 	
-	static void RegisterPSOUsageDataUpdateForNextSave(FPSOUsageData& UsageData);
+	static void RegisterPSOUsageDataUpdateForNextSave(const FPipelineCacheFileFormatPSO& PSO, FPSOUsageData& UsageData);
 	static void ClearOSPipelineCache();
 	static bool ShouldEnableFileCache();
 	
 private:
 	static FRWLock FileCacheLock;
 	static class FPipelineCacheFile* FileCache;
-	static TMap<uint32, FPSOUsageData> RunTimeToPSOUsage;		// Fast check structure - Not saved (External state cache runtime hash to seen usage data)
-	static TMap<uint32, FPSOUsageData> NewPSOUsage;				// For mask or engine updates - Merged + Saved (Our internal PSO hash to latest usage data) - temp working scratch, only holds updates since last "save" so is not the authority on state
+	static TMap<FPipelineCacheFileFormatPSO, FPSOUsageData> PSOToUsage;		// Slow check structure - Not saved (External state cache pso hash to seen usage data)
+	static TMap<FPipelineCacheFileFormatPSO, FPSOUsageData> NewPSOUsage;	// For mask or engine updates - Merged + Saved (Our internal PSO hash to latest usage data) - temp working scratch, only holds updates since last "save" so is not the authority on state
 	static TMap<uint32, FPipelineStateStats*> Stats;
 	static TSet<FPipelineCacheFileFormatPSO> NewPSOs;
 	static TSet<uint32> NewPSOHashes;

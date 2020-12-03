@@ -779,14 +779,27 @@ bool FVulkanDevice::QueryGPU(int32 DeviceIndex)
 	if (RHI->GetOptionalExtensions().HasKHRGetPhysicalDeviceProperties2)
 	{
 		VkPhysicalDeviceProperties2KHR GpuProps2;
+		VkBaseOutStructure* LastStruct;
+
 		ZeroVulkanStruct(GpuProps2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR);
 		GpuProps2.pNext = &GpuIdProps;
+		LastStruct = (VkBaseOutStructure*)(&GpuIdProps);
 		ZeroVulkanStruct(GpuIdProps, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES_KHR);
 
 #if VULKAN_SUPPORTS_DRIVER_PROPERTIES
 		if (GetOptionalExtensions().HasDriverProperties)
 		{
-			GpuIdProps.pNext = &PhysicalDeviceProperties;
+			LastStruct->pNext = (VkBaseOutStructure*)&PhysicalDeviceProperties;
+			LastStruct = (VkBaseOutStructure*)(&PhysicalDeviceProperties);
+		}
+#endif
+
+#if VULKAN_SUPPORTS_FDM2
+		if (GetOptionalExtensions().HasEXTFragmentDensityMap2)
+		{
+			LastStruct->pNext = (VkBaseOutStructure*)&FragmentDensityMap2Properties;
+			LastStruct = (VkBaseOutStructure*)(&FragmentDensityMap2Properties);
+			ZeroVulkanStruct(FragmentDensityMap2Properties, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_2_FEATURES_EXT);
 		}
 #endif
 
@@ -970,7 +983,7 @@ void FVulkanDevice::InitGPU(int32 DeviceIndex)
 
 		FRHIResourceCreateInfo CreateInfo;
 		DefaultImage = new FVulkanSurface(*this, VK_IMAGE_VIEW_TYPE_2D, PF_B8G8R8A8, 1, 1, 1, 1, 1, 1, TexCreate_RenderTargetable | TexCreate_ShaderResource, CreateInfo);
-		DefaultTextureView.Create(*this, DefaultImage->Image, VK_IMAGE_VIEW_TYPE_2D, DefaultImage->GetFullAspectMask(), PF_B8G8R8A8, VK_FORMAT_B8G8R8A8_UNORM, 0, 1, 0, 1);
+		DefaultTextureView.Create(*this, DefaultImage->Image, VK_IMAGE_VIEW_TYPE_2D, DefaultImage->GetFullAspectMask(), PF_B8G8R8A8, VK_FORMAT_B8G8R8A8_UNORM, 0, 1, 0, 1, DefaultImage->GetFlags() );
 	}
 }
 

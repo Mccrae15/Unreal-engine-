@@ -2,14 +2,8 @@
 
 Copyright (c) Facebook Technologies, LLC and its affiliates.  All rights reserved.
 
-Licensed under the Oculus SDK License Version 3.5 (the "License");
-you may not use the Oculus SDK except in compliance with the License,
-which is provided at the time of installation or download, or which
-otherwise accompanies this software in either electronic or hard copy form.
-
-You may obtain a copy of the License at
-
-https://developer.oculus.com/licenses/sdk-3.5/
+Your use of this SDK or tool is subject to the Oculus SDK License Agreement, available at
+https://developer.oculus.com/licenses/oculussdk/
 
 Unless required by applicable law or agreed to in writing, the Oculus SDK
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -28,6 +22,19 @@ limitations under the License.
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Deprecated for getting extra Vulkan paramters from Unity Oculus XR Plugin
+
+OVRP_EXPORT ovrpResult ovrp_Initialize5(
+    ovrpRenderAPIType apiType,
+    ovrpLogCallback logCallback,
+    void* activity,
+    void* vkInstance,
+    void* vkPhysicalDevice,
+    void* vkDevice,
+    void* vkQueue,
+    int initializeFlags,
+    OVRP_CONSTREF(ovrpVersion) version);
 
 // Deprecated by VRAPI_Vulkan changes
 OVRP_EXPORT ovrpResult ovrp_PreInitialize2();
@@ -207,6 +214,8 @@ OVRP_EXPORT ovrpBool ovrp_SetDesiredEyeTextureFormat(ovrpTextureFormat value);
 OVRP_EXPORT ovrpBool ovrp_GetEyePreviewRect(int eyeIndex, ovrpRecti* outputRect);
 OVRP_EXPORT ovrpBool ovrp_GetAppChromaticCorrection();
 OVRP_EXPORT ovrpBool ovrp_SetAppChromaticCorrection(ovrpBool value);
+OVRP_EXPORT ovrpResult ovrp_GetReorientHMDOnControllerRecenter(ovrpBool* recenter);
+OVRP_EXPORT ovrpResult ovrp_SetReorientHMDOnControllerRecenter(ovrpBool recenter);
 OVRP_EXPORT ovrpBool ovrp_EndEye(ovrpEye eye);
 OVRP_EXPORT ovrpBool ovrp_EndFrame(int frameIndex);
 OVRP_EXPORT ovrpBool ovrpi_SetTrackingCalibratedOrigin();
@@ -364,18 +373,13 @@ OVRP_EXPORT ovrpResult ovrp_EndEye2(ovrpEye eye, int frameIndex);
 // Update depth projection info, this is a replacement of ovrp_SetDepthCompositingInfo for more generic purpose
 OVRP_EXPORT ovrpResult ovrp_SetDepthProjInfo(float zNear, float zFar, ovrpBool isReverseZ);
 
-// Enable / Disable PTW
-OVRP_EXPORT ovrpResult ovrp_SetPTWEnable(ovrpBool enable);
-
-// Return current PTW status
-OVRP_EXPORT ovrpResult ovrp_GetPTWEnable(ovrpBool* enable);
-
 // Enable / Disable ASW
 OVRP_EXPORT ovrpResult ovrp_SetASWEnable(ovrpBool enable);
 
-// Return current PTW status
+// Return current ASW status
 OVRP_EXPORT ovrpResult ovrp_GetASWEnable(ovrpBool* enable);
 
+OVRP_EXPORT ovrpResult ovrp_GetSkeleton(ovrpSkeletonType skeletonType, ovrpSkeleton* skeleton);
 #ifdef __cplusplus
 }
 #endif

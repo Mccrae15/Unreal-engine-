@@ -205,7 +205,7 @@ class FGraphicsMinimalPipelineStateInitializer
 public:
 	// Can't use TEnumByte<EPixelFormat> as it changes the struct to be non trivially constructible, breaking memset
 	using TRenderTargetFormats = TStaticArray<uint8/*EPixelFormat*/, MaxSimultaneousRenderTargets>;
-	using TRenderTargetFlags = TStaticArray<uint32, MaxSimultaneousRenderTargets>;
+	using TRenderTargetFlags = TStaticArray<uint64/*ETextureCreateFlags*/, MaxSimultaneousRenderTargets>;
 
 	FGraphicsMinimalPipelineStateInitializer()
 		: BlendState(nullptr)
@@ -258,7 +258,7 @@ public:
 			, FGraphicsPipelineStateInitializer::TRenderTargetFormats(PF_Unknown)
 			, FGraphicsPipelineStateInitializer::TRenderTargetFlags(0)
 			, PF_Unknown
-			, 0
+			, TexCreate_None
 			, ERenderTargetLoadAction::ENoAction
 			, ERenderTargetStoreAction::ENoAction
 			, ERenderTargetLoadAction::ENoAction
@@ -269,7 +269,7 @@ public:
 			, 0
 			, 0
 			, bDepthBounds
-			, bMultiView
+			, MultiViewCount
 			, bHasFragmentDensityAttachment
 		);
 	}
@@ -296,7 +296,7 @@ public:
 			DepthStencilState != rhs.DepthStencilState ||
 			ImmutableSamplerState != rhs.ImmutableSamplerState ||
 			bDepthBounds != rhs.bDepthBounds ||
-			bMultiView != rhs.bMultiView ||
+			MultiViewCount != rhs.MultiViewCount ||
 			bHasFragmentDensityAttachment != rhs.bHasFragmentDensityAttachment ||
 			PrimitiveType != rhs.PrimitiveType)
 		{
@@ -363,7 +363,7 @@ public:
 			COMPARE_FIELD(RasterizerState)
 			COMPARE_FIELD(DepthStencilState)
 			COMPARE_FIELD(bDepthBounds)
-			COMPARE_FIELD(bMultiView)
+			COMPARE_FIELD(MultiViewCount)
 			COMPARE_FIELD(bHasFragmentDensityAttachment)
 			COMPARE_FIELD(PrimitiveType)
 		COMPARE_FIELD_END;
@@ -394,7 +394,7 @@ public:
 			COMPARE_FIELD(RasterizerState)
 			COMPARE_FIELD(DepthStencilState)
 			COMPARE_FIELD(bDepthBounds)
-			COMPARE_FIELD(bMultiView)
+			COMPARE_FIELD(MultiViewCount)
 			COMPARE_FIELD(bHasFragmentDensityAttachment)
 			COMPARE_FIELD(PrimitiveType)
 			COMPARE_FIELD_END;
@@ -418,7 +418,7 @@ public:
 	// as it is sometimes hashed and compared as raw bytes. Explicit padding is therefore required between
 	// all data members and at the end of the structure.
 	bool							bDepthBounds = false;
-	bool							bMultiView = false;
+	uint8							MultiViewCount = 0;
 	bool							bHasFragmentDensityAttachment = false;
 	uint8							Padding[1] = {};
 

@@ -4,7 +4,7 @@
 	VulkanConfiguration.h: Control compilation of the runtime RHI.
 =============================================================================*/
 
-// Compiled with 1.1.82.1
+// Compiled with 1.2.148.1
 
 #pragma once
 
@@ -221,6 +221,14 @@
 		#define VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE			1
 	#else
 		#define VULKAN_SUPPORTS_FULLSCREEN_EXCLUSIVE			0
+	#endif
+#endif
+
+#ifndef VULKAN_SUPPORTS_FDM2
+	#ifdef VK_EXT_fragment_density_map2
+		#define VULKAN_SUPPORTS_FDM2							1
+	#else
+		#define VULKAN_SUPPORTS_FDM2							0
 	#endif
 #endif
 

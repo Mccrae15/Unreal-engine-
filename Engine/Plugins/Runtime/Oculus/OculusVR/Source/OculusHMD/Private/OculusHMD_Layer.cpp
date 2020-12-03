@@ -9,6 +9,7 @@
 //#include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/SceneRenderTargets.h"
 #include "HeadMountedDisplayTypes.h" // for LogHMD
+#include "OculusHMD.h"
 #include "XRThreadUtils.h"
 #include "Engine/Texture2D.h"
 #include "UObject/ConstructorHelpers.h"
@@ -35,7 +36,17 @@ FOvrpLayer::FOvrpLayer(uint32 InOvrpLayerId) :
 
 FOvrpLayer::~FOvrpLayer()
 {
-	if (!IsInGameThread())
+	if (IsInGameThread())
+	{
+		ExecuteOnRenderThread([this]()
+		{
+			ExecuteOnRHIThread_DoNotWait([this]()
+			{
+				FOculusHMDModule::GetPluginWrapper().DestroyLayer(OvrpLayerId);
+			});
+		});
+	}
+	else
 	{
 		ExecuteOnRHIThread_DoNotWait([this]()
 		{
@@ -148,11 +159,10 @@ void FLayer::HandlePokeAHoleComponent()
 			BuildPokeAHoleMesh(Vertices, Triangles, UV0);
 			PokeAHoleComponentPtr->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UV0, VertexColors, Tangents, false);
 
-			UMaterial *PokeAHoleMaterial = Cast<UMaterial>(StaticLoadObject(UMaterial::StaticClass(), NULL, TEXT("/OculusVR/Materials/PokeAHoleMaterial")));
+			FOculusHMD* OculusHMD = static_cast<FOculusHMD*>(GEngine->XRSystem->GetHMDDevice());
+			UMaterial* PokeAHoleMaterial = OculusHMD->GetResourceHolder()->PokeAHoleMaterial;
 			UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(PokeAHoleMaterial, NULL);
-
 			PokeAHoleComponentPtr->SetMaterial(0, DynamicMaterial);
-
 		}
 		PokeAHoleComponentPtr->SetWorldTransform(Desc.Transform);
 
@@ -314,7 +324,7 @@ bool FLayer::CanReuseResources(const FLayer* InLayer) const
 		OvrpLayerDesc.MipLevels != InLayer->OvrpLayerDesc.MipLevels ||
 		OvrpLayerDesc.SampleCount != InLayer->OvrpLayerDesc.SampleCount ||
 		OvrpLayerDesc.Format != InLayer->OvrpLayerDesc.Format ||
-		((OvrpLayerDesc.LayerFlags ^ InLayer->OvrpLayerDesc.LayerFlags) & ovrpLayerFlag_Static) ||
+		OvrpLayerDesc.LayerFlags != InLayer->OvrpLayerDesc.LayerFlags ||
 		bNeedsTexSrgbCreate != InLayer->bNeedsTexSrgbCreate)
 	{
 		return false;
@@ -407,11 +417,6 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 		if (!(Desc.Flags & IStereoLayers::LAYER_FLAG_TEX_CONTINUOUS_UPDATE))
 		{
 			LayerFlags |= ovrpLayerFlag_Static;
-		}
-
-		if (Settings->Flags.bChromaAbCorrectionEnabled)
-		{
-			LayerFlags |= ovrpLayerFlag_ChromaticAberrationCorrection;
 		}
 
 		// Calculate layer desc
@@ -556,8 +561,10 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 				ResourceType = RRT_Texture2D;
 			}
 
-			uint32 ColorTexCreateFlags = TexCreate_ShaderResource | TexCreate_RenderTargetable | (bNeedsTexSrgbCreate ? TexCreate_SRGB : 0);
-			uint32 DepthTexCreateFlags = TexCreate_ShaderResource | TexCreate_DepthStencilTargetable;
+			const bool bNeedsSRGBFlag = bNeedsTexSrgbCreate || CustomPresent->IsSRGB(OvrpLayerDesc.Format);
+
+			ETextureCreateFlags ColorTexCreateFlags = TexCreate_ShaderResource | TexCreate_RenderTargetable | (bNeedsSRGBFlag ? TexCreate_SRGB : TexCreate_None);
+			ETextureCreateFlags DepthTexCreateFlags = TexCreate_ShaderResource | TexCreate_DepthStencilTargetable;
 
 			if (Desc.Texture.IsValid())
 			{
@@ -569,15 +576,15 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 			FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
 			FClearValueBinding DepthTextureBinding = SceneContext.GetDefaultDepthClear();
 
-			SwapChain = CustomPresent->CreateSwapChain_RenderThread(SizeX, SizeY, ColorFormat, ColorTextureBinding, NumMips, NumSamples, NumSamplesTileMem, ResourceType, ColorTextures, ColorTexCreateFlags);
+			SwapChain = CustomPresent->CreateSwapChain_RenderThread(SizeX, SizeY, ColorFormat, ColorTextureBinding, NumMips, NumSamples, NumSamplesTileMem, ResourceType, ColorTextures, ColorTexCreateFlags, *FString::Printf(TEXT("Oculus Color Swapchain %d"), OvrpLayerId));
 
 			if (bHasDepth)
 			{
-				DepthSwapChain = CustomPresent->CreateSwapChain_RenderThread(SizeX, SizeY, DepthFormat, DepthTextureBinding, 1, NumSamples, NumSamplesTileMem, ResourceType, DepthTextures, DepthTexCreateFlags);
+				DepthSwapChain = CustomPresent->CreateSwapChain_RenderThread(SizeX, SizeY, DepthFormat, DepthTextureBinding, 1, NumSamples, NumSamplesTileMem, ResourceType, DepthTextures, DepthTexCreateFlags, *FString::Printf(TEXT("Oculus Depth Swapchain %d"), OvrpLayerId));
 			}
 			if (bValidFoveationTextures)
 			{
-				FoveationSwapChain = CustomPresent->CreateSwapChain_RenderThread(FoveationTextureSize.w, FoveationTextureSize.h, PF_R8G8, FClearValueBinding::White, 1, 1, 1, ResourceType, FoveationTextures, 0);
+				FoveationSwapChain = CustomPresent->CreateSwapChain_RenderThread(FoveationTextureSize.w, FoveationTextureSize.h, PF_R8G8, FClearValueBinding::White, 1, 1, 1, ResourceType, FoveationTextures, TexCreate_Foveation, *FString::Printf(TEXT("Oculus Foveation Swapchain %d"), OvrpLayerId));
 			}
 			else
 			{
@@ -586,11 +593,11 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 
 			if (OvrpLayerDesc.Layout == ovrpLayout_Stereo)
 			{
-				RightSwapChain = CustomPresent->CreateSwapChain_RenderThread(SizeX, SizeY, ColorFormat, ColorTextureBinding, NumMips, NumSamples, NumSamplesTileMem, ResourceType, RightColorTextures, ColorTexCreateFlags);
+				RightSwapChain = CustomPresent->CreateSwapChain_RenderThread(SizeX, SizeY, ColorFormat, ColorTextureBinding, NumMips, NumSamples, NumSamplesTileMem, ResourceType, RightColorTextures, ColorTexCreateFlags, *FString::Printf(TEXT("Oculus Right Color Swapchain %d"), OvrpLayerId));
 
 				if (bHasDepth)
 				{
-					RightDepthSwapChain = CustomPresent->CreateSwapChain_RenderThread(SizeX, SizeY, DepthFormat, DepthTextureBinding, 1, NumSamples, NumSamplesTileMem, ResourceType, RightDepthTextures, DepthTexCreateFlags);
+					RightDepthSwapChain = CustomPresent->CreateSwapChain_RenderThread(SizeX, SizeY, DepthFormat, DepthTextureBinding, 1, NumSamples, NumSamplesTileMem, ResourceType, RightDepthTextures, DepthTexCreateFlags, *FString::Printf(TEXT("Oculus Right Depth Swapchain %d"), OvrpLayerId));
 				}
 			}
 		}
@@ -787,6 +794,9 @@ const ovrpLayerSubmit* FLayer::UpdateLayer_RHIThread(const FSettings* Settings, 
 		{
 			OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_InverseAlpha;
 		}
+#endif
+#if PLATFORM_WINDOWS
+		OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_IgnoreSourceAlpha;
 #endif
 	}
 

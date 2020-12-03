@@ -941,7 +941,7 @@ public:
 			check(SizeZ > 0);
 			UE_LOG(LogVectorField,Verbose,TEXT("InitRHI for 0x%016x %dx%dx%d"),(PTRINT)this,SizeX,SizeY,SizeZ);
 
-			uint32 TexCreateFlags = 0;
+			ETextureCreateFlags TexCreateFlags = TexCreate_None;
 			if (GetFeatureLevel() >= ERHIFeatureLevel::SM5)
 			{
 				TexCreateFlags = TexCreate_ShaderResource | TexCreate_UAV;

@@ -287,7 +287,7 @@ FPooledRenderTargetDesc FRCPassPostProcessDOFSetup::ComputeOutputDesc(EPassOutpu
 	Ret.Extent.Y = FMath::Max(1, Ret.Extent.Y);
 
 	Ret.Reset();
-	Ret.TargetableFlags &= ~(uint32)TexCreate_UAV;
+	Ret.TargetableFlags &= ~TexCreate_UAV;
 	Ret.TargetableFlags |= TexCreate_RenderTargetable;
 	Ret.AutoWritable = false;
 	Ret.DebugName = (InPassOutputId == ePId_Output0) ? TEXT("DOFSetup0") : TEXT("DOFSetup1");

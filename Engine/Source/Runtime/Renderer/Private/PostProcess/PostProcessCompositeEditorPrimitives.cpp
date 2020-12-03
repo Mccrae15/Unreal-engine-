@@ -310,7 +310,7 @@ FScreenPassTexture AddEditorPrimitivePass(
 			RDG_EVENT_NAME("EditorPrimitives"),
 			PassParameters,
 			ERDGPassFlags::Raster,
-			[&View, PassParameters, EditorView, EditorPrimitivesViewport, SceneDepthViewport, bPopulateEditorDepth, PopulateDepthPixelShader, BasePassType, MSAASampleCount] (FRHICommandListImmediate& RHICmdList)
+			[&View, Scene, PassParameters, EditorView, EditorPrimitivesViewport, SceneDepthViewport, bPopulateEditorDepth, PopulateDepthPixelShader, BasePassType, MSAASampleCount] (FRHICommandListImmediate& RHICmdList)
 		{
 			if (bPopulateEditorDepth)
 			{
@@ -350,6 +350,8 @@ FScreenPassTexture AddEditorPrimitivePass(
 			FMeshPassProcessorRenderState DrawRenderState(*EditorView, BasePassUniformBuffer);
 			DrawRenderState.SetDepthStencilAccess(FExclusiveDepthStencil::DepthWrite_StencilWrite);
 			DrawRenderState.SetBlendState(TStaticBlendStateWriteMask<CW_RGBA>::GetRHI());
+			DrawRenderState.SetInstancedViewUniformBuffer(Scene->UniformBuffers.InstancedViewUniformBuffer);
+
 
 			RenderEditorPrimitives(RHICmdList, *EditorView, DrawRenderState);
 

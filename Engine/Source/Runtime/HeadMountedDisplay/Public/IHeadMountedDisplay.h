@@ -168,9 +168,9 @@ public:
 	virtual void GetDistortionWarpValues(FVector4& K) const  { }
 
 	/**
-	 * Returns 'false' if chromatic aberration correction is off.
+	 * Returns 'false' if chromatic aberration correction is off. Most default platforms now handle CAC natively. 
 	 */
-	virtual bool IsChromaAbCorrectionEnabled() const = 0;
+	virtual bool IsChromaAbCorrectionEnabled() const { return true;  }
 
 	/**
 	 * Gets the chromatic aberration correction shader values for the device.

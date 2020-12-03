@@ -47,7 +47,8 @@ public:
 	FMobileSceneCaptureCopyPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
 		FGlobalShader(Initializer)
 	{
-		InTexture.Bind(Initializer.ParameterMap, TEXT("InTexture"), SPF_Mandatory);
+		InTexture.Bind(Initializer.ParameterMap, TEXT("InTexture"));
+		InTextureArray.Bind(Initializer.ParameterMap, TEXT("InTextureArray"));
 		InTextureSampler.Bind(Initializer.ParameterMap, TEXT("InTextureSampler"));
 		SceneTextureParameters.Bind(Initializer);
 	}
@@ -67,12 +68,14 @@ public:
 	{
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, RHICmdList.GetBoundPixelShader(), View.ViewUniformBuffer);
 		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), InTexture, InTextureSampler, SamplerStateRHI, TextureRHI);
+		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), InTextureArray, InTextureSampler, SamplerStateRHI, TextureRHI);
 		SceneTextureParameters.Set(RHICmdList, RHICmdList.GetBoundPixelShader(), View.FeatureLevel, ESceneTextureSetupMode::All);
 	}
 
 private:
 	LAYOUT_FIELD(FShaderResourceParameter, InTexture)
 	LAYOUT_FIELD(FShaderResourceParameter, InTextureSampler)
+	LAYOUT_FIELD(FShaderResourceParameter, InTextureArray)
 	LAYOUT_FIELD(FSceneTextureShaderParameters, SceneTextureParameters)
 };
 
@@ -323,6 +326,12 @@ void UpdateSceneCaptureContentMobile_RenderThread(
 	const FGenerateMipsParams& GenerateMipsParams,
 	bool bDisableFlipCopyGLES)
 {
+	// If we're not using MobileHDR, any source other than FinalColorLDR is invalid
+	if (!IsMobileHDR())
+	{
+		ensure(SceneRenderer->ViewFamily.SceneCaptureSource == SCS_FinalColorLDR);
+	}
+
 	FMemMark MemStackMark(FMemStack::Get());
 
 	// update any resources that needed a deferred update
@@ -432,7 +441,15 @@ void UpdateSceneCaptureContentMobile_RenderThread(
 		{
 			// Copy the captured scene into the destination texture
 			SCOPED_DRAW_EVENT(RHICmdList, CaptureSceneColor);
-			CopyCaptureToTarget(RHICmdList, Target, TargetSize, View, ViewRect, FSceneRenderTargets::Get(RHICmdList).GetSceneColorTexture()->GetTexture2D(), bNeedsFlippedCopy, SceneRenderer);
+			// If multiview is enabled, the SceneColorTexture will be an array texture.
+			if (FSceneRenderTargets::Get(RHICmdList).GetSceneColorTexture()->GetTexture2DArray())
+			{
+				CopyCaptureToTarget(RHICmdList, Target, TargetSize, View, ViewRect, FSceneRenderTargets::Get(RHICmdList).GetSceneColorTexture()->GetTexture2DArray(), bNeedsFlippedCopy, SceneRenderer);
+			}
+			else
+			{
+				CopyCaptureToTarget(RHICmdList, Target, TargetSize, View, ViewRect, FSceneRenderTargets::Get(RHICmdList).GetSceneColorTexture()->GetTexture2D(), bNeedsFlippedCopy, SceneRenderer);
+			}
 		}
 
 		if (bGenerateMips)

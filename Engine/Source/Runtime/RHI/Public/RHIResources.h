@@ -500,6 +500,11 @@ public:
 	mutable int32 NumMeshCommandReferencesForDebugging = 0;
 #endif
 
+#if WITH_LATE_LATCHING_CODE
+	virtual int32 GetPatchingFrameNumber() const { return -1; }
+	virtual void FlagPatchingFrameNumber(int32 FrameNumber) { }
+#endif
+
 private:
 	/** Layout of the uniform buffer. */
 	const FRHIUniformBufferLayout* Layout;
@@ -650,7 +655,7 @@ class RHI_API FRHITexture : public FRHIResource
 public:
 	
 	/** Initialization constructor. */
-	FRHITexture(uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, uint32 InFlags, FLastRenderTimeContainer* InLastRenderTime, const FClearValueBinding& InClearValue)
+	FRHITexture(uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, ETextureCreateFlags InFlags, FLastRenderTimeContainer* InLastRenderTime, const FClearValueBinding& InClearValue)
 		: ClearValue(InClearValue)
 		, NumMips(InNumMips)
 		, NumSamples(InNumSamples)
@@ -710,7 +715,7 @@ public:
 	EPixelFormat GetFormat() const { return Format; }
 
 	/** @return The flags used to create the texture. */
-	uint32 GetFlags() const { return Flags; }
+	ETextureCreateFlags GetFlags() const { return Flags; }
 
 	/* @return the number of samples for multi-sampling. */
 	uint32 GetNumSamples() const { return NumSamples; }
@@ -793,7 +798,7 @@ private:
 	uint32 NumMips;
 	uint32 NumSamples;
 	EPixelFormat Format;
-	uint32 Flags;
+	ETextureCreateFlags Flags;
 	FLastRenderTimeContainer& LastRenderTime;
 	FLastRenderTimeContainer DefaultLastRenderTime;	
 	FName TextureName;
@@ -804,7 +809,7 @@ class RHI_API FRHITexture2D : public FRHITexture
 public:
 	
 	/** Initialization constructor. */
-	FRHITexture2D(uint32 InSizeX,uint32 InSizeY,uint32 InNumMips,uint32 InNumSamples,EPixelFormat InFormat,uint32 InFlags, const FClearValueBinding& InClearValue)
+	FRHITexture2D(uint32 InSizeX,uint32 InSizeY,uint32 InNumMips,uint32 InNumSamples,EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture(InNumMips, InNumSamples, InFormat, InFlags, NULL, InClearValue)
 	, SizeX(InSizeX)
 	, SizeY(InSizeY)
@@ -840,7 +845,7 @@ class RHI_API FRHITexture2DArray : public FRHITexture2D
 public:
 	
 	/** Initialization constructor. */
-	FRHITexture2DArray(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,uint32 NumSamples, EPixelFormat InFormat,uint32 InFlags, const FClearValueBinding& InClearValue)
+	FRHITexture2DArray(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,uint32 NumSamples, EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture2D(InSizeX, InSizeY, InNumMips,NumSamples,InFormat,InFlags, InClearValue)
 	, SizeZ(InSizeZ)
 	{}
@@ -868,7 +873,7 @@ class RHI_API FRHITexture3D : public FRHITexture
 public:
 	
 	/** Initialization constructor. */
-	FRHITexture3D(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,EPixelFormat InFormat,uint32 InFlags, const FClearValueBinding& InClearValue)
+	FRHITexture3D(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture(InNumMips,1,InFormat,InFlags,NULL, InClearValue)
 	, SizeX(InSizeX)
 	, SizeY(InSizeY)
@@ -904,7 +909,7 @@ class RHI_API FRHITextureCube : public FRHITexture
 public:
 	
 	/** Initialization constructor. */
-	FRHITextureCube(uint32 InSize,uint32 InNumMips,EPixelFormat InFormat,uint32 InFlags, const FClearValueBinding& InClearValue)
+	FRHITextureCube(uint32 InSize,uint32 InNumMips,EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture(InNumMips,1,InFormat,InFlags,NULL, InClearValue)
 	, Size(InSize)
 	{}
@@ -929,7 +934,7 @@ class RHI_API FRHITextureReference : public FRHITexture
 {
 public:
 	explicit FRHITextureReference(FLastRenderTimeContainer* InLastRenderTime)
-		: FRHITexture(0,0,PF_Unknown,0,InLastRenderTime, FClearValueBinding())
+		: FRHITexture(0,0,PF_Unknown,TexCreate_None,InLastRenderTime, FClearValueBinding())
 	{}
 
 	virtual FRHITextureReference* GetTextureReference() override { return this; }
@@ -1536,6 +1541,14 @@ public:
 	}
 	static const uint32 MaxIndex = 4;
 
+	//--------------------------------------------------------------------------------------------------------------------------------
+	// PSOCache Note: need to be able to serialize FExclusiveDepthStencil because it is a member of FGraphicsPipelineStateInitializer
+	//--------------------------------------------------------------------------------------------------------------------------------
+	uint8 GetValue() const
+	{
+		return (uint8)Value;
+	}
+
 private:
 	inline Type ExtractDepth() const
 	{
@@ -1660,12 +1673,15 @@ public:
 
 	FRHITexture* FoveationTexture;
 
+	uint8 MultiViewCount;
+
 	FRHISetRenderTargetsInfo() :
 		NumColorRenderTargets(0),
 		bClearColor(false),
 		bHasResolveAttachments(false),
 		bClearDepth(false),
-		FoveationTexture(nullptr)
+		FoveationTexture(nullptr),
+		MultiViewCount(0)
 	{}
 
 	FRHISetRenderTargetsInfo(int32 InNumColorRenderTargets, const FRHIRenderTargetView* InColorRenderTargets, const FRHIDepthRenderTargetView& InDepthStencilRenderTarget) :
@@ -1720,6 +1736,7 @@ public:
 			bool bClearColor;
 			bool bHasResolveAttachments;
 			FRHIUnorderedAccessView* UnorderedAccessView[MaxSimultaneousUAVs];
+			uint8 MultiViewCount;
 
 			void Set(const FRHISetRenderTargetsInfo& RTInfo)
 			{
@@ -1746,7 +1763,7 @@ public:
 				bClearStencil = RTInfo.bClearStencil;
 				bClearColor = RTInfo.bClearColor;
 				bHasResolveAttachments = RTInfo.bHasResolveAttachments;
-
+				MultiViewCount = RTInfo.MultiViewCount;
 			}
 		};
 
@@ -1952,7 +1969,7 @@ class FGraphicsPipelineStateInitializer
 public:
 	// Can't use TEnumByte<EPixelFormat> as it changes the struct to be non trivially constructible, breaking memset
 	using TRenderTargetFormats		= TStaticArray<uint8/*EPixelFormat*/, MaxSimultaneousRenderTargets>;
-	using TRenderTargetFlags		= TStaticArray<uint32, MaxSimultaneousRenderTargets>;
+	using TRenderTargetFlags		= TStaticArray<uint64/*ETextureCreateFlags*/, MaxSimultaneousRenderTargets>;
 
 	FGraphicsPipelineStateInitializer()
 		: RenderTargetsEnabled(0)
@@ -1964,11 +1981,12 @@ public:
 		, DepthTargetStoreAction(ERenderTargetStoreAction::ENoAction)
 		, StencilTargetLoadAction(ERenderTargetLoadAction::ENoAction)
 		, StencilTargetStoreAction(ERenderTargetStoreAction::ENoAction)
+		, DepthStencilAccess(FExclusiveDepthStencil::Type::DepthNop_StencilNop)
 		, NumSamples(0)
 		, SubpassHint(ESubpassHint::None)
 		, SubpassIndex(0)
 		, bDepthBounds(false)
-		, bMultiView(false)
+		, MultiviewCount(0)
 		, bHasFragmentDensityAttachment(false)
 		, Flags(0)
 	{
@@ -1987,7 +2005,7 @@ public:
 		const TRenderTargetFormats&	InRenderTargetFormats,
 		const TRenderTargetFlags&	InRenderTargetFlags,
 		EPixelFormat				InDepthStencilTargetFormat,
-		uint32						InDepthStencilTargetFlag,
+		ETextureCreateFlags			InDepthStencilTargetFlag,
 		ERenderTargetLoadAction		InDepthTargetLoadAction,
 		ERenderTargetStoreAction	InDepthTargetStoreAction,
 		ERenderTargetLoadAction		InStencilTargetLoadAction,
@@ -1998,7 +2016,7 @@ public:
 		uint8						InSubpassIndex,
 		uint16						InFlags,
 		bool						bInDepthBounds,
-		bool						bInMultiView,
+		uint8						InMultiviewCount,
 		bool						bHasFragmentDensityAttachment
 		)
 		: BoundShaderState(InBoundShaderState)
@@ -2021,7 +2039,7 @@ public:
 		, SubpassHint(InSubpassHint)
 		, SubpassIndex(InSubpassIndex)
 		, bDepthBounds(bInDepthBounds)
-		, bMultiView(bInMultiView)
+		, MultiviewCount(InMultiviewCount)
 		, bHasFragmentDensityAttachment(bHasFragmentDensityAttachment)
 		, Flags(InFlags)
 	{
@@ -2045,11 +2063,9 @@ public:
 			ImmutableSamplerState != rhs.ImmutableSamplerState ||
 			PrimitiveType != rhs.PrimitiveType ||
 			bDepthBounds != rhs.bDepthBounds ||
-			bMultiView != rhs.bMultiView ||
+			MultiviewCount != rhs.MultiviewCount ||
 			bHasFragmentDensityAttachment != rhs.bHasFragmentDensityAttachment ||
 			RenderTargetsEnabled != rhs.RenderTargetsEnabled ||
-			RenderTargetFormats != rhs.RenderTargetFormats || 
-			RenderTargetFlags != rhs.RenderTargetFlags || 
 			DepthStencilTargetFormat != rhs.DepthStencilTargetFormat || 
 			DepthStencilTargetFlag != rhs.DepthStencilTargetFlag ||
 			DepthTargetLoadAction != rhs.DepthTargetLoadAction ||
@@ -2062,6 +2078,16 @@ public:
 			SubpassIndex != rhs.SubpassIndex)
 		{
 			return false;
+		}
+
+		// Check only the RenderTargets that are active
+		for (uint32 i = 0; i < RenderTargetsEnabled; ++i)
+		{
+			if (RenderTargetFormats[i] != rhs.RenderTargetFormats[i] ||
+				RenderTargetFlags[i] != rhs.RenderTargetFlags[i])
+			{
+				return false;
+			}
 		}
 
 		return true;
@@ -2107,7 +2133,7 @@ public:
 	ESubpassHint					SubpassHint;
 	uint8							SubpassIndex;
 	bool							bDepthBounds;
-	bool							bMultiView;
+	uint8							MultiviewCount;
 	bool							bHasFragmentDensityAttachment;
 	
 	// Note: these flags do NOT affect compilation of this PSO.
@@ -2422,8 +2448,8 @@ struct FRHIRenderPassInfo
 	// Some RHIs need to know if this render pass is going to be reading and writing to the same texture in the case of generating mip maps for partial resource transitions
 	bool bGeneratingMips = false;
 
-	// If this render pass should be multiview
-	bool bMultiviewPass = false;
+	// if this renderpass should be multiview, and if so how many views are required
+	uint8 MultiViewCount = 0;
 
 	// Hint for some RHI's that renderpass will have specific sub-passes 
 	ESubpassHint SubpassHint = ESubpassHint::None;

@@ -157,6 +157,7 @@ void FVulkanAndroidPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<c
 	OutExtensions.Add(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
 	OutExtensions.Add(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
 	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME);
+	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_2_EXTENSION_NAME);
 
 #if !UE_BUILD_SHIPPING
 	OutExtensions.Add(VULKAN_MALI_LAYER_NAME);
@@ -173,6 +174,11 @@ bool FVulkanAndroidPlatform::SupportsStandardSwapchain()
 	{
 		return FVulkanGenericPlatform::SupportsStandardSwapchain();
 	}
+}
+
+bool FVulkanAndroidPlatform::RequiresRenderingBackBuffer()
+{
+	return !FPlatformMisc::IsStandaloneStereoOnlyDevice();
 }
 
 EPixelFormat FVulkanAndroidPlatform::GetPixelFormatForNonDefaultSwapchain()
@@ -225,5 +231,13 @@ void FVulkanAndroidPlatform::SetupMaxRHIFeatureLevelAndShaderPlatform(ERHIFeatur
 		GMaxRHIShaderPlatform = SP_VULKAN_SM5_ANDROID;
 	}
 }
+
+#if WITH_LATE_LATCHING_CODE
+bool FVulkanAndroidPlatform::SupportsUniformBufferPatching()
+{
+	// Only Allow it on ( Oculus + Vulkan + Android ) devices for now to reduce the impact on general system
+	return !UseRealUBsOptimization(true) && FPlatformMisc::IsStandaloneStereoOnlyDevice();
+}
+#endif
 
 #endif

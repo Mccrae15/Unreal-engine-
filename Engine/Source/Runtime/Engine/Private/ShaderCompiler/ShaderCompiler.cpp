@@ -3066,9 +3066,27 @@ static void GenerateUniformBufferStructMember(FString& Result, const FShaderPara
 	Result = FString::Printf(TEXT("%s %s%s"), *TypeName, Member.GetName(), *ArrayDim);
 }
 
+static bool IsUniformBufferDataType(EUniformBufferBaseType InType)
+{
+	return InType == UBMT_INT32 || InType == UBMT_UINT32 || InType == UBMT_FLOAT32;
+}
+
 /* Generates the instanced stereo hlsl code that's dependent on view uniform declarations. */
 ENGINE_API void GenerateInstancedStereoCode(FString& Result)
 {
+	const uint32 MAX_VIEW_COUNT = 2;
+	// Find the View uniform buffer struct
+	const FShaderParametersMetadata* View = nullptr;
+	for (TLinkedList<FShaderParametersMetadata*>::TIterator StructIt(FShaderParametersMetadata::GetStructList()); StructIt; StructIt.Next())
+	{
+		if (StructIt->GetShaderVariableName() == FString(TEXT("View")))
+		{
+			View = *StructIt;
+			break;
+		}
+	}
+	checkSlow(View != nullptr);
+
 	// Find the InstancedView uniform buffer struct
 	const FShaderParametersMetadata* InstancedView = nullptr;
 	for (TLinkedList<FShaderParametersMetadata*>::TIterator StructIt(FShaderParametersMetadata::GetStructList()); StructIt; StructIt.Next())
@@ -3080,17 +3098,22 @@ ENGINE_API void GenerateInstancedStereoCode(FString& Result)
 		}
 	}
 	checkSlow(InstancedView != nullptr);
-	const TArray<FShaderParametersMetadata::FMember>& StructMembers = InstancedView->GetMembers();
+
+	// Generate struct ViewState from View Buffer, note: need skip samplers by IsUniformBufferDataType
+	const TArray<FShaderParametersMetadata::FMember>& StructMembersOfView = View->GetMembers();
 
 	// ViewState definition
-	Result =  "struct ViewState\r\n";
+	Result = "struct ViewState\r\n";
 	Result += "{\r\n";
-	for (int32 MemberIndex = 0; MemberIndex < StructMembers.Num(); ++MemberIndex)
+	for (int32 MemberIndex = 0; MemberIndex < StructMembersOfView.Num(); ++MemberIndex)
 	{
-		const FShaderParametersMetadata::FMember& Member = StructMembers[MemberIndex];
-		FString MemberDecl;
-		GenerateUniformBufferStructMember(MemberDecl, StructMembers[MemberIndex]);
-		Result += FString::Printf(TEXT("\t%s;\r\n"), *MemberDecl);
+		const FShaderParametersMetadata::FMember& Member = StructMembersOfView[MemberIndex];
+		if (IsUniformBufferDataType(Member.GetBaseType()))
+		{
+			FString MemberDecl;
+			GenerateUniformBufferStructMember(MemberDecl, StructMembersOfView[MemberIndex]);
+			Result += FString::Printf(TEXT("\t%s;\r\n"), *MemberDecl);
+		}
 	}
 	Result += "};\r\n";
 
@@ -3098,22 +3121,57 @@ ENGINE_API void GenerateInstancedStereoCode(FString& Result)
 	Result += "ViewState GetPrimaryView()\r\n";
 	Result += "{\r\n";
 	Result += "\tViewState Result;\r\n";
-	for (int32 MemberIndex = 0; MemberIndex < StructMembers.Num(); ++MemberIndex)
+	for (int32 MemberIndex = 0; MemberIndex < StructMembersOfView.Num(); ++MemberIndex)
 	{
-		const FShaderParametersMetadata::FMember& Member = StructMembers[MemberIndex];
-		Result += FString::Printf(TEXT("\tResult.%s = View.%s;\r\n"), Member.GetName(), Member.GetName());
+		const FShaderParametersMetadata::FMember& Member = StructMembersOfView[MemberIndex];
+		if (IsUniformBufferDataType(Member.GetBaseType()))
+		{
+			Result += FString::Printf(TEXT("\tResult.%s = View.%s;\r\n"), Member.GetName(), Member.GetName());
+		}
 	}
 	Result += "\treturn Result;\r\n";
 	Result += "}\r\n";
 
+	const TArray<FShaderParametersMetadata::FMember>& StructMembers = InstancedView->GetMembers();
 	// GetInstancedView definition
-	Result += "ViewState GetInstancedView()\r\n";
+	Result += "ViewState GetInstancedView(uint ViewIndex)\r\n";
 	Result += "{\r\n";
 	Result += "\tViewState Result;\r\n";
 	for (int32 MemberIndex = 0; MemberIndex < StructMembers.Num(); ++MemberIndex)
 	{
-		const FShaderParametersMetadata::FMember& Member = StructMembers[MemberIndex];
-		Result += FString::Printf(TEXT("\tResult.%s = InstancedView.%s;\r\n"), Member.GetName(), Member.GetName());
+		const FShaderParametersMetadata::FMember& InstancedViewMember = StructMembers[MemberIndex];
+		const FShaderParametersMetadata::FMember& ViewMember = StructMembersOfView[MemberIndex];
+		uint32 InstancedViewNumElements = InstancedViewMember.GetNumElements();
+		uint32 ViewNumElements = ViewMember.GetNumElements();
+
+		if ( InstancedViewNumElements > ViewNumElements)
+		{
+			if (ViewNumElements > 1) // when view member is an array
+			{
+				if (ViewNumElements * MAX_VIEW_COUNT != InstancedViewNumElements)
+				{
+					UE_LOG(LogShaderCompilers, Fatal, TEXT("ViewUniformBuffer mis-alignment %s vs %s Instance %d View %d !"), ViewMember.GetName(), InstancedViewMember.GetName(), ViewNumElements, InstancedViewNumElements);
+				}
+
+				for (uint32 elementIndex = 0; elementIndex < ViewNumElements; elementIndex++)
+				{
+					Result += FString::Printf(TEXT("\tResult.%s[%d] = InstancedView.%s[%d+ViewIndex* %d];\r\n"), ViewMember.GetName(), elementIndex, InstancedViewMember.GetName(), elementIndex, ViewNumElements);
+				}
+			}
+			else // when source is a single element
+			{
+				if (MAX_VIEW_COUNT != InstancedViewNumElements)
+				{
+					UE_LOG(LogShaderCompilers, Fatal, TEXT("ViewUniformBuffer mis-alignment %s vs %s Instance %d View %d !"), ViewMember.GetName(), InstancedViewMember.GetName(), ViewNumElements, InstancedViewNumElements);
+				}
+
+				Result += FString::Printf(TEXT("\tResult.%s = InstancedView.%s[ViewIndex];\r\n"), ViewMember.GetName(), InstancedViewMember.GetName());
+			}
+		}
+		else
+		{
+			Result += FString::Printf(TEXT("\tResult.%s = InstancedView.%s;\r\n"), ViewMember.GetName(), InstancedViewMember.GetName());
+		}
 	}
 	Result += "\treturn Result;\r\n";
 	Result += "}\r\n";
@@ -3125,8 +3183,29 @@ ENGINE_API void GenerateInstancedStereoCode(FString& Result)
 	Result += "\tViewState Result;\r\n";
 	for (int32 MemberIndex = 0; MemberIndex < StructMembers.Num(); ++MemberIndex)
 	{
-		const FShaderParametersMetadata::FMember& Member = StructMembers[MemberIndex];
-		Result += FString::Printf(TEXT("\tResult.%s = (ViewIndex == 0) ? View.%s : InstancedView.%s;\r\n"), Member.GetName(), Member.GetName(), Member.GetName());
+		const FShaderParametersMetadata::FMember& InstancedViewMember = StructMembers[MemberIndex];
+		const FShaderParametersMetadata::FMember& ViewMember = StructMembersOfView[MemberIndex];
+		uint32 InstancedViewNumElements = InstancedViewMember.GetNumElements();
+		uint32 ViewNumElements = ViewMember.GetNumElements();
+
+		if (InstancedViewNumElements > ViewNumElements)
+		{
+			if (ViewNumElements > 1) // when view member is an array
+			{
+				for (uint32 elementIndex = 0; elementIndex < ViewNumElements; elementIndex++)
+				{
+					Result += FString::Printf(TEXT("\tResult.%s[%d] = InstancedView.%s[%d+ViewIndex* %d];\r\n"), ViewMember.GetName(), elementIndex, InstancedViewMember.GetName(), elementIndex, ViewNumElements);
+				}
+			}
+			else // when source is a single element
+			{
+				Result += FString::Printf(TEXT("\tResult.%s = InstancedView.%s[ViewIndex];\r\n"), ViewMember.GetName(), InstancedViewMember.GetName());
+			}
+		}
+		else
+		{
+			Result += FString::Printf(TEXT("\tResult.%s = InstancedView.%s;\r\n"), ViewMember.GetName(), InstancedViewMember.GetName());
+		}
 	}
 	Result += "\treturn Result;\r\n";
 	Result += "}\r\n";
@@ -3409,6 +3488,10 @@ void GlobalBeginCompileShader(
 	{
 		Input.Environment.SetDefine(TEXT("SHADING_PATH_MOBILE"), 1);
 	}
+
+#if WITH_OCULUS_PRIVATE_CODE
+	Input.Environment.SetDefine(TEXT("WITH_OCULUS_PRIVATE_CODE"), 1);
+#endif
 
 	// Set VR definitions
 	{

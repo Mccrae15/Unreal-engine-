@@ -39,6 +39,21 @@ typedef enum ovrMessageType_ {
   ovrMessage_AssetFile_Status                                    = 0x02D32F60, ///< Generated in response to ovr_AssetFile_Status()
   ovrMessage_AssetFile_StatusById                                = 0x5D955D38, ///< Generated in response to ovr_AssetFile_StatusById()
   ovrMessage_AssetFile_StatusByName                              = 0x41CFDA50, ///< Generated in response to ovr_AssetFile_StatusByName()
+  ovrMessage_Challenges_Create                                   = 0x6859D641, ///< Generated in response to ovr_Challenges_Create()
+  ovrMessage_Challenges_DeclineInvite                            = 0x568E76C0, ///< Generated in response to ovr_Challenges_DeclineInvite()
+  ovrMessage_Challenges_Delete                                   = 0x264885CA, ///< Generated in response to ovr_Challenges_Delete()
+  ovrMessage_Challenges_Get                                      = 0x77584EF3, ///< Generated in response to ovr_Challenges_Get()
+  ovrMessage_Challenges_GetEntries                               = 0x121AB45F, ///< Generated in response to ovr_Challenges_GetEntries()
+  ovrMessage_Challenges_GetEntriesAfterRank                      = 0x08891A7F, ///< Generated in response to ovr_Challenges_GetEntriesAfterRank()
+  ovrMessage_Challenges_GetEntriesByIds                          = 0x316509DC, ///< Generated in response to ovr_Challenges_GetEntriesByIds()
+  ovrMessage_Challenges_GetList                                  = 0x43264356, ///< Generated in response to ovr_Challenges_GetList()
+  ovrMessage_Challenges_GetNextChallenges                        = 0x5B7CA1B6, ///< Generated in response to ovr_Challenges_GetNextChallenges()
+  ovrMessage_Challenges_GetNextEntries                           = 0x7F4CA0C6, ///< Generated in response to ovr_Challenges_GetNextEntries()
+  ovrMessage_Challenges_GetPreviousChallenges                    = 0x0EB4040D, ///< Generated in response to ovr_Challenges_GetPreviousChallenges()
+  ovrMessage_Challenges_GetPreviousEntries                       = 0x78C90470, ///< Generated in response to ovr_Challenges_GetPreviousEntries()
+  ovrMessage_Challenges_Join                                     = 0x21248069, ///< Generated in response to ovr_Challenges_Join()
+  ovrMessage_Challenges_Leave                                    = 0x296116E5, ///< Generated in response to ovr_Challenges_Leave()
+  ovrMessage_Challenges_UpdateInfo                               = 0x1175BE60, ///< Generated in response to ovr_Challenges_UpdateInfo()
   ovrMessage_CloudStorage2_GetUserDirectoryPath                  = 0x76A42EEE, ///< Generated in response to ovr_CloudStorage2_GetUserDirectoryPath()
   ovrMessage_CloudStorage_Delete                                 = 0x28DA456D, ///< Generated in response to ovr_CloudStorage_Delete()
   ovrMessage_CloudStorage_GetNextCloudStorageMetadataArrayPage   = 0x5C07A2EF, ///< Generated in response to ovr_CloudStorage_GetNextCloudStorageMetadataArrayPage()
@@ -62,6 +77,7 @@ typedef enum ovrMessageType_ {
   ovrMessage_LanguagePack_SetCurrent                             = 0x5B4FBBE0, ///< Generated in response to ovr_LanguagePack_SetCurrent()
   ovrMessage_Leaderboard_GetEntries                              = 0x5DB3474C, ///< Generated in response to ovr_Leaderboard_GetEntries()
   ovrMessage_Leaderboard_GetEntriesAfterRank                     = 0x18378BEF, ///< Generated in response to ovr_Leaderboard_GetEntriesAfterRank()
+  ovrMessage_Leaderboard_GetEntriesByIds                         = 0x39607BFC, ///< Generated in response to ovr_Leaderboard_GetEntriesByIds()
   ovrMessage_Leaderboard_GetNextEntries                          = 0x4E207CD9, ///< Generated in response to ovr_Leaderboard_GetNextEntries()
   ovrMessage_Leaderboard_GetPreviousEntries                      = 0x4901DAC0, ///< Generated in response to ovr_Leaderboard_GetPreviousEntries()
   ovrMessage_Leaderboard_WriteEntry                              = 0x117FC8FE, ///< Generated in response to ovr_Leaderboard_WriteEntry()
@@ -91,6 +107,8 @@ typedef enum ovrMessageType_ {
   ovrMessage_Notification_MarkAsRead                             = 0x717259E3, ///< Generated in response to ovr_Notification_MarkAsRead()
   ovrMessage_Party_GetCurrent                                    = 0x47933760, ///< Generated in response to ovr_Party_GetCurrent()
   ovrMessage_RichPresence_Clear                                  = 0x57B752B3, ///< Generated in response to ovr_RichPresence_Clear()
+  ovrMessage_RichPresence_GetDestinations                        = 0x586F2D14, ///< Generated in response to ovr_RichPresence_GetDestinations()
+  ovrMessage_RichPresence_GetNextDestinationArrayPage            = 0x67367F45, ///< Generated in response to ovr_RichPresence_GetNextDestinationArrayPage()
   ovrMessage_RichPresence_Set                                    = 0x3C147509, ///< Generated in response to ovr_RichPresence_Set()
   ovrMessage_Room_CreateAndJoinPrivate                           = 0x75D6E377, ///< Generated in response to ovr_Room_CreateAndJoinPrivate()
   ovrMessage_Room_CreateAndJoinPrivate2                          = 0x5A3A6243, ///< Generated in response to ovr_Room_CreateAndJoinPrivate2()
@@ -173,6 +191,19 @@ typedef enum ovrMessageType_ {
   /// ovr_Matchmaking_Enqueue(). Use ovr_Message_GetRoom() to extract the
   /// matchmaking room.
   ovrMessage_Notification_Matchmaking_MatchFound = 0x0BC3FCD7,
+
+  /// Sent when the status of a connection has changed.
+  ///
+  /// The message will contain a payload of type ::ovrNetSyncConnectionHandle.
+  /// Extract the payload from the message handle with ::ovr_Message_GetNetSyncConnection().
+  ovrMessage_Notification_NetSync_ConnectionStatusChanged = 0x073484CA,
+
+  /// Sent when the list of known connected sessions has changed. Contains the
+  /// new list of sessions.
+  ///
+  /// The message will contain a payload of type ::ovrNetSyncSessionsChangedNotificationHandle.
+  /// Extract the payload from the message handle with ::ovr_Message_GetNetSyncSessionsChangedNotification().
+  ovrMessage_Notification_NetSync_SessionsChanged = 0x387E7F36,
 
   /// Indicates that a connection has been established or there's been an error.
   /// Use ovr_NetworkingPeer_GetState() to get the result; as above,

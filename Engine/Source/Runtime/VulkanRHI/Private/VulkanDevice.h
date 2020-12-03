@@ -44,6 +44,7 @@ struct FOptionalVulkanDeviceExtensions
 			uint32 HasMemoryPriority : 1;
 			uint32 HasDriverProperties : 1;
 			uint32 HasEXTFragmentDensityMap : 1;
+			uint32 HasEXTFragmentDensityMap2 : 1;
 			uint32 HasEXTFullscreenExclusive : 1;
 			uint32 HasKHRImageFormatList : 1;
 		};
@@ -209,6 +210,13 @@ public:
 	{
 		return GpuProps;
 	}
+
+#if VULKAN_SUPPORTS_FDM2
+	inline const VkPhysicalDeviceFragmentDensityMap2FeaturesEXT& GetFDM2Properties() const
+	{
+		return FragmentDensityMap2Properties;
+	}
+#endif
 
 	inline const VkPhysicalDeviceLimits& GetLimits() const
 	{
@@ -449,6 +457,9 @@ private:
 	VkPhysicalDeviceProperties GpuProps;
 #if VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
 	VkPhysicalDeviceIDPropertiesKHR GpuIdProps;
+#endif
+#if VULKAN_SUPPORTS_FDM2
+	VkPhysicalDeviceFragmentDensityMap2FeaturesEXT FragmentDensityMap2Properties;
 #endif
 	VkPhysicalDeviceFeatures PhysicalFeatures;
 

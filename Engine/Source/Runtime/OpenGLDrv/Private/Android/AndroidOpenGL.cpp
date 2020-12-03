@@ -341,7 +341,7 @@ void PlatformDestroyOpenGLContext(FPlatformOpenGLDevice* Device, FPlatformOpenGL
 
 FRHITexture* PlatformCreateBuiltinBackBuffer(FOpenGLDynamicRHI* OpenGLRHI, uint32 SizeX, uint32 SizeY)
 {
-	uint32 Flags = TexCreate_RenderTargetable;
+	ETextureCreateFlags Flags = TexCreate_RenderTargetable;
 	FOpenGLTexture2D* Texture2D = new FOpenGLTexture2D(OpenGLRHI, AndroidEGL::GetInstance()->GetOnScreenColorRenderBuffer(), GL_RENDERBUFFER, GL_COLOR_ATTACHMENT0, SizeX, SizeY, 0, 1, 1, 1, 1, PF_B8G8R8A8, false, false, Flags, nullptr, FClearValueBinding::Transparent);
 	OpenGLTextureAllocated(Texture2D, Flags);
 
@@ -692,6 +692,22 @@ bool FAndroidOpenGL::SupportsFramebufferSRGBEnable()
 	static auto* MobileUseHWsRGBEncodingCVAR = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.UseHWsRGBEncoding"));
 	const bool bMobileUseHWsRGBEncoding = (MobileUseHWsRGBEncodingCVAR && MobileUseHWsRGBEncodingCVAR->GetValueOnAnyThread() == 1);
 	return bMobileUseHWsRGBEncoding;
+}
+
+bool FAndroidOpenGL::SupportsSubsampledLayout() {
+
+	GLint query = 0;
+	glGetTexParameteriv(GL_TEXTURE_2D,
+		GL_TEXTURE_FOVEATED_FEATURE_QUERY_QCOM,
+		&query);
+
+	if (((query & GL_FOVEATION_ENABLE_BIT_QCOM) == GL_FOVEATION_ENABLE_BIT_QCOM) &&
+		((query & GL_FOVEATION_SUBSAMPLED_LAYOUT_METHOD_BIT_QCOM) ==
+			GL_FOVEATION_SUBSAMPLED_LAYOUT_METHOD_BIT_QCOM))
+	{
+		return true;
+	}
+	return false; 
 }
 
 void FAndroidOpenGL::BeginQuery(GLenum QueryType, GLuint Query)
