@@ -95,7 +95,26 @@ float RgbLuma(float3 Color)
 	return dot(Color, LumaVec);
 }
 
-groupshared float4 SharedColorSamples[THREADGROUP_SIZE_X][THREADGROUP_SIZE_Y];
+groupshared uint SharedColorSamplesRG[THREADGROUP_SIZE_X * THREADGROUP_SIZE_Y];
+groupshared uint SharedColorSamplesBA[THREADGROUP_SIZE_X * THREADGROUP_SIZE_Y];
+
+void WriteSharedColorSample(uint2 Pos, float4 Color)
+{
+	uint i = Pos.x + Pos.y * THREADGROUP_SIZE_X;
+	SharedColorSamplesRG[i] = f32tof16(Color.r) | (f32tof16(Color.g) << 16);
+	SharedColorSamplesBA[i] = f32tof16(Color.b) | (f32tof16(Color.a) << 16);
+}
+
+float4 ReadSharedColorSample(uint2 Pos)
+{
+	uint i = Pos.x + Pos.y * THREADGROUP_SIZE_X;
+	float4 Color = 0;
+	Color.r = f16tof32(SharedColorSamplesRG[i] & 0xFFFF);
+	Color.g = f16tof32(SharedColorSamplesRG[i] >> 16);
+	Color.b = f16tof32(SharedColorSamplesBA[i] & 0xFFFF);
+	Color.a = f16tof32(SharedColorSamplesBA[i] >> 16);
+	return Color;
+}
 
 [numthreads(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y, 1)]
 void RayTracingReflectionResolveCS(
@@ -207,7 +226,7 @@ void RayTracingReflectionResolveCS(
 
 	if (ReflectionHistoryWeight > 0)
 	{
-		SharedColorSamples[GroupThreadId.x][GroupThreadId.y] = ReflectionColor;
+		WriteSharedColorSample(GroupThreadId, ReflectionColor);
 		GroupMemoryBarrierWithGroupSync();
 	}
 
@@ -231,7 +250,7 @@ void RayTracingReflectionResolveCS(
 			{
 				int2 TapOffset = int2(x, y);
 				int2 TapPos = clamp(int2(GroupThreadId) + TapOffset, ValidTapBounds.xy, ValidTapBounds.zw);
-				float4 SampleColor = SharedColorSamples[TapPos.x][TapPos.y];
+				float4 SampleColor = ReadSharedColorSample(TapPos);
 
 				// Welford's online algorithm for variance.
 				// More numerically stable than accumulating squares.
