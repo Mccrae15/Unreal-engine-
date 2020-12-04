@@ -89,6 +89,24 @@ float2 GetReprojectedBufferUV(float2 ScreenPos, float SceneDepth, float2 Encoded
 	return PrevScreenPos.xy * HistoryScreenPositionScaleBias.xy + HistoryScreenPositionScaleBias.zw;
 }
 
+bool DisocclusionHeuristic(float2 ScreenPos, float DeviceZ, float2 HistoryUV)
+{
+	float PrevDeviceZ = DepthBufferHistory.SampleLevel(GlobalPointClampedSampler, HistoryUV, 0).r;
+	float4 ThisClip = float4(ScreenPos, DeviceZ, 1);
+	float4 PrevClip = mul(ThisClip, View.ClipToPrevClip);
+	float3 PrevExpectedDeviceZ = PrevClip.z / PrevClip.w;
+
+	float3 CameraVelocity = View.WorldViewOrigin - View.PrevWorldViewOrigin;
+
+	float CompensatedPrevDeviceZ = ConvertToDeviceZ(ConvertFromDeviceZ(PrevDeviceZ) + length(CameraVelocity));
+
+	// Empirically chosen threshold to balance between aliasing/noise from false positives and ghosting from false negatives
+	float DisocclusionMaxDeviceZ = 0.001;
+
+	return (PrevDeviceZ - DeviceZ > DisocclusionMaxDeviceZ)
+		&& (CompensatedPrevDeviceZ - PrevExpectedDeviceZ > DisocclusionMaxDeviceZ);
+}
+
 float RgbLuma(float3 Color)
 {
 	float3 LumaVec = float3(0.299, 0.587, 0.114);
@@ -286,14 +304,17 @@ void RayTracingReflectionResolveCS(
 		float ColorDistance2 = abs(RgbLuma(ColorM1.rgb) - RgbLuma(HistoryColor2.rgb));
 
 		float4 HistoryColor = ColorDistance1 < ColorDistance2 ? HistoryColor1 : HistoryColor2;
+		float2 HistoryUV = ColorDistance1 < ColorDistance2 ? BufferUV1 : BufferUV2;
 
 		// Detect disocclusion and clamp history color closer to current neighborhood mean
-		const float2 HistoryUV = ColorDistance1 < ColorDistance2 ? BufferUV1 : BufferUV2;
-		const float DeviceZ = ConvertToDeviceZ(SceneDepth);
-		const float PrevDeviceZ = DepthBufferHistory.SampleLevel(GlobalPointClampedSampler, HistoryUV, 0).r;
-		if (abs(PrevDeviceZ - DeviceZ) > 0.001)
+		if (DisocclusionHeuristic(ScreenPos, ConvertToDeviceZ(SceneDepth), HistoryUV))
 		{
 			ColorStdDev *= 0.25;
+
+		#if 0 // Disocclusion debug visualiztion:
+			ReflectionColor.r = 1;
+			HistoryWeight = 0;
+		#endif
 		}
 
 		// Basic color box clamp -- #yuriy_todo: try box clipping instead
