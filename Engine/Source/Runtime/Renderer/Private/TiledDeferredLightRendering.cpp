@@ -404,6 +404,10 @@ void FDeferredShadingSceneRenderer::RenderTiledDeferredLighting(FRHICommandListI
 				}
 			}
 
+#if PLATFORM_REQUIRES_UAV_TO_RTV_TEXTURE_CACHE_FLUSH_WORKAROUND
+			RHICmdList.RHIFlushTextureCacheBOP(OutTexture->GetRenderTargetItem().TargetableTexture);
+#endif // #if PLATFORM_REQUIRES_UAV_TO_RTV_TEXTURE_CACHE_FLUSH_WORKAROUND
+
 			// swap with the former SceneColor
 			SceneContext.SetSceneColor(OutTexture);
 		}
