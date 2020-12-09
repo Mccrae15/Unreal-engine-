@@ -164,6 +164,22 @@ void UEditorStaticMeshLibrary::SetPreviewMeshForAnimAsset(USkeletalMesh* Preview
 	AnimationAsset->SetPreviewMesh(PreviewMesh);
 }
 
+FEditorScriptingMeshReductionOptions UEditorStaticMeshLibrary::GetModelReductionSettings(UStaticMesh* StaticMesh)
+{
+	FEditorScriptingMeshReductionOptions ReductionOptions;
+	if (StaticMesh)
+	{
+		for (int i = 0; i < StaticMesh->GetNumSourceModels(); i++) {
+			FEditorScriptingMeshReductionSettings singleSetting;
+			singleSetting.PercentTriangles = StaticMesh->GetSourceModel(i).ReductionSettings.PercentTriangles;
+			singleSetting.ScreenSize = StaticMesh->GetSourceModel(i).ScreenSize.Default;
+			ReductionOptions.ReductionSettings.Add(singleSetting);
+		}
+		ReductionOptions.bAutoComputeLODScreenSize = StaticMesh->bAutoComputeLODScreenSize;
+	}
+	return ReductionOptions;
+}
+
 void UEditorStaticMeshLibrary::SetLODScreenSizeProps(UStaticMesh* StaticMesh, TMap<int32,float> ScreenSize, FName Platform, bool PropagateToDefaults) {
 
 	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())

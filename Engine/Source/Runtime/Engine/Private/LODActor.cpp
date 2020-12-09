@@ -180,6 +180,8 @@ ALODActor::ALODActor(const FObjectInitializer& ObjectInitializer)
 	, LODDrawDistance(5000)
 	, bHasActorTriedToRegisterComponents(false)
 	, ForceIsBuilt(false)
+	, OverrideGlobalReductionSettings(false)
+	, ReductionOptions()
 {
 	SetCanBeDamaged(false);
 
