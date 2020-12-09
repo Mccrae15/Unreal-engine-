@@ -24,6 +24,48 @@ extern ENGINE_API TAutoConsoleVariable<FString> CVarHLODDistanceOverride;
  * @see UStaticMesh
  */
 
+USTRUCT(BlueprintType)
+struct FHLODMeshReductionSettings
+{
+	GENERATED_BODY()
+
+		FHLODMeshReductionSettings()
+		: PercentTriangles(0.5f)
+		, ScreenSize(0.5f)
+	{ }
+
+	// Percentage of triangles to keep. Ranges from 0.0 to 1.0: 1.0 = no reduction, 0.0 = no triangles.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+		float PercentTriangles;
+
+	// ScreenSize to display this LOD. Ranges from 0.0 to 1.0.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+		float ScreenSize;
+};
+
+USTRUCT(BlueprintType)
+struct FHLODMeshReductionOptions
+{
+	GENERATED_BODY()
+
+		FHLODMeshReductionOptions()
+		: bAutoComputeLODScreenSize(true)
+	{ }
+
+	// If true, the screen sizes at which LODs swap are computed automatically
+	// @note that this is displayed as 'Auto Compute LOD Distances' in the UI
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+		bool bAutoComputeLODScreenSize;
+
+	// Array of reduction settings to apply to each new LOD mesh.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+		TArray<FHLODMeshReductionSettings> ReductionSettings;
+};
+
+
+
+
+
 UCLASS(notplaceable, hidecategories = (Object, Collision, Display, Input, Blueprint, Transform, Physics))
 class ENGINE_API ALODActor : public AActor
 {
@@ -70,6 +112,12 @@ public:
 	
 	UPROPERTY(Category = LODActor, EditAnywhere, BlueprintReadWrite)
 	bool ForceIsBuilt;
+
+	UPROPERTY(Category = LODActor, EditAnywhere, BlueprintReadWrite)
+	FHLODMeshReductionOptions ReductionOptions;
+
+	UPROPERTY(Category = LODActor, EditAnywhere, BlueprintReadWrite)
+	bool OverrideGlobalReductionSettings;
 
 	UPROPERTY()
 	uint8 CachedNumHLODLevels;
