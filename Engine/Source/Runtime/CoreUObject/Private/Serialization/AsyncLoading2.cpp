@@ -1372,10 +1372,7 @@ private:
 		PackageRef.ClearErrorFlags();
 		if (PackageRef.AddRef())
 		{
-			if (Desc.bCanBeImported)
-			{
-				AddAsyncFlags(PackageRef.GetPackage());
-			}
+			AddAsyncFlags(PackageRef.GetPackage());
 		}
 	}
 
@@ -1396,10 +1393,7 @@ private:
 			*Desc.UPackageName.ToString(), Desc.UPackageId.Value());
 		if (PackageRef && PackageRef->ReleaseRef(Desc.UPackageId, Desc.UPackageId))
 		{
-			if (Desc.bCanBeImported)
-			{
-				ClearAsyncFlags(PackageRef->GetPackage());
-			}
+			ClearAsyncFlags(PackageRef->GetPackage());
 		}
 	}
 };
@@ -2370,6 +2364,8 @@ public:
 	virtual void NotifyUnreachableObjects(const TArrayView<FUObjectItem*>& UnreachableObjects) override;
 
 	virtual void FireCompletedCompiledInImport(void* AsyncPackage, FPackageIndex Import) override {}
+
+	void OnPreGarbageCollect();
 
 	/**
 	* [ASYNC THREAD] Finds an existing async package in the AsyncPackages by its name.
@@ -4738,7 +4734,6 @@ FAsyncLoadingThread2::~FAsyncLoadingThread2()
 void FAsyncLoadingThread2::ShutdownLoading()
 {
 	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().RemoveAll(this);
-	FCoreUObjectDelegates::GetPostGarbageCollect().RemoveAll(this);
 
 	delete Thread;
 	Thread = nullptr;
@@ -4754,6 +4749,8 @@ void FAsyncLoadingThread2::StartThread()
 {
 	// Make sure the GC sync object is created before we start the thread (apparently this can happen before we call InitUObject())
 	FGCCSyncObject::Create();
+
+	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddRaw(this, &FAsyncLoadingThread2::OnPreGarbageCollect);
 
 	if (!FAsyncLoadingThreadSettings::Get().bAsyncLoadingThreadEnabled)
 	{
@@ -4833,6 +4830,18 @@ void FAsyncLoadingThread2::FinalizeInitialLoad()
 	PendingCDOs.Empty();
 }
 
+void FAsyncLoadingThread2::OnPreGarbageCollect()
+{
+	if (!DeferredDeletePackages.IsEmpty())
+	{
+		FAsyncPackage2* Package = nullptr;
+		while (DeferredDeletePackages.Dequeue(Package))
+		{
+			DeleteAsyncPackage(Package);
+		}
+	}
+}
+
 uint32 FAsyncLoadingThread2::Run()
 {
 	LLM_SCOPE(ELLMTag::AsyncLoading);
@@ -4886,18 +4895,36 @@ uint32 FAsyncLoadingThread2::Run()
 					}
 
 					bool bShouldSuspend = false;
-					bool bPopped = false;
-					do 
+					bool bPopped = true;
+					while (bPopped)
 					{
-						bPopped = false;
-						for (FAsyncLoadEventQueue2* Queue : AltEventQueues)
+						for (int32 I = 0; bPopped && I < 100; ++I)
 						{
-							if (Queue->PopAndExecute(ThreadState))
+							bPopped = false;
+							for (FAsyncLoadEventQueue2* Queue : AltEventQueues)
 							{
-								bPopped = true;
-								bDidSomething = true;
-							}
+								if (Queue->PopAndExecute(ThreadState))
+								{
+									bPopped = true;
+									bDidSomething = true;
+								}
 
+								if (bSuspendRequested.Load(EMemoryOrder::Relaxed) || IsGarbageCollectionWaiting())
+								{
+									bShouldSuspend = true;
+									bPopped = false;
+									break;
+								}
+							}
+						}
+						if (!bShouldSuspend && !DeferredDeletePackages.IsEmpty())
+						{
+							FAsyncPackage2* Package = nullptr;
+							for (int32 I = 0; I < 100 && DeferredDeletePackages.Dequeue(Package); ++I) 
+							{
+								DeleteAsyncPackage(Package);
+							}
+							bDidSomething = true;
 							if (bSuspendRequested.Load(EMemoryOrder::Relaxed) || IsGarbageCollectionWaiting())
 							{
 								bShouldSuspend = true;
@@ -4905,7 +4932,7 @@ uint32 FAsyncLoadingThread2::Run()
 								break;
 							}
 						}
-					} while (bPopped);
+					}
 
 					if (bShouldSuspend || bSuspendRequested.Load(EMemoryOrder::Relaxed) || IsGarbageCollectionWaiting())
 					{
@@ -4948,19 +4975,6 @@ uint32 FAsyncLoadingThread2::Run()
 				{
 					TRACE_CPUPROFILER_EVENT_SCOPE(AsyncLoadingTime);
 					ThreadState.ProcessDeferredFrees();
-					bDidSomething = true;
-				}
-
-				if (!DeferredDeletePackages.IsEmpty())
-				{
-					FGCScopeGuard GCGuard;
-					TRACE_CPUPROFILER_EVENT_SCOPE(AsyncLoadingTime);
-					FAsyncPackage2* Package = nullptr;
-					int32 Count = 0;
-					while (++Count <= 100 && DeferredDeletePackages.Dequeue(Package))
-					{
-						DeleteAsyncPackage(Package);
-					}
 					bDidSomething = true;
 				}
 			}
@@ -5367,8 +5381,8 @@ void FAsyncPackage2::ClearConstructedObjects()
 	}
 	ConstructedObjects.Empty();
 
-	// the async flag of all GC'able public export objects in non-temp packages are handled by FGlobalImportStore::ClearAsyncFlags
-	const bool bShouldClearAsyncFlagForPublicExports = GUObjectArray.IsDisregardForGC(LinkerRoot) || !Desc.bCanBeImported;
+	// the async flag of all GC'able public export objects are handled by FGlobalImportStore::ClearAsyncFlags
+	const bool bShouldClearAsyncFlagForPublicExports = GUObjectArray.IsDisregardForGC(LinkerRoot);
 
 	for (FExportObject& Export : Data.Exports)
 	{
