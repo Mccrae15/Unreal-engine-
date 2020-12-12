@@ -1,6 +1,8 @@
 Unreal Engine
 =============
 
+**WARNING: Due to an issue we are investigating, applications built with V23 of the Oculus Mobile, Unity or Unreal SDK should not be submitted or updated. Please checkout v20.1 (https://github.com/Oculus-VR/UnrealEngine/tree/oculus-4.25.3-release-1.52.1-v20.1) instead.**
+
 Welcome to the Unreal Engine source code! 
 
 From this repository you can build the Unreal Editor for Windows, Mac and Linux, compile Unreal Engine games for Android, iOS, PlayStation 4, Xbox One and HTML5,
