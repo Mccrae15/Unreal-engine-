@@ -9,6 +9,7 @@
 #include "DSP/BufferVectorOperations.h"
 #include "DSP/MultithreadedPatching.h"
 #include "Quartz/AudioMixerClockManager.h"
+#include "UObject/GCObject.h"
 
 // Forward Declarations
 class FOnSubmixEnvelopeBP;
@@ -60,7 +61,8 @@ namespace Audio
 	}
 
 	class AUDIOMIXER_API FMixerDevice :	public FAudioDevice,
-										public IAudioMixer
+										public IAudioMixer,
+										public FGCObject
 	{
 	public:
 		FMixerDevice(IAudioMixerPlatformInterface* InAudioMixerPlatform);
@@ -148,6 +150,10 @@ namespace Audio
 		virtual bool OnProcessAudioStream(AlignedFloatBuffer& OutputBuffer) override;
 		virtual void OnAudioStreamShutdown() override;
 		//~ End IAudioMixer
+
+		//~ Begin FGCObject
+		virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+		//~End FGCObject
 
 		FMixerSubmixWeakPtr GetSubmixInstance(const USoundSubmixBase* SoundSubmix);
 
