@@ -25,7 +25,7 @@ bool FPlatformFileReadStatsHandle::Read( uint8* Destination, int64 BytesToRead )
 	double Delta = FPlatformTime::Seconds()-Timer;
 	if (Delta > SMALL_NUMBER)
 	{
-		const int32 BytesPerSec = (int32)((BytesToRead/1024.0f)/Delta);
+		const int32 BytesPerSec = (int32)((double(BytesToRead)/1024.0)/Delta);
 		FPlatformAtomics::InterlockedAdd(BytesPerSecCounter, BytesPerSec);
 	}
 	FPlatformAtomics::InterlockedAdd(BytesReadCounter, (int32)BytesToRead);
@@ -48,18 +48,18 @@ bool FPlatformFileReadStats::Tick( float Delta )
 	{
 		LifetimeReadCalls += Reads;
 		ReadKBs = BytesPerSec / Reads;
-		ReadSize = BytesReadTick / (float)Reads;
+		ReadSize = float(BytesReadTick) / float(Reads);
 		LifetimeReadSpeed += BytesPerSec;
-		LifetimeReadSize += BytesReadTick/1024.f;
+		LifetimeReadSize += float(BytesReadTick)/1024.f;
 
-		SET_FLOAT_STAT(STAT_LTAvgReadSize, (LifetimeReadSize/LifetimeReadCalls));
-		SET_FLOAT_STAT(STAT_LTAvgReadSpeed, (LifetimeReadSpeed/LifetimeReadCalls)/1024.f);
+		SET_FLOAT_STAT(STAT_LTAvgReadSize, (LifetimeReadSize/double(LifetimeReadCalls)));
+		SET_FLOAT_STAT(STAT_LTAvgReadSpeed, (LifetimeReadSpeed/double(LifetimeReadCalls))/1024.0);
 	}
 
-	SET_FLOAT_STAT(STAT_ReadSpeedMBs, ReadKBs/1024.f);
+	SET_FLOAT_STAT(STAT_ReadSpeedMBs, float(ReadKBs)/1024.f);
 	SET_FLOAT_STAT(STAT_ReadSize, ReadSize/1024.f);
 	SET_DWORD_STAT(STAT_ReadIssued, Reads);
-	INC_FLOAT_STAT_BY(STAT_TotalMBRead,(BytesReadTick / (1024.f*1024.f)));
+	INC_FLOAT_STAT_BY(STAT_TotalMBRead,(float(BytesReadTick) / (1024.f*1024.f)));
 	INC_DWORD_STAT_BY(STAT_TotalReadCalls, Reads);
 
 
