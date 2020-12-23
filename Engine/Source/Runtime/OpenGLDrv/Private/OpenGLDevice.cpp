@@ -1711,6 +1711,7 @@ void FOpenGLDynamicRHI::Init()
 	GRHICommandList.GetImmediateAsyncComputeCommandList().SetComputeContext(RHIGetDefaultAsyncComputeContext());
 	FRenderResource::InitPreRHIResources();
 	GIsRHIInitialized = true;
+	RegisterSharedShaderCodeDelegates();
 }
 
 void FOpenGLDynamicRHI::PostInit()
