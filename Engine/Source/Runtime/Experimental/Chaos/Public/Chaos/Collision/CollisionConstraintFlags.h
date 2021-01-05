@@ -19,15 +19,14 @@ namespace Chaos
 	class CHAOS_API FIgnoreCollisionManager
 	{
 	public:
-		using FGeometryParticle = TGeometryParticle<FReal, 3>;
 		using FHandleID = FUniqueIdx;
-		using FParticleArray = TArray<FGeometryParticle*>;
+		using FDeactivationArray = TArray<FUniqueIdx>;
 		using FActiveMap = TMap<FHandleID, TArray<FHandleID> >;
-		using FPendingMap = TMap<FGeometryParticle*, FParticleArray >;
+		using FPendingMap = TMap<FHandleID, TArray<FHandleID> >;
 		struct FStorageData
 		{
 			FPendingMap PendingActivations;
-			FParticleArray PendingDeactivations;
+			FDeactivationArray PendingDeactivations;
 		};
 
 		FIgnoreCollisionManager()
@@ -48,8 +47,8 @@ namespace Chaos
 		const FPendingMap& GetPendingActivationsForGameThread() const { return BufferedData->AccessProducerBuffer()->PendingActivations; }
 		FPendingMap& GetPendingActivationsForGameThread() { return BufferedData->AccessProducerBuffer()->PendingActivations; }
 
-		const FParticleArray& GetPendingDeactivationsForGameThread() const { return BufferedData->AccessProducerBuffer()->PendingDeactivations; }
-		FParticleArray& GetPendingDeactivationsForGameThread() { return BufferedData->AccessProducerBuffer()->PendingDeactivations; }
+		const FDeactivationArray& GetPendingDeactivationsForGameThread() const { return BufferedData->AccessProducerBuffer()->PendingDeactivations; }
+		FDeactivationArray& GetPendingDeactivationsForGameThread() { return BufferedData->AccessProducerBuffer()->PendingDeactivations; }
 
 		/*
 		*
@@ -65,7 +64,7 @@ namespace Chaos
 		FActiveMap IgnoreCollisionsList;
 
 		FPendingMap PendingActivations;
-		FParticleArray PendingDeactivations;
+		FDeactivationArray PendingDeactivations;
 		TUniquePtr<Chaos::IBufferResource<FStorageData>> BufferedData;
 	};
 

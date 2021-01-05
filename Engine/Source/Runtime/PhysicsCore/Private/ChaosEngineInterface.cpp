@@ -283,15 +283,35 @@ void FChaosEngineInterface::AddDisabledCollisionsFor_AssumesLocked(const TMap<FP
 		for (auto Elem : InMap)
 		{
 			FPhysicsActorHandle& ActorReference = Elem.Key;
-			TArray< FPhysicsActorHandle >& DisabledCollisions = Elem.Value;
+			Chaos::FUniqueIdx ActorIndex = ActorReference->UniqueIdx();
+
 			Chaos::FPhysicsSolver* Solver = ActorReference->GetProxy()->GetSolver<Chaos::FPhysicsSolver>();
 			Chaos::FIgnoreCollisionManager& CollisionManager = Solver->GetEvolution()->GetBroadPhase().GetIgnoreCollisionManager();
-			Chaos::FIgnoreCollisionManager::FPendingMap& PendingMap = CollisionManager.GetPendingActivationsForGameThread();
-			if (PendingMap.Contains(ActorReference))
+			//int32 ExternalTimestamp = Solver->GetMarshallingManager().GetExternalTimestamp_External();
+			Chaos::FIgnoreCollisionManager::FPendingMap& ActivationMap = CollisionManager.GetPendingActivationsForGameThread(/*ExternalTimestamp*/);
+
+			if (ActivationMap.Contains(ActorIndex))
 			{
-				PendingMap.Remove(ActorReference);
+				ActivationMap.Remove(ActorIndex);
 			}
-			PendingMap.Add(ActorReference, DisabledCollisions);
+
+			TArray< Chaos::FUniqueIdx > DisabledCollisions;
+			DisabledCollisions.Reserve(Elem.Value.Num());
+
+			if (Chaos::TPBDRigidParticle<float, 3>* Rigid0 = ActorReference->CastToRigidParticle())
+			{
+				Rigid0->SetCollisionConstraintFlag((uint32)Chaos::ECollisionConstraintFlags::CCF_BroadPhaseIgnoreCollisions);
+				for (auto Handle1 : Elem.Value)
+				{
+					if (Chaos::TPBDRigidParticle<float, 3>* Rigid1 = Handle1->CastToRigidParticle())
+					{
+						Rigid1->SetCollisionConstraintFlag((uint32)Chaos::ECollisionConstraintFlags::CCF_BroadPhaseIgnoreCollisions);
+						DisabledCollisions.Add(Handle1->UniqueIdx());
+					}
+				}
+			}
+
+			ActivationMap.Add(ActorIndex, DisabledCollisions);
 		}
 	}
 }
@@ -300,19 +320,22 @@ void FChaosEngineInterface::RemoveDisabledCollisionsFor_AssumesLocked(TArray< FP
 {
 	if (bEnableChaosCollisionManager)
 	{
-		for (FPhysicsActorHandle& Handle : InPhysicsActors)
+		for (FPhysicsActorHandle& ActorReference : InPhysicsActors)
 		{
-			Chaos::FPhysicsSolver* Solver = Handle->GetProxy()->GetSolver<Chaos::FPhysicsSolver>();
+			Chaos::FUniqueIdx ActorIndex = ActorReference->UniqueIdx();
+
+			Chaos::FPhysicsSolver* Solver = ActorReference->GetProxy()->GetSolver<Chaos::FPhysicsSolver>();
 			Chaos::FIgnoreCollisionManager& CollisionManager = Solver->GetEvolution()->GetBroadPhase().GetIgnoreCollisionManager();
-			Chaos::FIgnoreCollisionManager::FParticleArray& PendingMap = CollisionManager.GetPendingDeactivationsForGameThread();
-			if (!PendingMap.Contains(Handle))
+			//int32 ExternalTimestamp = Solver->GetMarshallingManager().GetExternalTimestamp_External();
+
+			Chaos::FIgnoreCollisionManager::FDeactivationArray& PendingMap = CollisionManager.GetPendingDeactivationsForGameThread(/*ExternalTimestamp*/);
+			if (!PendingMap.Contains(ActorReference->UniqueIdx()))
 			{
-				PendingMap.Add(Handle);
+				PendingMap.Add(ActorReference->UniqueIdx());
 			}
 		}
 	}
 }
-
 
 void FChaosEngineInterface::SetActorUserData_AssumesLocked(FPhysicsActorHandle& InActorReference,FPhysicsUserData* InUserData)
 {

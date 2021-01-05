@@ -264,6 +264,7 @@ public:
 		SetGravityEnabled(Other.GravityEnabled());
 		SetCollisionGroup(Other.CollisionGroup());
 		SetResimType(Other.ResimType());
+		SetCollisionConstraintFlag(Other.CollisionConstraintFlag());
 	}
 
 	template <typename TOther>
@@ -274,7 +275,8 @@ public:
 			&& AngularEtherDrag() == Other.AngularEtherDrag()
 			&& GravityEnabled() == Other.GravityEnabled()
 			&& CollisionGroup() == Other.CollisionGroup()
-			&& ResimType() == Other.ResimType();
+			&& ResimType() == Other.ResimType()
+			&& CollisionConstraintFlag() == Other.CollisionConstraintFlag();
 	}
 
 	bool operator==(const FParticleDynamicMisc& Other) const
@@ -300,6 +302,9 @@ public:
 	EResimType ResimType() const { return MResimType; }
 	void SetResimType(EResimType Type) { MResimType = Type; }
 
+	uint32 CollisionConstraintFlag() const { return MCollisionConstraintFlag; }
+	void SetCollisionConstraintFlag(uint32 InCollisionConstraintFlag) { MCollisionConstraintFlag = InCollisionConstraintFlag; }
+
 private:
 	FReal MLinearEtherDrag;
 	FReal MAngularEtherDrag;
@@ -309,6 +314,8 @@ private:
 	EResimType MResimType;
 
 	bool MGravityEnabled;
+	uint32 MCollisionConstraintFlag = 0;
+
 };
 
 inline FChaosArchive& operator<<(FChaosArchive& Ar,FParticleDynamicMisc& Data)
