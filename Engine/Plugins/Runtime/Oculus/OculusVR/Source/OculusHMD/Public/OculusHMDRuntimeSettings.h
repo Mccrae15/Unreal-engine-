@@ -70,14 +70,6 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	bool FFRDynamic;
 
-	/** Compensates in the compositor for chromatic aberration, at a higher GPU cost but without the color fringes on the sides of the lenses */
-	UPROPERTY(config, EditAnywhere, Category = Mobile)
-	bool bChromaCorrection;
-
-	/** Recenters the HMD too when the controller recenter button is pressed on Go */
-	UPROPERTY(config, EditAnywhere, Category = Mobile)
-	bool bRecenterHMDWithController;
-
 	/** If enabled the app will be focus aware. This will keep the app in foreground when the User presses the oculus button (needs the app to handle input focus loss!) */
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	bool bFocusAware;
@@ -95,6 +87,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	bool bLateLatching;
 //#endif
+
+	/** Enable phase sync on mobile, reducing HMD and controller latency, improve tracking prediction quality */
+	UPROPERTY(config, EditAnywhere, Category = Mobile)
+	bool bPhaseSync;
 
 private:
 	void LoadFromIni();

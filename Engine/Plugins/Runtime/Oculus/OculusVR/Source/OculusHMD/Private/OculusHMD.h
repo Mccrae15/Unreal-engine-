@@ -128,7 +128,7 @@ public:
 	//virtual float GetDistortionScalingFactor() const override;
 	//virtual float GetLensCenterOffset() const override;
 	//virtual void GetDistortionWarpValues(FVector4& K) const override;
-	virtual bool IsChromaAbCorrectionEnabled() const override;
+	//virtual bool IsChromaAbCorrectionEnabled() const override;
 	//virtual bool GetChromaAbCorrectionValues(FVector4& K) const override;
 	virtual bool HasHiddenAreaMesh() const override;
 	virtual bool HasVisibleAreaMesh() const override;
@@ -366,6 +366,8 @@ protected:
 protected:
 	void UpdateHMDWornState();
 	EHMDWornState::Type HMDWornState = EHMDWornState::Unknown;
+
+	void UpdateHMDEvents();
 
 	union
 	{

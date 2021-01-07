@@ -60,6 +60,9 @@ FVulkanCustomPresent::FVulkanCustomPresent(FOculusHMD* InOculusHMD) :
 	}
 */
 #endif
+	FVulkanDynamicRHI* const DynamicRHI = static_cast<FVulkanDynamicRHI*>(GDynamicRHI);
+
+	bSupportsSubsampled = DynamicRHI->GetDevice()->GetOptionalExtensions().HasEXTFragmentDensityMap2;
 }
 
 
@@ -106,13 +109,11 @@ void* FVulkanCustomPresent::GetOvrpDevice() const
 	return DynamicRHI->GetDevice()->GetInstanceHandle();
 }
 
-
 void* FVulkanCustomPresent::GetOvrpCommandQueue() const
 {
 	FVulkanDynamicRHI* DynamicRHI = static_cast<FVulkanDynamicRHI*>(GDynamicRHI);
 	return DynamicRHI->GetDevice()->GetGraphicsQueue()->GetHandle();
 }
-
 
 FTextureRHIRef FVulkanCustomPresent::CreateTexture_RenderThread(uint32 InSizeX, uint32 InSizeY, EPixelFormat InFormat, FClearValueBinding InBinding, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, ERHIResourceType InResourceType, ovrpTextureHandle InTexture, ETextureCreateFlags InTexCreateFlags)
 {
