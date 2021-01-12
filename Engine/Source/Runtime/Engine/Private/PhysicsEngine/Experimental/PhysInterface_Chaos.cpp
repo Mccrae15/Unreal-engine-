@@ -443,7 +443,11 @@ void FPhysInterface_Chaos::UpdateAngularDrive_AssumesLocked(const FPhysicsConstr
 					Constraint->SetAngularSLerpPositionDriveEnabled(InDriveParams.SlerpDrive.bEnablePositionDrive);
 				}
 
-				Constraint->SetAngularDrivePositionTarget(Chaos::FRotation3(InDriveParams.OrientationTarget.Quaternion()));
+				if (FMath::IsNearlyEqual(Constraint->GetAngularPlasticityLimit(),FLT_MAX) )
+				{
+					// Plastic joints should not be re-targeted after initialization. 
+					Constraint->SetAngularDrivePositionTarget(Chaos::FRotation3(InDriveParams.OrientationTarget.Quaternion()));
+				}
 			}
 
 			bool bVelocityDriveEnabled = InDriveParams.IsVelocityDriveEnabled();
@@ -459,7 +463,18 @@ void FPhysInterface_Chaos::UpdateAngularDrive_AssumesLocked(const FPhysicsConstr
 					Constraint->SetAngularSLerpVelocityDriveEnabled(InDriveParams.SlerpDrive.bEnableVelocityDrive);
 				}
 
-				Constraint->SetAngularDriveVelocityTarget(InDriveParams.AngularVelocityTarget);
+				if (!FMath::IsNearlyEqual(Constraint->GetAngularPlasticityLimit(),FLT_MAX))
+				{
+					// Plasticity requires a zero relative velocity.
+					if (!Constraint->GetAngularDriveVelocityTarget().IsZero())
+					{
+						Constraint->SetAngularDriveVelocityTarget(FVector(ForceInitToZero));
+					}
+				}
+				else
+				{
+					Constraint->SetAngularDriveVelocityTarget(InDriveParams.AngularVelocityTarget);
+				}
 			}
 
 			Constraint->SetAngularDriveForceMode(Chaos::EJointForceMode::Acceleration);
