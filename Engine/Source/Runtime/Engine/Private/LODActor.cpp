@@ -221,7 +221,7 @@ void ALODActor::SetupComponent(UStaticMeshComponent* Component)
 	bool bCastsStaticShadow = false;
 	bool bCastsDynamicShadow = false;
 
-	Component->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+	Component->SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
 	Component->Mobility = EComponentMobility::Static;
 	Component->SetGenerateOverlapEvents(false);
 	Component->CastShadow = bCastsShadow;

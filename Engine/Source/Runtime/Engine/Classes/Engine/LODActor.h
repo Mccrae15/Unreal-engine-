@@ -66,7 +66,7 @@ struct FHLODMeshReductionOptions
 
 
 
-UCLASS(notplaceable, hidecategories = (Object, Collision, Display, Input, Blueprint, Transform, Physics))
+UCLASS(notplaceable, hidecategories = (Object, Display, Input, Blueprint, Transform, Physics))
 class ENGINE_API ALODActor : public AActor
 {
 	GENERATED_UCLASS_BODY()
