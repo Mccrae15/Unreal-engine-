@@ -324,7 +324,7 @@ bool FLayer::CanReuseResources(const FLayer* InLayer) const
 		OvrpLayerDesc.MipLevels != InLayer->OvrpLayerDesc.MipLevels ||
 		OvrpLayerDesc.SampleCount != InLayer->OvrpLayerDesc.SampleCount ||
 		OvrpLayerDesc.Format != InLayer->OvrpLayerDesc.Format ||
-		OvrpLayerDesc.LayerFlags != InLayer->OvrpLayerDesc.LayerFlags ||
+		((OvrpLayerDesc.LayerFlags ^ InLayer->OvrpLayerDesc.LayerFlags) & ovrpLayerFlag_Static) ||
 		bNeedsTexSrgbCreate != InLayer->bNeedsTexSrgbCreate)
 	{
 		return false;
@@ -417,6 +417,11 @@ void FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 		if (!(Desc.Flags & IStereoLayers::LAYER_FLAG_TEX_CONTINUOUS_UPDATE))
 		{
 			LayerFlags |= ovrpLayerFlag_Static;
+		}
+
+		if (Settings->Flags.bChromaAbCorrectionEnabled)
+		{
+			LayerFlags |= ovrpLayerFlag_ChromaticAberrationCorrection;
 		}
 
 		// Calculate layer desc

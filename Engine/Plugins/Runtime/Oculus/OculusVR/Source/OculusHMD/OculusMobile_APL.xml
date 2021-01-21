@@ -182,12 +182,12 @@
 			<setBoolAnd result="bPackageForOculusQuestAndQuest2" arg1="$B(bPackageForOculusQuest)" arg2="$B(bPackageForOculusQuest2)"/>
 			<if condition="bPackageForOculusQuestAndQuest2">
 				<true>
-					<addAttribute tag="$supportedDevices" name="android:value" value="quest|quest2" />
+					<addAttribute tag="$supportedDevices" name="android:value" value="quest|delmar" />
 				</true>
 				<false>
 					<if condition="bPackageForOculusQuest2">
 						<true>
-							<addAttribute tag="$supportedDevices" name="android:value" value="quest2" />
+							<addAttribute tag="$supportedDevices" name="android:value" value="delmar" />
 						</true>
 						<false>
 							<addAttribute tag="$supportedDevices" name="android:value" value="quest" />

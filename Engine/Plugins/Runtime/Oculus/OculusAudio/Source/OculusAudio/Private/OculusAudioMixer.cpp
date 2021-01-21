@@ -178,8 +178,10 @@ bool OculusAudioSpatializationAudioMixer::Tick(float DeltaTime)
 	{
 		if (Context != nullptr)
 		{
+			ovrResult Result = OVRA_CALL(ovrAudio_UpdateRoomModel)(Context, 1.0f);
+
 			UOculusAudioSettings* settings = GetMutableDefault<UOculusAudioSettings>();
-			ovrResult Result = OVRA_CALL(ovrAudio_SetPropagationQuality)(Context, settings->PropagationQuality);
+			Result = OVRA_CALL(ovrAudio_SetPropagationQuality)(Context, settings->PropagationQuality);
 			if (Result != ovrSuccess)
 			{
 				UE_LOG(LogTemp, Warning, TEXT("Bad Propagation Quality setting %d!"), settings->PropagationQuality);

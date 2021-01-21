@@ -179,8 +179,11 @@ void FOculusAudioLibraryManager::ReleaseDll()
 bool FOculusAudioLibraryManager::UpdatePluginContext(float DeltaTime)
 {
 	ovrAudioContext Context = GetPluginContext();
+	ovrResult Result = OVRA_CALL(ovrAudio_UpdateRoomModel)(Context, 1.0f);
+	check(Result == ovrSuccess || Result == ovrError_AudioUninitialized);
+
 	UOculusAudioSettings* settings = GetMutableDefault<UOculusAudioSettings>();
-	ovrResult Result = OVRA_CALL(ovrAudio_SetPropagationQuality)(Context, settings->PropagationQuality);
+	Result = OVRA_CALL(ovrAudio_SetPropagationQuality)(Context, settings->PropagationQuality);
 	check(Result == ovrSuccess);
 
 	return true;
