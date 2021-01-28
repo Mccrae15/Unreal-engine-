@@ -762,34 +762,37 @@ void FChaosEngineInterface::AddRadialImpulse_AssumesLocked(const FPhysicsActorHa
 		const FVec3 WorldCOM = FParticleUtilitiesGT::GetCoMWorldPosition(Rigid);
 		const FVec3 OriginToActor = WorldCOM - InOrigin;
 		const FReal OriginToActorDistance = OriginToActor.Size();
-		if (OriginToActorDistance > 0)
+		if(OriginToActorDistance < InRadius)
 		{
-			const FVec3 OriginToActorNorm = OriginToActor / OriginToActorDistance;
+			if(OriginToActorDistance > 0)
+			{
+				const FVec3 OriginToActorNorm = OriginToActor / OriginToActorDistance;
 
-			if (InFalloff == ERadialImpulseFalloff::RIF_Constant)
-			{
-				AddImpulse_AssumesLocked(InActorReference, OriginToActorNorm * InStrength);
-				return;
-			}
-			else if (InFalloff == ERadialImpulseFalloff::RIF_Linear)
-			{
-				const FReal DistanceOverlapping = InRadius - OriginToActorDistance;
-				if (DistanceOverlapping > 0)
+				if(InFalloff == ERadialImpulseFalloff::RIF_Constant)
 				{
-					FReal Strength = FMath::Lerp(0.0f, InStrength, DistanceOverlapping / InRadius);
-					AddImpulse_AssumesLocked(InActorReference, OriginToActorNorm * Strength);
+					AddImpulse_AssumesLocked(InActorReference, OriginToActorNorm * InStrength);
+					return;
+				}
+				else if(InFalloff == ERadialImpulseFalloff::RIF_Linear)
+				{
+					const FReal DistanceOverlapping = InRadius - OriginToActorDistance;
+					if(DistanceOverlapping > 0)
+					{
+						FReal Strength = FMath::Lerp(0.0f, InStrength, DistanceOverlapping / InRadius);
+						AddImpulse_AssumesLocked(InActorReference, OriginToActorNorm * Strength);
+					}
+				}
+				else
+				{
+					// Unimplemented falloff type
+					ensure(false);
 				}
 			}
 			else
 			{
-				// Unimplemented falloff type
-				ensure(false);
+				// Sphere and actor center are coincident, just pick a direction and apply maximum strength impulse.
+				AddImpulse_AssumesLocked(InActorReference, FVector::ForwardVector * InStrength);
 			}
-		}
-		else
-		{
-			// Sphere and actor center are coincident, just pick a direction and apply maximum strength impulse.
-			AddImpulse_AssumesLocked(InActorReference, FVector::ForwardVector * InStrength);
 		}
 	}
 }
@@ -807,15 +810,6 @@ void FChaosEngineInterface::SetGravityEnabled_AssumesLocked(const FPhysicsActorH
 	if(Chaos::TPBDRigidParticle<float,3 >* RigidParticle = InActorReference->CastToRigidParticle())
 	{
 		RigidParticle->SetGravityEnabled(bEnabled);
-#if 0
-		FPhysicsCommand::ExecuteWrite(InActorReference,[&](const FPhysicsActorHandle& Actor)
-		{
-			// todo : This is currently synced in FSingleParticlePhysicsProxy<Chaos::TPBDRigidParticle<float, 3>>::PushToPhysicsState. 
-			//        Ideally this would execute a write command to the gravity forces on the physics thread. However,
-			//        the Actor.Handle() does not have access to the Evolution, so the PerParticleGravityForces are not accessible. 
-			//        This will need to be fixed. 
-		});
-#endif
 	}
 }
 
