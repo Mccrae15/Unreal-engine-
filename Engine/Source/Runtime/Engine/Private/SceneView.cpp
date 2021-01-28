@@ -26,6 +26,7 @@
 #include "HighResScreenshot.h"
 #include "Slate/SceneViewport.h"
 #include "RenderUtils.h"
+#include "Runtime/Renderer/Private/ScenePrivate.h"
 
 DEFINE_LOG_CATEGORY(LogBufferVisualization);
 DEFINE_LOG_CATEGORY(LogMultiView);
@@ -761,20 +762,11 @@ FSceneView::FSceneView(const FSceneViewInitOptions& InitOptions)
 	bIsMultiViewEnabled = RHISupportsMultiView(ShaderPlatform) && bIsInstancedStereoEnabled;
 
 	static const auto MobileMultiViewCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
-	bIsMobileMultiViewEnabled = bUsingMobileRenderer && bSkipPostprocessing && (MobileMultiViewCVar && MobileMultiViewCVar->GetValueOnAnyThread() != 0);
-	if (bIsMobileMultiViewEnabled && !RHISupportsMobileMultiView(ShaderPlatform))
-	{
-		// Native mobile multi-view is not supported, attempt to fall back to instancing on compatible RHIs
-		if (RHISupportsInstancedStereo(ShaderPlatform) && !GRHISupportsArrayIndexFromAnyShader)
-		{
-			UE_LOG(LogMultiView, Fatal, TEXT("Mobile Multi-View not supported by the RHI and no fallback is available."));
-		}
-		bIsInstancedStereoEnabled = RHISupportsInstancedStereo(ShaderPlatform);
-	}
+	bIsMobileMultiViewEnabled = bUsingMobileRenderer && bSkipPostprocessing && (MobileMultiViewCVar && MobileMultiViewCVar->GetValueOnAnyThread() != 0) && RHISupportsMobileMultiView(ShaderPlatform);
 
 	// If the plugin uses separate render targets it is required to support mobile multi-view
 	IStereoRenderTargetManager* const StereoRenderTargetManager = GEngine->StereoRenderingDevice.IsValid() ? GEngine->StereoRenderingDevice->GetRenderTargetManager() : nullptr;
-	bIsMobileMultiViewEnabled = bIsMobileMultiViewEnabled && StereoRenderTargetManager && StereoRenderTargetManager->ShouldUseSeparateRenderTarget() && IStereoRendering::IsStereoEyePass(StereoPass);
+	bIsMobileMultiViewEnabled = bIsMobileMultiViewEnabled && StereoRenderTargetManager && StereoRenderTargetManager->ShouldUseSeparateRenderTarget();
 
 	bShouldBindInstancedViewUB = bIsInstancedStereoEnabled || bIsMobileMultiViewEnabled;
 
@@ -2500,6 +2492,18 @@ const FSceneView& FSceneViewFamily::GetStereoEyeView(const EStereoscopicPass Eye
 	else // For extra views
 	{
 		return *Views[EyeIndex - eSSP_RIGHT_EYE + 1];
+	}
+}
+
+FRHIUniformBuffer* FSceneViewFamily::GetInstancedViewUniformBuffer() const
+{
+	if (Scene && Scene->GetRenderScene())
+	{
+		return Scene->GetRenderScene()->UniformBuffers.InstancedViewUniformBuffer;
+	}
+	else
+	{
+		return NULL;
 	}
 }
 

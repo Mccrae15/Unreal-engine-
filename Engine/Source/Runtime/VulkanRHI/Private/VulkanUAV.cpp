@@ -124,17 +124,17 @@ void FVulkanShaderResourceView::UpdateView()
 			{
 				FVulkanTexture2D* VTex2D = ResourceCast(Tex2D);
 				EPixelFormat OriginalFormat = Format;
-				TextureView.Create(*Device, VTex2D->Surface.Image, VK_IMAGE_VIEW_TYPE_2D, VTex2D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, bSRGB), MipLevel, NumMips, 0, 1);
+				TextureView.Create(*Device, VTex2D->Surface.Image, VK_IMAGE_VIEW_TYPE_2D, VTex2D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, bSRGB), MipLevel, NumMips, 0, 1, VTex2D->Surface.GetFlags());
 			}
 			else if (FRHITextureCube* TexCube = SourceTexture->GetTextureCube())
 			{
 				FVulkanTextureCube* VTexCube = ResourceCast(TexCube);
-				TextureView.Create(*Device, VTexCube->Surface.Image, VK_IMAGE_VIEW_TYPE_CUBE, VTexCube->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, bSRGB), MipLevel, NumMips, 0, 1);
+				TextureView.Create(*Device, VTexCube->Surface.Image, VK_IMAGE_VIEW_TYPE_CUBE, VTexCube->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, bSRGB), MipLevel, NumMips, 0, 1, VTexCube->Surface.GetFlags());
 			}
 			else if (FRHITexture3D* Tex3D = SourceTexture->GetTexture3D())
 			{
 				FVulkanTexture3D* VTex3D = ResourceCast(Tex3D);
-				TextureView.Create(*Device, VTex3D->Surface.Image, VK_IMAGE_VIEW_TYPE_3D, VTex3D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, bSRGB), MipLevel, NumMips, 0, 1);
+				TextureView.Create(*Device, VTex3D->Surface.Image, VK_IMAGE_VIEW_TYPE_3D, VTex3D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, bSRGB), MipLevel, NumMips, 0, 1, VTex3D->Surface.GetFlags());
 			}
 			else if (FRHITexture2DArray* Tex2DArray = SourceTexture->GetTexture2DArray())
 			{
@@ -149,7 +149,8 @@ void FVulkanShaderResourceView::UpdateView()
 					MipLevel,
 					NumMips,
 					FirstArraySlice,
-					(NumArraySlices == 0 ? VTex2DArray->GetSizeZ() : NumArraySlices)
+					(NumArraySlices == 0 ? VTex2DArray->GetSizeZ() : NumArraySlices),
+					VTex2DArray->Surface.GetFlags()
 				);
 			}
 			else
@@ -222,22 +223,22 @@ void FVulkanUnorderedAccessView::UpdateView()
 		if (FRHITexture2D* Tex2D = SourceTexture->GetTexture2D())
 		{
 			FVulkanTexture2D* VTex2D = ResourceCast(Tex2D);
-			TextureView.Create(*Device, VTex2D->Surface.Image, VK_IMAGE_VIEW_TYPE_2D, VTex2D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 0, 1);
+			TextureView.Create(*Device, VTex2D->Surface.Image, VK_IMAGE_VIEW_TYPE_2D, VTex2D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 0, 1, VTex2D->Surface.GetFlags());
 		}
 		else if (FRHITextureCube* TexCube = SourceTexture->GetTextureCube())
 		{
 			FVulkanTextureCube* VTexCube = ResourceCast(TexCube);
-			TextureView.Create(*Device, VTexCube->Surface.Image, VK_IMAGE_VIEW_TYPE_CUBE, VTexCube->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 0, 1);
+			TextureView.Create(*Device, VTexCube->Surface.Image, VK_IMAGE_VIEW_TYPE_CUBE, VTexCube->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 0, 1, VTexCube->Surface.GetFlags());
 		}
 		else if (FRHITexture3D* Tex3D = SourceTexture->GetTexture3D())
 		{
 			FVulkanTexture3D* VTex3D = ResourceCast(Tex3D);
-			TextureView.Create(*Device, VTex3D->Surface.Image, VK_IMAGE_VIEW_TYPE_3D, VTex3D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 0, VTex3D->GetSizeZ());
+			TextureView.Create(*Device, VTex3D->Surface.Image, VK_IMAGE_VIEW_TYPE_3D, VTex3D->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 0, VTex3D->GetSizeZ(), VTex3D->Surface.GetFlags());
 		}
 		else if (FRHITexture2DArray* Tex2DArray = SourceTexture->GetTexture2DArray())
 		{
 			FVulkanTexture2DArray* VTex2DArray = ResourceCast(Tex2DArray);
-			TextureView.Create(*Device, VTex2DArray->Surface.Image, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VTex2DArray->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 0, VTex2DArray->GetSizeZ());
+			TextureView.Create(*Device, VTex2DArray->Surface.Image, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VTex2DArray->Surface.GetPartialAspectMask(), Format, UEToVkTextureFormat(Format, false), MipLevel, 1, 0, VTex2DArray->GetSizeZ(), VTex2DArray->Surface.GetFlags());
 		}
 		else
 		{

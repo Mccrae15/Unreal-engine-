@@ -157,6 +157,7 @@ void FVulkanAndroidPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<c
 	OutExtensions.Add(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
 	OutExtensions.Add(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
 	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME);
+	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_2_EXTENSION_NAME);
 
 #if !UE_BUILD_SHIPPING
 	OutExtensions.Add(VULKAN_MALI_LAYER_NAME);

@@ -629,6 +629,13 @@ inline void RHICreateTargetableShaderResource2D(
 		{
 			ResolveTargetableTextureFlags |= TexCreate_DepthStencilResolveTarget;
 		}
+
+		// mobile platforms will never resolve out MSAA contents to memory for bandwidth reasons
+		if (IsMobilePlatform(GMaxRHIShaderPlatform))
+		{
+			TargetableTextureFlags |= TexCreate_Memoryless;
+		}
+
 		// Create a texture that has TargetableTextureFlags set, and a second texture that has TexCreate_ResolveTargetable and TexCreate_ShaderResource set.
 		OutTargetableTexture = RHICreateTexture2D(SizeX, SizeY, Format, NumMips, NumSamples, Flags | TargetableTextureFlags, CreateInfo);
 
@@ -721,6 +728,13 @@ inline void RHICreateTargetableShaderResource2DArray(
 		{
 			ResolveTargetableTextureFlags |= TexCreate_DepthStencilResolveTarget;
 		}
+
+		// mobile platforms will never resolve out MSAA contents to memory for bandwidth reasons
+		if (IsMobilePlatform(GMaxRHIShaderPlatform))
+		{
+			TargetableTextureFlags |= TexCreate_Memoryless;
+		}
+
 		// Create a texture that has TargetableTextureFlags set, and a second texture that has TexCreate_ResolveTargetable and TexCreate_ShaderResource set.
 		OutTargetableTexture = RHICreateTexture2DArray(SizeX, SizeY, SizeZ, Format, NumMips, NumSamples, Flags | TargetableTextureFlags, CreateInfo);
 
@@ -788,6 +802,12 @@ inline void RHICreateTargetableShaderResourceCube(
 	}
 	else
 	{
+		// mobile platforms will never resolve out MSAA contents to memory for bandwidth reasons
+		if (IsMobilePlatform(GMaxRHIShaderPlatform))
+		{
+			TargetableTextureFlags |= TexCreate_Memoryless;
+		}
+
 		// Create a texture that has TargetableTextureFlags set, and a second texture that has TexCreate_ResolveTargetable and TexCreate_ShaderResource set.
 		OutTargetableTexture = RHICreateTextureCube(LinearSize, Format, NumMips, Flags | TargetableTextureFlags, CreateInfo);
 		OutShaderResourceTexture = RHICreateTextureCube(LinearSize, Format, NumMips, Flags | TexCreate_ResolveTargetable | TexCreate_ShaderResource, CreateInfo);

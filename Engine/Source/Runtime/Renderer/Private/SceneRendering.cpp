@@ -3246,6 +3246,7 @@ void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 
 				FIntRect ViewRect = bMobileCustomDepthDownSample ? FIntRect::DivideAndRoundUp(View.ViewRect, 2) : View.ViewRect;
 
+				FInstancedViewUniformShaderParameters LocalInstancedViewUniformShaderParameters;
 				if (!View.IsInstancedStereoPass())
 				{
 					RHICmdList.SetViewport(ViewRect.Min.X, ViewRect.Min.Y, 0.0f, ViewRect.Max.X, ViewRect.Max.Y, 1.0f);
@@ -3299,7 +3300,7 @@ void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 
 						const FViewInfo& InstancedView = static_cast<const FViewInfo&>(View.Family->GetStereoEyeView(StereoPassIndex));
 
-						CustomDepthViewUniformBufferParameters = *InstancedView.CachedViewUniformShaderParameters;
+						FViewUniformShaderParameters InstancedCustomDepthViewUniformBufferParameters = *InstancedView.CachedViewUniformShaderParameters;
 						ModifiedViewMatrices = InstancedView.ViewMatrices;
 						ModifiedViewMatrices.HackRemoveTemporalAAProjectionJitter();
 
@@ -3309,9 +3310,11 @@ void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 							ModifiedViewMatrices,
 							VolumeBounds,
 							TVC_MAX,
-							CustomDepthViewUniformBufferParameters);
+							InstancedCustomDepthViewUniformBufferParameters);
 
-						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(CustomDepthViewUniformBufferParameters));
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, CustomDepthViewUniformBufferParameters, 0);
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, InstancedCustomDepthViewUniformBufferParameters, 1);
+						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(LocalInstancedViewUniformShaderParameters);
 					}
 				}
 				else
@@ -3320,12 +3323,16 @@ void FSceneRenderer::RenderCustomDepthPass(FRHICommandListImmediate& RHICmdList)
 					if ((View.IsInstancedStereoPass() || View.bIsMobileMultiViewEnabled) && View.Family->Views.Num() > 0)
 					{
 						const FViewInfo& InstancedView = Scene->UniformBuffers.GetInstancedView(View);
-						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(*InstancedView.CachedViewUniformShaderParameters));
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 0);
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *InstancedView.CachedViewUniformShaderParameters, 1);
+						Scene->UniformBuffers.InstancedViewUniformBuffer.UpdateUniformBufferImmediate(LocalInstancedViewUniformShaderParameters);
 					}
 					else
 					{
 						// If we don't render this pass in stereo we simply update the buffer with the same view uniform parameters.
-						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(*View.CachedViewUniformShaderParameters));
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 0);
+						InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 1);
+						Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(LocalInstancedViewUniformShaderParameters);
 					}
 				}
 	

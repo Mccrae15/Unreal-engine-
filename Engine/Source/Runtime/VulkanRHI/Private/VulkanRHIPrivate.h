@@ -43,6 +43,20 @@
 #include "VulkanDynamicRHI.h"
 #include "VulkanGlobalUniformBuffer.h"
 #include "RHI.h"
+
+#if VK_HEADER_VERSION >= 141
+//workaround for removed defines in sdk 141
+#define VK_DESCRIPTOR_TYPE_BEGIN_RANGE (VK_DESCRIPTOR_TYPE_SAMPLER)
+#define VK_DESCRIPTOR_TYPE_END_RANGE (VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)
+#define VK_DESCRIPTOR_TYPE_RANGE_SIZE (VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT - VK_DESCRIPTOR_TYPE_SAMPLER + 1)
+#define VK_IMAGE_VIEW_TYPE_RANGE_SIZE (VK_IMAGE_VIEW_TYPE_CUBE_ARRAY - VK_IMAGE_VIEW_TYPE_1D + 1)
+#define VK_DYNAMIC_STATE_BEGIN_RANGE (VK_DYNAMIC_STATE_VIEWPORT)
+#define VK_DYNAMIC_STATE_END_RANGE (VK_DYNAMIC_STATE_STENCIL_REFERENCE)
+#define VK_DYNAMIC_STATE_RANGE_SIZE (VK_DYNAMIC_STATE_STENCIL_REFERENCE - VK_DYNAMIC_STATE_VIEWPORT + 1)
+#define VK_FORMAT_RANGE_SIZE (VK_FORMAT_ASTC_12x12_SRGB_BLOCK - VK_FORMAT_UNDEFINED + 1)
+#define VK_SYSTEM_ALLOCATION_SCOPE_RANGE_SIZE (VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE - VK_SYSTEM_ALLOCATION_SCOPE_COMMAND + 1)
+#endif
+
 #include "VulkanDevice.h"
 #include "VulkanQueue.h"
 #include "VulkanCommandBuffer.h"
@@ -125,7 +139,9 @@ public:
 	inline uint32 GetNumAttachmentDescriptions() const { return NumAttachmentDescriptions; }
 	inline uint32 GetNumSamples() const { return NumSamples; }
 	inline uint32 GetNumUsedClearValues() const { return NumUsedClearValues; }
-	inline bool GetIsMultiView() const { return bIsMultiView != 0; }
+	inline bool GetIsMultiView() const { return MultiviewCount != 0; }
+	inline uint32 GetMultiviewCount() const { return MultiviewCount; }
+
 
 	inline const VkAttachmentReference* GetColorAttachmentReferences() const { return NumColorAttachments > 0 ? ColorReferences : nullptr; }
 	inline const VkAttachmentReference* GetResolveAttachmentReferences() const { return bHasResolveAttachments ? ResolveReferences : nullptr; }
@@ -153,7 +169,8 @@ protected:
 	uint8 NumSamples;
 	uint8 NumUsedClearValues;
 	ESubpassHint SubpassHint = ESubpassHint::None;
-	uint8 bIsMultiView;
+	uint8 MultiviewCount;
+
 	uint8 Pad0 = 0;
 	uint8 Pad1 = 0;
 	uint8 Pad2 = 0;
@@ -185,7 +202,7 @@ protected:
 		Extent.Extent3D.width = 0;
 		Extent.Extent3D.height = 0;
 		Extent.Extent3D.depth = 0;
-		bIsMultiView = 0;
+		MultiviewCount = 0;
 	}
 
 	bool bCalculatedHash = false;

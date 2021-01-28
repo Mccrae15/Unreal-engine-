@@ -493,6 +493,9 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 	const bool bUseSubpass = CVarMobileDisableTransluencySubpass.GetValueOnAnyThread() == 0;
 
+	static const auto CVarMobileMultiView = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
+	const bool bIsMultiViewApplication = (CVarMobileMultiView && CVarMobileMultiView->GetValueOnAnyThread() != 0);
+
 	// Initialize global system textures (pass-through if already initialized).
 	GSystemTextures.InitializeTextures(RHICmdList, ViewFeatureLevel);
 	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(RHICmdList);
@@ -652,7 +655,10 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 	SceneColorRenderPassInfo.SubpassHint = bUseSubpass ? ESubpassHint::DepthReadSubpass : ESubpassHint::None;
 	SceneColorRenderPassInfo.NumOcclusionQueries = ComputeNumOcclusionQueriesToBatch();
 	SceneColorRenderPassInfo.bOcclusionQueries = SceneColorRenderPassInfo.NumOcclusionQueries != 0;
-	SceneColorRenderPassInfo.bMultiviewPass = View.bIsMobileMultiViewEnabled;
+
+	//if the scenecolor isn't multiview but the app is, need to render as a single-view multiview due to shaders
+	SceneColorRenderPassInfo.MultiViewCount = View.bIsMobileMultiViewEnabled ? 2 : (bIsMultiViewApplication ? 1 : 0);
+
 
 	// TODO: required only for DX11 ?
 	if (UseVirtualTexturing(ViewFeatureLevel) && !IsHlslccShaderPlatform(View.GetShaderPlatform()))

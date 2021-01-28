@@ -132,7 +132,7 @@ static void HandlePipelineCreationFailure(const FGraphicsPipelineStateInitialize
 	if(Init.bFromPSOFileCache)
 	{
 		// Let the cache know so it hopefully won't give out this one again
-		FPipelineFileCache::RegisterPSOCompileFailure(GetTypeHash(Init), Init);
+		FPipelineFileCache::RegisterPSOCompileFailure(Init);
 	}
 	else
 	{
@@ -907,11 +907,12 @@ FComputePipelineState* PipelineStateCache::GetAndOrCreateComputePipelineState(FR
 
 	if (WasFound == false)
 	{
-		FPipelineFileCache::CacheComputePSO(GetTypeHash(ComputeShader), ComputeShader);
-
 		// create new graphics state
 		OutCachedState = new FComputePipelineState(ComputeShader);
-		OutCachedState->Stats = FPipelineFileCache::RegisterPSOStats(GetTypeHash(ComputeShader));
+		//---------------------------------------------------------------------------------------------------------------
+		// PSOCache Note: FPipelineFileCache::RegisterPSOStats has been folded into FPipelineFileCache::CacheComputePSO
+		//---------------------------------------------------------------------------------------------------------------
+		OutCachedState->Stats = FPipelineFileCache::CacheComputePSO(ComputeShader);
 
 		// create a compilation task, or just do it now...
 		if (DoAsyncCompile)
@@ -1203,11 +1204,12 @@ FGraphicsPipelineState* PipelineStateCache::GetAndOrCreateGraphicsPipelineState(
 
 	if (bWasFound == false)
 	{
-		FPipelineFileCache::CacheGraphicsPSO(GetTypeHash(*Initializer), *Initializer);
-
 		// create new graphics state
 		OutCachedState = new FGraphicsPipelineState();
-		OutCachedState->Stats = FPipelineFileCache::RegisterPSOStats(GetTypeHash(*Initializer));
+		//---------------------------------------------------------------------------------------------------------------
+		// PSOCache Note: FPipelineFileCache::RegisterPSOStats has been folded into FPipelineFileCache::CacheGraphicsPSO
+		//---------------------------------------------------------------------------------------------------------------
+		OutCachedState->Stats = FPipelineFileCache::CacheGraphicsPSO(*Initializer);
 
 		// create a compilation task, or just do it now...
 		if (DoAsyncCompile)

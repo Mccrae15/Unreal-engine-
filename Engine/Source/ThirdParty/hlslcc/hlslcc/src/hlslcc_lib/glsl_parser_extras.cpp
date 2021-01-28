@@ -1159,12 +1159,18 @@ void SCBuffer::CalculateMemberInfo(unsigned& SizeInFloats, unsigned& StartOffset
 		unsigned Dummy = 0;
 		CalculateMemberInfo(ElementSizeInFloats, Dummy, field_type->element_type(), &LastRowElements);
 		check(ElementSizeInFloats > 0);
-		SizeInFloats = (field_type->array_size() - 1) * ElementSizeInFloats;
-		if (field_type->element_type()->is_matrix())
+		if (!field_type->element_type()->is_matrix())
 		{
-			LastRowElements = 0;
-			SizeInFloats += ElementSizeInFloats;
+			// According std140, array element will round up to vec 4 if element are vector or scaler
+			int reminder = ElementSizeInFloats % 4;
+			if (reminder > 0)
+			{
+				ElementSizeInFloats = ElementSizeInFloats + (4 - reminder);
+			}
 		}
+
+		LastRowElements = 0;
+		SizeInFloats = field_type->array_size() * ElementSizeInFloats;
 		bNewRow = (StartOffset % 4) != 0;
 	}
 	else if (field_type->is_matrix())

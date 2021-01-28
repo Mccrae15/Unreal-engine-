@@ -2345,6 +2345,22 @@ public class AndroidPlatform : Platform
 				}
 			}
 
+			// map port for unreal insights if using localhost as the tracehost
+			if (ClientCmdLine.Contains("-tracehost=127.0.0.1"))
+			{
+				if (!reverseResult.Output.Contains("(reverse) tcp:1980 tcp:1980"))
+				{
+					RunAdbCommand(Params, DeviceName, "reverse tcp:1980 tcp:1980");
+				}
+			}
+			else
+			{
+				if (reverseResult.Output.Contains("(reverse) tcp:1980 tcp:1980"))
+				{
+					RunAdbCommand(Params, DeviceName, "reverse --remove tcp:1980");
+				}
+			}
+
 			// Message back to the UE4 Editor to correctly set the app id for each device
 			Console.WriteLine("Running Package@Device:{0}@{1}", PackageName, DeviceName);
 
@@ -2388,7 +2404,7 @@ public class AndroidPlatform : Platform
 
 				Thread.Sleep(1000);
 
-				if(!FinishedRunning)
+				if (!FinishedRunning)
 				{
 					TimeSpan DeltaRunTime = DateTime.Now - StartTime;
 					if ((DeltaRunTime.TotalSeconds > TimeOutSeconds) && (TimeOutSeconds != 0))

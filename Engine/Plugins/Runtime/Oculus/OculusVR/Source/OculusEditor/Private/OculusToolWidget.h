@@ -73,6 +73,9 @@ protected:
 	bool SettingIgnored(FName settingKey) const;
 
 	void OnChangePlatform(TSharedPtr<FString> ItemSelected, ESelectInfo::Type SelectInfo);
+	void OnChangeColorSpace(TSharedPtr<FString> ItemSelected, ESelectInfo::Type SelectedInfo);
+
+	EVisibility ColorSpaceVisibility() const;
 
 	FReply ForwardShadingEnable(bool text);
 	EVisibility ForwardShadingVisibility(FName tag) const;
@@ -138,6 +141,8 @@ protected:
 	APostProcessVolume* PostProcessVolume;
 	UEnum* PlatformEnum;
 	TArray<TSharedPtr<FString>> Platforms;
+	UEnum* ColorSpaceEnum;
+	TArray<TSharedPtr<FString>> ColorSpaces;
 	TMap<FName, SimpleSetting> SimpleSettings;
 
 	TMap<FString, TWeakObjectPtr<ULightComponentBase> > DynamicLights;

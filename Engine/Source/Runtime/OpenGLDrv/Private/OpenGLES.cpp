@@ -380,6 +380,9 @@ void FOpenGLES::ProcessExtensions(const FString& ExtensionsString)
 	GSupportsDepthRenderTargetWithoutColorRenderTarget = false;
 	bSupportsOcclusionQueries = true;
 
+	//opengl extensions (qcom_foveated) aren't map-based and function calls can be done until flush time.
+	GRHISupportsLateVRSUpdate = true;
+	
 	// Get procedures
 	if (bSupportsOcclusionQueries || SupportsDisjointTimeQueries())
 	{

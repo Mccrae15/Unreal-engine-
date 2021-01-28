@@ -40,8 +40,7 @@ public class OVRLipSync : ModuleRules
 
         if (Target.Platform == UnrealTargetPlatform.Win64)
         {
-            PublicLibraryPaths.Add(LibraryDirectory);
-            PublicAdditionalLibraries.Add("OVRLipSyncShim.lib");
+            PublicAdditionalLibraries.Add(Path.Combine(LibraryDirectory, "OVRLipSyncShim.lib"));
             PublicDelayLoadDLLs.Add("OVRLipSync.dll");
             RuntimeDependencies.Add(Path.Combine(LibraryDirectory, "OVRLipSync.dll"), StagedFileType.NonUFS);
         }
@@ -52,13 +51,12 @@ public class OVRLipSync : ModuleRules
         }
         else if (Target.Platform == UnrealTargetPlatform.Android)
         {
-            PublicLibraryPaths.Add(LibraryDirectory);
-            PublicLibraryPaths.Add(Path.Combine(ThirdPartyDirectory, "Lib", "Android", "arm64-v8a"));
-            PublicLibraryPaths.Add(Path.Combine(ThirdPartyDirectory, "Lib", "Android", "armeabi-v7a"));
             AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(ModuleDirectory, "OVRLipSync_APL.xml"));
-            PublicAdditionalLibraries.Add("OVRLipSyncShim");
+            PublicAdditionalLibraries.Add(Path.Combine(ThirdPartyDirectory, "Lib", "Android", "arm64-v8a", "libOVRLipSyncShim.a"));
+            PublicAdditionalLibraries.Add(Path.Combine(ThirdPartyDirectory, "Lib", "Android", "armeabi-v7a", "libOVRLipSyncShim.a"));
+            RuntimeDependencies.Add(Path.Combine(ThirdPartyDirectory, "Lib", "Android", "arm64-v8a", "libOVRLipSync.so"));
+            RuntimeDependencies.Add(Path.Combine(ThirdPartyDirectory, "Lib", "Android", "armeabi-v7a", "libOVRLipSync.so"));
         }
-
     }
 }
 

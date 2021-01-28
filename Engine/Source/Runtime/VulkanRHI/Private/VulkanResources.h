@@ -348,6 +348,8 @@ public:
 
 	inline uint32 GetNumSamples() const { return NumSamples; }
 
+	inline ETextureCreateFlags GetFlags() const { return UEFlags; }
+
 	inline uint32 GetNumberOfArrayLevels() const
 	{
 		switch (ViewType)
@@ -469,8 +471,8 @@ struct FVulkanTextureView
 	{
 	}
 
-	void Create(FVulkanDevice& Device, VkImage InImage, VkImageViewType ViewType, VkImageAspectFlags AspectFlags, EPixelFormat UEFormat, VkFormat Format, uint32 FirstMip, uint32 NumMips, uint32 ArraySliceIndex, uint32 NumArraySlices, bool bUseIdentitySwizzle = false);
-	void Create(FVulkanDevice& Device, VkImage InImage, VkImageViewType ViewType, VkImageAspectFlags AspectFlags, EPixelFormat UEFormat, VkFormat Format, uint32 FirstMip, uint32 NumMips, uint32 ArraySliceIndex, uint32 NumArraySlices, FSamplerYcbcrConversionInitializer& ConversionInitializer, bool bUseIdentitySwizzle = false);
+	void Create(FVulkanDevice& Device, VkImage InImage, VkImageViewType ViewType, VkImageAspectFlags AspectFlags, EPixelFormat UEFormat, VkFormat Format, uint32 FirstMip, uint32 NumMips, uint32 ArraySliceIndex, uint32 NumArraySlices, ETextureCreateFlags UEFlags, bool bUseIdentitySwizzle = false);
+	void Create(FVulkanDevice& Device, VkImage InImage, VkImageViewType ViewType, VkImageAspectFlags AspectFlags, EPixelFormat UEFormat, VkFormat Format, uint32 FirstMip, uint32 NumMips, uint32 ArraySliceIndex, uint32 NumArraySlices, ETextureCreateFlags UEFlags, FSamplerYcbcrConversionInitializer& ConversionInitializer, bool bUseIdentitySwizzle = false);
 	void Destroy(FVulkanDevice& Device);
 
 	VkImageView View;
@@ -478,7 +480,7 @@ struct FVulkanTextureView
 	uint32 ViewId;
 
 private:
-	static VkImageView StaticCreate(FVulkanDevice& Device, VkImage InImage, VkImageViewType ViewType, VkImageAspectFlags AspectFlags, EPixelFormat UEFormat, VkFormat Format, uint32 FirstMip, uint32 NumMips, uint32 ArraySliceIndex, uint32 NumArraySlices, bool bUseIdentitySwizzle, const FSamplerYcbcrConversionInitializer* ConversionInitializer);
+	static VkImageView StaticCreate(FVulkanDevice& Device, VkImage InImage, VkImageViewType ViewType, VkImageAspectFlags AspectFlags, EPixelFormat UEFormat, VkFormat Format, uint32 FirstMip, uint32 NumMips, uint32 ArraySliceIndex, uint32 NumArraySlices, ETextureCreateFlags UEFlags, bool bUseIdentitySwizzle, const FSamplerYcbcrConversionInitializer* ConversionInitializer);
 };
 
 /** The base class of resources that may be bound as shader resources. */

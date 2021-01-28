@@ -319,7 +319,7 @@ FSceneRenderTargets::FSceneRenderTargets(const FViewInfo& View, const FSceneRend
 	, bKeepDepthContent(SnapshotSource.bKeepDepthContent)
 	, bAllocatedFoveationTexture(SnapshotSource.bAllocatedFoveationTexture)
 	, bAllowTangentGBuffer(SnapshotSource.bAllowTangentGBuffer)
-	, bRequireMultiview(SnapshotSource.bRequireMultiview)
+	, bCurrentRequireMultiview(SnapshotSource.bCurrentRequireMultiview)
 {
 	FMemory::Memcpy(LargestDesiredSizes, SnapshotSource.LargestDesiredSizes);
 #if PREVENT_RENDERTARGET_SIZE_THRASHING
@@ -679,9 +679,10 @@ void FSceneRenderTargets::Allocate(FRHICommandListImmediate& RHICmdList, const F
 
 	bool bDownsampledOcclusionQueries = GDownsampledOcclusionQueries != 0;
 
+	bool bRequireMultiview;
 	{
 		static const auto MobileMultiViewCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
-		bRequireMultiview = (GSupportsMobileMultiView || GRHISupportsArrayIndexFromAnyShader) && (MobileMultiViewCVar && MobileMultiViewCVar->GetValueOnAnyThread() != 0) && SceneRenderer->Views[0].bIsMobileMultiViewEnabled;
+		bRequireMultiview = GSupportsMobileMultiView && (MobileMultiViewCVar && MobileMultiViewCVar->GetValueOnAnyThread() != 0);
 	}
 
 	int32 MaxShadowResolution = GetCachedScalabilityCVars().MaxShadowResolution;
@@ -724,7 +725,8 @@ void FSceneRenderTargets::Allocate(FRHICommandListImmediate& RHICmdList, const F
 		(CurrentTranslucencyLightingVolumeDim != TranslucencyLightingVolumeDim) ||
 		(CurrentMSAACount != MSAACount) ||
 		(bCurrentLightPropagationVolume != bLightPropagationVolume) ||
-		(CurrentMinShadowResolution != MinShadowResolution))
+		(CurrentMinShadowResolution != MinShadowResolution) || 
+		(bCurrentRequireMultiview != bRequireMultiview) )
 	{
 		CurrentGBufferFormat = GBufferFormat;
 		CurrentSceneColorFormat = SceneColorFormat;
@@ -737,6 +739,7 @@ void FSceneRenderTargets::Allocate(FRHICommandListImmediate& RHICmdList, const F
 		CurrentMSAACount = MSAACount;
 		CurrentMinShadowResolution = MinShadowResolution;
 		bCurrentLightPropagationVolume = bLightPropagationVolume;
+		bCurrentRequireMultiview = bRequireMultiview;
 
 		// Reinitialize the render targets for the given size.
 		SetBufferSize(DesiredBufferSize.X, DesiredBufferSize.Y);
@@ -1141,8 +1144,8 @@ void FSceneRenderTargets::AllocSceneColor(FRHICommandList& RHICmdList)
 		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(BufferSize, SceneColorBufferFormat, DefaultColorClear, TexCreate_None, TexCreate_RenderTargetable | TexCreate_ShaderResource, false));
 		Desc.Flags |= GFastVRamConfig.SceneColor;
 		Desc.NumSamples = GetNumSceneColorMSAASamples(CurrentFeatureLevel);
-		Desc.ArraySize = bRequireMultiview ? 2 : 1;
-		Desc.bIsArray = bRequireMultiview;
+		Desc.ArraySize = bCurrentRequireMultiview ? 2 : 1;
+		Desc.bIsArray = bCurrentRequireMultiview;
 
 		if (CurrentFeatureLevel >= ERHIFeatureLevel::SM5 && Desc.NumSamples == 1)
 		{
@@ -2404,13 +2407,14 @@ void FSceneRenderTargets::AllocateCommonDepthTargets(FRHICommandList& RHICmdList
 		const ETextureCreateFlags textureUAVCreateFlags = GRHISupportsDepthUAV ? TexCreate_UAV : TexCreate_None;
 
 		// Create a texture to store the resolved scene depth, and a render-targetable surface to hold the unresolved scene depth.
-		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(BufferSize, bRequireMultiview ? PF_D24 : PF_DepthStencil, DefaultDepthClear, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead | textureUAVCreateFlags, false));
+		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(BufferSize, bCurrentRequireMultiview ? PF_D24 : PF_DepthStencil, DefaultDepthClear, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead | textureUAVCreateFlags, false));
 		Desc.NumSamples = GetNumSceneColorMSAASamples(CurrentFeatureLevel);
 		Desc.Flags |= GFastVRamConfig.SceneDepth;
-		Desc.ArraySize = bRequireMultiview ? 2 : 1;
-		Desc.bIsArray = bRequireMultiview;
+		Desc.ArraySize = bCurrentRequireMultiview ? 2 : 1;
+		Desc.bIsArray = bCurrentRequireMultiview;
+#if PLATFORM_ANDROID
 		Desc.bDisableShaderResourceTexCreation = !bKeepDepthContent && Desc.NumSamples > 1;
-
+#endif
 		if (!bKeepDepthContent)
 		{
 			Desc.TargetableFlags |= TexCreate_Memoryless;
@@ -2475,8 +2479,8 @@ void FSceneRenderTargets::AllocateFoveationTexture(FRHICommandList& RHICmdList)
 	if (!FoveationTexture && bAllocatedFoveationTexture)
 	{
 		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(TextureSize, PF_R8G8, FClearValueBinding::White, TexCreate_None, TexCreate_None, false));
-		Desc.ArraySize = bRequireMultiview ? 2 : 1;
-		Desc.bIsArray = bRequireMultiview;
+		Desc.ArraySize = bCurrentRequireMultiview ? 2 : 1;
+		Desc.bIsArray = bCurrentRequireMultiview;
 
 		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, FoveationTexture, TEXT("FixedFoveation"));
 		const uint32 OldElementSize = FoveationTexture->ComputeMemorySize();

@@ -676,7 +676,18 @@ bool FShaderPipelineCache::Precompile(FRHICommandListImmediate& RHICmdList, ESha
 			GraphicsInitializer.StencilTargetLoadAction = PSO.GraphicsDesc.StencilLoad;
 			GraphicsInitializer.DepthTargetStoreAction = PSO.GraphicsDesc.DepthStore;
 			GraphicsInitializer.StencilTargetStoreAction = PSO.GraphicsDesc.StencilStore;
-			
+			//-------------------------------------------------------------------------------------------------------------
+			// PSOCache Note: need to initialize DepthStencilAccess because FGraphicsPipelineStateInitializer::oeprator==
+			// includes DepthStencilAccess as part of the comparison
+			//-------------------------------------------------------------------------------------------------------------
+			GraphicsInitializer.DepthStencilAccess = (FExclusiveDepthStencil::Type)PSO.GraphicsDesc.DepthStencilAccess;
+
+			//-------------------------------------------------------------------------------------------------------------
+			// PSOCache Note: multiview and fragment density are relevant for PSO creation
+			//-------------------------------------------------------------------------------------------------------------
+			GraphicsInitializer.MultiviewCount = PSO.GraphicsDesc.MultiViewCount;
+			GraphicsInitializer.bHasFragmentDensityAttachment = PSO.GraphicsDesc.HasFragmentDensityAttachment;
+
 			GraphicsInitializer.PrimitiveType = PSO.GraphicsDesc.PrimitiveType;
 			GraphicsInitializer.bFromPSOFileCache = true;
 			

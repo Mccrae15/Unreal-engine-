@@ -192,7 +192,7 @@ protected:
 		bKeepDepthContent(true),
 		bAllocatedFoveationTexture(false),
 		bAllowTangentGBuffer(false),
-		bRequireMultiview(false)
+		bCurrentRequireMultiview(false)
 		{
 			FMemory::Memset(LargestDesiredSizes, 0);
 #if PREVENT_RENDERTARGET_SIZE_THRASHING
@@ -813,7 +813,7 @@ private:
 	bool bAllowTangentGBuffer;
 
 	/** True if scenecolor and depth should be multiview-allocated */
-	bool bRequireMultiview;
+	bool bCurrentRequireMultiview;
 
 	/** CAUTION: When adding new data, make sure you copy it in the snapshot constructor! **/
 

@@ -1740,6 +1740,11 @@ struct FVulkanCustomMemManager
 
 	FVulkanCustomMemManager();
 
+	enum
+	{
+		VK_SYSTEM_ALLOCATION_SCOPE_RANGE_SIZE = 5,
+	};
+
 	struct FType
 	{
 		size_t UsedMemory = 0;

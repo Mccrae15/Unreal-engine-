@@ -47,10 +47,6 @@ static_assert(VK_API_VERSION >= UE_VK_API_VERSION, "Vulkan SDK is older than the
 	#error No VulkanSDK defines?
 #endif
 
-#if defined(VK_HEADER_VERSION) && VK_HEADER_VERSION < 8 && (VK_API_VERSION < VK_MAKE_VERSION(1, 0, 3))
-	#include <vulkan/vk_ext_debug_report.h>
-#endif
-
 ///////////////////////////////////////////////////////////////////////////////
 
 TAutoConsoleVariable<int32> GRHIThreadCvar(
@@ -721,6 +717,10 @@ void FVulkanDynamicRHI::InitInstance()
 		GMaxTextureArrayLayers = Props.limits.maxImageArrayLayers;
 		GRHISupportsBaseVertexIndex = true;
 		GSupportsSeparateRenderTargetBlendState = true;
+
+#if VULKAN_SUPPORTS_FDM2
+		GRHISupportsLateVRSUpdate = GetDevice()->GetOptionalExtensions().HasEXTFragmentDensityMap2 && Device->GetFDM2Properties().fragmentDensityMapDeferred;
+#endif
 
 		FVulkanPlatform::SetupFeatureLevels();
 
@@ -1502,6 +1502,9 @@ static VkRenderPass CreateRenderPass(FVulkanDevice& InDevice, const FVulkanRende
 	VkSubpassDescription SubpassDescriptions[2];
 	VkSubpassDependency SubpassDependencies[2];
 
+	//0b11 for 2, 0b1111 for 4, and so on
+	uint32 MultiviewMask = ( 0b1 << RTLayout.GetMultiviewCount() ) - 1;
+
 	const bool bHasDepthReadSubpass = RTLayout.GetSubpassHint() == ESubpassHint::DepthReadSubpass;
 		
 	// main sub-pass
@@ -1560,13 +1563,13 @@ static VkRenderPass CreateRenderPass(FVulkanDevice& InDevice, const FVulkanRende
 	Bit mask that specifies which view rendering is broadcast to
 	0011 = Broadcast to first and second view (layer)
 	*/
-	const uint32_t ViewMask[2] = { 0b00000011, 0b00000011 };
+	const uint32_t ViewMask[2] = { MultiviewMask, MultiviewMask };
 
 	/*
 	Bit mask that specifices correlation between views
 	An implementation may use this for optimizations (concurrent render)
 	*/
-	const uint32_t CorrelationMask = 0b00000011;
+	const uint32_t CorrelationMask = MultiviewMask;
 
 	VkRenderPassMultiviewCreateInfo MultiviewInfo;
 	if (RTLayout.GetIsMultiView())

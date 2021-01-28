@@ -2,14 +2,8 @@
 
 Copyright (c) Facebook Technologies, LLC and its affiliates.  All rights reserved.
 
-Licensed under the Oculus Master SDK License Version 1.0 (the "License");
-you may not use the Oculus SDK except in compliance with the License,
-which is provided at the time of installation or download, or which
-otherwise accompanies this software in either electronic or hard copy form.
-
-You may obtain a copy of the License at
-
-https://developer.oculus.com/licenses/oculusmastersdk-1.0/
+Your use of this SDK or tool is subject to the Oculus SDK License Agreement, available at
+https://developer.oculus.com/licenses/oculussdk/
 
 Unless required by applicable law or agreed to in writing, the Oculus SDK
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -28,8 +22,8 @@ limitations under the License.
 #endif
 
 #define OVRP_MAJOR_VERSION 1
-#define OVRP_MINOR_VERSION 52
-#define OVRP_PATCH_VERSION 1
+#define OVRP_MINOR_VERSION 55
+#define OVRP_PATCH_VERSION 0
 
 #define OVRP_VERSION OVRP_MAJOR_VERSION, OVRP_MINOR_VERSION, OVRP_PATCH_VERSION
 #define OVRP_VERSION_STR OVRP_STRINGIFY(OVRP_MAJOR_VERSION.OVRP_MINOR_VERSION.OVRP_PATCH_VERSION)
@@ -68,6 +62,8 @@ limitations under the License.
 
 #define OVRP_UNUSED(x) ((void)(x))
 
+#define OVRP_FILE_AND_LINE __FILE__ ":" OVRP_STRINGIFY(__LINE__)
+
 #ifndef OVRP_MIXED_REALITY_PRIVATE
 #define OVRP_MIXED_REALITY_PRIVATE 0
 #endif
@@ -91,6 +87,9 @@ typedef unsigned short ovrpUInt16;
 /// Int64
 typedef long long ovrpInt64;
 
+/// UInt64
+typedef unsigned long long ovrpUInt64;
+
 /// Epsilon for floating point comparison
 #define OVRP_FLOAT_EPSILON    (1e-5f)
 
@@ -98,6 +97,7 @@ typedef long long ovrpInt64;
 typedef enum {
   /// Success
   ovrpSuccess = 0,
+  ovrpSuccess_EventUnavailable = 1,
 
   /// Failure
   ovrpFailure = -1000,
@@ -114,6 +114,15 @@ typedef enum {
 
 #define OVRP_SUCCESS(result) ((result) >= 0)
 #define OVRP_FAILURE(result) ((result) < 0)
+
+/// XR API types
+typedef enum {
+  ovrpXrApi_Unknown = 0,
+  ovrpXrApi_CAPI = 1,
+  ovrpXrApi_VRAPI = 2,
+  ovrpXrApi_OpenXR = 3,
+  ovrpXrApi_EnumSize = 0x7fffffff
+} ovrpXrApi;
 
 /// Initialization flags
 typedef enum {
@@ -295,7 +304,7 @@ typedef enum {
   ovrpSystemHeadset_Rift_CB,
   ovrpSystemHeadset_Rift_S,
   ovrpSystemHeadset_Oculus_Link_Quest,    // Quest connected through Oculus Link
-  ovrpSystemHeadset_PC_Placeholder_4102,
+  ovrpSystemHeadset_Oculus_Link_Quest_2,
   ovrpSystemHeadset_PC_Placeholder_4103,
   ovrpSystemHeadset_PC_Placeholder_4104,
   ovrpSystemHeadset_PC_Placeholder_4105,
@@ -600,14 +609,14 @@ typedef struct {
 } ovrpTextureRectMatrixf;
 
 typedef struct {
-	float WarpLeft;
-	float WarpRight;
-	float WarpUp;
-	float WarpDown;
-	float SizeLeft;
-	float SizeRight;
-	float SizeUp;
-	float SizeDown;
+  float WarpLeft;
+  float WarpRight;
+  float WarpUp;
+  float WarpDown;
+  float SizeLeft;
+  float SizeRight;
+  float SizeUp;
+  float SizeDown;
 } ovrpOctilinearLayout;
 
 typedef struct { float r, g, b, a; } ovrpColorf;
@@ -806,6 +815,8 @@ typedef enum {
   ovrpDistortionWindowFlag_NoErrorContext = 0x00000002,
   /// Reserved 0x00000004 in ovrp_SetupDistortionWindow3
 
+  ovrpDistortionWindowFlag_PhaseSync = 0x00000008,
+
   ovrpDistortionWindowFlag_EnumSize = 0x7fffffff
 } ovrpDistortionWindowFlag;
 
@@ -825,6 +836,8 @@ typedef enum {
   ovrpShape_EyeFov = 3,
   ovrpShape_OffcenterCubemap = 4,
   ovrpShape_Equirect = 5,
+
+
 
 
 
@@ -872,7 +885,7 @@ typedef enum {
   ovrpLayerFlag_SymmetricFov = (1 << 2),
   /// Texture origin is in bottom-left
   ovrpLayerFlag_TextureOriginAtBottomLeft = (1 << 3),
-  /// Correct for chromatic aberration
+  /// Correct for chromatic aberration, deprecated
   ovrpLayerFlag_ChromaticAberrationCorrection = (1 << 4),
   /// Does not allocate texture space within the swapchain
   ovrpLayerFlag_NoAllocation = (1 << 5),
@@ -887,6 +900,10 @@ typedef enum {
   ovrpLayerFlag_Synchronous = (1 << 10),
   /// VrApi flag:VRAPI_ANDROID_SURFACE_SWAP_CHAIN_FLAG_USE_TIMESTAMPS
   ovrpLayerFlag_UseTimestamps = (1 << 11),
+  /// Allocate layer using subsampled layout
+  ovrpLayerFlag_Subsampled = (1 << 12),
+  /// if non-static, allocate 4 elements in a swapchain
+  ovrpLayerFlag_4DeepSwapchain = (1 << 13)
 } ovrpLayerFlags;
 
 /// Layer description used by ovrp_SetupLayer to create the layer
@@ -916,6 +933,7 @@ typedef OVRP_LAYER_DESC_TYPE ovrpLayerDesc_Cubemap;
 
 
 
+
 typedef struct {
   OVRP_LAYER_DESC_TYPE;
   ovrpFovf Fov[ovrpEye_Count];
@@ -941,6 +959,7 @@ typedef union {
   ovrpLayerDesc_EyeFov EyeFov;
   ovrpLayerDesc_OffcenterCubemap OffcenterCubemap;
   ovrpLayerDesc_Equirect Equirect;
+
 
 
 
@@ -1098,6 +1117,8 @@ typedef enum ovrpHandFingerPinch_ {
 
 typedef enum ovrpBoneId_ {
   ovrpBoneId_Invalid                 = -1,
+
+  // hand bones
   ovrpBoneId_Hand_Start              = 0,
   ovrpBoneId_Hand_WristRoot          = ovrpBoneId_Hand_Start + 0, // root frame of the hand, where the wrist is located
   ovrpBoneId_Hand_ForearmStub        = ovrpBoneId_Hand_Start + 1, // frame for user's forearm
@@ -1121,16 +1142,76 @@ typedef enum ovrpBoneId_ {
   ovrpBoneId_Hand_MaxSkinnable       = ovrpBoneId_Hand_Start + 19,
   // Bone tips are position only. They are not used for skinning but useful for hit-testing.
   // NOTE: ovrBoneId_Hand_ThumbTip == ovrBoneId_Hand_MaxSkinnable since the extended tips need to be contiguous
-  ovrpBoneId_Hand_ThumbTip           = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 0, // tip of the thumb
-  ovrpBoneId_Hand_IndexTip           = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 1, // tip of the index finger
-  ovrpBoneId_Hand_MiddleTip          = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 2, // tip of the middle finger
-  ovrpBoneId_Hand_RingTip            = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 3, // tip of the ring finger
-  ovrpBoneId_Hand_PinkyTip           = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 4, // tip of the pinky
-  ovrpBoneId_Hand_End                = ovrpBoneId_Hand_Start + ovrpBoneId_Hand_MaxSkinnable + 5,
+  ovrpBoneId_Hand_ThumbTip           = ovrpBoneId_Hand_MaxSkinnable + 0, // tip of the thumb
+  ovrpBoneId_Hand_IndexTip           = ovrpBoneId_Hand_MaxSkinnable + 1, // tip of the index finger
+  ovrpBoneId_Hand_MiddleTip          = ovrpBoneId_Hand_MaxSkinnable + 2, // tip of the middle finger
+  ovrpBoneId_Hand_RingTip            = ovrpBoneId_Hand_MaxSkinnable + 3, // tip of the ring finger
+  ovrpBoneId_Hand_PinkyTip           = ovrpBoneId_Hand_MaxSkinnable + 4, // tip of the pinky
+  ovrpBoneId_Hand_End                = ovrpBoneId_Hand_MaxSkinnable + 5,
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   // add other skeleton bone definitions here...
 
-  ovrpBoneId_Max                     = ovrpBoneId_Hand_End,
+
+
+
+  ovrpBoneId_Max                     = (ovrpBoneId_Hand_End > 50) ? ovrpBoneId_Hand_End : 50,
+
   ovrpBoneId_EnumSize = 0x7fff
 } ovrpBoneId;
 
@@ -1168,6 +1249,10 @@ typedef struct ovrpBone_ {
 } ovrpBone;
 
 typedef enum ovrpSkeletonConstants_ {
+  ovrpSkeletonConstants_MaxHandBones = ovrpBoneId_Hand_End,
+
+
+
   ovrpSkeletonConstants_MaxBones = ovrpBoneId_Max,
   ovrpSkeletonConstants_MaxBoneCapsules = 19,
   ovrpSkeletonConstants_EnumSize = 0x7fffffff
@@ -1178,17 +1263,20 @@ typedef enum ovrpSkeletonType_ {
   ovrpSkeletonType_None = -1,
   ovrpSkeletonType_HandLeft = 0,
   ovrpSkeletonType_HandRight = 1,
+
+
+
   ovrpSkeletonType_Count,
   ovrpSkeletonType_EnumSize = 0x7fffffff
 } ovrpSkeletonType;
 
-typedef struct ovrpSkeleton_ {
+typedef struct ovrpSkeleton2_ {
   ovrpSkeletonType SkeletonType;
   unsigned int NumBones;
   unsigned int NumBoneCapsules;
   ovrpBone Bones[ovrpSkeletonConstants_MaxBones];
   ovrpBoneCapsule BoneCapsules[ovrpSkeletonConstants_MaxBoneCapsules];
-} ovrpSkeleton;
+} ovrpSkeleton2;
 
 //-----------------------------------------------------------------
 // Hand mesh
@@ -1250,7 +1338,7 @@ typedef struct ovrpHandState_ {
   ovrpPosef RootPose;
 
   // Current rotation of each bone.
-  ovrpQuatf BoneRotations[ovrpSkeletonConstants_MaxBones];
+  ovrpQuatf BoneRotations[ovrpSkeletonConstants_MaxHandBones];
 
   // Provides a bitmask indicating if each finger is "pinched" or not. Indexable via bitshifting with the ovrpHandFinger enum
   // i.e. (1 << ovrpHandFinger_Index)
@@ -1279,6 +1367,40 @@ typedef struct ovrpHandState_ {
   // Time stamp of the captured sample that the pose was extrapolated from.
   double SampleTimeStamp;
 } ovrpHandState;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 //-----------------------------------------------------------------
 // Color Space Management
@@ -1363,6 +1485,28 @@ typedef enum ovrpColorSpace_ {
     ovrpColorSpace_Adobe_RGB = 8,
     ovrpColorSpace_Count
 } ovrpColorSpace;
+
+//-----------------------------------------------------------------
+// Event Management
+//-----------------------------------------------------------------
+// Enum defining the type of the underlying event, required first element in every event struct
+typedef enum ovrpEventType_ {
+  ovrpEventType_None = 0,
+  /// Refresh rate changed event
+  ovrpEventType_DisplayRefreshRateChange = 1
+} ovrpEventType;
+
+// biggest event that OVRPlugin can use
+typedef struct ovrpEventDataBuffer_ {
+  ovrpEventType EventType;
+  unsigned char EventData[4000];
+} ovrpEventDataBuffer;
+
+typedef struct ovrpEventDisplayRefreshRateChange_ {
+  ovrpEventType EventType;
+  float FromRefreshRate;
+  float ToRefreshRate;
+} ovrpEventDisplayRefreshRateChange;
 
 
 

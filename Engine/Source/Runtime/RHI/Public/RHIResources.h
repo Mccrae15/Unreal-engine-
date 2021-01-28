@@ -1541,6 +1541,14 @@ public:
 	}
 	static const uint32 MaxIndex = 4;
 
+	//--------------------------------------------------------------------------------------------------------------------------------
+	// PSOCache Note: need to be able to serialize FExclusiveDepthStencil because it is a member of FGraphicsPipelineStateInitializer
+	//--------------------------------------------------------------------------------------------------------------------------------
+	uint8 GetValue() const
+	{
+		return (uint8)Value;
+	}
+
 private:
 	inline Type ExtractDepth() const
 	{
@@ -1665,12 +1673,15 @@ public:
 
 	FRHITexture* FoveationTexture;
 
+	uint8 MultiViewCount;
+
 	FRHISetRenderTargetsInfo() :
 		NumColorRenderTargets(0),
 		bClearColor(false),
 		bHasResolveAttachments(false),
 		bClearDepth(false),
-		FoveationTexture(nullptr)
+		FoveationTexture(nullptr),
+		MultiViewCount(0)
 	{}
 
 	FRHISetRenderTargetsInfo(int32 InNumColorRenderTargets, const FRHIRenderTargetView* InColorRenderTargets, const FRHIDepthRenderTargetView& InDepthStencilRenderTarget) :
@@ -1725,6 +1736,7 @@ public:
 			bool bClearColor;
 			bool bHasResolveAttachments;
 			FRHIUnorderedAccessView* UnorderedAccessView[MaxSimultaneousUAVs];
+			uint8 MultiViewCount;
 
 			void Set(const FRHISetRenderTargetsInfo& RTInfo)
 			{
@@ -1751,7 +1763,7 @@ public:
 				bClearStencil = RTInfo.bClearStencil;
 				bClearColor = RTInfo.bClearColor;
 				bHasResolveAttachments = RTInfo.bHasResolveAttachments;
-
+				MultiViewCount = RTInfo.MultiViewCount;
 			}
 		};
 
@@ -1969,11 +1981,12 @@ public:
 		, DepthTargetStoreAction(ERenderTargetStoreAction::ENoAction)
 		, StencilTargetLoadAction(ERenderTargetLoadAction::ENoAction)
 		, StencilTargetStoreAction(ERenderTargetStoreAction::ENoAction)
+		, DepthStencilAccess(FExclusiveDepthStencil::Type::DepthNop_StencilNop)
 		, NumSamples(0)
 		, SubpassHint(ESubpassHint::None)
 		, SubpassIndex(0)
 		, bDepthBounds(false)
-		, bMultiView(false)
+		, MultiviewCount(0)
 		, bHasFragmentDensityAttachment(false)
 		, Flags(0)
 	{
@@ -2003,7 +2016,7 @@ public:
 		uint8						InSubpassIndex,
 		uint16						InFlags,
 		bool						bInDepthBounds,
-		bool						bInMultiView,
+		uint8						InMultiviewCount,
 		bool						bHasFragmentDensityAttachment
 		)
 		: BoundShaderState(InBoundShaderState)
@@ -2026,7 +2039,7 @@ public:
 		, SubpassHint(InSubpassHint)
 		, SubpassIndex(InSubpassIndex)
 		, bDepthBounds(bInDepthBounds)
-		, bMultiView(bInMultiView)
+		, MultiviewCount(InMultiviewCount)
 		, bHasFragmentDensityAttachment(bHasFragmentDensityAttachment)
 		, Flags(InFlags)
 	{
@@ -2050,11 +2063,9 @@ public:
 			ImmutableSamplerState != rhs.ImmutableSamplerState ||
 			PrimitiveType != rhs.PrimitiveType ||
 			bDepthBounds != rhs.bDepthBounds ||
-			bMultiView != rhs.bMultiView ||
+			MultiviewCount != rhs.MultiviewCount ||
 			bHasFragmentDensityAttachment != rhs.bHasFragmentDensityAttachment ||
 			RenderTargetsEnabled != rhs.RenderTargetsEnabled ||
-			RenderTargetFormats != rhs.RenderTargetFormats || 
-			RenderTargetFlags != rhs.RenderTargetFlags || 
 			DepthStencilTargetFormat != rhs.DepthStencilTargetFormat || 
 			DepthStencilTargetFlag != rhs.DepthStencilTargetFlag ||
 			DepthTargetLoadAction != rhs.DepthTargetLoadAction ||
@@ -2067,6 +2078,16 @@ public:
 			SubpassIndex != rhs.SubpassIndex)
 		{
 			return false;
+		}
+
+		// Check only the RenderTargets that are active
+		for (uint32 i = 0; i < RenderTargetsEnabled; ++i)
+		{
+			if (RenderTargetFormats[i] != rhs.RenderTargetFormats[i] ||
+				RenderTargetFlags[i] != rhs.RenderTargetFlags[i])
+			{
+				return false;
+			}
 		}
 
 		return true;
@@ -2112,7 +2133,7 @@ public:
 	ESubpassHint					SubpassHint;
 	uint8							SubpassIndex;
 	bool							bDepthBounds;
-	bool							bMultiView;
+	uint8							MultiviewCount;
 	bool							bHasFragmentDensityAttachment;
 	
 	// Note: these flags do NOT affect compilation of this PSO.
@@ -2427,8 +2448,8 @@ struct FRHIRenderPassInfo
 	// Some RHIs need to know if this render pass is going to be reading and writing to the same texture in the case of generating mip maps for partial resource transitions
 	bool bGeneratingMips = false;
 
-	// If this render pass should be multiview
-	bool bMultiviewPass = false;
+	// if this renderpass should be multiview, and if so how many views are required
+	uint8 MultiViewCount = 0;
 
 	// Hint for some RHI's that renderpass will have specific sub-passes 
 	ESubpassHint SubpassHint = ESubpassHint::None;
