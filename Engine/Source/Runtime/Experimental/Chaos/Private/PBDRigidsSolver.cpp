@@ -1248,6 +1248,7 @@ namespace Chaos
 	void TPBDRigidsSolver<Traits>::PostTickDebugDraw(FReal Dt) const
 	{
 #if CHAOS_DEBUG_DRAW
+		QUICK_SCOPE_CYCLE_COUNTER(SolverDebugDraw);
 		if (ChaosSolverDebugDrawShapes == 1)
 		{
 			DebugDraw::DrawParticleShapes(FRigidTransform3(), Particles.GetActiveStaticParticlesView(), FColor(128, 0, 0), &ChaosSolverDebugDebugDrawSettings);
