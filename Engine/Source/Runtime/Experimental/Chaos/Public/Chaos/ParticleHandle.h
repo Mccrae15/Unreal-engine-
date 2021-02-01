@@ -41,9 +41,11 @@ struct TPBDRigidParticleParameters : public TKinematicGeometryParticleParameters
 		: TKinematicGeometryParticleParameters<T, d>()
 		, bStartSleeping(false)
 		, bGravityEnabled(true)
+		, bCCDEnabled(false)
 	{}
 	bool bStartSleeping;
 	bool bGravityEnabled;
+	bool bCCDEnabled;
 };
 
 /** Concrete can either be the game thread or physics representation, but API stays the same. Useful for keeping initialization and other logic the same*/
@@ -90,6 +92,7 @@ void PBDRigidParticleHandleImpDefaultConstruct(TPBDRigidParticleHandleImp<T, d, 
 	Concrete.SetAngularEtherDrag(0.f);
 	Concrete.SetObjectStateLowLevel(Params.bStartSleeping ? EObjectStateType::Sleeping : EObjectStateType::Dynamic);
 	Concrete.SetGravityEnabled(Params.bGravityEnabled);
+	Concrete.SetCCDEnabled(Params.bCCDEnabled);
 	Concrete.SetResimType(EResimType::FullResim);
 }
 
@@ -113,6 +116,7 @@ void PBDRigidParticleDefaultConstruct(TPBDRigidParticle<T,d>& Concrete, const TP
 	Concrete.SetAngularEtherDrag(0.f);
 	Concrete.SetObjectState(Params.bStartSleeping ? EObjectStateType::Sleeping : EObjectStateType::Dynamic);
 	Concrete.SetGravityEnabled(Params.bGravityEnabled);
+	Concrete.SetCCDEnabled(Params.bCCDEnabled);
 	Concrete.ClearEvents();
 	Concrete.SetInitialized(false);
 	Concrete.SetResimType(EResimType::FullResim);
@@ -822,6 +826,7 @@ public:
 		SetAngularEtherDrag(DynamicMisc.AngularEtherDrag());
 		SetCollisionGroup(DynamicMisc.CollisionGroup());
 		SetGravityEnabled(DynamicMisc.GravityEnabled());
+		SetCCDEnabled(DynamicMisc.CCDEnabled());
 		SetResimType(DynamicMisc.ResimType());
 		AddCollisionConstraintFlag((Chaos::ECollisionConstraintFlags)DynamicMisc.CollisionConstraintFlag());
 	}
@@ -885,6 +890,14 @@ public:
 	bool GravityEnabled() const { return PBDRigidParticles->GravityEnabled(ParticleIdx); }
 
 	void SetGravityEnabled(bool bEnabled){ PBDRigidParticles->GravityEnabled(ParticleIdx) = bEnabled; }
+
+	bool CCDEnabled() const {
+		return PBDRigidParticles->CCDEnabled(ParticleIdx);
+	}
+
+	void SetCCDEnabled(bool bEnabled) {
+		PBDRigidParticles->CCDEnabled(ParticleIdx) = bEnabled;
+	}
 
 	EResimType ResimType() const { return PBDRigidParticles->ResimType(ParticleIdx);}
 
@@ -2251,6 +2264,13 @@ public:
 	{
 		MMiscData.Modify(true, MDirtyFlags, Proxy, [InCollisionConstraintFlag](auto& Data) { Data.SetCollisionConstraintFlag(InCollisionConstraintFlag); });
 	}
+
+	bool CCDEnabled() const { return MMiscData.Read().CCDEnabled(); }
+
+	void SetCCDEnabled(bool bInCCDEnabled)
+	{
+		MMiscData.Modify(true, MDirtyFlags, Proxy, [bInCCDEnabled](auto& Data) {Data.SetCCDEnabled(bInCCDEnabled); });
+	}
 	
 	//todo: remove this
 	bool IsInitialized() const { return MInitialized; }
@@ -2500,6 +2520,8 @@ public:
 		, MToBeRemovedOnFracture(false)
 		, MGravityEnabled(false)
 		, MInitialized(false)
+		, bCCDEnabled(false)
+		
 	{}
 
 	TPBDRigidParticleData(const TPBDRigidParticle<T, d>& InParticle)
@@ -2524,6 +2546,7 @@ public:
 		, MToBeRemovedOnFracture(InParticle.ToBeRemovedOnFracture())
 		, MGravityEnabled(InParticle.GravityEnabled())
 		, MInitialized(InParticle.IsInitialized())
+		, bCCDEnabled(InParticle.CCDEnabled())
 	{
 		Type = EParticleType::Rigid;
 	}
@@ -2549,6 +2572,7 @@ public:
 	bool MToBeRemovedOnFracture;
 	bool MGravityEnabled;
 	bool MInitialized;
+	bool bCCDEnabled;
 
 	void Reset() {
 		TKinematicGeometryParticleData<T, d>::Reset();
@@ -2573,6 +2597,7 @@ public:
 		MToBeRemovedOnFracture = false;
 		MGravityEnabled = false;
 		MInitialized = false;
+		bCCDEnabled = false;
 	}
 	void Init(const TPBDRigidParticle<T, d>& InParticle) {
 			Base::Init(InParticle);
@@ -2594,6 +2619,7 @@ public:
 			MToBeRemovedOnFracture = InParticle.ToBeRemovedOnFracture();
 			MGravityEnabled = InParticle.GravityEnabled();
 			MInitialized = InParticle.IsInitialized();
+			bCCDEnabled = InParticle.CCDEnabled();
 			Type = EParticleType::Rigid;
 		}
 };
