@@ -684,26 +684,25 @@ void TGeometryCollectionPhysicsProxy<Traits>::InitializeBodiesPT(Chaos::TPBDRigi
 		TArray<FTransform> Transform;
 		GeometryCollectionAlgo::GlobalMatrices(DynamicCollection.Transform, DynamicCollection.Parent, Transform);
 
-		const int NumRigids = 0; // ryan - Since we're doing SOA, we start at zero?
+		int NumRigids = 0; // ryan - Since we're doing SOA, we start at zero?
 		BaseParticleIndex = NumRigids;
 
 		// Count geometry collection leaf node particles to add
 		int NumSimulatedParticles = 0;
-		int NumLeafNodes = 0;
 		for (int32 Idx = 0; Idx < SimulatableParticles.Num(); ++Idx)
 		{
 			NumSimulatedParticles += SimulatableParticles[Idx];
-			NumLeafNodes += (SimulatableParticles[Idx] && Children[Idx].Num() == 0);
+			NumRigids += (SimulatableParticles[Idx] && !RestCollection->IsClustered(Idx));
 		}
 
 		// Add entries into simulation array
 		RigidsSolver->GetEvolution()->ReserveParticles(NumSimulatedParticles);
-		TArray<Chaos::TPBDGeometryCollectionParticleHandle<float, 3>*> Handles = RigidsSolver->GetEvolution()->CreateGeometryCollectionParticles(NumLeafNodes);
+		TArray<Chaos::TPBDGeometryCollectionParticleHandle<float, 3>*> Handles = RigidsSolver->GetEvolution()->CreateGeometryCollectionParticles(NumRigids);
 
 		int32 NextIdx = 0;
 		for (int32 Idx = 0; Idx < SimulatableParticles.Num(); ++Idx)
 		{
-			if (SimulatableParticles[Idx] && Children[Idx].Num() == 0) // Leaf node
+			if (SimulatableParticles[Idx] && !RestCollection->IsClustered(Idx))
 			{
 				// todo: Unblocked read access of game thread data on the physics thread.
 
@@ -840,9 +839,9 @@ void TGeometryCollectionPhysicsProxy<Traits>::InitializeBodiesPT(Chaos::TPBDRigi
 			SubTreeContainsSimulatableParticle.SetNumZeroed(RecursiveOrder.Num());
 			for (const int32 TransformGroupIndex : RecursiveOrder)
 			{
-				if (Children[TransformGroupIndex].Num() == 0)
+				if (SimulatableParticles[TransformGroupIndex] && !RestCollection->IsClustered(TransformGroupIndex))
 				{
-					// Leaf node
+					// Rigid node
 					SubTreeContainsSimulatableParticle[TransformGroupIndex] =
 						SolverParticleHandles[TransformGroupIndex] != nullptr;
 				}
@@ -938,8 +937,7 @@ void TGeometryCollectionPhysicsProxy<Traits>::InitializeBodiesPT(Chaos::TPBDRigi
 			// will optionally do this, but we switch that functionality off in BuildClusters().
 			for(int32 TransformGroupIndex = 0; TransformGroupIndex < NumTransforms; ++TransformGroupIndex)
 			{
-				const TManagedArray<TSet<int32>>& RestChildren = RestCollection->Children;
-				if (RestChildren[TransformGroupIndex].Num() > 0)
+				if (RestCollection->IsClustered(TransformGroupIndex))
 				{
 					if (SolverClusterHandles[TransformGroupIndex])
 					{
@@ -1760,6 +1758,7 @@ void TGeometryCollectionPhysicsProxy<Traits>::InitializeSharedCollisionStructure
 	const TManagedArray<int32>& BoneMap = RestCollection.BoneMap;
 	const TManagedArray<int32>& Parent = RestCollection.Parent;
 	const TManagedArray<TSet<int32>>& Children = RestCollection.Children;
+	const TManagedArray<int32>& SimulationType = RestCollection.SimulationType;
 	TManagedArray<bool>& CollectionSimulatableParticles =
 		RestCollection.GetAttribute<bool>(
 			FGeometryCollection::SimulatableParticlesAttribute, FTransformCollection::TransformGroup);
@@ -1841,7 +1840,7 @@ void TGeometryCollectionPhysicsProxy<Traits>::InitializeSharedCollisionStructure
 	for (int32 GeometryIndex = 0; GeometryIndex < NumGeometries; GeometryIndex++)
 	{
 		const int32 TransformGroupIndex = TransformIndex[GeometryIndex];
-		if (CollectionSimulatableParticles[TransformGroupIndex])
+		if (SimulationType[TransformGroupIndex] > FGeometryCollection::ESimulationTypes::FST_None)
 		{
 			TUniquePtr<TTriangleMesh<float>> TriMesh(
 				CreateTriangleMesh(
@@ -1945,6 +1944,10 @@ void TGeometryCollectionPhysicsProxy<Traits>::InitializeSharedCollisionStructure
 
 			TotalVolume += MassProperties.Volume;
 			TriangleMeshesArray[TransformGroupIndex] = MoveTemp(TriMesh);
+		}
+		else
+		{
+			CollectionSimulatableParticles[TransformGroupIndex] = false;
 		}
 	}
 
@@ -2184,7 +2187,7 @@ void TGeometryCollectionPhysicsProxy<Traits>::InitializeSharedCollisionStructure
 		//build collision structures depth first
 		for (const int32 TransformGroupIndex : RecursiveOrder)
 		{
-			if (Children[TransformGroupIndex].Num())	//only care about clusters at this point
+			if (RestCollection.IsClustered(TransformGroupIndex))
 			{
 				const int32 ClusterTransformIdx = TransformGroupIndex;
 				//update mass 
