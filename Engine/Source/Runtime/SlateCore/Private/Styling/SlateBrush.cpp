@@ -4,7 +4,18 @@
 #include "SlateGlobals.h"
 #include "Application/SlateApplicationBase.h"
 
-FSlateBrush::FSlateBrush( ESlateBrushDrawType::Type InDrawType, const FName InResourceName, const FMargin& InMargin, ESlateBrushTileType::Type InTiling, ESlateBrushImageType::Type InImageType, const FVector2D& InImageSize, const FLinearColor& InTint, UObject* InObjectResource, bool bInDynamicallyLoaded )
+
+FSlateBrush::FSlateBrush( ESlateBrushDrawType::Type InDrawType, 
+						  const FName InResourceName, 
+						  const FMargin& InMargin, 
+						  ESlateBrushTileType::Type InTiling, 
+						  ESlateBrushImageType::Type InImageType, 
+						  const FVector2D& InImageSize, 
+						  const FLinearColor& InTint, 
+						  UObject* InObjectResource, 
+						  bool bInDynamicallyLoaded
+						)
+
 	: ImageSize( InImageSize )
 	, Margin( InMargin )
 #if WITH_EDITORONLY_DATA
@@ -29,7 +40,17 @@ FSlateBrush::FSlateBrush( ESlateBrushDrawType::Type InDrawType, const FName InRe
 	//}
 }
 
-FSlateBrush::FSlateBrush( ESlateBrushDrawType::Type InDrawType, const FName InResourceName, const FMargin& InMargin, ESlateBrushTileType::Type InTiling, ESlateBrushImageType::Type InImageType, const FVector2D& InImageSize, const TSharedRef< FLinearColor >& InTint, UObject* InObjectResource, bool bInDynamicallyLoaded )
+FSlateBrush::FSlateBrush( ESlateBrushDrawType::Type InDrawType,
+ 						  const FName InResourceName,
+ 						  const FMargin& InMargin,
+ 						  ESlateBrushTileType::Type InTiling,
+ 						  ESlateBrushImageType::Type InImageType,
+ 						  const FVector2D& InImageSize,
+ 						  const TSharedRef< FLinearColor >& InTint,
+ 						  UObject* InObjectResource, 
+ 						  bool bInDynamicallyLoaded
+ 						)
+
 	: ImageSize( InImageSize )
 	, Margin( InMargin )
 #if WITH_EDITORONLY_DATA
@@ -54,7 +75,16 @@ FSlateBrush::FSlateBrush( ESlateBrushDrawType::Type InDrawType, const FName InRe
 	//}
 }
 
-FSlateBrush::FSlateBrush( ESlateBrushDrawType::Type InDrawType, const FName InResourceName, const FMargin& InMargin, ESlateBrushTileType::Type InTiling, ESlateBrushImageType::Type InImageType, const FVector2D& InImageSize, const FSlateColor& InTint, UObject* InObjectResource, bool bInDynamicallyLoaded )
+FSlateBrush::FSlateBrush( ESlateBrushDrawType::Type InDrawType, 
+						  const FName InResourceName, 
+						  const FMargin& InMargin,
+						  ESlateBrushTileType::Type InTiling, 
+						  ESlateBrushImageType::Type InImageType, 
+						  const FVector2D& InImageSize, const FSlateColor& InTint, 
+						  UObject* InObjectResource, 
+						  bool bInDynamicallyLoaded
+ 						)
+
 	: ImageSize(InImageSize)
 	, Margin(InMargin)
 #if WITH_EDITORONLY_DATA
@@ -84,12 +114,18 @@ const FString FSlateBrush::UTextureIdentifier()
 	return FString(TEXT("texture:/"));
 }
 
-void FSlateBrush::UpdateRenderingResource() const
+void FSlateBrush::UpdateRenderingResource(FVector2D LocalSize, float DrawScale) const
 {
 	if (DrawAs != ESlateBrushDrawType::NoDrawType && (ResourceName != NAME_None || ResourceObject != nullptr))
 	{
-		ResourceHandle = FSlateApplicationBase::Get().GetRenderer()->GetResourceHandle(*this);
+		// Always re-acquire a handle if the current handle is invalid or if its vector graphics.
+		// For vector graphics we will rebuild the handle only if the shape needs to be rasterized again and the new size and scale
+		if (!ResourceHandle.IsValid() || ImageType == ESlateBrushImageType::Vector)
+		{
+			ResourceHandle = FSlateApplicationBase::Get().GetRenderer()->GetResourceHandle(*this, LocalSize, DrawScale);
+		}
 	}
+
 }
 
 bool FSlateBrush::CanRenderResourceObject(UObject* InResourceObject) const

@@ -73,6 +73,8 @@ int32 SFxWidget::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeome
 	// There may be zero elements in this array if our child collapsed/hidden
 	if( ArrangedChildren.Num() > 0 )
 	{
+		const bool bShouldBeEnabled = ShouldBeEnabled(bParentEnabled);
+
 		// We can only have one direct descendant.
 		check( ArrangedChildren.Num() == 1 );
 		const FArrangedWidget& TheChild = ArrangedChildren[0];
@@ -84,9 +86,9 @@ int32 SFxWidget::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeome
 
 		FWidgetStyle CompoundedWidgetStyle = FWidgetStyle(InWidgetStyle)
 			.BlendColorAndOpacityTint(ColorAndOpacity.Get())
-			.SetForegroundColor( ForegroundColor );
+			.SetForegroundColor(bShouldBeEnabled ? GetForegroundColor() : GetDisabledForegroundColor());
 
-		return TheChild.Widget->Paint( Args.WithNewParent(this), TheChild.Geometry, ChildClippingRect, OutDrawElements, LayerId + 1, CompoundedWidgetStyle, ShouldBeEnabled( bParentEnabled ) );
+		return TheChild.Widget->Paint( Args.WithNewParent(this), TheChild.Geometry, ChildClippingRect, OutDrawElements, LayerId + 1, CompoundedWidgetStyle, bShouldBeEnabled );
 	}
 	return LayerId;
 

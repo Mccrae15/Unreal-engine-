@@ -37,6 +37,7 @@ public:
 	 * @param MenuName Identifier associated with the menu.
 	 * @return ToolMenuContext Context containing state.
 	 */
+	UE_DEPRECATED(4.26, "MakeMainTabMenu has been deprecated, use MakeMainMenu instead.")
 	static TSharedRef<SWidget> MakeMainTabMenu( const TSharedPtr<FTabManager>& TabManager, const FName MenuName, FToolMenuContext& ToolMenuContext );
 
 	/**

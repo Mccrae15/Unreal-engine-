@@ -28,10 +28,13 @@ public:
 		{ }
 
 		/** Image resource */
-		SLATE_ATTRIBUTE( const FSlateBrush*, Image )
+		SLATE_ATTRIBUTE(const FSlateBrush*, Image)
 
 		/** Color and opacity */
-		SLATE_ATTRIBUTE( FSlateColor, ColorAndOpacity )
+		SLATE_ATTRIBUTE(FSlateColor, ColorAndOpacity)
+
+		/** When specified, ignore the brushes size and report the DesiredSizeOverride as the desired image size. */
+		SLATE_ATTRIBUTE(TOptional<FVector2D>, DesiredSizeOverride)
 
 		/** Flips the image if the localization's flow direction is RightToLeft */
 		SLATE_ARGUMENT( bool, FlipForRightToLeftFlowDirection )
@@ -65,6 +68,9 @@ public:
 	/** See the Image attribute */
 	void SetImage(TAttribute<const FSlateBrush*> InImage);
 
+	/** See SizeOverride attribute */
+	void SetDesiredSizeOverride(TAttribute<TOptional<FVector2D>> InDesiredSizeOverride);
+
 public:
 
 	// SWidget overrides
@@ -79,12 +85,14 @@ protected:
 	// End SWidget overrides.
 
 protected:
-
 	/** The slate brush to draw for the image that we can invalidate. */
 	FInvalidatableBrushAttribute Image;
 
 	/** Color and opacity scale for this image */
 	TAttribute<FSlateColor> ColorAndOpacity;
+
+	/** When specified, ignore the content's desired size and report the.HeightOverride as the Box's desired height. */
+	TAttribute<TOptional<FVector2D>> DesiredSizeOverride;
 
 	/** Flips the image if the localization's flow direction is RightToLeft */
 	bool bFlipForRightToLeftFlowDirection;

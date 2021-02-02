@@ -62,10 +62,13 @@ public:
 	FSlateTextureAtlasD3D( uint32 Width, uint32 Height, uint32 StrideBytes, ESlateTextureAtlasPaddingStyle PaddingStyle );
 	~FSlateTextureAtlasD3D();
 
-	void InitAtlasTexture( int32 Index );
+
 	virtual void ConditionalUpdateTexture() override;
+	virtual void ReleaseResources() override {}
 
 	FSlateD3DTexture* GetAtlasTexture() const { return AtlasTexture; }
+private:
+	void InitAtlasTexture();
 private:
 	FSlateD3DTexture* AtlasTexture;
 };
@@ -81,8 +84,10 @@ public:
 
 	/** FSlateFontAtlas interface */
 	virtual void ConditionalUpdateTexture();
-	virtual class FSlateShaderResource* GetSlateTexture() override { return FontTexture; }
+	virtual class FSlateShaderResource* GetSlateTexture() const override { return FontTexture; }
 	virtual class FTextureResource* GetEngineTexture() override { return nullptr; }
+	virtual void ReleaseResources() override {}
+
 private:
 	/** Texture used for rendering */
 	FSlateD3DTexture* FontTexture;

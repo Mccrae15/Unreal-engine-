@@ -125,10 +125,11 @@ public:
 	FSlateElementPS( const ShaderMetaType::CompiledShaderInitializerType& Initializer )
 		: FGlobalShader( Initializer )
 	{
-		TextureParameter.Bind( Initializer.ParameterMap, TEXT("ElementTexture"));
-		TextureParameterSampler.Bind( Initializer.ParameterMap, TEXT("ElementTextureSampler"));
-		ShaderParams.Bind( Initializer.ParameterMap, TEXT("ShaderParams"));
-		GammaAndAlphaValues.Bind( Initializer.ParameterMap,TEXT("GammaAndAlphaValues"));
+		TextureParameter.Bind(Initializer.ParameterMap, TEXT("ElementTexture"));
+		TextureParameterSampler.Bind(Initializer.ParameterMap, TEXT("ElementTextureSampler"));
+		ShaderParams.Bind(Initializer.ParameterMap, TEXT("ShaderParams"));
+		ShaderParams2.Bind(Initializer.ParameterMap, TEXT("ShaderParams2"));
+		GammaAndAlphaValues.Bind(Initializer.ParameterMap,TEXT("GammaAndAlphaValues"));
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
@@ -149,9 +150,10 @@ public:
 	 * 
 	 * @param InShaderParams Shader params to use
 	 */
-	void SetShaderParams(FRHICommandList& RHICmdList, const FVector4& InShaderParams )
+	void SetShaderParams(FRHICommandList& RHICmdList, const FShaderParams& InShaderParams)
 	{
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ShaderParams, InShaderParams );
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ShaderParams, InShaderParams.PixelParams);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ShaderParams2, InShaderParams.PixelParams2);
 	}
 
 	/**
@@ -172,6 +174,7 @@ private:
 	LAYOUT_FIELD(FShaderResourceParameter, TextureParameter);
 	LAYOUT_FIELD(FShaderResourceParameter, TextureParameterSampler);
 	LAYOUT_FIELD(FShaderParameter, ShaderParams);
+	LAYOUT_FIELD(FShaderParameter, ShaderParams2);
 	LAYOUT_FIELD(FShaderParameter, GammaAndAlphaValues);
 };
 

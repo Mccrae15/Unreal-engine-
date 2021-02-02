@@ -106,14 +106,14 @@ void UImage::SetBrush(const FSlateBrush& InBrush)
 
 void UImage::SetBrushSize(FVector2D DesiredSize)
 {
-	if(Brush.ImageSize != DesiredSize)
-	{
-		Brush.ImageSize = DesiredSize;
+	SetDesiredSizeOverride(DesiredSize);
+}
 
-		if (MyImage.IsValid())
-		{
-			MyImage->SetImage(&Brush);
-		}
+void UImage::SetDesiredSizeOverride(FVector2D DesiredSize)
+{
+	if (MyImage.IsValid())
+	{
+		MyImage->SetDesiredSizeOverride(DesiredSize);
 	}
 }
 

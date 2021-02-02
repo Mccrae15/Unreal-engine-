@@ -12,6 +12,9 @@ void SImage::Construct( const FArguments& InArgs )
 	Image = FInvalidatableBrushAttribute(InArgs._Image);
 	ColorAndOpacity = InArgs._ColorAndOpacity;
 	bFlipForRightToLeftFlowDirection = InArgs._FlipForRightToLeftFlowDirection;
+
+	DesiredSizeOverride = InArgs._DesiredSizeOverride;
+
 	SetOnMouseButtonDown(InArgs._OnMouseButtonDown);
 }
 
@@ -45,7 +48,9 @@ FVector2D SImage::ComputeDesiredSize( float ) const
 	const FSlateBrush* ImageBrush = Image.Get();
 	if (ImageBrush != nullptr)
 	{
-		return ImageBrush->ImageSize;
+		const TOptional<FVector2D>& CurrentSizeOverride = DesiredSizeOverride.Get();
+
+		return CurrentSizeOverride.IsSet() ? CurrentSizeOverride.GetValue() : ImageBrush->ImageSize;
 	}
 	return FVector2D::ZeroVector;
 }
@@ -63,6 +68,11 @@ void SImage::SetColorAndOpacity( FLinearColor InColorAndOpacity )
 void SImage::SetImage(TAttribute<const FSlateBrush*> InImage)
 {
 	Image.SetImage(*this, InImage);
+}
+
+void SImage::SetDesiredSizeOverride(TAttribute<TOptional<FVector2D>> InDesiredSizeOverride)
+{
+	SetAttribute(DesiredSizeOverride, InDesiredSizeOverride, EInvalidateWidgetReason::Layout);
 }
 
 #if WITH_ACCESSIBILITY

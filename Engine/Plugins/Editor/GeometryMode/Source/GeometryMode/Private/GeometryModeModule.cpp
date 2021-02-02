@@ -17,12 +17,13 @@ void FGeometryModeModule::StartupModule()
 {
 	FGeometryModeStyle::Initialize();
 
+/*
 	FEditorModeRegistry::Get().RegisterMode<FEdModeGeometry>(
 		FGeometryEditingModes::EM_Geometry,
 		NSLOCTEXT("EditorModes", "GeometryMode", "Brush Editing"),
 		FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.BspMode", "LevelEditor.BspMode.Small"),
 		true, 500
-	);
+	);*/
 }
 
 

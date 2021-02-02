@@ -52,6 +52,9 @@ class IWindowTitleBar
 {
 public:
 	virtual void Flash( ) = 0;
+	virtual void UpdateWindowMenu(TSharedPtr<SWidget> MenuContent) = 0;
+	virtual void UpdateBackgroundContent(TSharedPtr<SWidget> BackgroundContent) = 0;
+	virtual void SetUseLargeIcon(bool bUseSmallIcon) = 0;
 };
 
 class FSlateApplicationBase;
@@ -177,6 +180,7 @@ public:
 	 * @return The icon.
 	 */
 	virtual const FSlateBrush* GetAppIcon( ) const = 0;
+	virtual const FSlateBrush* GetAppIconSmall() const = 0;
 
 	/**
 	 * Gets the ratio SlateUnit / ScreenPixel.

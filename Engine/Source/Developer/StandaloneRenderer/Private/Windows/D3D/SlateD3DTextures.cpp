@@ -110,7 +110,7 @@ void FSlateD3DTexture::UpdateTextureRaw(const void* Buffer, const FIntRect& Dirt
 	}
 
 	D3D11_MAPPED_SUBRESOURCE Resource;
-	HRESULT Hr = GD3DDeviceContext->Map(TextureToUpdate, 0, bUseStagingTexture?D3D11_MAP_READ_WRITE:D3D11_MAP_WRITE_DISCARD, 0, &Resource);
+	HRESULT Hr = GD3DDeviceContext->Map(TextureToUpdate, 0, bUseStagingTexture ? D3D11_MAP_READ_WRITE : D3D11_MAP_WRITE_DISCARD, 0, &Resource);
 
 	if (SUCCEEDED(Hr))
 	{
@@ -164,9 +164,10 @@ void FSlateD3DTexture::UpdateTextureThreadSafeWithTextureData(FSlateTextureData*
 
 
 FSlateTextureAtlasD3D::FSlateTextureAtlasD3D( uint32 Width, uint32 Height, uint32 StrideBytes, ESlateTextureAtlasPaddingStyle PaddingStyle )
-	: FSlateTextureAtlas( Width, Height, StrideBytes, PaddingStyle, true )
-	, AtlasTexture( new FSlateD3DTexture( Width, Height ) )
+	: FSlateTextureAtlas(Width, Height, StrideBytes, PaddingStyle, true)
+	, AtlasTexture(nullptr)
 {
+	InitAtlasTexture();
 }
 
 FSlateTextureAtlasD3D::~FSlateTextureAtlasD3D()
@@ -179,20 +180,22 @@ FSlateTextureAtlasD3D::~FSlateTextureAtlasD3D()
 
 
 
-void FSlateTextureAtlasD3D::InitAtlasTexture( int32 Index )
+void FSlateTextureAtlasD3D::InitAtlasTexture()
 {
-	check( AtlasTexture );
+	check(!AtlasTexture);
 
-	D3D11_SUBRESOURCE_DATA InitData;
-	InitData.pSysMem = AtlasData.GetData();
-	InitData.SysMemPitch = AtlasWidth * 4;
+	AtlasTexture = new FSlateD3DTexture(AtlasWidth, AtlasHeight);
 
-	AtlasTexture->Init( DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, &InitData );
+	AtlasTexture->Init( DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, nullptr, true );
 }
 
 void FSlateTextureAtlasD3D::ConditionalUpdateTexture()
 {
-	// Not yet supported
+	if (bNeedsUpdate)
+	{
+		AtlasTexture->UpdateTexture(AtlasData);
+		bNeedsUpdate = false;
+	}
 }
 
 FSlateFontAtlasD3D::FSlateFontAtlasD3D(uint32 Width, uint32 Height, const bool InIsGrayscale)

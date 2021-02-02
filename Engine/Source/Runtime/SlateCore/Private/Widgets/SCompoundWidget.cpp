@@ -20,19 +20,21 @@ int32 SCompoundWidget::OnPaint( const FPaintArgs& Args, const FGeometry& Allotte
 	// There may be zero elements in this array if our child collapsed/hidden
 	if( ArrangedChildren.Num() > 0 )
 	{
+		const bool bShouldBeEnabled = ShouldBeEnabled(bParentEnabled);
+
 		check( ArrangedChildren.Num() == 1 );
 		FArrangedWidget& TheChild = ArrangedChildren[0];
 
 		FWidgetStyle CompoundedWidgetStyle = FWidgetStyle(InWidgetStyle)
 			.BlendColorAndOpacityTint(ColorAndOpacity.Get())
-			.SetForegroundColor( GetForegroundColor() );
+			.SetForegroundColor(bShouldBeEnabled ? GetForegroundColor() : GetDisabledForegroundColor() );
 
 		int32 Layer = 0;
 		{
 #if WITH_VERY_VERBOSE_SLATE_STATS
 			SCOPE_CYCLE_COUNTER(STAT_ChildPaint);
 #endif
-			Layer = TheChild.Widget->Paint( Args.WithNewParent(this), TheChild.Geometry, MyCullingRect, OutDrawElements, LayerId + 1, CompoundedWidgetStyle, ShouldBeEnabled( bParentEnabled ) );
+			Layer = TheChild.Widget->Paint( Args.WithNewParent(this), TheChild.Geometry, MyCullingRect, OutDrawElements, LayerId + 1, CompoundedWidgetStyle, bShouldBeEnabled);
 		}
 		return Layer;
 	}

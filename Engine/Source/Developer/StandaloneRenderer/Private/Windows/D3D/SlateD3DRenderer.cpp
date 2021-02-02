@@ -383,14 +383,14 @@ bool FSlateD3DRenderer::GenerateDynamicImageResource(FName ResourceName, uint32 
 	return Result != nullptr;
 }
 
-FSlateResourceHandle FSlateD3DRenderer::GetResourceHandle( const FSlateBrush& Brush )
+FSlateResourceHandle FSlateD3DRenderer::GetResourceHandle(const FSlateBrush& Brush, FVector2D LocalSize, float DrawScale)
 {
 	if (!TextureManager.IsValid())
 	{
 		return FSlateResourceHandle();
 	}
 
-	return TextureManager->GetResourceHandle(Brush);
+	return TextureManager->GetResourceHandle(Brush, LocalSize, DrawScale);
 }
 
 void FSlateD3DRenderer::RemoveDynamicBrushResource( TSharedPtr<FSlateDynamicImageBrush> BrushToRemove )
@@ -537,11 +537,14 @@ void FSlateD3DRenderer::DrawWindows(FSlateDrawBuffer& InWindowDrawBuffer)
 
 			SWindow* WindowToDraw = ElementList.GetRenderWindow();
 
+			TextureManager->UpdateCache();
+
 			// Add all elements for this window to the element batcher
 			ElementBatcher->AddElements(ElementList);
 
 			// Update the font cache with new text before elements are batched
 			FontCache->UpdateCache();
+	
 
 			FVector2D WindowSize = WindowToDraw->GetSizeInScreen();
 
@@ -595,6 +598,7 @@ void FSlateD3DRenderer::DrawWindows(FSlateDrawBuffer& InWindowDrawBuffer)
 
 	// flush the cache if needed
 	FontCache->ConditionalFlushCache();
+	TextureManager->ConditionalFlushCache();
 
 	// Safely release the references now that we are finished rendering with the dynamic brushes
 	DynamicBrushesToRemove.Empty();

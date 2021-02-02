@@ -69,7 +69,7 @@ public:
 	void SetTexture( GLuint Texture, uint32 AddressU, uint32 AddressV  );
 	void SetDrawEffects(ESlateDrawEffect InDrawEffects );
 	void SetShaderType( uint32 InShaderType );
-	void SetMarginUVs( const FVector4& InMarginUVs );
+	void SetShaderParams(const FShaderParams& InShaderParams);
 	void SetGammaValues(const FVector2D& InGammaValues);
 private:
 	GLint ViewProjectionMatrixParam;
@@ -78,6 +78,7 @@ private:
 	GLint EffectsDisabledParam;
 	GLint IgnoreTextureAlphaParam;
 	GLint ShaderTypeParam;
-	GLint MarginUVsParam;
+	GLint ShaderParamsParam;
+	GLint ShaderParams2Param;
 	GLint GammaValuesParam;
 };

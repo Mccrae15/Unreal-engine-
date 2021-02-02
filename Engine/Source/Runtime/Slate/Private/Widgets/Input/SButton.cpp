@@ -535,6 +535,34 @@ void SButton::SetPressMethod(EButtonPressMethod::Type InPressMethod)
 	PressMethod = InPressMethod;
 }
 
+FSlateColor SButton::GetDisabledForegroundColor() const
+{
+	return Style->DisabledForeground;	
+}
+
+FSlateColor SButton::GetForegroundColor() const
+{
+	FSlateColor UserColor = ForegroundColor.Get();
+
+	if(UserColor == FSlateColor::UseStyle())
+	{
+		if (IsPressed())
+		{
+			return Style->PressedForeground;
+		}
+		else if (IsHovered())
+		{
+			return Style->HoveredForeground;
+		}
+		else
+		{
+			return Style->NormalForeground;
+		}
+	}
+
+	return UserColor;
+}
+
 #if WITH_ACCESSIBILITY
 TSharedRef<FSlateAccessibleWidget> SButton::CreateAccessibleWidget()
 {

@@ -9,7 +9,7 @@
 
 GLuint FSlateOpenGLTexture::NullTexture = 0;
 
-void FSlateOpenGLTexture::Init( GLenum TexFormat, const TArray<uint8>& TextureData )
+void FSlateOpenGLTexture::Init( GLenum InTexFormat, const TArray<uint8>& TextureData )
 {
 	// Create a new OpenGL texture
 	glGenTextures(1, &ShaderResource);
@@ -27,7 +27,9 @@ void FSlateOpenGLTexture::Init( GLenum TexFormat, const TArray<uint8>& TextureDa
 #endif // USE_DEPRECATED_OPENGL_FUNCTIONALITY
 
 	// the raw data is in bgra or bgr
-	const GLint Format = GL_BGRA;
+	const GLint Format = GL_RGBA;
+
+	TexFormat = InTexFormat;
 
 	// Upload the texture data
 	glTexImage2D( GL_TEXTURE_2D, 0, TexFormat, SizeX, SizeY, 0, Format, GL_UNSIGNED_INT_8_8_8_8_REV, TextureData.GetData() );
@@ -91,17 +93,17 @@ void FSlateOpenGLTexture::UpdateTextureRaw(const void* Buffer, const FIntRect& D
 
 	if (bHasPendingResize || Dirty.Area() == 0)
 	{
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SizeX, SizeY, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, Buffer);
+		glTexImage2D(GL_TEXTURE_2D, 0, TexFormat, SizeX, SizeY, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, Buffer);
 		bHasPendingResize = false;
 	}
 	else
 	{
 		glPixelStorei(GL_UNPACK_ROW_LENGTH, SizeX);
-		glTexSubImage2D(GL_TEXTURE_2D, 0, Dirty.Min.X, Dirty.Min.Y, Dirty.Width(), Dirty.Height(), GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, (uint8*)Buffer + Dirty.Min.Y * SizeX * 4 + Dirty.Min.X * 4);
+		glTexSubImage2D(GL_TEXTURE_2D, 0, Dirty.Min.X, Dirty.Min.Y, Dirty.Width(), Dirty.Height(), TexFormat, GL_UNSIGNED_INT_8_8_8_8_REV, (uint8*)Buffer + Dirty.Min.Y * SizeX * 4 + Dirty.Min.X * 4);
 		glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 	}
 #else
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, SizeX, SizeY, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, Buffer);
+	glTexImage2D(GL_TEXTURE_2D, 0, TexFormat, SizeX, SizeY, 0, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, Buffer);
 #endif
 	CHECK_GL_ERRORS;
 #if PLATFORM_MAC
@@ -210,4 +212,38 @@ GLint FSlateFontTextureOpenGL::GetGLTextureType() const
 		return GL_UNSIGNED_BYTE;
 	}
 	return GL_UNSIGNED_INT_8_8_8_8_REV;
+}
+
+FSlateTextureAtlasOpenGL::FSlateTextureAtlasOpenGL(uint32 Width, uint32 Height, uint32 StrideBytes, ESlateTextureAtlasPaddingStyle PaddingStyle)
+	: FSlateTextureAtlas(Width, Height, StrideBytes, PaddingStyle, true)
+{
+	InitAtlasTexture();
+}
+
+FSlateTextureAtlasOpenGL::~FSlateTextureAtlasOpenGL()
+{
+	if (AtlasTexture)
+	{
+		delete AtlasTexture;
+	}
+}
+
+void FSlateTextureAtlasOpenGL::ConditionalUpdateTexture()
+{
+	if (bNeedsUpdate)
+	{
+		AtlasTexture->UpdateTexture(AtlasData);
+		bNeedsUpdate = false;
+	}
+}
+
+void FSlateTextureAtlasOpenGL::InitAtlasTexture()
+{
+	AtlasTexture = new FSlateOpenGLTexture(AtlasWidth, AtlasHeight);
+			
+#if !PLATFORM_USES_GLES
+	AtlasTexture->Init(GL_SRGB8_ALPHA8, TArray<uint8>());
+#else
+	AtlasTexture->Init(GL_SRGB8_ALPHA8_EXT, TArray<uint8>());
+#endif
 }

@@ -24,7 +24,7 @@ public:
 
 	}
 
-	void Init( GLenum Format, const TArray<uint8>& TextureData );
+	void Init( GLenum InTexFormat, const TArray<uint8>& TextureData );
 
 	void Init( GLuint TextureID );
 
@@ -51,6 +51,7 @@ private:
 
 	static GLuint NullTexture;
 
+	GLenum TexFormat;
 	uint32 SizeX;
 	uint32 SizeY;
 	bool bHasPendingResize;
@@ -69,8 +70,10 @@ public:
 
 	/** FSlateFontAtlas interface */
 	virtual void ConditionalUpdateTexture();
-	virtual class FSlateShaderResource* GetSlateTexture() override { return FontTexture; }
+	virtual class FSlateShaderResource* GetSlateTexture() const override { return FontTexture; }
 	virtual class FTextureResource* GetEngineTexture() override { return nullptr; }
+	virtual void ReleaseResources() override {}
+
 private:
 	GLint GetGLTextureInternalFormat() const;
 	GLint GetGLTextureFormat() const;
@@ -78,4 +81,27 @@ private:
 
 	FSlateOpenGLTexture* FontTexture;
 };
+
+
+/**
+ * Representation of a texture for images in which characters are packed tightly based on their bounding rectangle
+ */
+class FSlateTextureAtlasOpenGL : public FSlateTextureAtlas
+{
+public:
+	FSlateTextureAtlasOpenGL(uint32 Width, uint32 Height, uint32 StrideBytes, ESlateTextureAtlasPaddingStyle PaddingStyle);
+	~FSlateTextureAtlasOpenGL();
+
+
+	virtual void ConditionalUpdateTexture() override;
+	virtual void ReleaseResources() override {}
+
+	FSlateOpenGLTexture* GetAtlasTexture() const { return AtlasTexture; }
+private:
+	void InitAtlasTexture();
+private:
+	FSlateOpenGLTexture* AtlasTexture;
+	GLuint TextureID;
+};
+
 
