@@ -119,6 +119,11 @@ static TAutoConsoleVariable<int32> CVarStripMinLodDataDuringCooking(
 	0,
 	TEXT("If non-zero, data for Static Mesh LOD levels below MinLOD will be discarded at cook time"));
 
+static TAutoConsoleVariable<int32> CVarStaticMeshKeepMobileMinLODSettingOnDesktop(
+	TEXT("r.StaticMesh.KeepMobileMinLODSettingOnDesktop"),
+	0,
+	TEXT("If non-zero, mobile setting for MinLOD will be stored in the cooked data for desktop platforms"));
+
 int32 GForceStripMeshAdjacencyDataDuringCooking = 0;
 static FAutoConsoleVariableRef CVarForceStripMeshAdjacencyDataDuringCooking(
 	TEXT("r.ForceStripAdjacencyDataDuringCooking"),
@@ -1413,6 +1418,7 @@ FStaticMeshRenderData::FStaticMeshRenderData()
 	, bReadyForStreaming(false)
 	, NumInlinedLODs(0)
 	, CurrentFirstLODIdx(0)
+	, LODBiasModifier(0)
 {
 	for (int32 LODIndex = 0; LODIndex < MAX_STATIC_MESH_LODS; ++LODIndex)
 	{
@@ -1545,6 +1551,41 @@ void FStaticMeshRenderData::Serialize(FArchive& Ar, UStaticMesh* Owner, bool bCo
 	}
 
 #endif // #if WITH_EDITORONLY_DATA
+
+#if PLATFORM_DESKTOP
+	if (bCooked)
+	{
+		int32 MinMobileLODIdx = 0;
+		bool bShouldSerialize = CVarStaticMeshKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0;
+#if WITH_EDITOR
+		if (Ar.IsSaving())
+		{
+			if (Ar.CookingTarget()->GetPlatformInfo().PlatformGroupName == TEXT("Desktop")
+				&& CVarStripMinLodDataDuringCooking.GetValueOnAnyThread() != 0
+				&& CVarStaticMeshKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0)
+			{
+				MinMobileLODIdx = Owner->GetMinLOD().GetValueForPlatform(TEXT("Mobile")) - Owner->GetMinLOD().GetValueForPlatform(TEXT("Desktop"));
+				MinMobileLODIdx = FMath::Clamp(MinMobileLODIdx, 0, 255); // Will be cast to uint8 when applying LOD bias. Also, make sure it's not < 0,
+																		 // which can happen if the desktop min LOD is higher than the mobile setting
+			}
+			else
+			{
+				bShouldSerialize = false;
+			}
+		}
+#endif
+
+		if (bShouldSerialize)
+		{
+			Ar << MinMobileLODIdx;
+
+			if (Ar.IsLoading() && GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1)
+			{
+				LODBiasModifier = MinMobileLODIdx;
+			}
+		}
+	}
+#endif // PLATFORM_DESKTOP
 
 	LODResources.Serialize(Ar, Owner);
 
@@ -2339,7 +2380,7 @@ static void SerializeBuildSettingsForDDC(FArchive& Ar, FMeshBuildSettings& Build
 // differences, etc.) replace the version GUID below with a new one.
 // In case of merge conflicts with DDC versions, you MUST generate a new GUID
 // and set this new GUID as the version.
-#define STATICMESH_DERIVEDDATA_VER TEXT("C3BD3DE6DEB1402FB100C9144E57D58B")
+#define STATICMESH_DERIVEDDATA_VER TEXT("48D1C55525F44EB3BD953D57E4BF5C72")
 
 const FString& GetStaticMeshDerivedDataVersion()
 {
@@ -2528,6 +2569,13 @@ static FString BuildStaticMeshDerivedDataKeySuffix(const ITargetPlatform* Target
 	}
 
 	IMeshBuilderModule::GetForPlatform(TargetPlatform).AppendToDDCKey(KeySuffix);
+
+	if (TargetPlatform->GetPlatformInfo().PlatformGroupName == TEXT("Desktop")
+		&& CVarStripMinLodDataDuringCooking.GetValueOnAnyThread() != 0
+		&& CVarStaticMeshKeepMobileMinLODSettingOnDesktop.GetValueOnAnyThread() != 0)
+	{
+		KeySuffix += TEXT("_MinMLOD");
+	}
 
 	return KeySuffix;
 }
@@ -2993,6 +3041,7 @@ void UStaticMesh::InitResources()
 			// Limit the number of LODs based on MinLOD value.
 			CachedSRRState.MaxNumLODs = FMath::Clamp<int32>(NumLODs - MinFirstLOD, GetRenderData()->NumInlinedLODs, NumLODs);
 			CachedSRRState.AssetLODBias = MinFirstLOD;
+			CachedSRRState.LODBiasModifier = GetRenderData()->LODBiasModifier;
 			// The optional LOD might be culled now.
 			CachedSRRState.NumNonOptionalLODs = FMath::Min(CachedSRRState.NumNonOptionalLODs, CachedSRRState.MaxNumLODs);
 			// Set LOD count to fit the current state.
@@ -4966,9 +5015,6 @@ void UStaticMesh::CacheDerivedData()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::CacheDerivedData);
 
-#if WITH_EDITORONLY_DATA
-	CacheMeshData();
-#endif
 	// Cache derived data for the running platform.
 	ITargetPlatformManagerModule& TargetPlatformManager = GetTargetPlatformManagerRef();
 	ITargetPlatform* RunningPlatform = TargetPlatformManager.GetRunningTargetPlatform();
@@ -5203,6 +5249,12 @@ void UStaticMesh::Serialize(FArchive& Ar)
 		{
 			FStaticMeshSourceModel& SrcModel = GetSourceModel(i);
 			SrcModel.SerializeBulkData(Ar, this);
+		}
+
+		// If loading, perform immediate conversion from legacy RawMesh to MeshDescription if necessary
+		if (Ar.IsLoading())
+		{
+			CacheMeshData();
 		}
 
 		if (Ar.CustomVer(FEditorObjectVersion::GUID) < FEditorObjectVersion::UPropertryForMeshSection)
@@ -5513,14 +5565,10 @@ void UStaticMesh::BeginPostLoadInternal(FStaticMeshPostLoadContext& Context)
 
 			for (int32 i = 0; i < GetNumSourceModels(); ++i)
 			{
-				// Access RawMesh directly instead of through the FStaticMeshSourceModel API,
-				// because we don't want to perform an automatic conversion to MeshDescription at this point -
-				// this will be done below in CacheDerivedData().
-				// This is a path for legacy assets.
-				if (!GetSourceModel(i).RawMeshBulkData->IsEmpty())
+				FMeshDescription MeshDescription;
+				if (GetSourceModel(i).CloneMeshDescription(MeshDescription))
 				{
-					GetSourceModel(i).RawMeshBulkData->LoadRawMesh(TempRawMesh);
-					TotalIndexCount += TempRawMesh.WedgeIndices.Num();
+					TotalIndexCount += MeshDescription.VertexInstances().Num();
 				}
 			}
 

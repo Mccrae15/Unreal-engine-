@@ -1139,6 +1139,7 @@ FScene::~FScene()
 	ReflectionSceneData.CubemapArray.ReleaseResource();
 	IndirectLightingCache.ReleaseResource();
 	DistanceFieldSceneData.Release();
+	VolumetricLightmapSceneData.RemoveAll();
 
 	if (AtmosphericFog)
 	{
@@ -2332,6 +2333,16 @@ void FVolumetricLightmapSceneData::RemoveLevelVolume(const FPrecomputedVolumetri
 
 	// Invalidate CPU lightmap lookup cache
 	CPUInterpolationCache.Empty();
+}
+
+void FVolumetricLightmapSceneData::RemoveAll()
+{
+	ensureMsgf(LevelVolumetricLightmaps.Num() == 0, TEXT("All volumetric lightmaps should have been removed before ~FScene(). Removing them anyway to avoid crash."));
+
+	while (LevelVolumetricLightmaps.Num() > 0)
+	{
+		RemoveLevelVolume(LevelVolumetricLightmaps[LevelVolumetricLightmaps.Num() - 1]);
+	}
 }
 
 const FPrecomputedVolumetricLightmap* FVolumetricLightmapSceneData::GetLevelVolumetricLightmap() const
@@ -3841,6 +3852,9 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 							GPUScene.AddPrimitiveToUpdate(SourceIndex);
 							GPUScene.AddPrimitiveToUpdate(DestIndex);
 
+							LumenSceneData->AddPrimitiveToUpdate(SourceIndex);
+							LumenSceneData->AddPrimitiveToUpdate(DestIndex);
+
 							SourceIndex = DestIndex;
 						}
 					}
@@ -3916,7 +3930,7 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 				GPUScene.AddPrimitiveToUpdate(PrimitiveIndex);
 
 				DistanceFieldSceneData.RemovePrimitive(PrimitiveSceneInfo);
-				LumenSceneData->RemovePrimitive(PrimitiveSceneInfo);
+				LumenSceneData->RemovePrimitive(PrimitiveSceneInfo, PrimitiveIndex);
 
 				DeletedSceneInfos.Add(PrimitiveSceneInfo);
 			}
@@ -3976,6 +3990,7 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 				PrimitiveSceneInfo->PackedIndex = SourceIndex;
 
 				GPUScene.AddPrimitiveToUpdate(SourceIndex);
+				LumenSceneData->AddPrimitiveToUpdate(SourceIndex);
 			}
 
 			bool EntryFound = false;
@@ -4052,6 +4067,7 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 							TBitArraySwapElements(PrimitivesNeedingStaticMeshUpdate, DestIndex, SourceIndex);
 
 							GPUScene.AddPrimitiveToUpdate(DestIndex);
+							LumenSceneData->AddPrimitiveToUpdate(DestIndex);
 						}
 					}
 				}
@@ -4345,7 +4361,7 @@ void FScene::FlushAsyncLightPrimitiveInteractionCreation() const
 
 bool FScene::IsPrimitiveBeingRemoved(FPrimitiveSceneInfo* PrimitiveSceneInfo) const
 {
-	check(IsInRenderingThread() || IsInParallelRenderingThread());
+	check(IsInParallelRenderingThread() || IsInRenderingThread());
 	return RemovedPrimitiveSceneInfos.Contains(PrimitiveSceneInfo);
 }
 

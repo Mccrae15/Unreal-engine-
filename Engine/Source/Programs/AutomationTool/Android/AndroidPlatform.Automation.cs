@@ -29,6 +29,164 @@ public class AndroidPlatform : Platform
 
 	}
 
+
+	public override string[] GetCodeSpecifiedSdkVersions()
+	{
+		UEBuildPlatformSDK AndroidSDK = UEBuildPlatformSDK.GetSDKForPlatform("Android");
+
+		return new string[] { AndroidSDK.GetMainVersion() };
+	}
+
+	public override bool GetSDKInstallCommand(out string Command, out string Params, out bool bRequiresPrivilegeElevation, ref string Preamble, ref string SuccessPostamble, ref string FailurePostamble, FileRetriever Retriever)
+	{
+		// run the Setup.bat in the engine, not coming from a normal FileSource
+
+		if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64)
+		{
+			Command = "$(EngineDir)/Extras/Android/SetupAndroid.bat";
+		}
+		else if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Mac)
+		{
+			Command = "$(EngineDir)/Extras/Android/SetupAndroid.command";
+		}
+		else
+		{
+			Command = "$(EngineDir)/Extras/Android/SetupAndroid.sh";
+		}
+
+		// pull the desired version numbers to install
+		UEBuildPlatformSDK AndroidSDK = UEBuildPlatformSDK.GetSDKForPlatform("Android");
+		string PlatformsVersion = AndroidSDK.GetPlatformSpecificVersion("platforms");
+		string BuildToolsVersion = AndroidSDK.GetPlatformSpecificVersion("build-tools");
+		string CMakeVersion = AndroidSDK.GetPlatformSpecificVersion("cmake");
+		string NDKVersion = AndroidSDK.GetPlatformSpecificVersion("ndk");
+
+		Params = $"{PlatformsVersion} {BuildToolsVersion} {CMakeVersion} {NDKVersion} -noninteractive";
+
+		bRequiresPrivilegeElevation = false;
+
+		return true;
+	}
+
+	private static string GetAndroidStudioExe()
+	{
+		string DefaultAndroidStudioInstallDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Android", "Android Studio");
+		string RegValue = Microsoft.Win32.Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Android", "Path", null) as string;
+		string AndroidStudioInstallDir = RegValue == null ? DefaultAndroidStudioInstallDir : RegValue;
+		return Path.Combine(AndroidStudioInstallDir, "bin", "studio64.exe");
+	}
+	private static string GetSdkDir()
+	{
+		string DefaultSdkDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Android", "Sdk");
+		string RegValue = Microsoft.Win32.Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Android", "SdkPath", null) as string;
+		return RegValue == null ? DefaultSdkDir : RegValue;
+	}
+
+	public override bool UpdateHostPrerequisites(BuildCommand Command, FileRetriever Retriever, bool bVerifyOnly)
+	{
+		// @todo turnkey: Handle Mac/Linux
+		if (HostPlatform.Current.HostEditorPlatform != UnrealTargetPlatform.Win64)
+		{
+			return false;
+		}
+
+		string AndroidStudioExe = GetAndroidStudioExe();
+		string SdkDir = GetSdkDir();
+
+		bool bIsInstalled = File.Exists(AndroidStudioExe) && Directory.Exists(SdkDir);
+
+		// if we are only verifying, just return the status, and if it's installed, we are done!
+		if (bVerifyOnly || bIsInstalled)
+		{
+			if (!File.Exists(AndroidStudioExe))
+			{
+//				Retriever.ReportError("Android Studio is not installed correctly.");
+				Retriever.PauseForUser("Android Studio is not installed correctly.");
+			}
+			if (!Directory.Exists(SdkDir))
+			{
+//				Retriever.ReportError("Android SDK directory is not set correctly.");
+				Retriever.PauseForUser("Android SDK directory is not set correctly.");
+			}
+			return bIsInstalled;
+		}
+
+		if (!File.Exists(AndroidStudioExe))
+		{
+			// get AS installer
+			string OutputPath = Retriever.RetrieveFileSource("AndroidStudio");
+
+			// Unset some envvars in case autosdk ran - they will mess up the first run of Android Studio
+			string[] Vars = new string[]
+			{
+					"ANDROID_HOME",
+					"ANDROID_SDK_HOME",
+					"JAVA_HOME",
+					"NDKROOT",
+					"NDK_ROOT",
+					"ANDROID_NDK_ROOT",
+					"ANDROID_SWT"
+			};
+			Array.ForEach(Vars, x => Environment.SetEnvironmentVariable(x, null));
+
+			if (OutputPath == null)
+			{
+				Retriever.PauseForUser("Unable to find Android Studio installer. Please download and install Android Studio 3.5.3 from https://developer.android.com/studio before continuing.\n\nMake sure to use the Run Android Studio and complete the first-time setup!\n\nChoose all default options unless you know what you are doing.");
+			}
+			else
+			{
+				Retriever.PauseForUser("Running the Android Studio installer, and then Android Studio for first-time setup!\n\nChoose all default options unless you know what you are doing.");
+				int ExitCode;
+				Utils.RunLocalProcessAndReturnStdOut(OutputPath, "/S", out ExitCode, true);
+				//				Utils.RunLocalProcessAndReturnStdOut(OutputPath, "", out ExitCode, true);
+
+				// AS installer returns 1223 even on success ("user canceled" even tho there's no UI to cancel it...) when running with /S
+				if (ExitCode != 0 && ExitCode != 1223)
+				{
+//					Retriever.ReportError($"Android Studio installer failed. ExitCode = {ExitCode}");
+					Retriever.PauseForUser($"Android Studio installer failed. ExitCode = {ExitCode}");
+					return false;
+				}
+
+				Utils.RunLocalProcessAndReturnStdOut(GetAndroidStudioExe(), "", out _, false);
+			}
+		}
+		else
+		{
+			Retriever.PauseForUser("The Sdk directory was not found. Running the Android Studio to perform first-time setup.\n\nChoose all default options unless you know what you are doing.");
+
+			Utils.RunLocalProcessAndReturnStdOut(AndroidStudioExe, "", out _, false);
+		}
+
+		// check to see if the installation worked. If so, continue on!
+		AndroidStudioExe = GetAndroidStudioExe();
+		SdkDir = GetSdkDir();
+
+		bIsInstalled = File.Exists(AndroidStudioExe) && Directory.Exists(SdkDir);
+
+		if (!File.Exists(AndroidStudioExe))
+		{
+//			Retriever.ReportError("Android Studio is not installed correctly, after attempted installation.");
+			Retriever.PauseForUser("Android Studio is not installed correctly, after attempted installation.");
+		}
+		if (!Directory.Exists(SdkDir))
+		{
+//			Retriever.ReportError("Android SDK directory is not set correctly, after attempted installation.");
+			Retriever.PauseForUser("Android SDK directory is not set correctly, after attempted installation.");
+		}
+
+		return bIsInstalled;
+	}
+
+
+
+
+
+
+
+
+
+
 	private static string GetSONameWithoutArchitecture(ProjectParams Params, string DecoratedExeName)
 	{
 		return Path.Combine(Path.GetDirectoryName(Params.GetProjectExeForPlatform(UnrealTargetPlatform.Android).ToString()), DecoratedExeName) + ".so";
@@ -685,7 +843,7 @@ public class AndroidPlatform : Platform
 				
 				TargetReceipt Receipt = SC.StageTargets[0].Receipt;
 				              
-				// when we make an embedded executable, all we do is output to libUE4.so - we don't need to make an APK at all
+				// when we make an embedded executable, all we do is output to libUnreal.so - we don't need to make an APK at all
 				// however, we still let package go through to make the .obb file
 				string CookFlavor = SC.FinalCookPlatform.IndexOf("_") > 0 ? SC.FinalCookPlatform.Substring(SC.FinalCookPlatform.IndexOf("_")) : "";
 				if (!Params.Prebuilt)
@@ -1237,7 +1395,7 @@ public class AndroidPlatform : Platform
 				if (bBuildWithHiddenSymbolVisibility || bSaveSymbols)
 				{
 					string SymbolizedSODirectory = GetFinalSymbolizedSODirectory(ApkName, SC, Architecture, GPUArchitecture);
-					string SymbolizedSOPath = Path.Combine(Path.Combine(Path.GetDirectoryName(ApkName), SymbolizedSODirectory), "libUE4.so");
+					string SymbolizedSOPath = Path.Combine(Path.Combine(Path.GetDirectoryName(ApkName), SymbolizedSODirectory), "libUnreal.so");
 					if (!FileExists(SymbolizedSOPath))
 					{
 						throw new AutomationException(ExitCode.Error_SymbolizedSONotFound, "ARCHIVE FAILED - {0} was not found", SymbolizedSOPath);
@@ -2147,13 +2305,13 @@ public class AndroidPlatform : Platform
 		return ReturnValue;
 	}
 
-	/** Returns the launch activity name to launch (must call GetPackageInfo first), returns "com.epicgames.ue4.SplashActivity" default if not found */
+	/** Returns the launch activity name to launch (must call GetPackageInfo first), returns "com.epicgames.unreal.SplashActivity" default if not found */
 	public static string GetLaunchableActivityName()
 	{
-		string ReturnValue = "com.epicgames.ue4.SplashActivity";
+		string ReturnValue = "com.epicgames.unreal.SplashActivity";
 		if (LaunchableActivityLine != null)
 		{
-			// the line should look like: launchable-activity: name='com.epicgames.ue4.SplashActivity'  label='TappyChicken' icon=''
+			// the line should look like: launchable-activity: name='com.epicgames.unreal.SplashActivity'  label='TappyChicken' icon=''
 			string[] Tokens = LaunchableActivityLine.Split("'".ToCharArray());
 			if (Tokens.Length >= 2)
 			{
@@ -2169,7 +2327,7 @@ public class AndroidPlatform : Platform
 		string ReturnValue = "";
 		if (MetaAppTypeLine != null)
 		{
-			// the line should look like: meta-data: name='com.epicgames.ue4.GameActivity.AppType' value='Client'
+			// the line should look like: meta-data: name='com.epicgames.unreal.GameActivity.AppType' value='Client'
 			string[] Tokens = MetaAppTypeLine.Split("'".ToCharArray());
 			if (Tokens.Length >= 4)
 			{
@@ -2205,7 +2363,7 @@ public class AndroidPlatform : Platform
 			if (MetaAppTypeLine == null)
 			{
 				string Line = Event.Data;
-				if (Line.StartsWith("meta-data: name='com.epicgames.ue4.GameActivity.AppType'"))
+				if (Line.StartsWith("meta-data: name='com.epicgames.unreal.GameActivity.AppType'"))
 				{
 					MetaAppTypeLine = Line;
 				}
@@ -2313,7 +2471,7 @@ public class AndroidPlatform : Platform
 		IProcessResult ABIResult = RunAdbCommand(Params, DeviceName, " shell getprop ro.product.cpu.abi", null, ERunOptions.AppMustExist);
 
 		// the output is just the architecture
-		string DeviceArch = UnrealBuildTool.AndroidExports.GetUE4Arch(ABIResult.Output.Trim());
+		string DeviceArch = UnrealBuildTool.AndroidExports.GetUnrealArch(ABIResult.Output.Trim());
 
 		// if the architecture wasn't built, look for a backup
 		if (!AppArchitectures.Contains(DeviceArch))
@@ -2418,7 +2576,7 @@ public class AndroidPlatform : Platform
 
 			PackageNames.Add(PackageName);
 
-			// Message back to the UE4 Editor to correctly set the app id for each device
+			// Message back to the Unreal Editor to correctly set the app id for each device
 			Console.WriteLine("Running Package@Device:{0}@{1}", PackageName, DeviceName);
 
 			// clear the log for the device
@@ -2475,7 +2633,7 @@ public class AndroidPlatform : Platform
 				if(FinishedRunning)
 				{
 					// this is just to get the ue4 log to go to the output
-					RunAdbCommand(Params, DeviceName, "logcat -d -s UE4 -s Debug");
+					RunAdbCommand(Params, DeviceName, "logcat -d -s UE debug Debug DEBUG");
 
 					// get the log we actually want to save
 					IProcessResult LogFileProcess = RunAdbCommand(Params, DeviceName, "logcat -d", null, ERunOptions.AppMustExist);

@@ -34,6 +34,7 @@
 #include "/Engine/Private/LightmapCommon.ush"
 #include "/Engine/Private/PathTracing/Material/PathTracingFresnel.ush"
 #include "/Engine/Private/PathTracing/Material/PathTracingThinGlass.ush"
+#include "/Engine/Private/Lumen/LumenHardwareRayTracingPayloadCommon.ush"
 
 /** Computes sky diffuse lighting, including precomputed shadowing. */
 void GetSkyLighting(
@@ -146,6 +147,15 @@ void GetPrecomputedIndirectLightingAndSkyLight(
 	float2 SkyOcclusionUV = 0;
 	uint SkyOcclusionDataIndex = 0u;
 
+#if HQ_TEXTURE_LIGHTMAP || LQ_TEXTURE_LIGHTMAP
+		float2 LightmapUV0, LightmapUV1;
+		uint LightmapDataIndex;
+		GetLightMapCoordinates(Interpolants, LightmapUV0, LightmapUV1, LightmapDataIndex);
+	#if LIGHTMAP_VT_ENABLED
+		LightmapVTPageTableResult = LightmapGetVTSampleInfo(LightmapUV0, LightmapDataIndex, MaterialParameters.SvPosition.xy);
+	#endif
+#endif
+
 	#if PRECOMPUTED_IRRADIANCE_VOLUME_LIGHTING
 		FThreeBandSHVectorRGB IrradianceSH = GetVolumetricLightmapSH3(VolumetricLightmapBrickTextureUVs);
 
@@ -163,12 +173,7 @@ void GetPrecomputedIndirectLightingAndSkyLight(
 
 	// High quality texture lightmaps
 	#elif HQ_TEXTURE_LIGHTMAP
-		float2 LightmapUV0, LightmapUV1;
-		uint LightmapDataIndex;
-		GetLightMapCoordinates(Interpolants, LightmapUV0, LightmapUV1, LightmapDataIndex);
-		#if LIGHTMAP_VT_ENABLED
-			LightmapVTPageTableResult = LightmapGetVTSampleInfo(LightmapUV0, LightmapDataIndex, MaterialParameters.SvPosition.xy);
-		#endif
+
 		SkyOcclusionUV = LightmapUV0;
 		SkyOcclusionDataIndex = LightmapDataIndex;
 		GetLightMapColorHQ(LightmapVTPageTableResult, LightmapUV0, LightmapUV1, LightmapDataIndex, DiffuseDir, MaterialParameters.SvPosition.xy, ShadingModel, OutDiffuseLighting, OutSubsurfaceLighting);
@@ -176,10 +181,7 @@ void GetPrecomputedIndirectLightingAndSkyLight(
 	// Low quality texture lightmaps
 	#elif LQ_TEXTURE_LIGHTMAP
 
-		float2 LightmapUV0, LightmapUV1;
-		uint LightmapDataIndex;
-		GetLightMapCoordinates(Interpolants, LightmapUV0, LightmapUV1, LightmapDataIndex);
-		OutDiffuseLighting = GetLightMapColorLQ(LightmapUV0, LightmapUV1, LightmapDataIndex, DiffuseDir).rgb;
+		OutDiffuseLighting = GetLightMapColorLQ(LightmapVTPageTableResult, LightmapUV0, LightmapUV1, LightmapDataIndex, DiffuseDir).rgb;
 
 	#endif
 
@@ -280,7 +282,7 @@ float3 GetLumenGeometryNormal()
 
 	// Safe normal
 	float SqareLength = dot(Unnormalized, Unnormalized);
-	float3 Normal = lerp(rsqrt(SqareLength)* Unnormalized, -WorldRayDirection(), SqareLength == 0.0f);
+	float3 Normal = lerp(rsqrt(SqareLength) * Unnormalized, -WorldRayDirection(), SqareLength == 0.0f);
 	return Normal;
 }
 
@@ -296,8 +298,13 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(MaterialCHS,
 	if (bIsLumenPayload)
 	{
 		float3 SurfaceNormal = GetLumenGeometryNormal();
+		const int PrimitiveIndex = GetInstanceUserData();
+		const int PrimitiveInstanceIndex = InstanceIndex() - GetBaseInstanceIndex();
+
 		PackedPayload.SetGeometryNormal(SurfaceNormal);
-		PackedPayload.SetInstanceID(GetInstanceUserData());//InstanceID
+		PackedPayload.SetDistanceFieldObjectIndex(
+			GetLumenDistanceFieldObjectIndex(PrimitiveIndex, PrimitiveInstanceIndex)
+		);
 	}
 
 	if (PackedPayload.IsMinimalPayloadMode())
@@ -513,7 +520,12 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(MaterialCHS,
 	// Override packed payload with custom Lumen data
 	if (bIsLumenPayload)
 	{
-		PackedPayload.SetInstanceID(GetInstanceUserData());
+		const int PrimitiveIndex = GetInstanceUserData();
+		const int PrimitiveInstanceIndex = InstanceIndex() - GetBaseInstanceIndex();
+
+		PackedPayload.SetDistanceFieldObjectIndex(
+			GetLumenDistanceFieldObjectIndex(PrimitiveIndex, PrimitiveInstanceIndex)
+		);
 	}
 
 #endif // USE_MATERIAL_CLOSEST_HIT_SHADER

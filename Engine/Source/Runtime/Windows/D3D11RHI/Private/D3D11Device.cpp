@@ -51,6 +51,22 @@ TAutoConsoleVariable<int32> CVarD3D11ZeroBufferSizeInMB(
 	ECVF_ReadOnly
 	);
 
+
+static bool ShouldPreferFeatureLevelES31(ERHIFeatureLevel::Type& PreviewFeatureLevelOUT)
+{
+	if (!GIsEditor)
+	{
+		bool bPreferFeatureLevelES31 = false;
+		GConfig->GetBool(TEXT("D3DRHIPreference"), TEXT("bPreferFeatureLevelES31"), bPreferFeatureLevelES31, GGameUserSettingsIni);
+		if (bPreferFeatureLevelES31 || FParse::Param(FCommandLine::Get(), TEXT("FeatureLevelES31")) || FParse::Param(FCommandLine::Get(), TEXT("FeatureLevelES3_1")))
+		{
+			PreviewFeatureLevelOUT = ERHIFeatureLevel::ES3_1;
+			return true;
+		}
+	}
+	return false;
+}
+
 FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1,D3D_FEATURE_LEVEL InFeatureLevel, int32 InChosenAdapter, const DXGI_ADAPTER_DESC& InChosenDescription) :
 	DXGIFactory1(InDXGIFactory1),
 #if NV_AFTERMATH
@@ -111,7 +127,7 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1,D3D_FEATURE_LEV
 	}
 
 	ERHIFeatureLevel::Type PreviewFeatureLevel;
-	if (RHIGetPreviewFeatureLevel(PreviewFeatureLevel))
+	if (RHIGetPreviewFeatureLevel(PreviewFeatureLevel) || ShouldPreferFeatureLevelES31(PreviewFeatureLevel))
 	{
 		// ES3.1 feature level emulation in D3D11
 		GMaxRHIFeatureLevel = PreviewFeatureLevel;
@@ -425,6 +441,7 @@ void FD3D11DynamicRHI::SetupAfterDeviceCreation()
 	}
 
 	{
+#if 0
 		D3D11_FEATURE_DATA_D3D11_OPTIONS2 Data;
 		HRESULT Result = Direct3DDevice->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS2, &Data, sizeof(Data));
 		GRHISupportsStencilRefFromPixelShader = SUCCEEDED(Result) && Data.PSSpecifiedStencilRefSupported;
@@ -432,6 +449,9 @@ void FD3D11DynamicRHI::SetupAfterDeviceCreation()
 		{
 			UE_LOG(LogD3D11RHI, Log, TEXT("Stencil ref from pixel shader is supported"));
 		}
+#else
+		GRHISupportsStencilRefFromPixelShader = false; // this boolean is later used to choose a code path that requires DXIL shaders. Cannot set to true without fixing that first.
+#endif
 	}
 
 	{

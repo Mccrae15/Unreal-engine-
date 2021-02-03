@@ -222,7 +222,7 @@ void FOpenGLDynamicRHI::RHIEndScene()
 
 #if PLATFORM_ANDROID
 
-JNI_METHOD void Java_com_epicgames_ue4_MediaPlayer14_nativeClearCachedAttributeState(JNIEnv* jenv, jobject thiz, jint PositionAttrib, jint TexCoordsAttrib)
+JNI_METHOD void Java_com_epicgames_unreal_MediaPlayer14_nativeClearCachedAttributeState(JNIEnv* jenv, jobject thiz, jint PositionAttrib, jint TexCoordsAttrib)
 {
 	FOpenGLContextState& ContextState = PrivateOpenGLDevicePtr->GetContextStateForCurrentContext();
 
@@ -710,8 +710,6 @@ static void InitRHICapabilitiesForGL()
 	LOG_AND_GET_GL_INT_TEMP(GL_MAX_VERTEX_ATTRIBS, 0);
 
 	LOG_AND_GET_GL_INT_TEMP(GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS, 0);
-	LOG_AND_GET_GL_INT_TEMP(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0);
-	LOG_AND_GET_GL_INT_TEMP(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0);
 	LOG_AND_GET_GL_INT_TEMP(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, 0);
 	
 

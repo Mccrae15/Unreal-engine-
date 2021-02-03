@@ -28,8 +28,11 @@ void FCborStructSerializerBackend::BeginArray(const FStructSerializerState& Stat
 			if (CastField<FByteProperty>(ArrayProperty->Inner) || CastField<FInt8Property>(ArrayProperty->Inner)) // A CBOR draft to support homogeneous array exists, but is not yet approved: https://datatracker.ietf.org/doc/draft-ietf-cbor-array-tags/.
 			{
 				check(!bSerializingByteArray);
-				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(State.ValueData));
-				AccumulatedBytes.Reset(ArrayHelper.Num());
+				// WritePODArray should be preferred in this case instead of doing per element serialization
+				// Hence omit reserving the space needed for per element serialization since it will be written directly to the cbor stream
+				// if otherwise per element serialization is done, it will still work although through some additional allocation
+				//FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(State.ValueData));
+				//AccumulatedBytes.Reset(ArrayHelper.Num());				
 				bSerializingByteArray = true;
 			}
 		}
@@ -284,20 +287,10 @@ void FCborStructSerializerBackend::WriteProperty(const FStructSerializerState& S
 	}
 
 	// Classes & Objects
-	else if (State.FieldType == FClassProperty::StaticClass())
-	{
-		UObject* const& Value = CastFieldChecked<FClassProperty>(State.ValueProperty)->GetPropertyValue_InContainer(State.ValueData, ArrayIndex);
-		WritePropertyValue(CborWriter, State, Value ? Value->GetPathName() : FString());
-	}
 	else if (State.FieldType == FSoftClassProperty::StaticClass())
 	{
 		FSoftObjectPtr const& Value = CastFieldChecked<FSoftClassProperty>(State.ValueProperty)->GetPropertyValue_InContainer(State.ValueData, ArrayIndex);
 		WritePropertyValue(CborWriter, State, Value.IsValid() ? Value->GetPathName() : FString());
-	}
-	else if (State.FieldType == FObjectProperty::StaticClass())
-	{
-		UObject* const& Value = CastFieldChecked<FObjectProperty>(State.ValueProperty)->GetPropertyValue_InContainer(State.ValueData, ArrayIndex);
-		WritePropertyValue(CborWriter, State, Value ? Value->GetPathName() : FString());
 	}
 	else if (State.FieldType == FWeakObjectProperty::StaticClass())
 	{
@@ -309,6 +302,14 @@ void FCborStructSerializerBackend::WriteProperty(const FStructSerializerState& S
 		FSoftObjectPtr const& Value = CastFieldChecked<FSoftObjectProperty>(State.ValueProperty)->GetPropertyValue_InContainer(State.ValueData, ArrayIndex);
 		WritePropertyValue(CborWriter, State, Value.ToString());
 	}
+	else if (FObjectProperty* ObjectProperty = CastField<FObjectProperty>(State.ValueProperty))
+	{
+		// @TODO: Could this be expanded to include everything derived from FObjectPropertyBase?
+		// Generic handling for a property type derived from FObjectProperty that is obtainable as a pointer and will be stored using its path.
+		// This must come after all the more specialized handlers for object property types.
+		UObject* const Value = ObjectProperty->GetObjectPropertyValue_InContainer(State.ValueData, ArrayIndex);
+		WritePropertyValue(CborWriter, State, Value ? Value->GetPathName() : FString());
+	}
 
 	// Unsupported
 	else
@@ -316,4 +317,20 @@ void FCborStructSerializerBackend::WriteProperty(const FStructSerializerState& S
 		UE_LOG(LogSerialization, Verbose, TEXT("FCborStructSerializerBackend: Property %s cannot be serialized, because its type (%s) is not supported"), *State.ValueProperty->GetFName().ToString(), *State.ValueType->GetFName().ToString());
 	}
 
+}
+
+bool FCborStructSerializerBackend::WritePODArray(const FStructSerializerState& State)
+{
+	FArrayProperty* ArrayProperty = CastField<FArrayProperty>(State.ValueProperty);
+	if (bSerializingByteArray &&
+		ArrayProperty && 
+		(CastField<FByteProperty>(ArrayProperty->Inner) || CastField<FInt8Property>(ArrayProperty->Inner))) // A CBOR draft to support homogeneous array exists, but is not yet approved: https://datatracker.ietf.org/doc/draft-ietf-cbor-array-tags/.
+	{
+		FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(State.ValueData));
+		// write out the array as a ByteString directly.
+		CborWriter.WriteValue(ArrayHelper.GetRawPtr(), ArrayHelper.Num());
+		bSerializingByteArray = false;
+		return true;
+	}
+	return false;
 }

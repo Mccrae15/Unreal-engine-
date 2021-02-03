@@ -38,7 +38,7 @@ namespace Chaos
 		//
 		//  @todo(chaos) : Collision Manifold 
 		//     Create a correspondence between the faces and surface particles on construction.
-		//     The correspondence will provide an index between the Planes and the SurfaceParticles,
+		//     The correspondence will provide an index between the Planes and the Vertices,
 		//     removing the need for the exhaustive search here. 
 		//
 
@@ -50,13 +50,13 @@ namespace Chaos
 			FReal AbsOfSignedDistance = FMath::Abs(Plane.SignedDistance(Position));
 			if (AbsOfSignedDistance < SearchDist)
 			{
-				for (int32 Fdx = 0; Fdx < (int32)SurfaceParticles.Size(); Fdx++)
+				for (int32 Fdx = 0; Fdx < (int32)Vertices.Num(); Fdx++)
 				{
 					if (!IncludedParticles.Contains(Fdx))
 					{
-						if (FMath::Abs(Plane.SignedDistance(SurfaceParticles.X(Fdx))) < SearchDist)
+						if (FMath::Abs(Plane.SignedDistance(Vertices[Fdx])) < SearchDist)
 						{
-							FaceVertices.Add(SurfaceParticles.X(Fdx));
+							FaceVertices.Add(Vertices[Fdx]);
 							IncludedParticles.Add(Fdx);
 						}
 					}
@@ -90,18 +90,17 @@ namespace Chaos
 
 	int32 FConvex::GetMostOpposingPlaneWithVertex(int32 VertexIndex, const FVec3& Normal) const
 	{
-		const TArrayView<const int32> VertexPlaneIndices = GetVertexPlanes(VertexIndex);
-
-		if ((VertexIndex == INDEX_NONE) || (VertexPlaneIndices.Num() == 0))
+		const int32 VertexPlaneNum = NumVertexPlanes(VertexIndex);
+		if ((VertexIndex == INDEX_NONE) || (VertexPlaneNum == 0))
 		{
 			return GetMostOpposingPlane(Normal);
 		}
 
 		int32 MostOpposingIdx = INDEX_NONE;
 		FReal MostOpposingDot = TNumericLimits<FReal>::Max();
-		for (int32 VertexPlaneIndex = 0; VertexPlaneIndex < VertexPlaneIndices.Num(); ++VertexPlaneIndex)
+		for (int32 VertexPlaneIndex = 0; VertexPlaneIndex < VertexPlaneNum; ++VertexPlaneIndex)
 		{
-			const int32 PlaneIndex = VertexPlaneIndices[VertexPlaneIndex];
+			const int32 PlaneIndex = GetVertexPlane(VertexIndex, VertexPlaneIndex);
 			const TPlaneConcrete<FReal, 3>& Plane = Planes[PlaneIndex];
 			const FReal Dot = FVec3::DotProduct(Plane.Normal(), Normal);
 			if (Dot < MostOpposingDot)
@@ -119,13 +118,13 @@ namespace Chaos
 		FVec3 ClosestEdgePosition = FVec3(0);
 		FReal ClosestDistanceSq = FLT_MAX;
 
-		const TArrayView<const int32> PlaneVertexIndices = GetPlaneVertices(PlaneIndex);
-		if (PlaneVertexIndices.Num() > 0)
+		const int32 PlaneVerticesNum = NumPlaneVertices(PlaneIndex);
+		if (PlaneVerticesNum > 0)
 		{
-			FVec3 P0 = GetVertex(PlaneVertexIndices[PlaneVertexIndices.Num() - 1]);
-			for (int32 PlaneVertexIndex = 0; PlaneVertexIndex < PlaneVertexIndices.Num(); ++PlaneVertexIndex)
+			FVec3 P0 = GetVertex(GetPlaneVertex(PlaneIndex, PlaneVerticesNum - 1));
+			for (int32 PlaneVertexIndex = 0; PlaneVertexIndex < PlaneVerticesNum; ++PlaneVertexIndex)
 			{
-				const int32 VertexIndex = PlaneVertexIndices[PlaneVertexIndex];
+				const int32 VertexIndex = GetPlaneVertex(PlaneIndex, PlaneVertexIndex);
 				const FVec3 P1 = GetVertex(VertexIndex);
 				
 				const FVec3 EdgePosition = FMath::ClosestPointOnLine(P0, P1, Position);
@@ -144,32 +143,46 @@ namespace Chaos
 		return ClosestEdgePosition;
 	}
 
-	TArrayView<const int32> FConvex::GetVertexPlanes(int32 VertexIndex) const
+	int32 FConvex::NumVertexPlanes(int32 VertexIndex) const
 	{
 		if (StructureData.IsValid())
 		{
-			return StructureData.GetVertexPlanes(VertexIndex);
+			return StructureData.NumVertexPlanes(VertexIndex);
 		}
-
-		static TArray<const int32> EmptyPlanes;
-		return MakeArrayView(EmptyPlanes);
+		return 0;
 	}
 
-	TArrayView<const int32> FConvex::GetPlaneVertices(int32 FaceIndex) const
+	int32 FConvex::GetVertexPlane(int32 VertexIndex, int32 VertexPlaneIndex) const
 	{
 		if (StructureData.IsValid())
 		{
-			return StructureData.GetPlaneVertices(FaceIndex);
+			return StructureData.GetVertexPlane(VertexIndex, VertexPlaneIndex);
 		}
+		return INDEX_NONE;
+	}
 
-		static TArray<const int32> EmptyVertices;
-		return MakeArrayView(EmptyVertices);
+	int32 FConvex::NumPlaneVertices(int32 PlaneIndex) const
+	{
+		if (StructureData.IsValid())
+		{
+			return StructureData.NumPlaneVertices(PlaneIndex);
+		}
+		return 0;
+	}
+
+	int32 FConvex::GetPlaneVertex(int32 PlaneIndex, int32 PlaneVertexIndex) const
+	{
+		if (StructureData.IsValid())
+		{
+			return StructureData.GetPlaneVertex(PlaneIndex, PlaneVertexIndex);
+		}
+		return INDEX_NONE;
 	}
 
 	// Store the structure data with the convex. This is used by manifold generation, for example
 	void FConvex::CreateStructureData(TArray<TArray<int32>>&& PlaneVertexIndices)
 	{
-		StructureData.SetPlaneVertices(MoveTemp(PlaneVertexIndices), SurfaceParticles.Size());
+		StructureData.SetPlaneVertices(MoveTemp(PlaneVertexIndices), Vertices.Num());
 	}
 
 	void FConvex::MovePlanesAndRebuild(const FReal InDelta)
@@ -271,12 +284,6 @@ namespace Chaos
 
 
 		// Use the new surface points
-		TParticles<FReal, 3> NewParticles;
-		NewParticles.AddParticles(NewPoints.Num());
-		for (int32 PointIndex = 0; PointIndex < NewPoints.Num(); ++PointIndex)
-		{
-			NewParticles.X(PointIndex) = NewPoints[PointIndex];
-		}
-		SurfaceParticles = MoveTemp(NewParticles);
+		Vertices = MoveTemp(NewPoints);
 	}
 }
