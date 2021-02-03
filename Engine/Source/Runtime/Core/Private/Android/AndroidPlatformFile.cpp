@@ -486,21 +486,24 @@ public:
 			return;
 		}
 
-		FString EntireFile;
-		char Buffer[1024];
-		Buffer[1023] = '\0';
-		int BytesRead = 1023;
-		while ( BytesRead == 1023 )
-		{
-			BytesRead = read(Handle, Buffer, 1023);
-			check( Buffer[1023] == '\0');
-			EntireFile.Append(FString(UTF8_TO_TCHAR(Buffer)));
-		}
-
-		close( Handle );
-
 		TArray<FString> Lines;
-		EntireFile.ParseIntoArrayLines(Lines);
+		{
+			TArray<char> FileBuffer;
+			char Buffer[1024];
+			int BytesRead = 1024;
+			while (BytesRead == 1024)
+			{
+				BytesRead = read(Handle, Buffer, 1024);
+				FileBuffer.Insert(Buffer, BytesRead, FileBuffer.Num());
+			}
+
+			close(Handle);
+
+			FileBuffer.AddZeroed(); // Zero terminate buffer for FString
+			FString EntireFile = FString(UTF8_TO_TCHAR(FileBuffer.GetData()));
+
+			EntireFile.ParseIntoArrayLines(Lines);
+		}
 
 #if LOG_ANDROID_FILE_MANIFEST
 		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Loaded manifest file %s"), *ManifestFileName);

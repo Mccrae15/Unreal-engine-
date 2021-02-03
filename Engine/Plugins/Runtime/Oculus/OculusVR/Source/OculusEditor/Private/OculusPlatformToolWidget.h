@@ -81,6 +81,8 @@ private:
 	FReply OnClearRiftBuildDirectory();
 	FReply OnSelectLaunchFilePath();
 	FReply OnClearLaunchFilePath();
+	FReply OnSelectSymbolDirPath();
+	FReply OnClearSymbolDirPath();
 	FReply OnSelect2DLaunchPath();
 	FReply OnClear2DLaunchPath();
 	FReply OnCancelUpload();
@@ -88,6 +90,8 @@ private:
 	FReply OnClearLanguagePacksPath();
 	FReply OnSelectExpansionFilesPath();
 	FReply OnClearExpansionFilesPath();
+
+	FString GenerateSymbolPath();
 
 	void OnPlatformSettingChanged(TSharedPtr<FString> ItemSelected, ESelectInfo::Type SelectInfo);
 	void OnApplicationIDChanged(const FText& InText, ETextCommit::Type InCommitType);

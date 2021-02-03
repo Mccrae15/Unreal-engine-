@@ -60,6 +60,9 @@ FVulkanCustomPresent::FVulkanCustomPresent(FOculusHMD* InOculusHMD) :
 	}
 */
 #endif
+	FVulkanDynamicRHI* const DynamicRHI = static_cast<FVulkanDynamicRHI*>(GDynamicRHI);
+
+	bSupportsSubsampled = DynamicRHI->GetDevice()->GetOptionalExtensions().HasEXTFragmentDensityMap2;
 }
 
 

@@ -760,7 +760,7 @@ bool FVulkanCommandListContext::IsSwapchainImage(FRHITexture* InTexture) const
 
 	for (uint32 i = 0; i < numViewports; i++)
 	{
-		for (int swapchainImageIdx = 0; swapchainImageIdx < FVulkanViewport::NUM_BUFFERS; swapchainImageIdx++)
+		for (int swapchainImageIdx = 0; swapchainImageIdx < viewports[i]->GetBackBufferSwapchainLength(); swapchainImageIdx++)
 		{
 			VkImage Image = FVulkanTextureBase::Cast(InTexture)->Surface.Image;
 			if (Image == viewports[i]->GetBackBufferImage(swapchainImageIdx))

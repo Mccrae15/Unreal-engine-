@@ -29,6 +29,7 @@
 #include "DynamicResolutionState.h"
 #include "DynamicResolutionProxy.h"
 #include "OculusHMDRuntimeSettings.h"
+#include "OculusDelegates.h"
 
 #if PLATFORM_ANDROID
 #include "Android/AndroidJNI.h"
@@ -51,6 +52,20 @@
 #endif
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
+
+static TAutoConsoleVariable<int32> CVarOculusEnableSubsampledLayout(
+	TEXT("r.Mobile.Oculus.EnableSubsampled"),
+	0,
+	TEXT("0: Disable subsampled layout (Default)\n")
+	TEXT("1: Enable subsampled layout on supported platforms\n"),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarOculusEnableLowLatencyVRS(
+	TEXT("r.Mobile.Oculus.EnableLowLatencyVRS"),
+	0,
+	TEXT("0: Disable late update of VRS textures (Default)\n")
+	TEXT("1: Enable late update of VRS textures\n"),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
 
 #define OCULUS_PAUSED_IDLE_FPS 10
 
@@ -782,6 +797,8 @@ namespace OculusHMD
 
 		bool retval = true;
 
+		UpdateHMDEvents();
+
 		if (FOculusHMDModule::GetPluginWrapper().GetInitialized())
 		{
 			if (OCFlags.DisplayLostDetected)
@@ -1127,14 +1144,6 @@ namespace OculusHMD
 	bool FOculusHMD::GetHMDDistortionEnabled(EShadingPath /* ShadingPath */) const
 	{
 		return false;
-	}
-
-
-	bool FOculusHMD::IsChromaAbCorrectionEnabled() const
-	{
-		CheckInGameThread();
-
-		return Settings->Flags.bChromaAbCorrectionEnabled;
 	}
 
 
@@ -1660,6 +1669,23 @@ namespace OculusHMD
 		}
 	}
 
+	void FOculusHMD::UpdateHMDEvents()
+	{
+		ovrpEventDataBuffer buf;
+		while (FOculusHMDModule::GetPluginWrapper().PollEvent(&buf) == ovrpSuccess)
+		{
+			if (buf.EventType == ovrpEventType_None)
+			{
+				break;
+			}
+			else if (buf.EventType == ovrpEventType_DisplayRefreshRateChange)
+			{
+				ovrpEventDisplayRefreshRateChange* rateChangedEvent = (ovrpEventDisplayRefreshRateChange*)&buf;
+				FOculusEventDelegates::OculusDisplayRefreshRateChanged.Broadcast(rateChangedEvent->FromRefreshRate, rateChangedEvent->ToRefreshRate);
+			}
+		}
+	}
+
 	uint32 FOculusHMD::CreateLayer(const IStereoLayers::FLayerDesc& InLayerDesc)
 	{
 		CheckInGameThread();
@@ -1949,6 +1975,29 @@ namespace OculusHMD
 		return GEngine && GEngine->IsStereoscopic3D(InViewport);
 	}
 
+#if WITH_LATE_LATCHING_CODE
+	bool FOculusHMD::LateLatchingEnabled() const
+	{
+#if OCULUS_HMD_SUPPORTED_PLATFORMS_VULKAN && PLATFORM_ANDROID
+		// No LateLatching supported when occlusion culling is enabled due to mid frame submission
+		// No LateLatching supported for non Multi view ATM due to viewUniformBuffer reusing.
+		// The setting can be disabled in FOculusHMD::UpdateStereoRenderingParams
+		return Settings->bLateLatching; 
+#else
+		return false;
+#endif
+	}
+
+	void FOculusHMD::PreLateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
+	{
+		CheckInRenderThread();
+		FGameFrame* CurrentFrame = GetFrame_RenderThread();
+		if (CurrentFrame)
+		{
+			CurrentFrame->Flags.bRTLateUpdateDone = false; // Allow LateLatching to update poses again
+		}
+	}
+#endif
 
 	FOculusHMD::FOculusHMD(const FAutoRegister& AutoRegister)
 		: FHeadMountedDisplayBase(nullptr)
@@ -2142,14 +2191,14 @@ namespace OculusHMD
 
 			int initializeFlags = GIsEditor ? ovrpInitializeFlag_SupportsVRToggle : 0;
 
-			initializeFlags |= CustomPresent->supportsSRGB() ? ovrpInitializeFlag_SupportSRGBFrameBuffer : 0;
+			initializeFlags |= CustomPresent->SupportsSRGB() ? ovrpInitializeFlag_SupportSRGBFrameBuffer : 0;
 
 			if (Settings->Flags.bSupportsDash)
 			{
 				initializeFlags |= ovrpInitializeFlag_FocusAware;
 			}
 
-			if (OVRP_FAILURE(FOculusHMDModule::GetPluginWrapper().Initialize5(
+			if (OVRP_FAILURE(FOculusHMDModule::GetPluginWrapper().Initialize6(
 				CustomPresent->GetRenderAPI(),
 				logCallback,
 				activity,
@@ -2157,6 +2206,8 @@ namespace OculusHMD
 				CustomPresent->GetOvrpPhysicalDevice(),
 				CustomPresent->GetOvrpDevice(),
 				CustomPresent->GetOvrpCommandQueue(),
+				nullptr,
+				0,
 				initializeFlags,
 				{ OVRP_VERSION })))
 			{
@@ -2171,28 +2222,33 @@ namespace OculusHMD
 
 #if PLATFORM_ANDROID
 		FOculusHMDModule::GetPluginWrapper().SetupDisplayObjects2(AndroidEGL::GetInstance()->GetRenderingContext()->eglContext, AndroidEGL::GetInstance()->GetDisplay(), AndroidEGL::GetInstance()->GetNativeWindow());
-		ovrpBool mvSupport;
-		FOculusHMDModule::GetPluginWrapper().GetSystemMultiViewSupported2(&mvSupport);
-		GSupportsMobileMultiView = mvSupport;
-		if (GSupportsMobileMultiView)
+		GSupportsMobileMultiView = true;
+		if (GRHISupportsLateVRSUpdate)
 		{
-			UE_LOG(LogHMD, Log, TEXT("OculusHMD plugin supports multiview!"));
+			UE_LOG(LogHMD, Log, TEXT("RHI supports VRS late-update!"));
 		}
 #endif
-		ovrpDistortionWindowFlag flag = ovrpDistortionWindowFlag_None;
+		int flag = ovrpDistortionWindowFlag_None;
 #if PLATFORM_ANDROID && USE_ANDROID_EGL_NO_ERROR_CONTEXT
 		if (AndroidEGL::GetInstance()->GetSupportsNoErrorContext())
 		{
 			flag = ovrpDistortionWindowFlag_NoErrorContext;
 		}
 #endif // PLATFORM_ANDROID && USE_ANDROID_EGL_NO_ERROR_CONTEXT
+
+#if PLATFORM_ANDROID
+		if (Settings->bPhaseSync)
+		{
+			flag |= (ovrpDistortionWindowFlag)(ovrpDistortionWindowFlag_PhaseSync);
+		}
+#endif // PLATFORM_ANDROID
+
 		FOculusHMDModule::GetPluginWrapper().SetupDistortionWindow3(flag);
 		FOculusHMDModule::GetPluginWrapper().SetSystemCpuLevel2(Settings->CPULevel);
 		FOculusHMDModule::GetPluginWrapper().SetSystemGpuLevel2(Settings->GPULevel);
 		FOculusHMDModule::GetPluginWrapper().SetTiledMultiResLevel((ovrpTiledMultiResLevel)Settings->FFRLevel);
 		FOculusHMDModule::GetPluginWrapper().SetTiledMultiResDynamic(Settings->FFRDynamic);
 		FOculusHMDModule::GetPluginWrapper().SetAppCPUPriority2(ovrpBool_True);
-		FOculusHMDModule::GetPluginWrapper().SetReorientHMDOnControllerRecenter(Settings->Flags.bRecenterHMDWithController ? ovrpBool_True : ovrpBool_False);
 
 		OCFlags.NeedSetTrackingOrigin = true;
 		bNeedReAllocateViewportRenderTarget = true;
@@ -2291,17 +2347,18 @@ namespace OculusHMD
 			FApp::SetHasVRFocus(true);
 		}
 
+		EColorSpace ClientColorSpace = EColorSpace::Unknown;
 		if (Settings->bEnableSpecificColorGamut)
 		{
-			EColorSpace ClientColorSpace = Settings->ColorSpace;
-#if PLATFORM_ANDROID
-			if (ClientColorSpace == EColorSpace::Unknown)
-			{
-				ClientColorSpace = EColorSpace::Quest;
-			}
-#endif
-			FOculusHMDModule::GetPluginWrapper().SetClientColorDesc((ovrpColorSpace)ClientColorSpace);
+			ClientColorSpace = Settings->ColorSpace;
 		}
+
+		if (ClientColorSpace == EColorSpace::Unknown)
+		{
+			UE_LOG(LogHMD, Warning, TEXT("A specific color gamut was not set! Defaulting to Rift CV1 color space."));
+			ClientColorSpace = EColorSpace::Rift_CV1;
+		}
+		FOculusHMDModule::GetPluginWrapper().SetClientColorDesc((ovrpColorSpace)ClientColorSpace);
 
 		return true;
 	}
@@ -2487,12 +2544,26 @@ namespace OculusHMD
 		if (bIsUsingMobileMultiView)
 		{
 			Layout = ovrpLayout_Array;
-			Settings->Flags.bIsUsingDirectMultiview = true;
+		}
+		else if (Settings->bLateLatching)
+		{
+			UE_CLOG(true, LogHMD, Error, TEXT("LateLatching can't be used when Multiview is off, force disabling."));
+			Settings->bLateLatching = false;
 		}
 
+
+		static const auto AllowOcclusionQueriesCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowOcclusionQueries"));
+		const bool bAllowOcclusionQueries = AllowOcclusionQueriesCVar && (AllowOcclusionQueriesCVar->GetValueOnAnyThread() != 0);
+		if (bAllowOcclusionQueries && Settings->bLateLatching)
+		{
+			UE_CLOG(true, LogHMD, Error, TEXT("LateLatching can't used when Occlusion culling is on due to mid frame vkQueueSubmit, force disabling"));
+			Settings->bLateLatching = false;
+		}
 #endif
 
 		ovrpLayerDesc_EyeFov EyeLayerDesc;
+		const bool requestsSubsampled = CVarOculusEnableSubsampledLayout.GetValueOnAnyThread() == 1 && CustomPresent->SupportsSubsampled();
+		int eyeLayerFlags = requestsSubsampled ? ovrpLayerFlag_Subsampled : 0;
 
 		if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().CalculateEyeLayerDesc2(
 			Layout,
@@ -2501,7 +2572,7 @@ namespace OculusHMD
 			1, // UNDONE
 			CustomPresent->GetOvrpTextureFormat(CustomPresent->GetDefaultPixelFormat(), Settings->Flags.bsRGBEyeBuffer),
 			(Settings->Flags.bCompositeDepth && bSupportsDepth) ? CustomPresent->GetDefaultDepthOvrpTextureFormat() : ovrpTextureFormat_None,
-			CustomPresent->GetLayerFlags() | (Settings->Flags.bChromaAbCorrectionEnabled ? ovrpLayerFlag_ChromaticAberrationCorrection : 0),
+			CustomPresent->GetLayerFlags() | eyeLayerFlags,
 			&EyeLayerDesc)))
 		{
 			// Update viewports
@@ -2573,6 +2644,7 @@ namespace OculusHMD
 
 	void FOculusHMD::InitializeEyeLayer_RenderThread(FRHICommandListImmediate& RHICmdList)
 	{
+		check(!InGameThread());
 		CheckInRenderThread();
 
 		if (LayerMap[0].IsValid())
@@ -3328,6 +3400,20 @@ namespace OculusHMD
 					Layers_RenderThread[LayerIndex]->UpdateTexture_RenderThread(CustomPresent, RHICmdList);
 				}
 			}
+
+			if (GRHISupportsLateVRSUpdate && CVarOculusEnableLowLatencyVRS.GetValueOnAnyThread() == 1)
+			{
+				// late-update foveation if supported and needed
+				ExecuteOnRHIThread_DoNotWait([this]()
+				{
+					ovrpResult Result;
+					if (Frame_RHIThread && OVRP_FAILURE(Result = FOculusHMDModule::GetPluginWrapper().UpdateFoveation(Frame_RHIThread->FrameNumber)))
+					{
+						UE_LOG(LogHMD, Error, TEXT("FOculusHMDModule::GetPluginWrapper().UpdateFoveation %u failed (%d)"), Frame_RHIThread->FrameNumber, Result);
+					}
+				});
+			}
+
 		}
 
 		Frame_RenderThread.Reset();
@@ -3549,14 +3635,18 @@ namespace OculusHMD
 		Settings->Flags.bSupportsDash = HMDSettings->bSupportsDash;
 		Settings->Flags.bCompositeDepth = HMDSettings->bCompositesDepth;
 		Settings->Flags.bHQDistortion = HMDSettings->bHQDistortion;
-		Settings->Flags.bChromaAbCorrectionEnabled = HMDSettings->bChromaCorrection;
-		Settings->Flags.bRecenterHMDWithController = HMDSettings->bRecenterHMDWithController;
 		Settings->FFRLevel = HMDSettings->FFRLevel;
 		Settings->FFRDynamic = HMDSettings->FFRDynamic;
 		Settings->CPULevel = HMDSettings->CPULevel;
 		Settings->GPULevel = HMDSettings->GPULevel;
 		Settings->PixelDensityMin = HMDSettings->PixelDensityMin;
 		Settings->PixelDensityMax = HMDSettings->PixelDensityMax;
+		Settings->bEnableSpecificColorGamut = HMDSettings->bEnableSpecificColorGamut;
+		Settings->ColorSpace = HMDSettings->ColorSpace;
+#if WITH_LATE_LATCHING_CODE
+		Settings->bLateLatching = HMDSettings->bLateLatching;
+#endif
+		Settings->bPhaseSync = HMDSettings->bPhaseSync;
 	}
 
 	/// @endcond

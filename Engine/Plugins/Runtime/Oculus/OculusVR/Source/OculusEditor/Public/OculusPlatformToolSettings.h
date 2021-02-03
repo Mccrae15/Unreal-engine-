@@ -188,6 +188,18 @@ public:
 		}
 	}
 
+	FString GetSymbolDirPath()
+	{
+		return (uint8)OculusTargetPlatform < OculusSymbolDirPath.Num() ? OculusSymbolDirPath[(uint8)OculusTargetPlatform] : "";
+	}
+	void SetSymbolDirPath(FString s)
+	{
+		if (OculusTargetPlatform < EOculusPlatformTarget::Length)
+		{
+			OculusSymbolDirPath[(uint8)OculusTargetPlatform] = s;
+		}
+	}
+
 	TArray<FAssetConfig>* GetAssetConfigs()
 	{
 		return (uint8)OculusTargetPlatform < OculusAssetConfigs.Num() ? &OculusAssetConfigs[(uint8)OculusTargetPlatform].ConfigArray : NULL;
@@ -241,6 +253,9 @@ private:
 
 	UPROPERTY(config, EditAnywhere, Category = Oculus)
 	TArray<FString> OculusExpansionFilesPath;
+
+	UPROPERTY(config, EditAnywhere, Category = Oculus)
+	TArray<FString> OculusSymbolDirPath;
 
 	UPROPERTY(config, EditAnywhere, Category = Oculus)
 	TArray<FAssetConfigArray> OculusAssetConfigs;

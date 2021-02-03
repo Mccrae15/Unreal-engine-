@@ -833,6 +833,8 @@ bool GRHISupportsResolveCubemapFaces = false;
 
 bool GRHISupportsBackBufferWithCustomDepthStencil = true;
 
+bool GRHISupportsLateVRSUpdate = false;
+
 bool GRHIIsHDREnabled = false;
 bool GRHISupportsHDROutput = false;
 

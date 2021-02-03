@@ -38,6 +38,9 @@ public:
 FOpenGLCustomPresent::FOpenGLCustomPresent(FOculusHMD* InOculusHMD, bool srgbSupport) :
 	FCustomPresent(InOculusHMD, ovrpRenderAPI_OpenGL, PF_R8G8B8A8, srgbSupport)
 {
+#if PLATFORM_ANDROID
+	bSupportsSubsampled = FAndroidOpenGL::SupportsSubsampledLayout();
+#endif
 }
 
 

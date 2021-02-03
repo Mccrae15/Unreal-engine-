@@ -97,6 +97,11 @@ public:
 		}
 	}
 
+	inline int32 GetBackBufferSwapchainLength()
+	{
+		return BackBufferImages.Num();
+	}
+
 	inline FVulkanSwapChain* GetSwapChain()
 	{
 		return SwapChain;

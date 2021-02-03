@@ -198,7 +198,8 @@ protected:
 		DefaultDepthClear(FClearValueBinding::DepthFar),
 		bHMDAllocatedDepthTarget(false),
 		bKeepDepthContent(true),
-		bAllocatedFoveationTexture(false)
+		bAllocatedFoveationTexture(false),
+		bRequireMultiView(false)
 		{
 			FMemory::Memset(LargestDesiredSizes, 0);
 #if PREVENT_RENDERTARGET_SIZE_THRASHING

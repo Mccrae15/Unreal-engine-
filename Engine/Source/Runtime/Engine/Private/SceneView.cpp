@@ -26,6 +26,7 @@
 #include "HighResScreenshot.h"
 #include "Slate/SceneViewport.h"
 #include "RenderUtils.h"
+#include "Runtime/Renderer/Private/ScenePrivate.h"
 
 DEFINE_LOG_CATEGORY(LogBufferVisualization);
 DEFINE_LOG_CATEGORY(LogMultiView);
@@ -795,12 +796,17 @@ FSceneView::FSceneView(const FSceneViewInitOptions& InitOptions)
 	bIsMobileMultiViewEnabled = Family && Family->bRequireMultiView;
 	if (bIsMobileMultiViewEnabled && !RHISupportsMobileMultiView(ShaderPlatform))
 	{
+#if PLATFORM_ANDROID || PLATFORM_HOLOLENS
 		// Native mobile multi-view is not supported, attempt to fall back to instancing on compatible RHIs
 		if (RHISupportsInstancedStereo(ShaderPlatform) && !GRHISupportsArrayIndexFromAnyShader)
 		{
 			UE_LOG(LogMultiView, Fatal, TEXT("Mobile Multi-View not supported by the RHI and no fallback is available."));
 		}
 		bIsMobileMultiViewEnabled = bIsInstancedStereoEnabled = RHISupportsInstancedStereo(ShaderPlatform);
+#else
+		bIsMobileMultiViewEnabled = bIsInstancedStereoEnabled = false;
+#endif
+
 	}
 
 	bShouldBindInstancedViewUB = bIsInstancedStereoEnabled || bIsMobileMultiViewEnabled;
@@ -2539,6 +2545,9 @@ FSceneViewFamily::FSceneViewFamily(const ConstructionValues& CVS)
 	bIsHDR(false),
 	bRequireMultiView(false),
 	GammaCorrection(CVS.GammaCorrection),
+#if WITH_LATE_LATCHING_CODE
+	bLateLatchingEnabled(false),
+#endif
 	SecondaryViewFraction(1.0f),
 	SecondaryScreenPercentageMethod(ESecondaryScreenPercentageMethod::LowerPixelDensitySimulation),
 	ScreenPercentageInterface(nullptr),
@@ -2645,6 +2654,18 @@ const FSceneView& FSceneViewFamily::GetStereoEyeView(const EStereoscopicPass Eye
 	else // For extra views
 	{
 		return *Views[EyeIndex - eSSP_RIGHT_EYE + 1];
+	}
+}
+
+FRHIUniformBuffer* FSceneViewFamily::GetInstancedViewUniformBuffer() const
+{
+	if (Scene && Scene->GetRenderScene())
+	{
+		return Scene->GetRenderScene()->UniformBuffers.InstancedViewUniformBuffer;
+	}
+	else
+	{
+		return NULL;
 	}
 }
 

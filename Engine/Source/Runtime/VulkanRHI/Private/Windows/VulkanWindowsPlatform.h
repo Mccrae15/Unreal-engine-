@@ -69,6 +69,13 @@ public:
 		static auto* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Vulkan.UseRealUBs"));
 		return (CVar && CVar->GetValueOnAnyThread() == 0) ? false : bCodeHeaderUseRealUBs;
 	}
+
+#if WITH_LATE_LATCHING_CODE
+	static bool SupportsUniformBufferPatching()
+	{
+		return false;
+	}
+#endif
 };
 
 typedef FVulkanWindowsPlatform FVulkanPlatform;

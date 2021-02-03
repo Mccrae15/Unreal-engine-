@@ -5156,10 +5156,10 @@ void UCookOnTheFlyServer::CollectFilesToCook(TArray<FName>& FilesInPath, const T
 			// Add the default map section
 			GEditor->LoadMapListFromIni(TEXT("AlwaysCookMaps"), MapList);
 
-			for (int32 MapIdx = 0; MapIdx < MapList.Num(); MapIdx++)
+			for (const FString& MapName : MapList)
 			{
-				UE_LOG(LogCook, Verbose, TEXT("Maplist contains has %s "), *MapList[MapIdx]);
-				AddFileToCook(FilesInPath, MapList[MapIdx]);
+				UE_LOG(LogCook, Verbose, TEXT("Maplist contains has %s "), *MapName);
+				AddFileToCook(FilesInPath, MapName);
 			}
 		}
 
@@ -5177,8 +5177,8 @@ void UCookOnTheFlyServer::CollectFilesToCook(TArray<FName>& FilesInPath, const T
 			{
 				UE_LOG(LogCook, Verbose, TEXT("Maplist contains %s"), *MapName);
 				AddFileToCook(FilesInPath, MapName);
-				bFoundMapsToCook = true;
 			}
+			bFoundMapsToCook = bFoundMapsToCook || MapList.Num() != 0;
 		}
 
 		// If we didn't find any maps look in the project settings for maps
@@ -5186,13 +5186,13 @@ void UCookOnTheFlyServer::CollectFilesToCook(TArray<FName>& FilesInPath, const T
 		{
 			for (const FFilePath& MapToCook : PackagingSettings->MapsToCook)
 			{
-				UE_LOG(LogCook, Verbose, TEXT("Maps to cook list contains %s"), *MapToCook.FilePath);
-				FilesInPath.Add(FName(*MapToCook.FilePath));
-				bFoundMapsToCook = true;
+				UE_LOG(LogCook, Verbose, TEXT("Maps to cook list contains %s "), *MapToCook.FilePath);
+				AddFileToCook(FilesInPath, MapToCook.FilePath);
 			}
+			bFoundMapsToCook = PackagingSettings->MapsToCook.Num() != 0;
 		}
 
-		// If we didn't find any maps, cook the AllMaps section
+		// If we still didn't find maps to cook, then cook the AllMaps section
 		if (bFoundMapsToCook == false)
 		{
 			UE_LOG(LogCook, Verbose, TEXT("Loading default map ini section AllMaps"));

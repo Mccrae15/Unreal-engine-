@@ -129,7 +129,7 @@ public:
 	//virtual float GetDistortionScalingFactor() const override;
 	//virtual float GetLensCenterOffset() const override;
 	//virtual void GetDistortionWarpValues(FVector4& K) const override;
-	virtual bool IsChromaAbCorrectionEnabled() const override;
+	//virtual bool IsChromaAbCorrectionEnabled() const override;
 	//virtual bool GetChromaAbCorrectionValues(FVector4& K) const override;
 	virtual bool HasHiddenAreaMesh() const override;
 	virtual bool HasVisibleAreaMesh() const override;
@@ -213,7 +213,10 @@ public:
 	virtual void PostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
 	virtual int32 GetPriority() const override;
 	virtual bool IsActiveThisFrame(class FViewport* InViewport) const override;
-
+#if WITH_LATE_LATCHING_CODE
+	virtual bool LateLatchingEnabled() const override; 
+	virtual void PreLateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
+#endif
 
 public:
 	FOculusHMD(const FAutoRegister&);
@@ -364,6 +367,8 @@ protected:
 protected:
 	void UpdateHMDWornState();
 	EHMDWornState::Type HMDWornState = EHMDWornState::Unknown;
+
+	void UpdateHMDEvents();
 
 	union
 	{

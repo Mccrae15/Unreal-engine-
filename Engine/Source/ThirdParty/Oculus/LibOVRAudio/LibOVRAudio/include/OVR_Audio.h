@@ -28,7 +28,7 @@ typedef int32_t ovrResult;
 #endif
 
 /// Enumerates error codes that can be returned by OVRAudio
-typedef enum 
+typedef enum
 {
    ovrError_AudioUnknown                                = 2000, ///< An unknown error has occurred.
    ovrError_AudioInvalidParam                           = 2001, ///< An invalid parameter, e.g. NULL pointer or out of range variable, was passed
@@ -36,7 +36,7 @@ typedef enum
    ovrError_AudioMissingDLL                             = 2003, ///< The DLL or shared library could not be found
    ovrError_AudioBadAlignment                           = 2004, ///< Buffers did not meet 16b alignment requirements
    ovrError_AudioUninitialized                          = 2005, ///< audio function called before initialization
-   ovrError_AudioHRTFInitFailure                        = 2006, ///< HRTF provider initialization failed 
+   ovrError_AudioHRTFInitFailure                        = 2006, ///< HRTF provider initialization failed
    ovrError_AudioBadVersion                             = 2007, ///< Mismatched versions between header and libs
    ovrError_AudioSymbolNotFound                         = 2008, ///< Couldn't find a symbol in the DLL
    ovrError_SharedReverbDisabled                        = 2009, ///< Late reverberation is disabled
@@ -54,7 +54,7 @@ typedef struct ovrPoseStatef_ ovrPoseStatef;
 #endif
 
 #define OVR_AUDIO_MAJOR_VERSION 1
-#define OVR_AUDIO_MINOR_VERSION 41
+#define OVR_AUDIO_MINOR_VERSION 52
 #define OVR_AUDIO_PATCH_VERSION 0
 
 #ifdef _WIN32
@@ -63,8 +63,8 @@ typedef struct ovrPoseStatef_ ovrPoseStatef;
 #elif defined(__ANDROID__)
 #define OVRA_EXPORT __attribute__((visibility("default")))
 #define FUNC_NAME __func__
-#elif defined __APPLE__ 
-#define OVRA_EXPORT 
+#elif defined __APPLE__
+#define OVRA_EXPORT __attribute__((visibility("default")))
 #define FUNC_NAME __func__
 #elif defined __linux__
 #define OVRA_EXPORT __attribute__((visibility("default")))
@@ -77,7 +77,7 @@ typedef struct ovrPoseStatef_ ovrPoseStatef;
 /// Audio source flags
 ///
 /// \see ovrAudio_SetAudioSourceFlags
-typedef enum 
+typedef enum
 {
   ovrAudioSourceFlag_None                          = 0x0000,
 
@@ -99,14 +99,14 @@ typedef enum
 /// Audio source attenuation mode
 ///
 /// \see ovrAudio_SetAudioSourceAttenuationMode
-typedef enum 
+typedef enum
 {
   ovrAudioSourceAttenuationMode_None          = 0,      ///< Sound is not attenuated, e.g. middleware handles attenuation
   ovrAudioSourceAttenuationMode_Fixed         = 1,      ///< Sound has fixed attenuation (passed to ovrAudio_SetAudioSourceAttenuationMode)
   ovrAudioSourceAttenuationMode_InverseSquare = 2,      ///< Sound uses internally calculated attenuation based on inverse square
 
   ovrAudioSourceAttenuationMode_COUNT
-  
+
 } ovrAudioSourceAttenuationMode;
 
 /// Global boolean flags
@@ -140,7 +140,7 @@ typedef enum
 /// Internal use only
 ///
 /// Internal use only
-typedef enum 
+typedef enum
 {
 
   ovrAudioHRTFInterpolationMethod_Nearest,
@@ -180,7 +180,7 @@ typedef enum
     ovrAudioHeadphones_Rift_INTERNAL4 = 5,   ///< Apply correction for default headphones on Rift
 
     ovrAudioHeadphones_Custom         = 10,  ///< Apply correction using custom IR
-    
+
     ovrAudioHeadphones_COUNT
 } ovrAudioHeadphones;
 
@@ -199,7 +199,7 @@ typedef enum
 
 
 /// Ambisonic formats
-typedef enum 
+typedef enum
 {
     ovrAudioAmbisonicFormat_FuMa, ///< standard B-Format, channel order = WXYZ (W channel is -3dB)
     ovrAudioAmbisonicFormat_AmbiX ///< ACN/SN3D standard, channel order = WYZX
@@ -209,7 +209,7 @@ typedef enum
 /// Virtual speaker layouts for ambisonics
 ///
 /// Provides a variety of virtual speaker layouts for ambisonic playback. The default is Spherical Harmonics which is a experimental approach that uses no virtual speakers at all and provides better externalization but can exhibit some artifacts with broadband content.
-/// 
+///
 typedef enum
 {
     ovrAudioAmbisonicSpeakerLayout_FrontOnly           =  0, ///< A single virtual speaker in-front of listener
@@ -221,7 +221,6 @@ typedef enum
     ovrAudioAmbisonicSpeakerLayout_SphericalHarmonics  = -1, ///< (default) Uses a spherical harmonic representation of HRTF instead of virtual speakers
     ovrAudioAmbisonicSpeakerLayout_Mono                = -2  ///< Plays the W (omni) channel through left and right with no spatialization
 } ovrAudioAmbisonicSpeakerLayout;
-
 
 /// Opaque type definitions for audio source and context
 typedef struct ovrAudioSource_   ovrAudioSource;
@@ -251,7 +250,7 @@ OVRA_EXPORT const char *ovrAudio_GetVersion( int *Major, int *Minor, int *Patch 
 /// Helper function that allocates 16-byte aligned sample data sufficient
 /// for passing to the spatialization APIs.
 ///
-/// \param NumSamples number of samples to allocate 
+/// \param NumSamples number of samples to allocate
 /// \return Returns pointer to 16-byte aligned float buffer, or NULL on failure
 /// \see ovrAudio_FreeSamples
 ///
@@ -276,7 +275,7 @@ OVRA_EXPORT void ovrAudio_FreeSamples( float *Samples );
 /// \param Pos[out] buffer to store position
 /// \return Returns an ovrResult indicating success or failure
 ///
-OVRA_EXPORT ovrResult ovrAudio_GetTransformFromPose( const ovrPosef *Pose, 
+OVRA_EXPORT ovrResult ovrAudio_GetTransformFromPose( const ovrPosef *Pose,
                                                      float *Vx, float *Vy, float *Vz,
                                                      float *Pos );
 
@@ -324,8 +323,8 @@ OVRA_EXPORT void ovrAudio_DestroyContext( ovrAudioContext Context );
 /// \param Enable 0 to disable, 1 to enable
 /// \return Returns an ovrResult indicating success or failure
 ///
-OVRA_EXPORT ovrResult ovrAudio_Enable( ovrAudioContext Context, 
-                                  ovrAudioEnable What, 
+OVRA_EXPORT ovrResult ovrAudio_Enable( ovrAudioContext Context,
+                                  ovrAudioEnable What,
                                   int Enable );
 
 /// Query option status in the audio context.
@@ -335,8 +334,8 @@ OVRA_EXPORT ovrResult ovrAudio_Enable( ovrAudioContext Context,
 /// \param pEnabled addr of variable to receive the queried property status
 /// \return Returns an ovrResult indicating success or failure
 ///
-OVRA_EXPORT ovrResult ovrAudio_IsEnabled( ovrAudioContext Context, 
-										  ovrAudioEnable What, 
+OVRA_EXPORT ovrResult ovrAudio_IsEnabled( ovrAudioContext Context,
+										  ovrAudioEnable What,
 										  int* pEnabled );
 
 /// Set the unit scale of game units relative to meters. (e.g. for centimeters set UnitScale = 0.01)
@@ -357,7 +356,7 @@ OVRA_EXPORT ovrResult ovrAudio_GetUnitScale(ovrAudioContext Context, float *Unit
 /// \param Context context to use
 /// \param InterpolationMethod method to use
 ///
-OVRA_EXPORT ovrResult ovrAudio_SetHRTFInterpolationMethod( ovrAudioContext Context, 
+OVRA_EXPORT ovrResult ovrAudio_SetHRTFInterpolationMethod( ovrAudioContext Context,
 															 ovrAudioHRTFInterpolationMethod InterpolationMethod );
 
 /// Get HRTF interpolation method.
@@ -366,7 +365,7 @@ OVRA_EXPORT ovrResult ovrAudio_SetHRTFInterpolationMethod( ovrAudioContext Conte
 /// \param Context context to use
 /// \param InterpolationMethod method to use
 ///
-OVRA_EXPORT ovrResult ovrAudio_GetHRTFInterpolationMethod( ovrAudioContext Context, 
+OVRA_EXPORT ovrResult ovrAudio_GetHRTFInterpolationMethod( ovrAudioContext Context,
 															ovrAudioHRTFInterpolationMethod* pInterpolationMethod );
 
 /// Box room parameters used by ovrAudio_SetSimpleBoxRoomParameters
@@ -375,19 +374,16 @@ OVRA_EXPORT ovrResult ovrAudio_GetHRTFInterpolationMethod( ovrAudioContext Conte
 typedef struct _ovrAudioBoxRoomParameters
 {
    uint32_t       brp_Size;                              ///< Size of struct
-   float          brp_ReflectLeft, brp_ReflectRight;     ///< Reflection values (0..0.95)
-   float          brp_ReflectUp, brp_ReflectDown;        ///< Reflection values (0..0.95)
-   float          brp_ReflectBehind, brp_ReflectFront;   ///< Reflection values (0..0.95)
+   float          brp_ReflectLeft, brp_ReflectRight;     ///< Reflection values (0 - 0.97)
+   float          brp_ReflectUp, brp_ReflectDown;        ///< Reflection values (0 - 0.97)
+   float          brp_ReflectBehind, brp_ReflectFront;   ///< Reflection values (0 - 0.97)
    float          brp_Width, brp_Height, brp_Depth;      ///< Size of box in meters
 } ovrAudioBoxRoomParameters;
 
 /// Set box room parameters for reverberation.
 ///
-/// These parameters are used for reverberation/early reflections if 
+/// These parameters are used for reverberation/early reflections if
 /// ovrAudioEnable_SimpleRoomModeling is enabled.
-///
-/// Width/Height/Depth default is 11/10/9m
-/// Reflection constants default to 0.25
 ///
 /// \param Context[in] context to use
 /// \param Parameters[in] pointer to ovrAudioBoxRoomParameters describing box
@@ -395,20 +391,70 @@ typedef struct _ovrAudioBoxRoomParameters
 /// \see ovrAudioBoxRoomParameters
 /// \see ovrAudio_Enable
 ///
-OVRA_EXPORT ovrResult ovrAudio_SetSimpleBoxRoomParameters( ovrAudioContext Context, 
-                                                     const ovrAudioBoxRoomParameters *Parameters );
+OVRA_EXPORT ovrResult ovrAudio_SetSimpleBoxRoomParameters( ovrAudioContext Context,
+                                                           const ovrAudioBoxRoomParameters *Parameters );
 
 /// Get box room parameters for current reverberation.
 ///
 /// \param Context[in] context to use
-/// \param Parameters[in] pointer to returned ovrAudioBoxRoomParameters box description
+/// \param Parameters[out] pointer to returned ovrAudioBoxRoomParameters box description
 /// \return Returns an ovrResult indicating success or failure
 /// \see ovrAudioBoxRoomParameters
 /// \see ovrAudio_Enable
 ///
-OVRA_EXPORT ovrResult ovrAudio_GetSimpleBoxRoomParameters( ovrAudioContext Context, 
-															ovrAudioBoxRoomParameters *Parameters );
+OVRA_EXPORT ovrResult ovrAudio_GetSimpleBoxRoomParameters( ovrAudioContext Context,
+														   ovrAudioBoxRoomParameters *Parameters );
 
+/// Box room parameters used by ovrAudio_SetSimpleBoxRoomParameters
+///
+/// \see ovrAudio_SetAdvancedBoxRoomParameters
+typedef struct _ovrAudioAdvancedBoxRoomParameters
+{
+    uint32_t         abrp_Size;                               ///< Size of struct
+    AudioBands  abrp_ReflectLeft, abrp_ReflectRight;     ///< Reflection bands (0 - 1.0)
+    AudioBands  abrp_ReflectUp, abrp_ReflectDown;        ///< Reflection bands (0 - 1.0)
+    AudioBands  abrp_ReflectBehind, abrp_ReflectFront;   ///< Reflection bands (0 - 1.0)
+    float            abrp_Width, abrp_Height, abrp_Depth;     ///< Size of box in meters
+    int              abrp_LockToListenerPosition;             ///< Whether box is centered on listener
+    ovrAudioVector3f abrp_RoomPosition;
+} ovrAudioAdvancedBoxRoomParameters;
+
+/// Set advanced box room parameters for reverberation.
+///
+/// These parameters are used for reverberation/early reflections if
+/// ovrAudioEnable_SimpleRoomModeling is enabled.
+///
+/// \param Context[in] context to use
+/// \param LockToListenerPosition[in] 1 - room is centered on listener, 0 - room center is specified by RoomPosition coordinates
+/// \param RoomPositionX[in] desired X coordinate of room (if not locked to listener)
+/// \param RoomPositionY[in] desired Y coordinate of room (if not locked to listener)
+/// \param RoomPositionZ[in] desired Z coordinate of room (if not locked to listener)
+/// \param WallMaterials[in] absorption coefficients for room materials
+/// \return Returns an ovrResult indicating success or failure
+/// \see ovrAudio_SetSimpleBoxRoomParameters
+/// \see ovrAudio_Enable
+///
+OVRA_EXPORT ovrResult ovrAudio_SetAdvancedBoxRoomParameters( ovrAudioContext Context,
+                                                             const ovrAudioAdvancedBoxRoomParameters *Parameters );
+
+
+/// Get advanced box room parameters for reverberation.
+///
+/// These parameters are used for reverberation/early reflections if
+/// ovrAudioEnable_SimpleRoomModeling is enabled.
+///
+/// \param Context[in] context to use
+/// \param LockToListenerPosition[out] 1 - room is centered on listener, 0 - room center is specified by RoomPosition coordinates
+/// \param RoomPositionX[out] desired X coordinate of room (if not locked to listener)
+/// \param RoomPositionY[out] desired Y coordinate of room (if not locked to listener)
+/// \param RoomPositionZ[out] desired Z coordinate of room (if not locked to listener)
+/// \param WallMaterials[out] absorption coefficients for room materials
+/// \return Returns an ovrResult indicating success or failure
+/// \see ovrAudio_SetAdvancedBoxRoomParameters
+/// \see ovrAudio_Enable
+///
+OVRA_EXPORT ovrResult ovrAudio_GetAdvancedBoxRoomParameters( ovrAudioContext Context,
+                                                             ovrAudioAdvancedBoxRoomParameters *Parameters );
 
 /// Sets the listener's pose state as vectors, position is in game units (unit scale will be applied)
 ///
@@ -462,7 +508,7 @@ OVRA_EXPORT ovrResult ovrAudio_GetListenerVectors(	ovrAudioContext Context,
 /// \param PoseState[in] listener's pose state as returned by LibOVR
 /// \return Returns an ovrResult indicating success or failure
 ///
-OVRA_EXPORT ovrResult ovrAudio_SetListenerPoseStatef( ovrAudioContext Context, 
+OVRA_EXPORT ovrResult ovrAudio_SetListenerPoseStatef( ovrAudioContext Context,
                                                 const ovrPoseStatef *PoseState );
 
 // Note: there is no ovrAudio_GetListenerPoseStatef() since the pose data is not cached internally.
@@ -491,8 +537,8 @@ OVRA_EXPORT ovrResult ovrAudio_ResetAudioSource( ovrAudioContext Context, int So
 /// \see ovrAudio_SetListenerPoseStatef
 /// \see ovrAudio_SetAudioSourceRange
 ///
-OVRA_EXPORT ovrResult ovrAudio_SetAudioSourcePos( ovrAudioContext Context, 
-                                                  int Sound, 
+OVRA_EXPORT ovrResult ovrAudio_SetAudioSourcePos( ovrAudioContext Context,
+                                                  int Sound,
                                                   float X, float Y, float Z );
 
 /// Gets the position of an audio source.  Use "OVR" coordinate system (same as pose).
@@ -506,8 +552,8 @@ OVRA_EXPORT ovrResult ovrAudio_SetAudioSourcePos( ovrAudioContext Context,
 /// \see ovrAudio_SetListenerPoseStatef
 /// \see ovrAudio_SetAudioSourceRange
 ///
-OVRA_EXPORT ovrResult ovrAudio_GetAudioSourcePos( ovrAudioContext Context, 
-                                                  int Sound, 
+OVRA_EXPORT ovrResult ovrAudio_GetAudioSourcePos( ovrAudioContext Context,
+                                                  int Sound,
                                                   float* pX, float* pY, float* pZ );
 
 /// Sets the min and max range of the audio source.
@@ -520,8 +566,8 @@ OVRA_EXPORT ovrResult ovrAudio_GetAudioSourcePos( ovrAudioContext Context,
 /// \see ovrAudio_SetListenerPoseStatef
 /// \see ovrAudio_SetAudioSourcePos
 ///
-OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceRange( ovrAudioContext Context, 
-                                                    int Sound, 
+OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceRange( ovrAudioContext Context,
+                                                    int Sound,
                                                     float RangeMin, float RangeMax );
 
 /// Gets the min and max range of the audio source.
@@ -535,8 +581,8 @@ OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceRange( ovrAudioContext Context,
 /// \see ovrAudio_SetAudioSourcePos
 /// \see ovrAudio_SetAudioSourceRange
 ///
-OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceRange( ovrAudioContext Context, 
-                                                    int Sound, 
+OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceRange( ovrAudioContext Context,
+                                                    int Sound,
                                                     float* pRangeMin, float* pRangeMax );
 
 /// Sets the radius of the audio source for volumetric sound sources. Set a radius of 0 to make it a point source.
@@ -548,8 +594,8 @@ OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceRange( ovrAudioContext Context,
 /// \see ovrAudio_SetListenerPoseStatef
 /// \see ovrAudio_SetAudioSourcePos
 ///
-OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceRadius( ovrAudioContext Context, 
-                                                    int Sound, 
+OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceRadius( ovrAudioContext Context,
+                                                    int Sound,
                                                     float Radius );
 
 /// Gets the radius of the audio source for volumetric sound sources.
@@ -562,8 +608,8 @@ OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceRadius( ovrAudioContext Context,
 /// \see ovrAudio_SetAudioSourcePos
 /// \see ovrAudio_SetAudioSourceRadius
 ///
-OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceRadius( ovrAudioContext Context, 
-                                                    int Sound, 
+OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceRadius( ovrAudioContext Context,
+                                                    int Sound,
                                                     float* pRadius );
 
 /// Sets the reverb wet send level for audio source
@@ -583,7 +629,7 @@ OVRA_EXPORT ovrResult ovrAudio_SetAudioReverbSendLevel(ovrAudioContext Context,
 ///
 /// \param Context context to use
 /// \param Sound index of sound (0..NumSources-1)
-/// \param pLevel addr of variable to receive the currently set send level 
+/// \param pLevel addr of variable to receive the currently set send level
 /// \return Returns an ovrResult indicating success or failure
 /// \see ovrAudio_SetListenerPoseStatef
 /// \see ovrAudio_SetAudioSourcePos
@@ -600,8 +646,8 @@ OVRA_EXPORT ovrResult ovrAudio_GetAudioReverbSendLevel(ovrAudioContext Context,
 /// \param Flags a logical OR of ovrAudioSourceFlag enumerants
 /// \return Returns an ovrResult indicating success or failure
 ///
-OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceFlags( ovrAudioContext Context, 
-                                                    int Sound, 
+OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceFlags( ovrAudioContext Context,
+                                                    int Sound,
                                                     uint32_t Flags );
 
 /// Gets an audio source's flags.
@@ -611,8 +657,8 @@ OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceFlags( ovrAudioContext Context,
 /// \param pFlags addr of returned flags (a logical OR of ovrAudioSourceFlag enumerants)
 /// \return Returns an ovrResult indicating success or failure
 ///
-OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceFlags( ovrAudioContext Context, 
-                                                    int Sound, 
+OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceFlags( ovrAudioContext Context,
+                                                    int Sound,
                                                     uint32_t* pFlags );
 
 /// Set the attenuation mode for a sound source.
@@ -625,10 +671,10 @@ OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceFlags( ovrAudioContext Context,
 /// \param FixedScale attenuation constant used for fixed attenuation mode
 /// \return Returns an ovrResult indicating success or failure
 ///
-OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceAttenuationMode( ovrAudioContext Context, 
-                                                              int Sound, 
-                                                              ovrAudioSourceAttenuationMode Mode, 
-                                                              float FixedScale );
+OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceAttenuationMode( ovrAudioContext Context,
+                                                              int Sound,
+                                                              ovrAudioSourceAttenuationMode Mode,
+                                                              float SourceGain );
 
 /// Get the attenuation mode for a sound source.
 ///
@@ -640,10 +686,10 @@ OVRA_EXPORT ovrResult ovrAudio_SetAudioSourceAttenuationMode( ovrAudioContext Co
 /// \param pFixedScale addr of returned attenuation constant used for fixed attenuation mode
 /// \return Returns an ovrResult indicating success or failure
 ///
-OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceAttenuationMode( ovrAudioContext Context, 
-                                                              int Sound, 
-                                                              ovrAudioSourceAttenuationMode* pMode, 
-                                                              float* pFixedScale );
+OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceAttenuationMode( ovrAudioContext Context,
+                                                              int Sound,
+                                                              ovrAudioSourceAttenuationMode* pMode,
+                                                              float* pSourceGain );
 
 /// Get the overall gain for a sound source.
 ///
@@ -663,7 +709,6 @@ OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceOverallGain( ovrAudioContext Contex
 ///
 /// \param Context[in] context to use
 /// \param Sound[in] index of sound (0..NumSources-1)
-/// \param InFlags[in] spatialization flags to apply 
 /// \param OutStatus[out] bitwise OR of flags indicating status of currently playing sound
 /// \param Dst[out] pointer to stereo interleaved floating point destination buffer
 /// \param Src[in] pointer to mono floating point buffer to spatialize
@@ -671,16 +716,15 @@ OVRA_EXPORT ovrResult ovrAudio_GetAudioSourceOverallGain( ovrAudioContext Contex
 ///
 /// \see ovrAudio_SpatializeMonoSourceLR
 ///
-OVRA_EXPORT ovrResult ovrAudio_SpatializeMonoSourceInterleaved( ovrAudioContext Context, 
-                                                          int Sound, 
-                                                          uint32_t *OutStatus, 
+OVRA_EXPORT ovrResult ovrAudio_SpatializeMonoSourceInterleaved( ovrAudioContext Context,
+                                                          int Sound,
+                                                          uint32_t *OutStatus,
                                                           float *Dst, const float *Src );
 
 /// Spatialize a mono audio source to separate left and right output buffers.
 ///
 /// \param Context[in] context to use
 /// \param Sound[in] index of sound (0..NumSources-1)
-/// \param InFlags[in] spatialization flags to apply 
 /// \param OutStatus[out] bitwise OR of flags indicating status of currently playing sound
 /// \param DstLeft[out]  pointer to floating point left channel buffer
 /// \param DstRight[out] pointer to floating point right channel buffer
@@ -689,10 +733,10 @@ OVRA_EXPORT ovrResult ovrAudio_SpatializeMonoSourceInterleaved( ovrAudioContext 
 ///
 /// \see ovrAudio_SpatializeMonoSourceInterleaved
 ///
-OVRA_EXPORT ovrResult ovrAudio_SpatializeMonoSourceLR( ovrAudioContext Context, 
-                                                 int Sound, 
-                                                 uint32_t *OutStatus, 
-                                                 float *DstLeft, float *DstRight, 
+OVRA_EXPORT ovrResult ovrAudio_SpatializeMonoSourceLR( ovrAudioContext Context,
+                                                 int Sound,
+                                                 uint32_t *OutStatus,
+                                                 float *DstLeft, float *DstRight,
                                                  const float *Src );
 
 /// Set the headphone model used by the headphone correction algorithm.
@@ -704,7 +748,7 @@ OVRA_EXPORT ovrResult ovrAudio_SpatializeMonoSourceLR( ovrAudioContext Context,
 /// \return Returns an ovrResult indicating success or failure
 /// \see ovrAudio_ApplyHeadphoneCorrection
 ///
-OVRA_EXPORT ovrResult ovrAudio_SetHeadphoneModel( ovrAudioContext Context, 
+OVRA_EXPORT ovrResult ovrAudio_SetHeadphoneModel( ovrAudioContext Context,
                                             ovrAudioHeadphones Model,
                                             const float *ImpulseResponse, int NumSamples );
 
@@ -717,21 +761,20 @@ OVRA_EXPORT ovrResult ovrAudio_SetHeadphoneModel( ovrAudioContext Context,
 /// \return Returns an ovrResult indicating success or failure
 /// \see ovrAudio_ApplyHeadphoneCorrection
 ///
-OVRA_EXPORT ovrResult ovrAudio_GetHeadphoneModel( ovrAudioContext Context, 
+OVRA_EXPORT ovrResult ovrAudio_GetHeadphoneModel( ovrAudioContext Context,
                                             ovrAudioHeadphones* pModel,
                                             const float** pImpulseResponse, int* pNumSamples );
 
 /// Mix shared reverb into buffer
 ///
 /// \param Context[in] context to use
-/// \param InFlags[in] spatialization flags to apply 
 /// \param OutStatus[out] bitwise OR of flags indicating status of currently playing sound
 /// \param OutLeft[out] pointer to floating point left channel buffer to mix into (MUST CONTAIN VALID AUDIO OR SILENCE)
 /// \param OutRight[out] pointer to floating point right channel buffer to mix into (MUST CONTAIN VALID AUDIO OR SILENCE)
 /// \return Returns an ovrResult indicating success or failure
 ///
-OVRA_EXPORT ovrResult ovrAudio_MixInSharedReverbLR( ovrAudioContext Context, 
-                                                    uint32_t *OutStatus, 
+OVRA_EXPORT ovrResult ovrAudio_MixInSharedReverbLR( ovrAudioContext Context,
+                                                    uint32_t *OutStatus,
                                                     float *DstLeft, float *DstRight );
 
 
@@ -743,7 +786,7 @@ OVRA_EXPORT ovrResult ovrAudio_MixInSharedReverbLR( ovrAudioContext Context,
 /// \return Returns an ovrResult indicating success or failure
 ///
 OVRA_EXPORT ovrResult ovrAudio_MixInSharedReverbInterleaved( ovrAudioContext Context,
-                                                             uint32_t* OutStatus, 
+                                                             uint32_t* OutStatus,
                                                              float* DstInterleaved );
 
 /// Set shared reverb wet level
@@ -752,7 +795,7 @@ OVRA_EXPORT ovrResult ovrAudio_MixInSharedReverbInterleaved( ovrAudioContext Con
 /// \param Level[out] linear value to scale global reverb level by
 /// \return Returns an ovrResult indicating success or failure
 ///
-OVRA_EXPORT ovrResult ovrAudio_SetSharedReverbWetLevel(ovrAudioContext Context, 
+OVRA_EXPORT ovrResult ovrAudio_SetSharedReverbWetLevel(ovrAudioContext Context,
 														  const float Level);
 
 /// Get shared reverb wet level
@@ -796,7 +839,7 @@ OVRA_EXPORT ovrResult ovrAudio_GetSharedReverbRange( ovrAudioContext Context,
 ///
 /// \param Context[in] context to use
 /// \param Config[in] configuration state
-OVRA_EXPORT ovrResult ovrAudio_SetHeadRadius( ovrAudioContext Context, 
+OVRA_EXPORT ovrResult ovrAudio_SetHeadRadius( ovrAudioContext Context,
                                               float HeadRadius );
 
 /// Set user configuration.
@@ -818,9 +861,9 @@ OVRA_EXPORT ovrResult ovrAudio_GetHeadRadius( ovrAudioContext Context,
 /// \return Returns an ovrResult indicating success or failure
 /// \see ovrAudio_ResetPerformanceCounter
 ///
-OVRA_EXPORT ovrResult ovrAudio_GetPerformanceCounter( ovrAudioContext Context, 
-                                                      ovrAudioPerformanceCounter Counter, 
-                                                      int64_t *Count, 
+OVRA_EXPORT ovrResult ovrAudio_GetPerformanceCounter( ovrAudioContext Context,
+                                                      ovrAudioPerformanceCounter Counter,
+                                                      int64_t *Count,
                                                       double *TimeMicroSeconds );
 
 /// Reset a performance counter.
@@ -829,10 +872,10 @@ OVRA_EXPORT ovrResult ovrAudio_GetPerformanceCounter( ovrAudioContext Context,
 /// \param Counter[in] the counter to retrieve
 /// \see ovrAudio_ResetPerformanceCounter
 ///
-OVRA_EXPORT ovrResult ovrAudio_ResetPerformanceCounter( ovrAudioContext Context, 
+OVRA_EXPORT ovrResult ovrAudio_ResetPerformanceCounter( ovrAudioContext Context,
                                                         ovrAudioPerformanceCounter Counter );
 
-/// Quad-binaural spatialization 
+/// Quad-binaural spatialization
 ///
 /// \param ForwardLR[in] pointer to stereo interleaved floating point binaural audio for the forward direction (0 degrees)
 /// \param RightLR[in] pointer to stereo interleaved floating point binaural audio for the right direction (90 degrees)
@@ -845,7 +888,7 @@ OVRA_EXPORT ovrResult ovrAudio_ResetPerformanceCounter( ovrAudioContext Context,
 /// \param Dst[out] pointer to stereo interleaved floating point destination buffer
 ///
 OVRA_EXPORT ovrResult ovrAudio_ProcessQuadBinaural(const float *ForwardLR, const float *RightLR, const float *BackLR, const float *LeftLR,
-                                                   float LookDirectionX, float LookDirectionY, float LookDirectionZ, 
+                                                   float LookDirectionX, float LookDirectionY, float LookDirectionZ,
                                                    int NumSamples, float *Dst);
 
 /// Create an ambisonic stream instance for spatializing B-format ambisonic audio
@@ -855,10 +898,10 @@ OVRA_EXPORT ovrResult ovrAudio_ProcessQuadBinaural(const float *ForwardLR, const
 /// \param pContext[out] pointer to store address of stream.
 ///
 OVRA_EXPORT ovrResult ovrAudio_CreateAmbisonicStream(	ovrAudioContext Context,
-														int SampleRate, 
-														int AudioBufferLength, 
-														ovrAudioAmbisonicFormat format, 
-														int ambisonicOrder, 
+														int SampleRate,
+														int AudioBufferLength,
+														ovrAudioAmbisonicFormat format,
+														int ambisonicOrder,
 														ovrAudioAmbisonicStream* pAmbisonicStream);
 
 /// Reset a previously created ambisonic stream for re-use
@@ -909,7 +952,7 @@ OVRA_EXPORT ovrResult ovrAudio_MonoToAmbisonic(const float* InMono, float Direct
 /// \param DirectionZ[in] Z component of the direction vector
 /// \param Format[in] ambisonic format (AmbiX or FuMa)
 /// \param AmbisonicOrder[in] order of ambisonics (1 or 2)
-/// \param OutSpeakerFeed[out] Buffer to write speaker feed to 
+/// \param OutSpeakerFeed[out] Buffer to write speaker feed to
 /// \param NumSamples[in] Length of the buffer in frames (OutSpeakerFeed is this length, InAmbisonics is either 4 or 9 times this length depending on 1st or 2nd order)
 ///
 OVRA_EXPORT ovrResult ovrAudio_RenderAmbisonicSpeakerFeed(const float* InAmbisonics, float DirectionX, float DirectionY, float DirectionZ, ovrAudioAmbisonicFormat Format, int AmbisonicOrder, float* SpeakerFeed, int NumSamples);
@@ -1007,12 +1050,6 @@ OVRA_EXPORT ovrResult ovrAudio_SetDynamicRoomMaxWallDistance(ovrAudioContext Con
 ///
 OVRA_EXPORT ovrResult ovrAudio_SetDynamicRoomRaysRayCacheSize(ovrAudioContext Context, int RayCacheSize);
 
-/// Update the dynamic room modeling, this will fire the ray cast calback and update the size of the room
-///
-/// \param Context[in] context to use
-///
-OVRA_EXPORT ovrResult ovrAudio_UpdateRoomModel(ovrAudioContext Context, float WetLevel);
-
 /// Retrieves the dimensions of the dynamic room moel
 ///
 /// \param Context[in] context to use
@@ -1071,33 +1108,261 @@ OVRA_EXPORT ovrResult ovrAudio_AudioMaterialReset(ovrAudioMaterial material, ovr
 OVRA_EXPORT ovrResult ovrAudio_AudioGeometryWriteMeshData(const ovrAudioGeometry geometry, const ovrAudioSerializer* serializer);
 OVRA_EXPORT ovrResult ovrAudio_AudioGeometryReadMeshData(ovrAudioGeometry geometry, const ovrAudioSerializer* serializer);
 
+typedef enum
+{
+    ovrAudioMaterialPreset_AcousticTile,
+    ovrAudioMaterialPreset_Brick,
+    ovrAudioMaterialPreset_BrickPainted,
+    ovrAudioMaterialPreset_Carpet,
+    ovrAudioMaterialPreset_CarpetHeavy,
+    ovrAudioMaterialPreset_CarpetHeavyPadded,
+    ovrAudioMaterialPreset_CeramicTile,
+    ovrAudioMaterialPreset_Concrete,
+    ovrAudioMaterialPreset_ConcreteRough,
+    ovrAudioMaterialPreset_ConcreteBlock,
+    ovrAudioMaterialPreset_ConcreteBlockPainted,
+    ovrAudioMaterialPreset_Curtain,
+    ovrAudioMaterialPreset_Foliage,
+    ovrAudioMaterialPreset_Glass,
+    ovrAudioMaterialPreset_GlassHeavy,
+    ovrAudioMaterialPreset_Grass,
+    ovrAudioMaterialPreset_Gravel,
+    ovrAudioMaterialPreset_GypsumBoard,
+    ovrAudioMaterialPreset_PlasterOnBrick,
+    ovrAudioMaterialPreset_PlasterOnConcreteBlock,
+    ovrAudioMaterialPreset_Soil,
+    ovrAudioMaterialPreset_SoundProof,
+    ovrAudioMaterialPreset_Snow,
+    ovrAudioMaterialPreset_Steel,
+    ovrAudioMaterialPreset_Water,
+    ovrAudioMaterialPreset_WoodThin,
+    ovrAudioMaterialPreset_WoodThick,
+    ovrAudioMaterialPreset_WoodFloor,
+    ovrAudioMaterialPreset_WoodOnConcrete,
+    ovrAudioMaterialPreset_COUNT
+} ovrAudioMaterialPreset;
+
+inline ovrResult ovrAudio_GetReflectionBands(ovrAudioMaterialPreset Preset, AudioBands Bands)
+{
+    if (Preset < 0 || Preset >= ovrAudioMaterialPreset_COUNT || Bands == NULL)
+    {
+        return ovrError_AudioInvalidParam;
+    }
+
+    switch (Preset)
+    {
+    case ovrAudioMaterialPreset_AcousticTile:
+        Bands[0] = 0.488168418f;
+        Bands[1] = 0.361475229f;
+        Bands[2] = 0.339595377f;
+        Bands[3] = 0.498946249f;
+        break;
+    case ovrAudioMaterialPreset_Brick:
+        Bands[0] = 0.975468814f;
+        Bands[1] = 0.972064495f;
+        Bands[2] = 0.949180186f;
+        Bands[3] = 0.930105388f;
+        break;
+    case ovrAudioMaterialPreset_BrickPainted:
+        Bands[0] = 0.975710571f;
+        Bands[1] = 0.983324170f;
+        Bands[2] = 0.978116691f;
+        Bands[3] = 0.970052719f;
+        break;
+    case ovrAudioMaterialPreset_Carpet:
+        Bands[0] = 0.987633705f;
+        Bands[1] = 0.905486643f;
+        Bands[2] = 0.583110571f;
+        Bands[3] = 0.351053834f;
+        break;
+    case ovrAudioMaterialPreset_CarpetHeavy:
+        Bands[0] = 0.977633715f;
+        Bands[1] = 0.859082878f;
+        Bands[2] = 0.526479602f;
+        Bands[3] = 0.370790422f;
+        break;
+    case ovrAudioMaterialPreset_CarpetHeavyPadded:
+        Bands[0] = 0.910534739f;
+        Bands[1] = 0.530433178f;
+        Bands[2] = 0.294055820f;
+        Bands[3] = 0.270105422f;
+        break;
+    case ovrAudioMaterialPreset_CeramicTile:
+        Bands[0] = 0.990000010f;
+        Bands[1] = 0.990000010f;
+        Bands[2] = 0.982753932f;
+        Bands[3] = 0.980000019f;
+        break;
+    case ovrAudioMaterialPreset_Concrete:
+        Bands[0] = 0.990000010f;
+        Bands[1] = 0.983324170f;
+        Bands[2] = 0.980000019f;
+        Bands[3] = 0.980000019f;
+        break;
+    case ovrAudioMaterialPreset_ConcreteRough:
+        Bands[0] = 0.989408433f;
+        Bands[1] = 0.964494646f;
+        Bands[2] = 0.922127008f;
+        Bands[3] = 0.900105357f;
+        break;
+    case ovrAudioMaterialPreset_ConcreteBlock:
+        Bands[0] = 0.635267377f;
+        Bands[1] = 0.652230680f;
+        Bands[2] = 0.671053469f;
+        Bands[3] = 0.789051592f;
+        break;
+    case ovrAudioMaterialPreset_ConcreteBlockPainted:
+        Bands[0] = 0.902957916f;
+        Bands[1] = 0.940235913f;
+        Bands[2] = 0.917584062f;
+        Bands[3] = 0.919947326f;
+        break;
+    case ovrAudioMaterialPreset_Curtain:
+        Bands[0] = 0.686494231f;
+        Bands[1] = 0.545859993f;
+        Bands[2] = 0.310078561f;
+        Bands[3] = 0.399473131f;
+        break;
+    case ovrAudioMaterialPreset_Foliage:
+        Bands[0] = 0.518259346f;
+        Bands[1] = 0.503568292f;
+        Bands[2] = 0.578688800f;
+        Bands[3] = 0.690210819f;
+        break;
+    case ovrAudioMaterialPreset_Glass:
+        Bands[0] = 0.655915797f;
+        Bands[1] = 0.800631821f;
+        Bands[2] = 0.918839693f;
+        Bands[3] = 0.923488140f;
+        break;
+    case ovrAudioMaterialPreset_GlassHeavy:
+        Bands[0] = 0.827098966f;
+        Bands[1] = 0.950222731f;
+        Bands[2] = 0.974604130f;
+        Bands[3] = 0.980000019f;
+        break;
+    case ovrAudioMaterialPreset_Grass:
+        Bands[0] = 0.881126285f;
+        Bands[1] = 0.507170796f;
+        Bands[2] = 0.131893098f;
+        Bands[3] = 0.0103688836f;
+        break;
+    case ovrAudioMaterialPreset_Gravel:
+        Bands[0] = 0.729294717f;
+        Bands[1] = 0.373122454f;
+        Bands[2] = 0.255317450f;
+        Bands[3] = 0.200263441f;
+        break;
+    case ovrAudioMaterialPreset_GypsumBoard:
+        Bands[0] = 0.721240044f;
+        Bands[1] = 0.927690148f;
+        Bands[2] = 0.934302270f;
+        Bands[3] = 0.910105407f;
+        break;
+    case ovrAudioMaterialPreset_PlasterOnBrick:
+        Bands[0] = 0.975696504f;
+        Bands[1] = 0.979106009f;
+        Bands[2] = 0.961063504f;
+        Bands[3] = 0.950052679f;
+        break;
+    case ovrAudioMaterialPreset_PlasterOnConcreteBlock:
+        Bands[0] = 0.881774724f;
+        Bands[1] = 0.924773932f;
+        Bands[2] = 0.951497555f;
+        Bands[3] = 0.959947288f;
+        break;
+    case ovrAudioMaterialPreset_Soil:
+        Bands[0] = 0.844084203f;
+        Bands[1] = 0.634624243f;
+        Bands[2] = 0.416662872f;
+        Bands[3] = 0.400000036f;
+        break;
+    case ovrAudioMaterialPreset_SoundProof:
+        Bands[0] = 0.000000000f;
+        Bands[1] = 0.000000000f;
+        Bands[2] = 0.000000000f;
+        Bands[3] = 0.000000000f;
+        break;
+    case ovrAudioMaterialPreset_Snow:
+        Bands[0] = 0.532252669f;
+        Bands[1] = 0.154535770f;
+        Bands[2] = 0.0509644151f;
+        Bands[3] = 0.0500000119f;
+        break;
+    case ovrAudioMaterialPreset_Steel:
+        Bands[0] = 0.793111682f;
+        Bands[1] = 0.840140402f;
+        Bands[2] = 0.925591767f;
+        Bands[3] = 0.979736567f;
+        break;
+    case ovrAudioMaterialPreset_Water:
+        Bands[0] = 0.970588267f;
+        Bands[1] = 0.971753478f;
+        Bands[2] = 0.978309572f;
+        Bands[3] = 0.970052719f;
+        break;
+    case ovrAudioMaterialPreset_WoodThin:
+        Bands[0] = 0.592423141f;
+        Bands[1] = 0.858273327f;
+        Bands[2] = 0.917242289f;
+        Bands[3] = 0.939999998f;
+        break;
+    case ovrAudioMaterialPreset_WoodThick:
+        Bands[0] = 0.812957883f;
+        Bands[1] = 0.895329595f;
+        Bands[2] = 0.941304684f;
+        Bands[3] = 0.949947298f;
+        break;
+    case ovrAudioMaterialPreset_WoodFloor:
+        Bands[0] = 0.852366328f;
+        Bands[1] = 0.898992121f;
+        Bands[2] = 0.934784114f;
+        Bands[3] = 0.930052698f;
+        break;
+    case ovrAudioMaterialPreset_WoodOnConcrete:
+        Bands[0] = 0.959999979f;
+        Bands[1] = 0.941232264f;
+        Bands[2] = 0.937923789f;
+        Bands[3] = 0.930052698f;
+        break;
+    default:
+        Bands[0] = 0.000000000f;
+        Bands[1] = 0.000000000f;
+        Bands[2] = 0.000000000f;
+        Bands[3] = 0.000000000f;
+        return ovrError_AudioInvalidParam;
+    };
+
+    return ovrSuccess;
+}
+
 #ifdef __cplusplus
 }
 #endif
 
-/*! 
+/*!
 
 \section intro_sec Introduction
 
 The OVRAudio API is a C/C++ interface that implements HRTF-based spatialization
-and optional room effects. Your application can directly use this API, though 
-most developers will access it indirectly via one of our plugins for popular 
+and optional room effects. Your application can directly use this API, though
+most developers will access it indirectly via one of our plugins for popular
 middleware such as FMOD, Wwise, and Unity.  Starting with Unreal Engine 4.8 it
 will also be available natively.
 
 OVRAudio is a low-level API, and as such, it does not buffer or manage sound
-state for applications. It positions sounds by filtering incoming monophonic 
-audio buffers and generating floating point stereo output buffers. Your 
-application must then mix, convert, and feed this signal to the appropriate 
+state for applications. It positions sounds by filtering incoming monophonic
+audio buffers and generating floating point stereo output buffers. Your
+application must then mix, convert, and feed this signal to the appropriate
 audio output device.
 
-OVRAudio does not handle audio subsystem configuration and output. It is up to 
-developers to implement this using either a low-level system interface 
-(e.g., DirectSound, WASAPI, CoreAudio, ALSA) or a high-level middleware 
-package (e.g,  FMOD, Wwise, Unity). 
+OVRAudio does not handle audio subsystem configuration and output. It is up to
+developers to implement this using either a low-level system interface
+(e.g., DirectSound, WASAPI, CoreAudio, ALSA) or a high-level middleware
+package (e.g,  FMOD, Wwise, Unity).
 
-If you are unfamiliar with the concepts behind audio and virtual reality, we 
-strongly recommend beginning with the companion guide 
+If you are unfamiliar with the concepts behind audio and virtual reality, we
+strongly recommend beginning with the companion guide
 *Introduction to Virtual Reality Audio*.
 
 \section sysreq System Requirements
@@ -1108,19 +1373,19 @@ strongly recommend beginning with the companion guide
 
 \section installation Installation
 
-OVRAudio is distributed as a compressed archive. To install, unarchive it in 
-your development tree and update your compiler include and lib paths 
+OVRAudio is distributed as a compressed archive. To install, unarchive it in
+your development tree and update your compiler include and lib paths
 appropriately.
 
-When deploying an application on systems that support shared libraries, you 
+When deploying an application on systems that support shared libraries, you
 must ensure that the appropriate DLL/shared library is in the same directory
 as your application (Android uses static libraries).
 
 \section multithreading Multithreading
 
-OVRAudio does not create multiple threads  and uses a per-context mutex for 
+OVRAudio does not create multiple threads  and uses a per-context mutex for
 safe read/write access via the API functions from different threads.  It is the
-application's responsibility to coordinate context management between different 
+application's responsibility to coordinate context management between different
 threads.
 
 \section using Using OVRAudio
@@ -1135,20 +1400,20 @@ Contexts contain the state for a specific spatializer instance.  In most cases
 you will only need a single context.
 
 \code{.cpp}
-#include "OVR_Audio.h"
+// Make sure to #include "OVR_Audio.h"
 
-OVRAudioContext context;
+ovrAudioContext context;
 
 void setup()
 {
     // Version checking is not strictly necessary but it's a good idea!
     int major, minor, patch;
     const char *VERSION_STRING;
-     
+
     VERSION_STRING = ovrAudio_GetVersion( &major, &minor, &patch );
     printf( "Using OVRAudio: %s\n", VERSION_STRING );
 
-    if ( major != OVR_AUDIO_MAJOR_VERSION || 
+    if ( major != OVR_AUDIO_MAJOR_VERSION ||
          minor != OVR_AUDIO_MINOR_VERSION )
     {
       printf( "Mismatched Audio SDK version!\n" );
@@ -1157,7 +1422,6 @@ void setup()
     ovrAudioContextConfiguration config = {};
 
     config.acc_Size = sizeof( config );
-    config.acc_Provider = ovrAudioSpatializationProvider_OVR_OculusHQ;
     config.acc_SampleRate = 48000;
     config.acc_BufferLength = 512;
     config.acc_MaxNumSources = 16;
@@ -1189,7 +1453,7 @@ a more natural sound.
 \subsection sourcemanagement Audio Source Management
 
 OVRAudio maintains a set of N audio sources, where N is determined by the value
-specified in ovrAudioContextConfiguration::acc_MaxNumSources passed to 
+specified in ovrAudioContextConfiguration::acc_MaxNumSources passed to
 ovrAudio_CreateContext.
 
 Each source is associated with a set of parameter, such as:
@@ -1212,7 +1476,7 @@ The volume of a sound is attenuated over distance, and this can be modeled in
 different ways.  By default, OVRAudio does not perform any attenuation, as the most
 common use case is an application or middleware defined attenuation curve.
 
-If you want OVRAudio to attenuate volume based on distance between the sound 
+If you want OVRAudio to attenuate volume based on distance between the sound
 source and listener, call ovrAudio_SetAudioSourceAttenuationMode with the
 the appropriate mode.  OVRAudio can also scale volume by a fixed value using
 ovrAudioSourceAttenuationMode_Fixed.  If, for example, you have computed the
@@ -1222,7 +1486,7 @@ attenuation factor and would like OVRAudio to apply it during spatialization.
 
 You may define properties of specific audio sources by setting appropriate flags
 using the ovrAudio_SetAudioSourceFlags aPI.  These flags include:
-- ovrAudioSourceFlag_WideBand_HINT: Set this to help mask certain artifacts for 
+- ovrAudioSourceFlag_WideBand_HINT: Set this to help mask certain artifacts for
 wideband audio sources with a lot of spectral content, such as music, voice and
 noise.
 - ovrAudioSourceFlag_NarrowBand_HINT: Set this for narrowband audio sources that
@@ -1233,7 +1497,7 @@ commonly represent sound travel as instantaneous.
 
 \subsection sourcesize Audio Source Size
 
-OVRAudio treats sound sources as infinitely small point sources by default.  
+OVRAudio treats sound sources as infinitely small point sources by default.
 This works in most cases, but when a source approaches the listener it may sound
 incorret, as if the sound were coming from between the listener's ears.  You may
 set a virtual dieamater for a sound source using ovrAudio_SetAudioSourcePropertyf
@@ -1263,13 +1527,13 @@ void enterRoom( float w, float h, float d, float r )
      brp.brp_Height = h;
      brp.brp_Depth = d;
 
-     ovrAudio_SetSimpleBoxRoomParameters( context, &brp );
-}  
+     ovrAudio_SetSimpleBoxRoomParameters( AudioContext, &brp );
+}
 \endcode
 
 \subsection headtracking Head Tracking (Optional)
 
-You may specify the listener's pose state using values retrieved directly from 
+You may specify the listener's pose state using values retrieved directly from
 the HMD using LibOVR:
 \code
 void setListenerPose( const ovrPoseStatef *PoseState )
@@ -1279,15 +1543,15 @@ void setListenerPose( const ovrPoseStatef *PoseState )
 \endcode
 
 All sound sources are transformed with reference to the specified pose so that
-they remain positioned correctly relative to the listener. If you do not call 
-this function, the listener is assumed to be at (0,0,0) and looking forward 
+they remain positioned correctly relative to the listener. If you do not call
+this function, the listener is assumed to be at (0,0,0) and looking forward
 (down the -Z axis), and that all sounds are in listener-relative coordinates.
 
 \subsection spatialization Applying 3D Spatialization
 
-Applying 3D spatialiazation consists of looping over all of your sounds, 
-copying their data into intermediate buffers, and passing them to the 
-positional audio engine. It will in turn process the sounds with the 
+Applying 3D spatialiazation consists of looping over all of your sounds,
+copying their data into intermediate buffers, and passing them to the
+positional audio engine. It will in turn process the sounds with the
 appropriate HRTFs and effects and return a floating point stereo buffer:
 \code
 void processSounds( Sound *sounds, int NumSounds, float *MixBuffer )
@@ -1298,35 +1562,34 @@ void processSounds( Sound *sounds, int NumSounds, float *MixBuffer )
    uint32_t Flags = 0, Status = 0;
 
    float outbuffer[ INPUT_BUFFER_SIZE * 2 ];
-   float inbuffer[ INPUT_BUFFER_SIZE };
+   float inbuffer[ INPUT_BUFFER_SIZE ];
 
    for ( int i = 0; i < NumSounds; i++ )
    {
       // Set the sound's position in space (using OVR coordinates)
       // NOTE: if a pose state has been specified by a previous call to
-      // ovrAudio_ListenerPoseStatef then it will be transformed 
+      // ovrAudio_ListenerPoseStatef then it will be transformed
       // by that as well
-      ovrAudio_SetAudioSourcePos( AudioContext, i, 
+      ovrAudio_SetAudioSourcePos( AudioContext, i,
          sounds[ i ].X, sounds[ i ].Y, sounds[ i ].Z );
 
       // This sets the attenuation range from max volume to silent
       // NOTE: attenuation can be disabled or enabled
-       ovrAudio_SetAudioSourceRange( AudioContext, i, 
+       ovrAudio_SetAudioSourceRange( AudioContext, i,
          sounds[ i ].RangeMin, sounds[ i ].RangeMax );
 
-      // Grabs the next chunk of data from the sound, looping etc. 
+      // Grabs the next chunk of data from the sound, looping etc.
       // as necessary.  This is application specific code.
       sounds[ i ].GetSoundData( inbuffer );
 
       // Spatialize the sound into the output buffer.  Note that there
       // are two APIs, one for interleaved sample data and another for
       // separate left/right sample data
-      ovrAudio_SpatializeMonoSourceInterleaved( AudioContext, 
-          i, 
-         Flags, &Status,
+      ovrAudio_SpatializeMonoSourceInterleaved( AudioContext,
+          i, &Status,
          outbuffer, inbuffer );
 
-      // Do some mixing      
+      // Do some mixing
       for ( int j = 0; j < INPUT_BUFFER_SIZE; j++ )
       {
          if ( i == 0 )
@@ -1337,13 +1600,13 @@ void processSounds( Sound *sounds, int NumSounds, float *MixBuffer )
          {
             MixBuffer[ j ] += outbuffer[ j ];
          }
-      }   
+      }
    }
 
    // From here we'd send the MixBuffer on for more processing or
    // final device output
 
-   PlayMixBuffer( ... );
+   PlayMixBuffer(MixBuffer);
 }
 \endcode
 
@@ -1363,14 +1626,14 @@ finished the OutStatus will contain ovrAudioSpatializationStatus_Finished flag.
 NOTE: This is currently not implemented!
 
 All transducers (speakers, headphones, microphones, et cetera) introduce their
-own characteristics on signals. This is usually measured as an **impulse 
+own characteristics on signals. This is usually measured as an **impulse
 response**. If we know the impulse response for a given transducer, we can correct
-for this by applying its inverse through deconvolution. Because spatialization is 
-highly dependent on frequency response, removing the transducer contribution from 
+for this by applying its inverse through deconvolution. Because spatialization is
+highly dependent on frequency response, removing the transducer contribution from
 signals generally helps with spatialization.
 
-The Audio SDK provides an optional set of APIs to perform this deconvolution. It 
-requires having an impulse response for your headphones. For Rift, we have provided 
+The Audio SDK provides an optional set of APIs to perform this deconvolution. It
+requires having an impulse response for your headphones. For Rift, we have provided
 the impulse response internally.
 
 void AdjustStereoForHeadphones( ovrAudioContext Context,
@@ -1381,9 +1644,9 @@ void AdjustStereoForHeadphones( ovrAudioContext Context,
    // Normally we'd set headphone model just once
    // Note: IR is supplied for Rift
    ovrAudio_SetHeadphoneModel( Context, ovrAudioHeadphones_Rift, NULL, 0 );
-   ovrAudio_HeadphoneCorrection( Context, 
-      OutLeft, OutRight, 
-      InLeft, InRight, 
+   ovrAudio_HeadphoneCorrection( Context,
+      OutLeft, OutRight,
+      InLeft, InRight,
       Length );
 }
 
@@ -1392,13 +1655,13 @@ applied directly on the stereo outputs and not on each sound.
 
 \subsection shutdown Shutdown
 
-When you are no longer using OVRAudio, shut it down by destroying any contexts, 
+When you are no longer using OVRAudio, shut it down by destroying any contexts,
 and then calling ovrAudio_Shutdown.
 
 \code
 void shutdownOvrAudio()
 {
-   ovrAudio_DestroyContext( &AudioContext );
+   ovrAudio_DestroyContext( AudioContext );
    ovrAudio_Shutdown();
 }
 \endcode

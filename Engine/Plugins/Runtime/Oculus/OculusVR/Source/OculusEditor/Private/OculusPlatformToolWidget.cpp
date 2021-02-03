@@ -251,6 +251,11 @@ void SOculusPlatformToolWidget::BuildGeneralSettingsBox(TSharedPtr<SVerticalBox>
 		BuildFileDirectoryField(box, LOCTEXT("APKLaunchPath", "APK File Path"), FText::FromString(PlatformSettings->GetLaunchFilePath()),
 			LOCTEXT("APKLaunchPathTT", " Specifies the path to the APK that launches your app."),
 			&SOculusPlatformToolWidget::OnSelectLaunchFilePath, &SOculusPlatformToolWidget::OnClearLaunchFilePath);
+
+		// Build field for Debug symbol directory path.
+		BuildFileDirectoryField(box, LOCTEXT("SymbolPath", "Symbol Directory Path"), FText::FromString(PlatformSettings->GetSymbolDirPath()),
+			LOCTEXT("SymbolPathTT", "Specifies the path to the directory containing the app symbols (libUE4.so)."),
+			&SOculusPlatformToolWidget::OnSelectSymbolDirPath, &SOculusPlatformToolWidget::OnClearSymbolDirPath);
 	}
 }
 
@@ -771,6 +776,16 @@ bool SOculusPlatformToolWidget::ConstructArguments(FString& args)
 		ValidateTextField(&SOculusPlatformToolWidget::FileFieldValidator, PlatformSettings->GetLaunchFilePath(),
 			LOCTEXT("APKLaunchFile", "APK File Path").ToString(), success);
 		args += " --apk \"" + PlatformSettings->GetLaunchFilePath() + "\"";
+
+		if (PlatformSettings->GetSymbolDirPath() != "")
+		{
+			ValidateTextField(&SOculusPlatformToolWidget::DirectoryFieldValidator, PlatformSettings->GetSymbolDirPath(),
+				LOCTEXT("SymbolDirPath", "Symbol Directory Path").ToString(), success);
+			if (success)
+			{
+				args += " --debug-symbols-dir \"" + PlatformSettings->GetSymbolDirPath() + "\"";
+			}
+		}
 	}
 
 	if (!PlatformSettings->GetExpansionFilesPath().IsEmpty())
@@ -1114,6 +1129,42 @@ FReply SOculusPlatformToolWidget::OnClearLaunchFilePath()
 	if (PlatformSettings != NULL)
 	{
 		PlatformSettings->SetLaunchFilePath("");
+		PlatformSettings->SaveConfig();
+		BuildGeneralSettingsBox(GeneralSettingsBox);
+	}
+	return FReply::Handled();
+}
+
+FString SOculusPlatformToolWidget::GenerateSymbolPath()
+{
+	return FPaths::ProjectDir() + TEXT("Binaries/Android/") + FApp::GetProjectName() + TEXT("_Symbols_v1/") + FApp::GetProjectName() + TEXT("-arm64");
+}
+
+
+FReply SOculusPlatformToolWidget::OnSelectSymbolDirPath()
+{
+	TSharedPtr<SWindow> parentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
+	const void* parentWindowHandle = (parentWindow.IsValid() && parentWindow->GetNativeWindow().IsValid()) ? parentWindow->GetNativeWindow()->GetOSWindowHandle() : nullptr;
+
+	if (PlatformSettings != NULL)
+	{
+		FString dirPath;
+		FString defaultPath = PlatformSettings->GetSymbolDirPath().IsEmpty() ? GenerateSymbolPath() : PlatformSettings->GetSymbolDirPath();
+		if (FDesktopPlatformModule::Get()->OpenDirectoryDialog(parentWindowHandle, "Choose Launch File", defaultPath, dirPath))
+		{
+			PlatformSettings->SetSymbolDirPath(FPaths::ConvertRelativePathToFull(dirPath));
+			PlatformSettings->SaveConfig();
+			BuildGeneralSettingsBox(GeneralSettingsBox);
+		}
+	}
+	return FReply::Handled();
+}
+
+FReply SOculusPlatformToolWidget::OnClearSymbolDirPath()
+{
+	if (PlatformSettings != NULL)
+	{
+		PlatformSettings->SetSymbolDirPath("");
 		PlatformSettings->SaveConfig();
 		BuildGeneralSettingsBox(GeneralSettingsBox);
 	}

@@ -24,6 +24,9 @@ namespace UnrealBuildTool
 		// classpath of default android build tools gradle plugin
 		private const string ANDROID_TOOLS_BUILD_GRADLE_VERSION = "com.android.tools.build:gradle:4.0.0";
 
+		// name of the only vulkan validation layer we're interested in 
+		private const string ANDROID_VULKAN_VALIDATION_LAYER = "libVkLayer_khronos_validation.so";
+
 		// Minimum Android SDK that must be used for Java compiling
 		readonly int MinimumSDKLevel = 28;
 
@@ -1296,10 +1299,10 @@ namespace UnrealBuildTool
 				string VulkanLayersDir = Environment.ExpandEnvironmentVariables("%NDKROOT%/sources/third_party/vulkan/src/build-android/jniLibs/") + NDKArch;
 				if (Directory.Exists(VulkanLayersDir))
 				{
-					Log.TraceInformation("Copying vulkan layers from {0}", VulkanLayersDir);
+					Log.TraceInformation("Copying {0} vulkan layer from {1}", ANDROID_VULKAN_VALIDATION_LAYER, VulkanLayersDir);
 					string DestDir = Path.Combine(UE4BuildPath, "libs", NDKArch);
 					Directory.CreateDirectory(DestDir);
-					CopyFileDirectory(VulkanLayersDir, DestDir);
+					File.Copy(Path.Combine(VulkanLayersDir, ANDROID_VULKAN_VALIDATION_LAYER), Path.Combine(DestDir, ANDROID_VULKAN_VALIDATION_LAYER));
 				}
 			}
 		}
@@ -1558,6 +1561,30 @@ namespace UnrealBuildTool
 			foreach (string GPUArch in GPUArchitectures)
 			{
 				CurrentSettings.AppendFormat("GPUArch={0}{1}", GPUArch, Environment.NewLine);
+			}
+
+			// Modifying some settings in the GameMapsSettings could trigger the OBB regeneration
+			// and make the cached OBBData.java mismatch to the actually data. 
+			// So we insert the relevant keys into CurrentSettings to capture the change, to
+			// enforce the refreshing of Android java codes
+			Section = Ini.FindSection("/Script/EngineSettings.GameMapsSettings");
+			if (Section != null)
+			{
+				foreach (string Key in Section.KeyNames)
+				{
+					if (!Key.Equals("GameDefaultMap") && 
+						!Key.Equals("GlobalDefaultGameMode"))
+					{
+						continue;
+					}
+
+					IReadOnlyList<string> Values;
+					Section.TryGetValues(Key, out Values);
+					foreach (string Value in Values)
+					{
+						CurrentSettings.AppendLine(string.Format("{0}={1}", Key, Value));
+					}
+				}
 			}
 
 			return CurrentSettings.ToString();
@@ -2358,6 +2385,10 @@ namespace UnrealBuildTool
 			if (bPackageForDaydream)
 			{
 				Text.AppendLine(string.Format("\t\t<meta-data android:name=\"com.epicgames.ue4.GameActivity.bDaydream\" android:value=\"true\"/>"));
+			}
+			if (bPackageForOculusMobile && !bIsForDistribution)
+			{
+				Text.AppendLine("\t\t\t<meta-data android:name=\"com.oculus.extlib\" android:value=\"true\"/>");
 			}
 			Text.AppendLine("\t\t<meta-data android:name=\"com.google.android.gms.games.APP_ID\"");
 			Text.AppendLine("\t\t           android:value=\"@string/app_id\" />");

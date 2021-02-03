@@ -143,8 +143,6 @@
 							<setElement result="vrIntent" value="category"/>
 							<addAttribute tag="$vrIntent" name="android:name" value="com.oculus.intent.category.VR"/>
 							<addElement tag="intent-filter" name="vrIntent"/>
-
-							<addPermission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
 							<addFeature android:name="android.hardware.usb.host"/>
 						</true>
 					</if>

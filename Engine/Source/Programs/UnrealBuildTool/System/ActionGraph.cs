@@ -180,9 +180,13 @@ namespace UnrealBuildTool
 				{
 					Executor = new XGE();
 				}
-				else if (BuildConfiguration.bAllowFASTBuild && FASTBuild.IsAvailable())
+				else if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac && BuildConfiguration.bAllowFASTBuild && FASTBuild.IsAvailable())
 				{
 					Executor = new FASTBuild();
+				}
+				else if (BuildConfiguration.bAllowFASTBuild && FASTBuild2.IsAvailable())
+				{
+					Executor = new FASTBuild2();
 				}
 				else if (BuildConfiguration.bAllowDistcc)
 				{

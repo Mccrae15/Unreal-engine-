@@ -1441,11 +1441,22 @@ FShaderResourceViewRHIRef FD3D11DynamicRHI::RHICreateShaderResourceView(FRHIText
 		Texture2DArray->GetResource()->GetDesc(&TextureDesc);
 		BaseTextureFormat = TextureDesc.Format;
 
-		SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-		SRVDesc.Texture2DArray.MostDetailedMip = CreateInfo.MipLevel;
-		SRVDesc.Texture2DArray.MipLevels = CreateInfo.NumMipLevels;
-		SRVDesc.Texture2DArray.FirstArraySlice = CreateInfo.FirstArraySlice;
-		SRVDesc.Texture2DArray.ArraySize = (CreateInfo.NumArraySlices == 0 ? TextureDesc.ArraySize : CreateInfo.NumArraySlices);
+		if (TextureDesc.SampleDesc.Count > 1)
+		{
+			///MS textures can't have mips apparently, so nothing else to set.
+			SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY;
+			SRVDesc.Texture2DMSArray.FirstArraySlice = CreateInfo.FirstArraySlice;
+			SRVDesc.Texture2DMSArray.ArraySize = (CreateInfo.NumArraySlices == 0 ? TextureDesc.ArraySize : CreateInfo.NumArraySlices);
+		}
+		else
+		{
+			SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+			SRVDesc.Texture2DArray.MostDetailedMip = CreateInfo.MipLevel;
+			SRVDesc.Texture2DArray.MipLevels = CreateInfo.NumMipLevels;
+			SRVDesc.Texture2DArray.FirstArraySlice = CreateInfo.FirstArraySlice;
+			SRVDesc.Texture2DArray.ArraySize = (CreateInfo.NumArraySlices == 0 ? TextureDesc.ArraySize : CreateInfo.NumArraySlices);
+		}
+
 	}
 	else if (TextureRHI->GetTextureCube() != NULL)
 	{

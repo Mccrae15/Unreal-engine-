@@ -207,8 +207,12 @@ static void CreateHLSLUniformBufferStructMembersDeclaration(
 
 			// Array elements are 16 byte aligned.
 			if(Member.GetNumElements() > 0)
-			{
-				HLSLMemberSize = (Member.GetNumElements() - 1) * Align(HLSLMemberSize,16) + HLSLMemberSize;
+			{	
+				// According GL Spec, for std140 layout
+				// The array may have padding at the end; the base offset of the member following
+				// the array is rounded up to the next multiple of the base alignment.
+				// So we should avoid add padding manually at the end, this is different with single vector like Vec3 or float
+				HLSLMemberSize = Member.GetNumElements() * Align(HLSLMemberSize, SHADER_PARAMETER_ARRAY_ELEMENT_ALIGNMENT);
 			}
 
 			const uint32 AbsoluteMemberOffset = StructOffset + Member.GetOffset();

@@ -1,4 +1,4 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright 1998-2019 Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 #include "OculusHMDModule.h"
@@ -43,7 +43,7 @@ public:
 private:
 	// Initializers for runtime hand assets
 	static void InitializeHandMesh(USkeletalMesh* SkeletalMesh, const ovrpMesh* OvrMesh, const float WorldToMeters);
-	static void InitializeHandSkeleton(USkeletalMesh* SkeletalMesh, const ovrpSkeleton* OvrSkeleton, const float WorldToMeters);
+	static void InitializeHandSkeleton(USkeletalMesh* SkeletalMesh, const ovrpSkeleton2* OvrSkeleton, const float WorldToMeters);
 };
 
 
