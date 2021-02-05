@@ -875,9 +875,8 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 		UnregisterWithScalabilityManager();
 	}
 
-	if (!bIsScalabilityCull && bIsCulledByScalability)
+	if (!bIsScalabilityCull && bIsCulledByScalability && ScalabilityManagerHandle != INDEX_NONE)
 	{
-		check(ScalabilityManagerHandle != INDEX_NONE);
 		//If this is a non scalability activate call and we're still registered with the manager.
 		//If we reach this point then we must have been previously culled by scalability so bail here.
 		return;
@@ -2390,6 +2389,9 @@ void UNiagaraComponent::SetAsset(UNiagaraSystem* InAsset)
 		Asset->GetExposedParameters().RemoveOnChangedHandler(AssetExposedParametersChangedHandle);
 	}
 #endif
+
+	UnregisterWithScalabilityManager();
+
 	Asset = InAsset;
 
 #if WITH_EDITOR
