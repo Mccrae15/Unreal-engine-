@@ -231,7 +231,10 @@ namespace Chaos
 					{
 						const FAABB3& LocalBounds = Particle.LocalBounds();
 						FAABB3 WorldSpaceBounds = LocalBounds.TransformedAABB(FRigidTransform3(Particle.P(), Particle.Q()));
-						WorldSpaceBounds.ThickenSymmetrically(Particle.V() * Dt);
+						if (Particle.CCDEnabled())
+						{
+							WorldSpaceBounds.ThickenSymmetrically(Particle.V() * Dt);
+						}
 						Particle.SetWorldSpaceInflatedBounds(WorldSpaceBounds);
 					}
 				}
