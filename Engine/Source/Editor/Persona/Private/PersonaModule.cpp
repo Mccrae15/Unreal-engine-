@@ -113,32 +113,6 @@ void FPersonaModule::StartupModule()
 	// Make sure the advanced preview scene module is loaded 
 	FModuleManager::Get().LoadModuleChecked("AdvancedPreviewScene");
 
-	// Load all blueprint animnotifies from asset registry so they are available from drop downs in anim segment detail views
-	// TODO: Currently disabled when I/O store is enabled in editor builds because this triggers loading cooked SkeletalMeshes
-	// that currently crashes
-	FString Commandline = FCommandLine::Get();
-	const bool bIsCookCommandlet = Commandline.Contains(TEXT("cookcommandlet")) || Commandline.Contains(TEXT("run=cook"));
-	const bool bLoadAnimNotifiesBlueprints = !bIsCookCommandlet && !WITH_IOSTORE_IN_EDITOR;
-	if(bLoadAnimNotifiesBlueprints)
-	{
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-
-		// Collect a full list of assets with the specified class
-		TArray<FAssetData> AssetData;
-		AssetRegistryModule.Get().GetAssetsByClass(UBlueprint::StaticClass()->GetFName(), AssetData);
-
-		const FString BPAnimNotify( TEXT("Class'/Script/Engine.AnimNotify'" ));
-
-		for (int32 AssetIndex = 0; AssetIndex < AssetData.Num(); ++AssetIndex)
-		{
-			FString TagValue = AssetData[ AssetIndex ].GetTagValueRef<FString>(FBlueprintTags::ParentClassPath);
-			if (TagValue == BPAnimNotify)
-			{
-				FString BlueprintPath = AssetData[AssetIndex].ObjectPath.ToString();
-				LoadObject<UBlueprint>(NULL, *BlueprintPath, NULL, 0, NULL);
-			}
-		}
-	}
 	{
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.RegisterCustomClassLayout( "SkeletalMeshSocket", FOnGetDetailCustomizationInstance::CreateStatic( &FSkeletalMeshSocketDetails::MakeInstance ) );
