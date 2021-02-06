@@ -238,22 +238,19 @@ namespace LowLevelTasks
 		if(!Drowsing && WorkerEvent->SleepState.compare_exchange_strong(DrowsingState1, ESleepState::Drowsing, std::memory_order_relaxed)) //continue drowsing
 		{
 			verifySlow(OutOfWork.Stop());
-			Drowsing = true;
-			FPlatformProcess::SleepNoStats(0);	// Alternative State one: ((Running -> Drowsing) -> Drowsing)
+			Drowsing = true; // Alternative State one: ((Running -> Drowsing) -> Drowsing)
 		}
 		else if(WorkerEvent->SleepState.compare_exchange_strong(DrowsingState2, ESleepState::Sleeping, std::memory_order_relaxed))
 		{
 			verifySlow(!OutOfWork.Stop());
 			Drowsing = false;
 			WorkerEvent->SleepEvent->Wait(); // State two: ((Running -> Drowsing) -> Sleeping)
-			verifySlow(OutOfWork.Start());
 		}
 		else if(WorkerEvent->SleepState.compare_exchange_strong(RunningState, ESleepState::Drowsing, std::memory_order_relaxed))
 		{
-			verifySlow(OutOfWork.Stop() == !Drowsing);
+			OutOfWork.Stop();
 			Drowsing = true;
-			SleepEventQueue[bBackgroundWorker].enqueue(WorkerEvent);
-			FPlatformProcess::SleepNoStats(0); // State one: (Running -> Drowsing)
+			SleepEventQueue[bBackgroundWorker].enqueue(WorkerEvent); // State one: (Running -> Drowsing)
 		}
 		else
 		{

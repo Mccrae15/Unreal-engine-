@@ -552,7 +552,9 @@ public:
 				}
 				for (int32 Chunk = 0; Chunk < NumTasks; Chunk++)
 				{
-					ChunkTasks.Add(TGraphTask< FCollectorTaskProcessorTask >::CreateTask().ConstructAndDispatchWhenReady(TaskQueue, Chunk >= NumThreads ? BackgroundThreadName : NormalThreadName));
+					extern CORE_API int32 GUseNewTaskBackend;
+					ENamedThreads::Type ThreadPriority = GUseNewTaskBackend ? ENamedThreads::AnyHiPriThreadHiPriTask : ((Chunk >= NumThreads) ? BackgroundThreadName : NormalThreadName);
+					ChunkTasks.Add(TGraphTask< FCollectorTaskProcessorTask >::CreateTask().ConstructAndDispatchWhenReady(TaskQueue, ThreadPriority));
 				}
 
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_GC_Subtask_Wait);
