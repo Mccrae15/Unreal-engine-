@@ -255,8 +255,9 @@ namespace LowLevelTasks
 		FLocalQueueType* WorkerLocalQueue = LocalQueue;
 
 		uint32 WaitCount = 0;
+		const bool bIsBackgroundWorker = WorkerType == EWorkerType::Background;
 		bool bPermitBackgroundWork = ActiveTask && ActiveTask->IsBackgroundTask();
-		FQueueRegistry::FOutOfWork OutOfWork = QueueRegistry.GetOutOfWorkScope(bPermitBackgroundWork);
+		FQueueRegistry::FOutOfWork OutOfWork = QueueRegistry.GetOutOfWorkScope(bIsBackgroundWorker);
 		while (true)
 		{
 			while(TryExecuteTaskFrom<&FLocalQueueType::DequeueLocal>(WorkerLocalQueue, OutOfWork, bPermitBackgroundWork)
@@ -284,7 +285,6 @@ namespace LowLevelTasks
 				return;
 			}
 
-			const bool bIsBackgroundWorker = WorkerType == EWorkerType::Background;
 			if (WaitCount < WorkerSpinCycles)
 			{
 				OutOfWork.Start();
@@ -296,13 +296,11 @@ namespace LowLevelTasks
 			{
 				bPermitBackgroundWork = true;
 			}
-			else
+			else if(!bIsBackgroundWorker)
 			{
-				TRACE_CPUPROFILER_EVENT_SCOPE(BusyWaitInternal::SleepNoStats);
-				WakeUpWorker(true); //wake up a backgoundworker in case we were waiting on background work.
-				FPlatformProcess::SleepNoStats(0);
-				WaitCount = 0;
+				WakeUpWorker(true);
 			}
+			WaitCount = 0;
 		}
 	}
 }
