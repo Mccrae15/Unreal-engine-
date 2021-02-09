@@ -30,7 +30,7 @@ class UMaterialExpressionStrataBSDF : public UMaterialExpression
 	GENERATED_UCLASS_BODY()
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract)// STRATA_DISABLED
 class UMaterialExpressionStrataSlabBSDF : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -136,7 +136,7 @@ class UMaterialExpressionStrataSlabBSDF : public UMaterialExpressionStrataBSDF
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract)// STRATA_DISABLED
 class UMaterialExpressionStrataSheenBSDF : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -171,7 +171,7 @@ class UMaterialExpressionStrataSheenBSDF : public UMaterialExpressionStrataBSDF
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract)// STRATA_DISABLED
 class UMaterialExpressionStrataVolumetricFogCloudBSDF : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -212,7 +212,7 @@ class UMaterialExpressionStrataVolumetricFogCloudBSDF : public UMaterialExpressi
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract)// STRATA_DISABLED
 class UMaterialExpressionStrataUnlitBSDF : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -241,7 +241,7 @@ class UMaterialExpressionStrataUnlitBSDF : public UMaterialExpressionStrataBSDF
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract)// STRATA_DISABLED
 class UMaterialExpressionStrataHairBSDF : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -300,7 +300,7 @@ class UMaterialExpressionStrataHairBSDF : public UMaterialExpressionStrataBSDF
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract)// STRATA_DISABLED
 class UMaterialExpressionStrataSingleLayerWaterBSDF : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -388,7 +388,7 @@ class UMaterialExpressionStrataSingleLayerWaterBSDF : public UMaterialExpression
 ///////////////////////////////////////////////////////////////////////////////
 // Operator nodes
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract)// STRATA_DISABLED
 class UMaterialExpressionStrataHorizontalMixing : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -423,7 +423,7 @@ class UMaterialExpressionStrataHorizontalMixing : public UMaterialExpressionStra
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract)// STRATA_DISABLED
 class UMaterialExpressionStrataVerticalLayering : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -452,7 +452,7 @@ class UMaterialExpressionStrataVerticalLayering : public UMaterialExpressionStra
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract)// STRATA_DISABLED
 class UMaterialExpressionStrataAdd : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -481,7 +481,7 @@ class UMaterialExpressionStrataAdd : public UMaterialExpressionStrataBSDF
 	//~ End UMaterialExpression Interface
 };
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract)// STRATA_DISABLED
 class UMaterialExpressionStrataMultiply : public UMaterialExpressionStrataBSDF
 {
 	GENERATED_UCLASS_BODY()
@@ -515,7 +515,7 @@ class UMaterialExpressionStrataMultiply : public UMaterialExpressionStrataBSDF
 ///////////////////////////////////////////////////////////////////////////////
 // Utilities
 
-UCLASS(MinimalAPI, collapsecategories, hidecategories = Object)
+UCLASS(MinimalAPI, collapsecategories, hidecategories = Object, Abstract)// STRATA_DISABLED
 class UMaterialExpressionStrataAnisotropyToRoughness : public UMaterialExpression
 {
 	GENERATED_UCLASS_BODY()
