@@ -8,6 +8,7 @@
 #include "PerforceSourceControlChangelistState.h"
 
 class FPerforceSourceControlRevision;
+typedef TMap<FString, TArray< TSharedRef<FPerforceSourceControlRevision, ESPMode::ThreadSafe> > > FPerforceFileHistoryMap;
 
 class FPerforceConnectWorker : public IPerforceSourceControlWorker
 {
@@ -129,11 +130,13 @@ public:
 	TMap<FString, EPerforceState::Type> OutStateMap;
 
 	/** Map of filenames to history */
-	typedef TMap<FString, TArray< TSharedRef<FPerforceSourceControlRevision, ESPMode::ThreadSafe> > > FHistoryMap;
-	FHistoryMap OutHistory;
+	FPerforceFileHistoryMap OutHistory;
 
 	/** Map of filenames to modified flag */
 	TArray<FString> OutModifiedFiles;
+
+	/** Override on status update return */
+	bool bForceQuiet = false;
 };
 
 class FPerforceGetWorkspacesWorker : public IPerforceSourceControlWorker
@@ -160,6 +163,11 @@ public:
 	TArray<FPerforceSourceControlChangelistState> OutChangelistsStates;
 	TArray<TArray<FPerforceSourceControlState>> OutCLFilesStates;
 	TArray<TMap<FString, EPerforceState::Type>> OutCLShelvedFilesStates;
+	TArray<TMap<FString, FString>> OutCLShelvedFilesMap;
+
+private:
+	/** Controls whether or not we will remove changelists from the cache after a full update */
+	bool bCleanupCache = false;
 };
 
 class FPerforceCopyWorker : public IPerforceSourceControlWorker
@@ -283,12 +291,22 @@ public:
 	virtual bool Execute(class FPerforceSourceControlCommand& InCommand) override;
 	virtual bool UpdateStates() const override;
 
-protected:	
+protected:
 	/** Map of filenames to perforce state */
 	TMap<FString, EPerforceState::Type> OutResults;
 
-	/** Changelist to be updated */
-	FPerforceSourceControlChangelist ChangelistToUpdate;
+	/** Map depot filenames to local file */
+	TMap<FString, FString> OutFileMap;
+
+	/** Reopened files */
+	TArray<FString> MovedFiles;
+
+	/** Changelist description if needed */
+	FString ChangelistDescription;
+
+	/** Changelist(s) to be updated */
+	FPerforceSourceControlChangelist InChangelistToUpdate;
+	FPerforceSourceControlChangelist OutChangelistToUpdate;
 };
 
 class FPerforceDeleteShelveWorker : public IPerforceSourceControlWorker

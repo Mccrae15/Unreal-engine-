@@ -41,40 +41,12 @@ namespace SSourceControlSubmitWidgetDefs
 }
 
 
-FSubmitItem::FSubmitItem(const FSourceControlStateRef& InItem)
-	: Item(InItem)
-{
-	CheckBoxState = ECheckBoxState::Checked;
-
-	AssetName = FText::FromString(TEXT("None"));
-	PackageName = FText::FromString(Item->GetFilename());
-	FileName = PackageName;
-
-	FString LongPackageName;
-	if (FPackageName::TryConvertFilenameToLongPackageName(InItem->GetFilename(), LongPackageName))
-	{
-		PackageName = FText::FromString(LongPackageName);
-
-		TArray<FAssetData> Assets;
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		AssetRegistryModule.Get().GetAssetsByPackageName(*LongPackageName, Assets);
-
-		if (Assets.Num())
-		{
-			const FAssetData& AssetData = Assets[0];
-			PackageName = FText::FromString(AssetData.PackageName.ToString());
-			AssetName = FText::FromString(AssetData.AssetName.ToString());
-		}
-	}
-}
-
-
 void SSourceControlSubmitListRow::Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTableView)
 {
 	SourceControlSubmitWidgetPtr = InArgs._SourceControlSubmitWidget;
 	Item = InArgs._Item;
 
-	SMultiColumnTableRow<TSharedPtr<FSubmitItem>>::Construct(FSuperRowType::FArguments(), InOwnerTableView);
+	SMultiColumnTableRow<TSharedPtr<FFileTreeItem>>::Construct(FSuperRowType::FArguments(), InOwnerTableView);
 }
 
 
@@ -103,23 +75,31 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 	ParentFrame = InArgs._ParentWindow.Get();
 	SortByColumn = SSourceControlSubmitWidgetDefs::ColumnID_AssetLabel;
 	SortMode = EColumnSortMode::Ascending;
+	SavedChangeListDescription = InArgs._Description.Get();
+	const bool bDescriptionIsReadOnly = !InArgs._AllowDescriptionChange.Get();
+	const bool bAllowUncheckFiles = InArgs._AllowUncheckFiles.Get();
+	const bool bAllowKeepCheckedOut = InArgs._AllowKeepCheckedOut.Get();
+	const bool bShowChangelistValidation = !InArgs._ChangeValidationDescription.Get().IsEmpty();
 
 	for (const auto& Item : InArgs._Items.Get())
 	{
-		ListViewItems.Add(MakeShareable(new FSubmitItem(Item)));
+		ListViewItems.Add(MakeShareable(new FFileTreeItem(Item)));
 	}
 
 	TSharedRef<SHeaderRow> HeaderRowWidget = SNew(SHeaderRow);
 
-	HeaderRowWidget->AddColumn(
-		SHeaderRow::Column(SSourceControlSubmitWidgetDefs::ColumnID_CheckBoxLabel)
-		[
-			SNew(SCheckBox)
-			.IsChecked(this, &SSourceControlSubmitWidget::GetToggleSelectedState)
-			.OnCheckStateChanged(this, &SSourceControlSubmitWidget::OnToggleSelectedCheckBox)
-		]
-		.FixedWidth(SSourceControlSubmitWidgetDefs::CheckBoxColumnWidth)
-	);
+	if (bAllowUncheckFiles)
+	{
+		HeaderRowWidget->AddColumn(
+			SHeaderRow::Column(SSourceControlSubmitWidgetDefs::ColumnID_CheckBoxLabel)
+			[
+				SNew(SCheckBox)
+				.IsChecked(this, &SSourceControlSubmitWidget::GetToggleSelectedState)
+				.OnCheckStateChanged(this, &SSourceControlSubmitWidget::OnToggleSelectedCheckBox)
+			]
+			.FixedWidth(SSourceControlSubmitWidgetDefs::CheckBoxColumnWidth)
+		);
+	}
 
 	HeaderRowWidget->AddColumn(
 		SHeaderRow::Column(SSourceControlSubmitWidgetDefs::ColumnID_IconLabel)
@@ -147,106 +127,151 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 		.FillWidth(7.0f)
 	);
 
+	TSharedPtr<SVerticalBox> Contents;
+
 	ChildSlot
 	[
 		SNew(SBorder)
 		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
-			SNew(SVerticalBox)
-			+SVerticalBox::Slot()
-			.AutoHeight()
+			SAssignNew(Contents, SVerticalBox)
+		]
+	];
+
+	// Build contents of dialog
+	Contents->AddSlot()
+	.AutoHeight()
+	.Padding(5)
+	[
+		SNew(STextBlock)
+		.Text(NSLOCTEXT("SourceControl.SubmitPanel", "ChangeListDesc", "Changelist Description"))
+	];
+
+	Contents->AddSlot()
+	.FillHeight(.5f)
+	.Padding(FMargin(5, 0, 5, 5))
+	[
+		SNew(SBox)
+		.WidthOverride(520)
+		[
+			SAssignNew(ChangeListDescriptionTextCtrl, SMultiLineEditableTextBox)
+			.SelectAllTextWhenFocused(!bDescriptionIsReadOnly)
+			.Text(SavedChangeListDescription)
+			.AutoWrapText(true)
+			.IsReadOnly(bDescriptionIsReadOnly)
+		]
+	];
+
+	Contents->AddSlot()
+	.Padding(FMargin(5, 0))
+	[
+		SNew(SBorder)
+		[
+			SAssignNew(ListView, SListView<TSharedPtr<FFileTreeItem>>)
+			.ItemHeight(20)
+			.ListItemsSource(&ListViewItems)
+			.OnGenerateRow(this, &SSourceControlSubmitWidget::OnGenerateRowForList)
+			.OnContextMenuOpening(this, &SSourceControlSubmitWidget::OnCreateContextMenu)
+			.OnMouseButtonDoubleClick(this, &SSourceControlSubmitWidget::OnDiffAgainstDepotSelected)
+			.HeaderRow(HeaderRowWidget)
+			.SelectionMode(ESelectionMode::Single)
+		]
+	];
+
+	if (!bDescriptionIsReadOnly)
+	{
+		Contents->AddSlot()
+		.AutoHeight()
+		.Padding(FMargin(5, 5, 5, 0))
+		[
+			SNew( SBorder)
+			.Visibility(this, &SSourceControlSubmitWidget::IsWarningPanelVisible)
 			.Padding(5)
 			[
-				SNew( STextBlock )
-				.Text( NSLOCTEXT("SourceControl.SubmitPanel", "ChangeListDesc", "Changelist Description") )
+				SNew( SErrorText )
+				.ErrorText( NSLOCTEXT("SourceControl.SubmitPanel", "ChangeListDescWarning", "Changelist description is required to submit") )
 			]
-			+SVerticalBox::Slot()
-			.FillHeight(.5f)
-			.Padding(FMargin(5, 0, 5, 5))
+		];
+	}
+
+	if (bShowChangelistValidation)
+	{
+		FString ChangelistResultText = InArgs._ChangeValidationDescription.Get();
+		FName ChangelistIconName = InArgs._ChangeValidationIcon.Get();
+
+		Contents->AddSlot()
+		.AutoHeight()
+		.Padding(FMargin(5))
+		[
+			SNew(SHorizontalBox)
+			+SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
 			[
-				SNew(SBox)
-				.WidthOverride(520)
-				[
-					SAssignNew( ChangeListDescriptionTextCtrl, SMultiLineEditableTextBox )
-					.SelectAllTextWhenFocused( true )
-					.Text(SavedChangeListDescription)
-					.AutoWrapText( true )
-				]
+				SNew(SImage)
+				.Image(FEditorStyle::GetBrush(ChangelistIconName))
 			]
-			+SVerticalBox::Slot()
-			.Padding(FMargin(5, 0))
+			+SHorizontalBox::Slot()
 			[
-				SNew(SBorder)
-				[
-					SAssignNew(ListView, SListView<TSharedPtr<FSubmitItem>>)
-					.ItemHeight(20)
-					.ListItemsSource(&ListViewItems)
-					.OnGenerateRow(this, &SSourceControlSubmitWidget::OnGenerateRowForList)
-					.OnContextMenuOpening(this, &SSourceControlSubmitWidget::OnCreateContextMenu)
-					.OnMouseButtonDoubleClick(this, &SSourceControlSubmitWidget::OnDiffAgainstDepotSelected)
-					.HeaderRow(HeaderRowWidget)
-					.SelectionMode(ESelectionMode::Single)
-				]
+				SNew(SMultiLineEditableTextBox)
+				.Text(FText::FromString(ChangelistResultText))
+				.AutoWrapText(true)
+				.IsReadOnly(true)
 			]
-			+SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(FMargin(5, 5, 5, 0))
+		];
+	}
+
+	if (bAllowKeepCheckedOut)
+	{
+		Contents->AddSlot()
+		.AutoHeight()
+		.Padding(5)
+		[
+			SNew(SWrapBox)
+			.UseAllottedSize(true)
+			+SWrapBox::Slot()
+			.Padding(0.0f, 0.0f, 16.0f, 0.0f)
 			[
-				SNew( SBorder)
-				.Visibility(this, &SSourceControlSubmitWidget::IsWarningPanelVisible)
-				.Padding(5)
+				SNew(SCheckBox)
+				.OnCheckStateChanged( this, &SSourceControlSubmitWidget::OnCheckStateChanged_KeepCheckedOut)
+				.IsChecked( this, &SSourceControlSubmitWidget::GetKeepCheckedOut )
+				.IsEnabled( this, &SSourceControlSubmitWidget::CanCheckOut )
 				[
-					SNew( SErrorText )
-					.ErrorText( NSLOCTEXT("SourceControl.SubmitPanel", "ChangeListDescWarning", "Changelist description is required to submit") )
+					SNew(STextBlock)
+					.Text(NSLOCTEXT("SourceControl.SubmitPanel", "KeepCheckedOut", "Keep Files Checked Out") )
 				]
 			]
-			+SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(5)
-			[
-				SNew(SWrapBox)
-				.UseAllottedSize(true)
-				+SWrapBox::Slot()
-				.Padding(0.0f, 0.0f, 16.0f, 0.0f)
-				[
-					SNew(SCheckBox)
-					.OnCheckStateChanged( this, &SSourceControlSubmitWidget::OnCheckStateChanged_KeepCheckedOut)
-					.IsChecked( this, &SSourceControlSubmitWidget::GetKeepCheckedOut )
-					.IsEnabled( this, &SSourceControlSubmitWidget::CanCheckOut )
-					[
-						SNew(STextBlock)
-						.Text(NSLOCTEXT("SourceControl.SubmitPanel", "KeepCheckedOut", "Keep Files Checked Out") )
-					]
-				]
-			]
-			+SVerticalBox::Slot()
-			.AutoHeight()
-			.HAlign(HAlign_Right)
-			.VAlign(VAlign_Bottom)
-			.Padding(0.0f,0.0f,0.0f,5.0f)
-			[
-				SNew(SUniformGridPanel)
-				.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
-				.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-				.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
-				+SUniformGridPanel::Slot(0,0)
-				[
-					SNew(SButton)
-					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
-					.IsEnabled(this, &SSourceControlSubmitWidget::IsOKEnabled)
-					.Text( NSLOCTEXT("SourceControl.SubmitPanel", "OKButton", "Submit") )
-					.OnClicked(this, &SSourceControlSubmitWidget::OKClicked)
-				]
-				+SUniformGridPanel::Slot(1,0)
-				[
-					SNew(SButton)
-					.HAlign(HAlign_Center)
-					.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
-					.Text( NSLOCTEXT("SourceControl.SubmitPanel", "CancelButton", "Cancel") )
-					.OnClicked(this, &SSourceControlSubmitWidget::CancelClicked)
-				]
-			]
+		];
+	}
+
+	const float AdditionalTopPadding = (bAllowKeepCheckedOut ? 0.0f : 5.0f);
+
+	Contents->AddSlot()
+	.AutoHeight()
+	.HAlign(HAlign_Right)
+	.VAlign(VAlign_Bottom)
+	.Padding(0.0f,AdditionalTopPadding,0.0f,5.0f)
+	[
+		SNew(SUniformGridPanel)
+		.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
+		.MinDesiredSlotWidth(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
+		.MinDesiredSlotHeight(FEditorStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+		+SUniformGridPanel::Slot(0,0)
+		[
+			SNew(SButton)
+			.HAlign(HAlign_Center)
+			.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+			.IsEnabled(this, &SSourceControlSubmitWidget::IsOKEnabled)
+			.Text( NSLOCTEXT("SourceControl.SubmitPanel", "OKButton", "Submit") )
+			.OnClicked(this, &SSourceControlSubmitWidget::OKClicked)
+		]
+		+SUniformGridPanel::Slot(1,0)
+		[
+			SNew(SButton)
+			.HAlign(HAlign_Center)
+			.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
+			.Text( NSLOCTEXT("SourceControl.SubmitPanel", "CancelButton", "Cancel") )
+			.OnClicked(this, &SSourceControlSubmitWidget::CancelClicked)
 		]
 	];
 
@@ -307,7 +332,7 @@ void SSourceControlSubmitWidget::OnDiffAgainstDepot()
 	}
 }
 
-void SSourceControlSubmitWidget::OnDiffAgainstDepotSelected(TSharedPtr<FSubmitItem> InSelectedItem)
+void SSourceControlSubmitWidget::OnDiffAgainstDepotSelected(TSharedPtr<FFileTreeItem> InSelectedItem)
 {
 	FString PackageName;
 	if (FPackageName::TryConvertFilenameToLongPackageName(InSelectedItem->GetFileName().ToString(), PackageName))
@@ -340,7 +365,7 @@ FReply SSourceControlSubmitWidget::OnKeyDown( const FGeometry& MyGeometry, const
    return FReply::Unhandled();
 }
 
-TSharedRef<SWidget> SSourceControlSubmitWidget::GenerateWidgetForItemAndColumn(TSharedPtr<FSubmitItem> Item, const FName ColumnID) const
+TSharedRef<SWidget> SSourceControlSubmitWidget::GenerateWidgetForItemAndColumn(TSharedPtr<FFileTreeItem> Item, const FName ColumnID) const
 {
 	check(Item.IsValid());
 
@@ -355,8 +380,8 @@ TSharedRef<SWidget> SSourceControlSubmitWidget::GenerateWidgetForItemAndColumn(T
 			.Padding(RowPadding)
 			[
 				SNew(SCheckBox)
-				.IsChecked(Item.Get(), &FSubmitItem::GetCheckBoxState)
-				.OnCheckStateChanged(Item.Get(), &FSubmitItem::SetCheckBoxState)
+				.IsChecked(Item.Get(), &FFileTreeItem::GetCheckBoxState)
+				.OnCheckStateChanged(Item.Get(), &FFileTreeItem::SetCheckBoxState)
 			];
 	}
 	else if (ColumnID == SSourceControlSubmitWidgetDefs::ColumnID_IconLabel)
@@ -512,7 +537,7 @@ bool SSourceControlSubmitWidget::CanCheckOut() const
 }
 
 
-TSharedRef<ITableRow> SSourceControlSubmitWidget::OnGenerateRowForList(TSharedPtr<FSubmitItem> SubmitItem, const TSharedRef<STableViewBase>& OwnerTable)
+TSharedRef<ITableRow> SSourceControlSubmitWidget::OnGenerateRowForList(TSharedPtr<FFileTreeItem> SubmitItem, const TSharedRef<STableViewBase>& OwnerTable)
 {
 	TSharedRef<ITableRow> Row =
 	SNew(SSourceControlSubmitListRow, OwnerTable)
@@ -559,12 +584,12 @@ void SSourceControlSubmitWidget::SortTree()
 	{
 		if (SortMode == EColumnSortMode::Ascending)
 		{
-			ListViewItems.Sort([](const TSharedPtr<FSubmitItem>& A, const TSharedPtr<FSubmitItem>& B) {
+			ListViewItems.Sort([](const TSharedPtr<FFileTreeItem>& A, const TSharedPtr<FFileTreeItem>& B) {
 				return A->GetAssetName().ToString() < B->GetAssetName().ToString(); });
 		}
 		else if (SortMode == EColumnSortMode::Descending)
 		{
-			ListViewItems.Sort([](const TSharedPtr<FSubmitItem>& A, const TSharedPtr<FSubmitItem>& B) {
+			ListViewItems.Sort([](const TSharedPtr<FFileTreeItem>& A, const TSharedPtr<FFileTreeItem>& B) {
 				return A->GetAssetName().ToString() >= B->GetAssetName().ToString(); });
 		}
 	}
@@ -572,12 +597,12 @@ void SSourceControlSubmitWidget::SortTree()
 	{
 		if (SortMode == EColumnSortMode::Ascending)
 		{
-			ListViewItems.Sort([](const TSharedPtr<FSubmitItem>& A, const TSharedPtr<FSubmitItem>& B) {
+			ListViewItems.Sort([](const TSharedPtr<FFileTreeItem>& A, const TSharedPtr<FFileTreeItem>& B) {
 				return A->GetPackageName().ToString() < B->GetPackageName().ToString(); });
 		}
 		else if (SortMode == EColumnSortMode::Descending)
 		{
-			ListViewItems.Sort([](const TSharedPtr<FSubmitItem>& A, const TSharedPtr<FSubmitItem>& B) {
+			ListViewItems.Sort([](const TSharedPtr<FFileTreeItem>& A, const TSharedPtr<FFileTreeItem>& B) {
 				return A->GetPackageName().ToString() >= B->GetPackageName().ToString(); });
 		}
 	}
@@ -585,12 +610,12 @@ void SSourceControlSubmitWidget::SortTree()
 	{
 		if (SortMode == EColumnSortMode::Ascending)
 		{
-			ListViewItems.Sort([](const TSharedPtr<FSubmitItem>& A, const TSharedPtr<FSubmitItem>& B) {
+			ListViewItems.Sort([](const TSharedPtr<FFileTreeItem>& A, const TSharedPtr<FFileTreeItem>& B) {
 				return A->GetIconName().ToString() < B->GetIconName().ToString(); });
 		}
 		else if (SortMode == EColumnSortMode::Descending)
 		{
-			ListViewItems.Sort([](const TSharedPtr<FSubmitItem>& A, const TSharedPtr<FSubmitItem>& B) {
+			ListViewItems.Sort([](const TSharedPtr<FFileTreeItem>& A, const TSharedPtr<FFileTreeItem>& B) {
 				return A->GetIconName().ToString() >= B->GetIconName().ToString(); });
 		}
 	}

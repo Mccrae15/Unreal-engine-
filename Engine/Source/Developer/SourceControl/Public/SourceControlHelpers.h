@@ -493,6 +493,36 @@ public:
 	 */
 	static const FString& GetGlobalSettingsIni();
 
+	/**
+	* Helper function to retrieve the FAssetData associated with a given file
+	* @return Whether the asset data could be retrieved or not
+	*/
+	static bool GetAssetData(const FString& InFileName, const FString& InPackageName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies = nullptr);
+
+	/**
+	 * Helper function to retrieve the FAssetData associated with a given file
+	 * @return Whether the asset data could be retrieved or not
+	 */
+	static bool GetAssetData(const FString& InFileName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies = nullptr);
+
+	/**
+	* Helper function to retrieve the FAssetData associated with a given package name
+	* @return Whether the asset data could be retrieved or not
+	*/
+	static bool GetAssetDataFromPackage(const FString& InPackageName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies = nullptr);
+
+	/**
+	 * Helper function to get the asset data from a file's history
+	 * Note: will not query history to prevent recursion
+	 */
+	static bool GetAssetDataFromFileHistory(const FString& InFileName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies = nullptr, int64 MaxFetchSize = -1);
+
+	/**
+	 * Helper function to get the asset data from a file's history
+	 * Note: will not query history to prevent recursion
+	 */
+	static bool GetAssetDataFromFileHistory(FSourceControlStatePtr InSourceControlState, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies = nullptr, int64 MaxFetchSize = -1);
+
 };  // USourceControlHelpers
 
 

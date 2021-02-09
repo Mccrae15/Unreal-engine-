@@ -497,7 +497,7 @@ bool FPerforceCheckInWorker::Execute(FPerforceSourceControlCommand& InCommand)
 			// Reopen the assets to the default changelist to remove them from the changelist we created above
 			if (ReopenedFiles.Num() > 0)
 			{
-				InCommand.bCommandSuccessful = RunReopenCommand(InCommand, ReopenedFiles, InCommand.Changelist);
+				RunReopenCommand(InCommand, ReopenedFiles, InCommand.Changelist);
 			}
 
 			// Delete the changelist we created above
@@ -1266,7 +1266,7 @@ static const FString& FindWorkspaceFile(const TArray<FPerforceSourceControlState
 	return InDepotFile;
 }
 
-static void ParseHistoryResults(const FP4RecordSet& InRecords, const TArray<FPerforceSourceControlState>& InStates, FPerforceUpdateStatusWorker::FHistoryMap& OutHistory)
+static void ParseHistoryResults(const FP4RecordSet& InRecords, const TArray<FPerforceSourceControlState>& InStates, FPerforceFileHistoryMap& OutHistory)
 {
 	if (InRecords.Num() > 0)
 	{
@@ -1373,6 +1373,30 @@ static void ParseHistoryResults(const FP4RecordSet& InRecords, const TArray<FPer
 			}
 		}
 	}
+}
+
+static bool GetFileHistory(FPerforceConnection& Connection, FPerforceSourceControlCommand& InCommand, const TArray<FString>& InFiles, TArray<FPerforceSourceControlState>& OutStates, FPerforceFileHistoryMap& OutHistory)
+{
+	TArray<FString> Parameters;
+	FP4RecordSet Records;
+	// disregard non-contributory integrations
+	Parameters.Add(TEXT("-s"));
+	//include branching history
+	Parameters.Add(TEXT("-i"));
+	//include truncated change list descriptions
+	Parameters.Add(TEXT("-L"));
+	//include time stamps
+	Parameters.Add(TEXT("-t"));
+	//limit to last 100 changes
+	Parameters.Add(TEXT("-m 100"));
+	Parameters.Append(InFiles);
+	InCommand.bCommandSuccessful &= Connection.RunCommand(TEXT("filelog"), Parameters, Records, InCommand.ResultInfo.ErrorMessages, FOnIsCancelled::CreateRaw(&InCommand, &FPerforceSourceControlCommand::IsCanceled), InCommand.bConnectionDropped);
+	ParseHistoryResults(Records, OutStates, OutHistory);
+	RemoveRedundantErrors(InCommand, TEXT(" - no such file(s)."));
+	RemoveRedundantErrors(InCommand, TEXT(" - file(s) not on client"));
+	RemoveRedundantErrors(InCommand, TEXT("' is not under client's root '"));
+
+	return InCommand.bCommandSuccessful;
 }
 
 static void ParseDiffResults(const FP4RecordSet& InRecords, TArray<FString>& OutModifiedFiles)
@@ -1501,26 +1525,11 @@ bool FPerforceUpdateStatusWorker::Execute(FPerforceSourceControlCommand& InComma
 		check(InCommand.Operation->GetName() == GetName());
 		TSharedRef<FUpdateStatus, ESPMode::ThreadSafe> Operation = StaticCastSharedRef<FUpdateStatus>(InCommand.Operation);
 
+		bForceQuiet = Operation->ShouldBeQuiet();
+
 		if(Operation->ShouldUpdateHistory())
 		{
-			TArray<FString> Parameters;
-			FP4RecordSet Records;
-			// disregard non-contributory integrations
-			Parameters.Add(TEXT("-s"));
-			//include branching history
-			Parameters.Add(TEXT("-i"));
-			//include truncated change list descriptions
-			Parameters.Add(TEXT("-L"));
-			//include time stamps
-			Parameters.Add(TEXT("-t"));
-			//limit to last 100 changes
-			Parameters.Add(TEXT("-m 100"));
-			Parameters.Append(InCommand.Files);
-			InCommand.bCommandSuccessful &= Connection.RunCommand(TEXT("filelog"), Parameters, Records, InCommand.ResultInfo.ErrorMessages, FOnIsCancelled::CreateRaw(&InCommand, &FPerforceSourceControlCommand::IsCanceled), InCommand.bConnectionDropped);
-			ParseHistoryResults(Records, OutStates, OutHistory);
-			RemoveRedundantErrors(InCommand, TEXT(" - no such file(s)."));
-			RemoveRedundantErrors(InCommand, TEXT(" - file(s) not on client"));
-			RemoveRedundantErrors(InCommand, TEXT("' is not under client's root '"));
+			GetFileHistory(Connection, InCommand, InCommand.Files, OutStates, OutHistory);
 		}
 
 		if(Operation->ShouldGetOpenedOnly())
@@ -1593,7 +1602,7 @@ bool FPerforceUpdateStatusWorker::UpdateStates() const
 	bUpdated |= UpdateCachedStates(OutStateMap);
 
 	// add history, if any
-	for(FHistoryMap::TConstIterator It(OutHistory); It; ++It)
+	for(FPerforceFileHistoryMap::TConstIterator It(OutHistory); It; ++It)
 	{
 		TSharedRef<FPerforceSourceControlState, ESPMode::ThreadSafe> State = PerforceSourceControl.GetProvider().GetStateInternal(It.Key());
 		const TArray< TSharedRef<FPerforceSourceControlRevision, ESPMode::ThreadSafe> >& History = It.Value();
@@ -1612,7 +1621,7 @@ bool FPerforceUpdateStatusWorker::UpdateStates() const
 		bUpdated = true;
 	}
 
-	return bUpdated;
+	return !bForceQuiet && bUpdated;
 }
 
 FName FPerforceGetWorkspacesWorker::GetName() const
@@ -1665,6 +1674,49 @@ static bool GetOpenedFilesInChangelist(FPerforceConnection& Connection, FPerforc
 	return InCommand.bCommandSuccessful;
 }
 
+static void ParseWhereResults(FP4RecordSet& InRecords, TMap<FString, FString>& DepotToFileMap)
+{
+	for (int32 Index = 0; Index < InRecords.Num(); ++Index)
+	{
+		const FP4Record& Record = InRecords[Index];
+
+		FString DepotFile = Record(TEXT("depotFile"));
+		FString ClientFile = Record(TEXT("path")).Replace(TEXT("\\"), TEXT("/"));
+
+		if (DepotFile.Len() > 0 && ClientFile.Len() > 0)
+		{
+			DepotToFileMap.Emplace(DepotFile, ClientFile);
+		}
+	}
+}
+
+static bool GetDepotFileToLocalFileMap(FPerforceConnection& Connection, FPerforceSourceControlCommand& InCommand, const TMap<FString, EPerforceState::Type>& InDepotFiles, TMap<FString, FString>& OutDepotToLocalMap)
+{
+	if (InDepotFiles.Num() == 0)
+	{
+		return true;
+	}
+
+	TArray<FString> Parameters;
+	for (TMap<FString, EPerforceState::Type>::TConstIterator It(InDepotFiles); It; ++It)
+	{
+		Parameters.Add(It.Key());
+	}
+
+	FP4RecordSet Records;
+	Connection.RunCommand(TEXT("where"), Parameters, Records, InCommand.ResultInfo.ErrorMessages, FOnIsCancelled::CreateRaw(&InCommand, &FPerforceSourceControlCommand::IsCanceled), InCommand.bConnectionDropped);
+
+	if (InCommand.ResultInfo.ErrorMessages.Num() == 0)
+	{
+		ParseWhereResults(Records, OutDepotToLocalMap);
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+
 bool FPerforceGetPendingChangelistsWorker::Execute(FPerforceSourceControlCommand& InCommand)
 {
 	FScopedPerforceConnection ScopedConnection(InCommand);
@@ -1695,6 +1747,8 @@ bool FPerforceGetPendingChangelistsWorker::Execute(FPerforceSourceControlCommand
 			InCommand.bCommandSuccessful &= (InCommand.ResultInfo.ErrorMessages.Num() == 0);
 
 			ParseChangelistsResults(Records, OutChangelistsStates);
+
+			bCleanupCache = InCommand.bCommandSuccessful;
 		}
 
 		// Test whether we should continue processing SCC commands
@@ -1729,6 +1783,7 @@ bool FPerforceGetPendingChangelistsWorker::Execute(FPerforceSourceControlCommand
 				if (!ChangelistState.bHasShelvedFiles)
 				{
 					OutCLShelvedFilesStates.Emplace(); // Add empty list
+					OutCLShelvedFilesMap.Emplace(); // Add empty list
 					continue;
 				}
 
@@ -1745,6 +1800,9 @@ bool FPerforceGetPendingChangelistsWorker::Execute(FPerforceSourceControlCommand
 				{
 					TMap<FString, EPerforceState::Type>& OutShelvedStateMap = OutCLShelvedFilesStates.Emplace_GetRef();
 					ParseShelvedChangelistResults(Records, OutShelvedStateMap);
+
+					TMap<FString, FString>& OutShelvedFileMap = OutCLShelvedFilesMap.Emplace_GetRef();
+					GetDepotFileToLocalFileMap(Connection, InCommand, OutShelvedStateMap, OutShelvedFileMap);
 				}
 			}
 		}
@@ -1760,22 +1818,45 @@ bool FPerforceGetPendingChangelistsWorker::Execute(FPerforceSourceControlCommand
 	return InCommand.bCommandSuccessful;
 }
 
-static bool AddShelvedFilesToChangelist(const TMap<FString, EPerforceState::Type>& FilesToAdd, TSharedRef<FPerforceSourceControlChangelistState, ESPMode::ThreadSafe>& ChangelistState, const FDateTime* TimeStamp = nullptr)
+static bool AddShelvedFilesToChangelist(const TMap<FString, EPerforceState::Type>& FilesToAdd, const TMap<FString, FString>& DepotToFileMap, TSharedRef<FPerforceSourceControlChangelistState, ESPMode::ThreadSafe>& ChangelistState, const FDateTime* TimeStamp = nullptr)
 {
 	FPerforceSourceControlModule& PerforceSourceControl = FPerforceSourceControlModule::Get();
 	const FDateTime Now = (TimeStamp ? *TimeStamp : FDateTime::Now());
 
 	for (TMap<FString, EPerforceState::Type>::TConstIterator It(FilesToAdd); It; ++It)
 	{
-		int32 Index = Algo::IndexOfByPredicate(ChangelistState->ShelvedFiles, [&It](const FSourceControlStateRef& ShelvedFile) {
-				return ShelvedFile->GetFilename() == It.Key();
+		FString ItDepotFilename = It.Key();
+		FString ItFilename = ItDepotFilename;
+
+		if (DepotToFileMap.Contains(ItDepotFilename))
+		{
+			ItFilename = DepotToFileMap[It.Key()];
+		}
+
+		int32 Index = Algo::IndexOfByPredicate(ChangelistState->ShelvedFiles, [&ItFilename](const FSourceControlStateRef& ShelvedFile) {
+				return ShelvedFile->GetFilename() == ItFilename;
 			});
 
 		if (Index < 0)
 		{
 			// Create new entry
+			TSharedRef<FPerforceSourceControlState, ESPMode::ThreadSafe> ShelvedFileState = MakeShareable(new FPerforceSourceControlState(ItFilename));
+			ShelvedFileState->DepotFilename = ItDepotFilename;
+
+			// Add revision to be able to fetch the shelved file, if it's not marked for deletion.
+			if (It.Value() != EPerforceState::MarkedForDelete)
+			{
+				TSharedRef<FPerforceSourceControlRevision, ESPMode::ThreadSafe> ShelvedRevision = MakeShareable(new FPerforceSourceControlRevision());
+				ShelvedRevision->FileName = ShelvedFileState->DepotFilename;
+				ShelvedRevision->ChangelistNumber = StaticCastSharedRef<FPerforceSourceControlChangelist>(ChangelistState->GetChangelist())->ToInt();
+				ShelvedRevision->bIsShelve = true;
+
+				ShelvedFileState->History.Add(ShelvedRevision);
+			}
+
+			// Add to shelved files
 			Index = ChangelistState->ShelvedFiles.Num();
-			ChangelistState->ShelvedFiles.Emplace(MakeShareable(new FPerforceSourceControlState(It.Key())));
+			ChangelistState->ShelvedFiles.Add(ShelvedFileState);
 		}
 
 		TSharedRef<FPerforceSourceControlState, ESPMode::ThreadSafe> FileState = StaticCastSharedRef<FPerforceSourceControlState>(ChangelistState->ShelvedFiles[Index]);
@@ -1787,11 +1868,11 @@ static bool AddShelvedFilesToChangelist(const TMap<FString, EPerforceState::Type
 	return FilesToAdd.Num() > 0;
 }
 
-static bool AddShelvedFilesToChangelist(const TMap<FString, EPerforceState::Type>& FilesToAdd, const FPerforceSourceControlChangelist& Changelist)
+static bool AddShelvedFilesToChangelist(const TMap<FString, EPerforceState::Type>& FilesToAdd, const TMap<FString, FString>& DepotToFileMap, const FPerforceSourceControlChangelist& Changelist)
 {
 	FPerforceSourceControlModule& PerforceSourceControl = FPerforceSourceControlModule::Get();
 	TSharedRef<FPerforceSourceControlChangelistState, ESPMode::ThreadSafe> ChangelistState = PerforceSourceControl.GetProvider().GetStateInternal(Changelist);
-	return AddShelvedFilesToChangelist(FilesToAdd, ChangelistState);
+	return AddShelvedFilesToChangelist(FilesToAdd, DepotToFileMap, ChangelistState);
 }
 
 bool FPerforceGetPendingChangelistsWorker::UpdateStates() const
@@ -1829,7 +1910,29 @@ bool FPerforceGetPendingChangelistsWorker::UpdateStates() const
 		if(bUpdateShelvedFiles)
 		{
 			ChangelistState->ShelvedFiles.Reset(OutCLShelvedFilesStates[StatusIndex].Num());
-			AddShelvedFilesToChangelist(OutCLShelvedFilesStates[StatusIndex], ChangelistState, &Now);
+			AddShelvedFilesToChangelist(OutCLShelvedFilesStates[StatusIndex], OutCLShelvedFilesMap[StatusIndex], ChangelistState, &Now);
+		}
+	}
+
+	if (bCleanupCache)
+	{
+		TArray<FPerforceSourceControlChangelist> ChangelistsToRemove;
+		PerforceSourceControl.GetProvider().GetCachedStateByPredicate([this, &ChangelistsToRemove](const FSourceControlChangelistStateRef& InCLState) {
+			TSharedRef<FPerforceSourceControlChangelistState, ESPMode::ThreadSafe> CLState = StaticCastSharedRef<FPerforceSourceControlChangelistState>(InCLState);
+
+			if (Algo::NoneOf(OutChangelistsStates, [&CLState](const FPerforceSourceControlChangelistState& UpdatedCLState) {
+				return CLState->Changelist == UpdatedCLState.Changelist;
+				}))
+			{
+				ChangelistsToRemove.Add(CLState->Changelist);
+			}
+			
+			return false;
+			});
+
+		for (const FPerforceSourceControlChangelist& ChangelistToRemove : ChangelistsToRemove)
+		{
+			PerforceSourceControl.GetProvider().RemoveChangelistFromCache(ChangelistToRemove);
 		}
 	}
 
@@ -2226,23 +2329,86 @@ bool FPerforceShelveWorker::Execute(class FPerforceSourceControlCommand& InComma
 	if (!InCommand.IsCanceled() && ScopedConnection.IsValid())
 	{
 		FPerforceConnection& Connection = ScopedConnection.GetConnection();
-		TArray<FString> Parameters;
-		Parameters.Add(TEXT("-c"));
-		Parameters.Add(InCommand.Changelist.ToString());
-		Parameters.Add(TEXT("-f")); // force
 
-		if (InCommand.Files.Num() > 0)
+		check(InCommand.Operation->GetName() == GetName());
+		TSharedRef<FShelve, ESPMode::ThreadSafe> Operation = StaticCastSharedRef<FShelve>(InCommand.Operation);
+
+		FPerforceSourceControlChangelist Changelist(InCommand.Changelist);
+
+		InCommand.bCommandSuccessful = true;
+
+		// If the command is issued on the default changelist, then we should create a new changelist,
+		// move the files to the new changelist (reopen), then shelve the files
+		if (InCommand.Changelist.IsDefault())
 		{
-			Parameters.Append(InCommand.Files);
+			TArray<FString> FilesToShelve = InCommand.Files;
+
+			// If the command has specified the default changelist but no files, then get all files from the default changelist
+			if (FilesToShelve.Num() == 0 && InCommand.Changelist.IsInitialized())
+			{
+				FPerforceSourceControlModule& PerforceSourceControl = FPerforceSourceControlModule::Get();
+				TSharedRef<FPerforceSourceControlChangelistState, ESPMode::ThreadSafe> DefaultChangelistState = PerforceSourceControl.GetProvider().GetStateInternal(InCommand.Changelist);
+				Algo::Transform(DefaultChangelistState->Files, FilesToShelve, [](const auto& FileState) {
+					return FileState->GetFilename();
+					});
+			}
+
+			int32 NewChangeList = Connection.CreatePendingChangelist(Operation->GetDescription(), TArray<FString>(), FOnIsCancelled::CreateRaw(&InCommand, &FPerforceSourceControlCommand::IsCanceled), InCommand.ResultInfo.ErrorMessages);
+			if (NewChangeList > 0)
+			{
+				Changelist = FPerforceSourceControlChangelist(NewChangeList);
+				InCommand.bCommandSuccessful = RunReopenCommand(InCommand, FilesToShelve, Changelist, &MovedFiles);
+				ChangelistDescription = Operation->GetDescription().ToString();
+			}
+			else
+			{
+				InCommand.bCommandSuccessful = false;
+			}
 		}
 
 		FP4RecordSet Records;
-		InCommand.bCommandSuccessful = Connection.RunCommand(TEXT("shelve"), Parameters, Records, InCommand.ResultInfo.ErrorMessages, FOnIsCancelled::CreateRaw(&InCommand, &FPerforceSourceControlCommand::IsCanceled), InCommand.bConnectionDropped);
-		
+
 		if (InCommand.bCommandSuccessful)
 		{
-			ChangelistToUpdate = InCommand.Changelist;
+			TArray<FString> Parameters;
+			Parameters.Add(TEXT("-c"));
+			Parameters.Add(Changelist.ToString());
+			Parameters.Add(TEXT("-f")); // force
+
+			if (InCommand.Files.Num() > 0)
+			{
+				Parameters.Append(InCommand.Files);
+			}
+
+			InCommand.bCommandSuccessful = Connection.RunCommand(TEXT("shelve"), Parameters, Records, InCommand.ResultInfo.ErrorMessages, FOnIsCancelled::CreateRaw(&InCommand, &FPerforceSourceControlCommand::IsCanceled), InCommand.bConnectionDropped);
+		}
+
+		if (InCommand.bCommandSuccessful)
+		{
+			InChangelistToUpdate = InCommand.Changelist;
+			OutChangelistToUpdate = Changelist;
+
 			ParseShelvedResults(Records, OutResults);
+
+			// Build depot to file mapping
+			GetDepotFileToLocalFileMap(Connection, InCommand, OutResults, OutFileMap);
+		}
+		else
+		{
+			// If we had to create a new changelist, move the files back to the default changelist
+			// and delete the changelist
+			if (Changelist != InCommand.Changelist)
+			{
+				if (MovedFiles.Num() > 0)
+				{
+					RunReopenCommand(InCommand, MovedFiles, InCommand.Changelist);
+				}
+
+				TArray<FString> ChangeParams;
+				ChangeParams.Add(TEXT("-d"));
+				ChangeParams.Add(Changelist.ToString());
+				Connection.RunCommand(TEXT("change"), ChangeParams, Records, InCommand.ResultInfo.ErrorMessages, FOnIsCancelled::CreateRaw(&InCommand, &FPerforceSourceControlCommand::IsCanceled), InCommand.bConnectionDropped);
+			}
 		}
 	}
 
@@ -2251,7 +2417,37 @@ bool FPerforceShelveWorker::Execute(class FPerforceSourceControlCommand& InComma
 
 bool FPerforceShelveWorker::UpdateStates() const
 {
-	return (OutResults.Num() > 0 && AddShelvedFilesToChangelist(OutResults, ChangelistToUpdate));
+	FPerforceSourceControlModule& PerforceSourceControl = FPerforceSourceControlModule::Get();
+
+	bool bMovedFiles = false;
+
+	// If we moved files to a new changelist, then we must make sure that the files are properly moved
+	if (InChangelistToUpdate != OutChangelistToUpdate && MovedFiles.Num() > 0)
+	{
+		const FDateTime Now = FDateTime::Now();
+		TSharedRef<FPerforceSourceControlChangelistState, ESPMode::ThreadSafe> SourceChangelistState = PerforceSourceControl.GetProvider().GetStateInternal(InChangelistToUpdate);
+		TSharedRef<FPerforceSourceControlChangelistState, ESPMode::ThreadSafe> DestinationChangelistState = PerforceSourceControl.GetProvider().GetStateInternal(OutChangelistToUpdate);
+
+		DestinationChangelistState->Changelist = OutChangelistToUpdate;
+		DestinationChangelistState->Description = ChangelistDescription;
+		DestinationChangelistState->bHasShelvedFiles = true;
+
+		for (const FString& MovedFile : MovedFiles)
+		{
+			TSharedRef<FPerforceSourceControlState, ESPMode::ThreadSafe> FileState = PerforceSourceControl.GetProvider().GetStateInternal(MovedFile);
+
+			SourceChangelistState->Files.Remove(FileState);
+			DestinationChangelistState->Files.Add(FileState);
+			FileState->Changelist = OutChangelistToUpdate;
+			FileState->TimeStamp = Now;
+		}
+
+		bMovedFiles = true;
+	}
+
+	const bool bAddedShelvedFilesToChangelist = (OutResults.Num() > 0 && AddShelvedFilesToChangelist(OutResults, OutFileMap, OutChangelistToUpdate));
+
+	return bMovedFiles || bAddedShelvedFilesToChangelist;
 }
 
 

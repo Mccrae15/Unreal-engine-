@@ -13,6 +13,7 @@
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
 #include "Logging/MessageLog.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 #define LOCTEXT_NAMESPACE "SourceControlHelpers"
 
@@ -1422,6 +1423,129 @@ const FString& USourceControlHelpers::GetGlobalSettingsIni()
 	return SourceControlGlobalSettingsIni;
 }
 
+bool USourceControlHelpers::GetAssetData(const FString& InFileName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies)
+{
+	FString PackageName;
+	if (FPackageName::TryConvertFilenameToLongPackageName(InFileName, PackageName))
+	{
+		return GetAssetData(InFileName, PackageName, OutAssets, OutDependencies);
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool USourceControlHelpers::GetAssetDataFromPackage(const FString& PackageName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies)
+{
+	return GetAssetData(PackageFilename(PackageName), PackageName, OutAssets, OutDependencies);
+}
+
+bool USourceControlHelpers::GetAssetData(const FString & InFileName, const FString& InPackageName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies)
+{
+	const bool bGetDependencies = (OutDependencies != nullptr);
+	OutAssets.Reset();
+	if (bGetDependencies)
+	{
+		OutDependencies->Reset();
+	}
+
+	// Try the registry first
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	AssetRegistryModule.Get().GetAssetsByPackageName(*InPackageName, OutAssets);
+
+	if (OutAssets.Num() > 0)
+	{
+		// Assets are already in the cache, we can query dependencies directly
+		if (bGetDependencies)
+		{
+			AssetRegistryModule.Get().GetDependencies(*InPackageName, *OutDependencies);
+		}
+
+		return true;
+	}
+
+	// Filter on improbable file extensions
+	EPackageExtension PackageExtension = FPackagePath::ParseExtension(InFileName);
+
+	if (PackageExtension == EPackageExtension::Unspecified ||
+		PackageExtension == EPackageExtension::Custom)
+	{
+		return false;
+	}
+
+	// If nothing was done, try to get the data explicitly	
+	IAssetRegistry::FLoadPackageRegistryData LoadedData(bGetDependencies);
+
+	AssetRegistryModule.Get().LoadPackageRegistryData(InFileName, LoadedData);
+	OutAssets = MoveTemp(LoadedData.Data);
+
+	if (bGetDependencies)
+	{
+		*OutDependencies = MoveTemp(LoadedData.DataDependencies);
+	}	
+
+	return OutAssets.Num() > 0;
+}
+
+bool USourceControlHelpers::GetAssetDataFromFileHistory(const FString& InFileName, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies, int64 MaxFetchSize)
+{
+	OutAssets.Reset();
+
+	if (OutDependencies)
+	{
+		OutDependencies->Reset();
+	}
+
+	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+	// Get the SCC state
+	FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState(InFileName, EStateCacheUsage::Use);
+	if (SourceControlState.IsValid())
+	{
+		return GetAssetDataFromFileHistory(SourceControlState, OutAssets, OutDependencies, MaxFetchSize);
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool USourceControlHelpers::GetAssetDataFromFileHistory(FSourceControlStatePtr InSourceControlState, TArray<FAssetData>& OutAssets, TArray<FName>* OutDependencies /* = nullptr */, int64 MaxFetchSize /* = -1 */)
+{
+	check(InSourceControlState.IsValid());
+	OutAssets.Reset();
+
+	if (OutDependencies)
+	{
+		OutDependencies->Reset();
+	}
+
+	// This code is similar to what's done in UAssetToolsImpl::DiffAgainstDepot but we'll force it quiet to prevent recursion issues
+	if (InSourceControlState->GetHistorySize() == 0)
+	{
+		ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+		TSharedRef<FUpdateStatus, ESPMode::ThreadSafe> UpdateStatusOperation = ISourceControlOperation::Create<FUpdateStatus>();
+		UpdateStatusOperation->SetUpdateHistory(true);
+		UpdateStatusOperation->SetQuiet(true);
+		SourceControlProvider.Execute(UpdateStatusOperation, InSourceControlState->GetFilename());
+	}
+
+	if (InSourceControlState->GetHistorySize() > 0)
+	{
+		TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> Revision = InSourceControlState->GetHistoryItem(0);
+		check(Revision.IsValid());
+
+		const bool bShouldGetFile = (MaxFetchSize < 0 || MaxFetchSize >(int64)Revision->GetFileSize());
+
+		FString TempFileName;
+		if (bShouldGetFile && Revision->Get(TempFileName))
+		{
+			return GetAssetData(TempFileName, OutAssets, OutDependencies);
+		}
+	}
+
+	return false;
+}
 
 FScopedSourceControl::FScopedSourceControl()
 {
