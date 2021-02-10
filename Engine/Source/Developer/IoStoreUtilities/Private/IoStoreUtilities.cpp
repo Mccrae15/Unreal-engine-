@@ -2411,7 +2411,7 @@ static void ParsePackageAssets(
 			Package.ImportCount = Summary.ImportCount;
 			Package.PreloadDependencyCount = Summary.PreloadDependencyCount;
 			Package.ExportCount = Summary.ExportCount;
-			Package.PackageFlags = Summary.PackageFlags;
+			Package.PackageFlags = Summary.GetPackageFlags();
 			Package.CookedHeaderSize = Summary.TotalHeaderSize;
 
 		}, EParallelForFlags::Unbalanced);
