@@ -1706,6 +1706,7 @@ FLevelEditorViewportClient::FLevelEditorViewportClient(const TSharedPtr<SLevelVi
 	, bIsTrackingBrushModification( false )
 	, bOnlyMovedPivot(false)
 	, bLockedCameraView(true)
+	, bNeedToRestoreComponentBeingMovedFlag(false)
 	, bReceivedFocusRecently(false)
 	, bAlwaysShowModeWidgetAfterSelectionChanges(true)
 	, ElementsToManipulate(UTypedElementRegistry::GetInstance()->CreateElementList())
@@ -2871,6 +2872,17 @@ bool FLevelEditorViewportClient::InputKey(FViewport* InViewport, int32 Controlle
 	return bHandled;
 }
 
+void SetActorBeingMovedByEditor(AActor* Actor, bool bIsBeingMoved)
+{
+	TInlineComponentArray<UPrimitiveComponent*> Components;
+	Actor->GetComponents(Components);
+
+	for (UPrimitiveComponent* PrimitiveComponent : Components)
+	{
+		PrimitiveComponent->SetIsBeingMovedByEditor(bIsBeingMoved);
+	}
+}
+
 void FLevelEditorViewportClient::TrackingStarted( const FInputEventState& InInputState, bool bIsDraggingWidget, bool bNudge )
 {
 	// Begin transacting.  Give the current editor mode an opportunity to do the transacting.
@@ -2900,6 +2912,7 @@ void FLevelEditorViewportClient::TrackingStarted( const FInputEventState& InInpu
 	}
 
 	bOnlyMovedPivot = false;
+	bNeedToRestoreComponentBeingMovedFlag = false;
 
 	PreDragActorTransforms.Empty();
 	CacheElementsToManipulate();
@@ -2919,6 +2932,17 @@ void FLevelEditorViewportClient::TrackingStarted( const FInputEventState& InInpu
 		Widget->SetSnapEnabled(true);
 
 		ViewportInteraction->BeginGizmoManipulation(ElementsToManipulate, GetWidgetMode());
+
+		if (!bDuplicateActorsInProgress)
+		{
+			bNeedToRestoreComponentBeingMovedFlag = true;
+
+			TypedElementListObjectUtil::ForEachObject<AActor>(ElementsToManipulate, [this](AActor* InActor)
+			{
+				SetActorBeingMovedByEditor(InActor, true);
+				return true;
+			});
+		}
 	}
 
 	// Start a transformation transaction if required
@@ -3038,6 +3062,17 @@ void FLevelEditorViewportClient::TrackingStopped()
 		{
 			GUnrealEd->UpdatePivotLocationForSelection();
 		}
+	}
+
+	if (bNeedToRestoreComponentBeingMovedFlag)
+	{
+		TypedElementListObjectUtil::ForEachObject<AActor>(ElementsToManipulate, [this](AActor* InActor)
+		{
+			SetActorBeingMovedByEditor(InActor, false);
+			return true;
+		});
+
+		bNeedToRestoreComponentBeingMovedFlag = false;
 	}
 
 	// End the transaction here if one was started in StartTransaction()
