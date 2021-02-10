@@ -1365,7 +1365,7 @@ namespace ChaosTest {
 				Vertices[VertexIndex] = Particles.X(VertexIndex);
 			}
 			FConvex Convex(Vertices, 0.0f);
-			const TArray<TVec3<T>>& CulledParticles = Convex.GetVertices();
+			const TArray<FVec3>& CulledParticles = Convex.GetVertices();
 			EXPECT_EQ(CulledParticles.Num(), 8);
 
 			for (int32 Idx = 0; Idx < CulledParticles.Num(); ++Idx)
@@ -1404,7 +1404,7 @@ namespace ChaosTest {
 	{
 		{
 			//degenerates
-			TArray<Chaos::TVec3<T>> Particles;
+			TArray<Chaos::FVec3> Particles;
 			Particles.SetNum(3);
 			Particles[0] = Chaos::TVec3<float>(-1, -1, -1);
 			Particles[1] = Chaos::TVec3<float>(1, -1, -1);
@@ -1417,7 +1417,7 @@ namespace ChaosTest {
 			EXPECT_EQ(Indices.Num(), 0);
 		}
 		{
-			TArray <Chaos::TVec3<T>> Particles;
+			TArray <Chaos::FVec3> Particles;
 			Particles.SetNum(9);
 			Particles[0] = Chaos::TVec3<float>(-1, -1, -1);
 			Particles[1] = Chaos::TVec3<float>(-1, -1, 1);
@@ -1439,7 +1439,7 @@ namespace ChaosTest {
 			}
 		}
 		{
-			TArray<TVec3<T>> Particles;
+			TArray<FVec3> Particles;
 			Particles.SetNum(5);
 			Particles[0] = Chaos::TVec3<float>(-1, -1, -1);
 			Particles[1] = Chaos::TVec3<float>(1, -1, -1);
@@ -1451,7 +1451,7 @@ namespace ChaosTest {
 			EXPECT_EQ(Indices.Num(), 6);
 		}
 		{
-			TArray<TVec3<T>> Particles;
+			TArray<FVec3> Particles;
 			Particles.SetNum(6);
 			Particles[0] = Chaos::TVec3<float>(-1, -1, -1);
 			Particles[1] = Chaos::TVec3<float>(1, -1, -1);
@@ -1468,7 +1468,7 @@ namespace ChaosTest {
 			// a large enough epsilon for building horizons in hull generation
 			// (tested to fail with 1e-1) we will generate a non-convex hull
 			// Using a scaled epsilon resolves this case
-			TArray<TVec3<T>> Particles;
+			TArray<FVec3> Particles;
 			Particles.SetNum(9);
 			Particles[0] = Chaos::TVec3<float>(-1, -1, -1);
 			Particles[1] = Chaos::TVec3<float>(-1, -1, 1);
@@ -1492,9 +1492,9 @@ namespace ChaosTest {
 			{
 				for (int32 i = 0; i < 3; ++i)
 				{
-					TVector<T, 3> V = Particles[Tri[i]];
-					TVector<T, 3> VAbs = V.GetAbs();
-					T Max = VAbs.GetMax();
+					FVec3 V = Particles[Tri[i]];
+					FVec3 VAbs = V.GetAbs();
+					FReal Max = VAbs.GetMax();
 					EXPECT_GE(Max, 1 - 1e-2);
 				}
 			}
@@ -1504,7 +1504,7 @@ namespace ChaosTest {
 			// only the original box - ignoring all interior and coplanar points.
 			// Note: If hull generation is changed to support non-triangular faces the conditions here
 			// will need to change as a correct hull in that method will produce only 6 faces not 12
-			TArray<TVec3<T>> Particles;
+			TArray<FVec3> Particles;
 			int32 NumParticles = 3600;
 			Particles.SetNum(NumParticles);
 			Particles[0] = Chaos::TVec3<float>(-1, -1, -1);
@@ -1532,9 +1532,9 @@ namespace ChaosTest {
 			{
 				for(int i = 0; i < 3; ++i)
 				{
-					TVector<T, 3> V = Particles[Tri[i]];
-					TVector<T, 3> VAbs = V.GetAbs();
-					T Max = VAbs.GetMax();
+					FVec3 V = Particles[Tri[i]];
+					FVec3 VAbs = V.GetAbs();
+					FReal Max = VAbs.GetMax();
 					EXPECT_GE(Max, 1 - 1e-2);
 				}
 			}
@@ -1543,7 +1543,7 @@ namespace ChaosTest {
 
 	void Simplify()
 	{
-		TArray<TVec3<T>> Particles;
+		TArray<FVec3> Particles;
 		Particles.SetNum(18);
 		Particles[0] = Chaos::TVec3<float>(0, 0, 12.0f);
 		Particles[1] = Chaos::TVec3<float>(-0.707f, -0.707f, 10.0f);
@@ -1571,8 +1571,8 @@ namespace ChaosTest {
 		int32 OriginalNumberFaces = Convex.GetFaces().Num();
 		FAABB3 OriginalBoundingBox = Convex.BoundingBox();
 
-		const TArray<TVec3<T>>& CulledParticles = Convex.GetVertices();
-		const TArray<TPlaneConcrete<T, 3>> Planes = Convex.GetFaces();
+		const TArray<FVec3>& CulledParticles = Convex.GetVertices();
+		const TArray<TPlaneConcrete<FReal, 3>> Planes = Convex.GetFaces();
 
 		// set target number of particles in simplified convex
 		FConvexBuilder::PerformGeometryReduction = 1;
