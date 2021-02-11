@@ -850,6 +850,11 @@ void UWorldPartition::DrawRuntimeHash3D()
 }
 
 #if WITH_EDITOR
+void UWorldPartition::DrawRuntimeHashPreview()
+{
+	RuntimeHash->DrawPreview();
+}
+
 void UWorldPartition::PrepareForPIE()
 {
 	check(World->IsPlayInEditor());
