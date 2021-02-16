@@ -6,7 +6,9 @@ public class VirtualCameraEditor : ModuleRules
 {
 	public VirtualCameraEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
-		DefaultBuildSettings = BuildSettingsVersion.V2;
+        bLegacyPublicIncludePaths = false;
+
+        DefaultBuildSettings = BuildSettingsVersion.V2;
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
