@@ -845,7 +845,7 @@ FSteamVRInputDevice* USteamVRInputDeviceFunctionLibrary::GetSteamVRInputDevice()
 		FSteamVRInputDevice* TestSteamVRDevice = static_cast<FSteamVRInputDevice*>(MotionController);
 		if (TestSteamVRDevice != nullptr)
 		{
-			if (!FGenericPlatformMath::IsNaN(TestSteamVRDevice->GetDeviceSignature()))
+			if (!FGenericPlatformMath::IsNaN((float)TestSteamVRDevice->GetDeviceSignature()))
 			{
 				if (TestSteamVRDevice->GetDeviceSignature() == 2019)
 				{
