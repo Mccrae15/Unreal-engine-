@@ -80,7 +80,7 @@ public:
 	bool ContainsDataForActor(const ALODActor* InLODActor) const;
 #endif
 
-public
+public:
 #if WITH_EDITOR
 	// Remove all assets associated with the given proxy mesh
 	void RemoveAssets(const FHLODProxyMesh& ProxyMesh);
