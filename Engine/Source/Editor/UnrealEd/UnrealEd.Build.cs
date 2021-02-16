@@ -7,7 +7,8 @@ public class UnrealEd : ModuleRules
 {
 	public UnrealEd(ReadOnlyTargetRules Target) : base(Target)
 	{
-		if(Target.Type != TargetType.Editor)
+		bLegacyPublicIncludePaths = false;
+		if (Target.Type != TargetType.Editor)
 		{
 			throw new BuildException("Unable to instantiate UnrealEd module for non-editor targets.");
 		}
