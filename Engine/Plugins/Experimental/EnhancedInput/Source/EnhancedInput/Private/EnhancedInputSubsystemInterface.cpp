@@ -189,7 +189,7 @@ bool IEnhancedInputSubsystemInterface::HasTriggerWith(TFunctionRef<bool(const UI
 	return false;
 };
 
-void IEnhancedInputSubsystemInterface::InjectChordBlockers(const TMap<FEnhancedActionKeyMapping*, int32>& ChordedMappings)
+void IEnhancedInputSubsystemInterface::InjectChordBlockers(const TArray<int32>& ChordedMappings)
 {
 	UEnhancedPlayerInput* PlayerInput = GetPlayerInput();
 	if (!PlayerInput)
@@ -198,13 +198,13 @@ void IEnhancedInputSubsystemInterface::InjectChordBlockers(const TMap<FEnhancedA
 	}
 
 	// Inject chord blockers into all lower priority action mappings with a shared key
-	for (const TPair<FEnhancedActionKeyMapping*, int32>& ChordPair : ChordedMappings)
+	for (int32 MappingIndex : ChordedMappings)
 	{
-		FEnhancedActionKeyMapping* ChordMapping = ChordPair.Key;
-		for (int32 i = ChordPair.Value; i < PlayerInput->EnhancedActionMappings.Num(); ++i)
+		FEnhancedActionKeyMapping& ChordMapping = PlayerInput->EnhancedActionMappings[MappingIndex];
+		for (int32 i = MappingIndex + 1; i < PlayerInput->EnhancedActionMappings.Num(); ++i)
 		{
 			FEnhancedActionKeyMapping& Mapping = PlayerInput->EnhancedActionMappings[i];
-			if (Mapping.Action && Mapping.Key == ChordMapping->Key)
+			if (Mapping.Action && Mapping.Key == ChordMapping.Key)
 			{
 				// If we have no explicit triggers we can't inject an implicit as it may cause us to fire when we shouldn't.
 				auto AnyExplicit = [](const UInputTrigger* Trigger) { return Trigger->GetTriggerType() == ETriggerType::Explicit; };
@@ -216,7 +216,7 @@ void IEnhancedInputSubsystemInterface::InjectChordBlockers(const TMap<FEnhancedA
 				}
 
 				UInputTriggerChordBlocker* ChordBlocker = NewObject<UInputTriggerChordBlocker>(PlayerInput);
-				ChordBlocker->ChordAction = ChordMapping->Action;
+				ChordBlocker->ChordAction = ChordMapping.Action;
 				// TODO: If the chording action is bound at a lower priority than the blocked action its trigger state will be evaluated too late, which may produce unintended effects on the first tick.
 				Mapping.Triggers.Add(ChordBlocker);
 			}
@@ -356,7 +356,7 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 
 	TSet<FKey> AppliedKeys;
 
-	TMap<FEnhancedActionKeyMapping*, int32> ChordedMappings;
+	TArray<int32> ChordedMappings;
 
 	for (const TPair<const UInputMappingContext*, int32>& ContextPair : OrderedInputContexts)
 	{
@@ -378,7 +378,8 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 					ContextAppliedKeys.Add(Mapping.Key);
 				}
 
-				FEnhancedActionKeyMapping& NewMapping = PlayerInput->AddMapping(Mapping);
+				int32 NewMappingIndex = PlayerInput->AddMapping(Mapping);
+				FEnhancedActionKeyMapping& NewMapping = PlayerInput->EnhancedActionMappings[NewMappingIndex];
 
 				// Re-instance modifiers
 				DeepCopyPtrArray<UInputModifier>(Mapping.Modifiers, NewMapping.Modifiers);
@@ -395,7 +396,7 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 				{
 					// TODO: Re-prioritize chorded mappings (within same context only?) by number of chorded actions, so Ctrl + Alt + [key] > Ctrl + [key] > [key].
 					// TODO: Above example shouldn't block [key] if only Alt is down, as there is no direct Alt + [key] mapping.y
-					ChordedMappings.Emplace(&NewMapping, PlayerInput->EnhancedActionMappings.Num());
+					ChordedMappings.Add(NewMappingIndex);
 
 					// Action level chording triggers need to be evaluated at the mapping level to ensure they block early enough.
 					// TODO: Continuing to evaluate these at the action level is redundant.
