@@ -279,6 +279,13 @@ void FGenerateMeshLODGraph::UpdateThickenSettings(const UE::GeometryFlow::FMeshT
 	CurrentThickenSettings = ThickenSettings;
 }
 
+void FGenerateMeshLODGraph::UpdateCollisionGroupLayerName(const FName& NewCollisionGroupLayerName)
+{
+	CollisionGroupLayerName = NewCollisionGroupLayerName;
+	UpdateSourceNodeValue<FNameSourceNode>(*Graph, GroupLayerNameNode, CollisionGroupLayerName);
+}
+
+
 void FGenerateMeshLODGraph::EvaluateResult(
 	FDynamicMesh3& ResultMesh,
 	FMeshTangentsd& ResultTangents,
@@ -516,6 +523,10 @@ void FGenerateMeshLODGraph::BuildGraph()
 	Graph->InferConnection(FilterTrianglesNode, DecomposeMeshForCollisionNode);
 	Graph->InferConnection(IgnoreGroupsForCollisionNode, DecomposeMeshForCollisionNode);
 
+	GroupLayerNameNode = Graph->AddNodeOfType<FNameSourceNode>(TEXT("GroupLayerNameNode"));
+	Graph->AddConnection(GroupLayerNameNode, FNameSourceNode::OutParamValue(), 
+						 DecomposeMeshForCollisionNode, FMakeTriangleSetsFromGroupsNode::InParamGroupLayer());
+
 	GenerateSimpleCollisionNode = Graph->AddNodeOfType<FGenerateSimpleCollisionNode>(TEXT("GenerateSimpleCollision"));
 	Graph->InferConnection(FilterTrianglesNode, GenerateSimpleCollisionNode);
 	Graph->InferConnection(DecomposeMeshForCollisionNode, GenerateSimpleCollisionNode);
@@ -588,6 +599,8 @@ void FGenerateMeshLODGraph::BuildGraph()
 	FIndexSets IgnoreGroupsForCollision;
 	IgnoreGroupsForCollision.AppendSet({ 0 });
 	UpdateSettingsSourceNodeValue(*Graph, IgnoreGroupsForCollisionNode, IgnoreGroupsForCollision);
+
+	UpdateCollisionGroupLayerName(CollisionGroupLayerName);
 
 	FGenerateSimpleCollisionSettings GenSimpleCollisionSettings;
 	UpdateGenerateSimpleCollisionSettings(GenSimpleCollisionSettings);

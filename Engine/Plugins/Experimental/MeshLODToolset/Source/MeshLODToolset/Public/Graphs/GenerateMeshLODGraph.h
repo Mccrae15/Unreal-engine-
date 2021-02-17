@@ -58,6 +58,8 @@ public:
 
 	void UpdateThickenWeightMap(const TArray<float>& ThickenWeightMap);
 
+	void UpdateCollisionGroupLayerName(const FName& CollisionGroupLayerName);
+
 	void UpdateThickenSettings(const UE::GeometryFlow::FMeshThickenSettings& ThickenSettings);
 	const UE::GeometryFlow::FMeshThickenSettings& GetCurrentThickenSettings() const { return CurrentThickenSettings; }
 
@@ -126,6 +128,8 @@ protected:
 	UE::GeometryFlow::FGraph::FHandle ThickenWeightMapNode;
 	UE::GeometryFlow::FMeshThickenSettings CurrentThickenSettings;
 
+	UE::GeometryFlow::FGraph::FHandle GroupLayerNameNode;
+
 	struct FBakeTextureGraphInfo
 	{
 		int32 Index;
@@ -145,4 +149,6 @@ protected:
 	UE::GeometryFlow::FGraph::FHandle MeshOutputNode;
 	UE::GeometryFlow::FGraph::FHandle TangentsOutputNode;
 
+	FName CollisionGroupLayerName = TEXT("Default");
+	
 };
