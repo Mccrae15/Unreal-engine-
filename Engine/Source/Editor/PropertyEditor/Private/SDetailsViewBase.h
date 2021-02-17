@@ -34,10 +34,7 @@ class IPropertyGenerationUtilities;
 class SSearchBox;
 struct FDetailsViewObjectRoot;
 
-
 typedef STreeView< TSharedRef<class FDetailTreeNode> > SDetailTree;
-
-
 
 /** Represents a filter which controls the visibility of items in the details view */
 struct FDetailFilter
@@ -49,6 +46,7 @@ struct FDetailFilter
 		, bShowAllChildrenIfCategoryMatches(true)
 		, bShowKeyable(false)
 		, bShowAnimated(false)
+		, bShowFavoritesCategory(false)
 	{}
 
 	bool IsEmptyFilter() const { return FilterStrings.Num() == 0 && bShowOnlyModifiedProperties == false && bShowAllAdvanced == false && bShowOnlyDiffering == false && bShowAllChildrenIfCategoryMatches == false && bShowKeyable == false && bShowAnimated == false; }
@@ -67,6 +65,8 @@ struct FDetailFilter
 	bool bShowKeyable;
 	/** If we should only show animated properties */
 	bool bShowAnimated;
+	/** If we should show the favorites category. */
+	bool bShowFavoritesCategory;
 	TSet<FPropertyPath> WhitelistedProperties;
 };
 
@@ -366,7 +366,7 @@ protected:
 	/** The current detail layout based on objects in this details panel.  There is one layout for each top level object node.*/
 	FDetailLayoutList DetailLayouts;
 	/** Row for searching and view options */
-	TSharedPtr<SHorizontalBox>  FilterRow;
+	TSharedPtr<SWidget> FilterRow;
 	/** Search box */
 	TSharedPtr<SSearchBox> SearchBox;
 	/** Customization instances that need to be destroyed when safe to do so */

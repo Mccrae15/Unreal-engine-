@@ -624,7 +624,7 @@ bool FDetailCategoryImpl::GetSavedExpansionState(FDetailTreeNode& InTreeNode) co
 }
 
 bool FDetailCategoryImpl::ContainsOnlyAdvanced() const
-{
+{ 
 	return !bFavoriteCategory && SimpleChildNodes.Num() == 0 && AdvancedChildNodes.Num() > 0;
 }
 
@@ -1000,6 +1000,11 @@ void FDetailCategoryImpl::FilterNode(const FDetailFilter& InFilter)
 	bForceAdvanced = bFavoriteCategory || bHasFilterStrings || InFilter.bShowAllAdvanced == true || ContainsOnlyAdvanced();
 
 	bHasVisibleDetails = false;
+
+	if (bFavoriteCategory && !InFilter.bShowFavoritesCategory)
+	{
+		return;
+	}
 
 	if (InlinePropertyNode.IsValid())
 	{
