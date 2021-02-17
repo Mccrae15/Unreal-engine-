@@ -939,7 +939,11 @@ void FLandscapeRenderSystem::ComputeSectionPerViewParameters(
 		ForcedLODLevel = FMath::Min<int32>(ForcedLODLevel, SectionLODSettings[EntityIndex].LastLODIndex);
 
 #if PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING
-		const float CurFirstLODIdx = (float)SectionCurrentFirstLODIndices[EntityIndex];
+		float CurFirstLODIdx = 0.f;
+		if (SectionCurrentFirstLODIndices.IsValidIndex(EntityIndex))
+		{
+			CurFirstLODIdx = (float)SectionCurrentFirstLODIndices[EntityIndex];
+		}
 #else
 		constexpr float CurFirstLODIdx = 0.f;
 #endif
