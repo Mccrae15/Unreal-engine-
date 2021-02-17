@@ -13,23 +13,23 @@ class TYCombinator
 	LAMBDA Lambda;
 
 public:
-	inline TYCombinator(LAMBDA&& InLambda) : Lambda(Forward<LAMBDA>(InLambda)) {}
+	constexpr TYCombinator(LAMBDA&& InLambda) : Lambda(Forward<LAMBDA>(InLambda)) {}
 
 	template <class... ARGS>
-	inline decltype(auto) operator()(ARGS&&... Args) const 
+	constexpr decltype(auto) operator()(ARGS&&... Args) const 
 	{
 		return Lambda(*this, Forward<ARGS>(Args)...);
 	}
 
 	template <class... ARGS>
-	inline decltype(auto) operator()(ARGS&&... Args) 
+	constexpr decltype(auto) operator()(ARGS&&... Args) 
 	{
 		return Lambda(*this, Forward<ARGS>(Args)...);
 	}
 };
 
 template<typename LAMBDA>
-inline TYCombinator<std::decay_t<LAMBDA>> MakeYCombinator(LAMBDA&& Lambda)
+constexpr TYCombinator<std::decay_t<LAMBDA>> MakeYCombinator(LAMBDA&& Lambda)
 {
 	return TYCombinator<std::decay_t<LAMBDA>>(Forward<LAMBDA>(Lambda));
 }
@@ -51,7 +51,7 @@ class TLocalWorkQueue
 	TFunctionRef<void(TaskType*)>* DoWork = nullptr;
 
 public:
-	TLocalWorkQueue(TaskType* InitialWork, LowLevelTasks::ETaskPriority InPriority = LowLevelTasks::ETaskPriority::Count) : Priority(InPriority)
+	inline TLocalWorkQueue(TaskType* InitialWork, LowLevelTasks::ETaskPriority InPriority = LowLevelTasks::ETaskPriority::Count) : Priority(InPriority)
 	{
 		if (Priority == LowLevelTasks::ETaskPriority::Count)
 		{
@@ -80,13 +80,13 @@ public:
 	}
 
 public:
-	void AddTask(TaskType* NewWork)
+	inline void AddTask(TaskType* NewWork)
 	{
 		check(!InternalData->CheckDone.load(std::memory_order_relaxed));
 		InternalData->TaskQueue.enqueue(NewWork);
 	}
 
-	void AddWorkers(uint16 NumWorkers)
+	inline void AddWorkers(uint16 NumWorkers)
 	{
 		check(!InternalData->CheckDone.load(std::memory_order_relaxed));
 		check(DoWork != nullptr);
@@ -117,7 +117,7 @@ public:
 		}
 	}
 
-	void Run(TFunctionRef<void(TaskType*)> InDoWork)
+	inline void Run(TFunctionRef<void(TaskType*)> InDoWork)
 	{
 		DoWork = &InDoWork;
 		LowLevelTasks::BusyWaitUntil([&InDoWork, InternalData = InternalData]()
