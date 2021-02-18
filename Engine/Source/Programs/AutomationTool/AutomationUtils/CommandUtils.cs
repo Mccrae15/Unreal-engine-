@@ -2714,7 +2714,6 @@ namespace AutomationTool
 
 		static readonly string[] TimestampServersSHA1 =
 		{
-			"http://timestamp.verisign.com/scripts/timestamp.dll",
 			"http://timestamp.globalsign.com/scripts/timstamp.dll",
 			"http://timestamp.comodoca.com/authenticode"
 		};
