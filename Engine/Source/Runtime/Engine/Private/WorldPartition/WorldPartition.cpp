@@ -800,11 +800,6 @@ void UWorldPartition::BeginDestroy()
 
 #if WITH_EDITOR
 	LoadedSubobjects.Empty();
-
-	for (TUniquePtr<FWorldPartitionActorDesc>& ActorDescPtr : ActorDescList)
-	{
-		ActorDescPtr.Release();
-	}
 #endif
 }
 
