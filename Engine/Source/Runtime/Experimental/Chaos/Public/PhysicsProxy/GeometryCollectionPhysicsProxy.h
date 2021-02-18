@@ -23,6 +23,9 @@ namespace Chaos
 	template <typename T> class TSerializablePtr;
 	class FErrorReporter;
 	template <typename T> struct FClusterCreationParameters;
+
+	template <typename Traits>
+	class TPBDRigidsEvolutionBase;
 }
 
 class FStubGeometryCollectionData : public Chaos::FParticleData 
@@ -89,7 +92,7 @@ public:
 	 * Construct \c PTDynamicCollection, copying attributes from the game thread, 
 	 * and prepare for simulation.
 	 */
-	void Initialize();
+	void Initialize(Chaos::TPBDRigidsEvolutionBase<Traits>* Evolution);
 	void Reset() { }
 
 	/** 
@@ -195,6 +198,9 @@ public:
 	{
 		return GTParticles;
 	}
+
+	/* Implemented so we can construct TAccelerationStructureHandle. */
+	virtual void* GetHandleUnsafe() const override { return nullptr; }
 
 protected:
 	/**

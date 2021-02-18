@@ -24,6 +24,7 @@
 #include "GeometryCollection/GeometryCollectionSimulationTypes.h"
 #include "GeometryCollection/ManagedArrayCollection.h"
 #include "Modules/ModuleManager.h"
+#include "Chaos/PBDRigidsEvolution.h"
 
 #ifndef TODO_REIMPLEMENT_INIT_COMMANDS
 #define TODO_REIMPLEMENT_INIT_COMMANDS 0
@@ -405,7 +406,7 @@ float ReportHighParticleFraction = -1.f;
 FAutoConsoleVariableRef CVarReportHighParticleFraction(TEXT("p.gc.ReportHighParticleFraction"), ReportHighParticleFraction, TEXT("Report any objects with particle fraction above this threshold"));
 
 template <typename Traits>
-void TGeometryCollectionPhysicsProxy<Traits>::Initialize()
+void TGeometryCollectionPhysicsProxy<Traits>::Initialize(Chaos::TPBDRigidsEvolutionBase<Traits> *Evolution)
 {
 	check(IsInGameThread());
 
@@ -528,6 +529,8 @@ void TGeometryCollectionPhysicsProxy<Traits>::Initialize()
 		{
 			GTParticles[Index] = Chaos::TGeometryParticle<Chaos::FReal, 3>::CreateParticle();
 			Chaos::TGeometryParticle<Chaos::FReal, 3>* P = GTParticles[Index].Get();
+
+			GTParticles[Index]->SetUniqueIdx(Evolution->GenerateUniqueIdx());
 
 			const FTransform& T = Parameters.WorldTransform * GameThreadCollection.Transform[Index];
 			P->SetX(T.GetTranslation(), false);
@@ -687,17 +690,25 @@ void TGeometryCollectionPhysicsProxy<Traits>::InitializeBodiesPT(Chaos::TPBDRigi
 		int NumRigids = 0; // ryan - Since we're doing SOA, we start at zero?
 		BaseParticleIndex = NumRigids;
 
+		// Gather unique indices from GT to pass into PT handle creation
+		TArray<Chaos::FUniqueIdx> UniqueIndices;
+		UniqueIndices.Reserve(SimulatableParticles.Num());
+
 		// Count geometry collection leaf node particles to add
 		int NumSimulatedParticles = 0;
 		for (int32 Idx = 0; Idx < SimulatableParticles.Num(); ++Idx)
 		{
 			NumSimulatedParticles += SimulatableParticles[Idx];
-			NumRigids += (SimulatableParticles[Idx] && !RestCollection->IsClustered(Idx));
+			if (SimulatableParticles[Idx] && !RestCollection->IsClustered(Idx))
+			{
+				NumRigids++;
+				UniqueIndices.Add(GTParticles[Idx]->UniqueIdx());
+			}
 		}
 
 		// Add entries into simulation array
 		RigidsSolver->GetEvolution()->ReserveParticles(NumSimulatedParticles);
-		TArray<Chaos::TPBDGeometryCollectionParticleHandle<float, 3>*> Handles = RigidsSolver->GetEvolution()->CreateGeometryCollectionParticles(NumRigids);
+		TArray<Chaos::TPBDGeometryCollectionParticleHandle<float, 3>*> Handles = RigidsSolver->GetEvolution()->CreateGeometryCollectionParticles(NumRigids, UniqueIndices.GetData());
 
 		int32 NextIdx = 0;
 		for (int32 Idx = 0; Idx < SimulatableParticles.Num(); ++Idx)
@@ -1347,9 +1358,28 @@ void TGeometryCollectionPhysicsProxy<Traits>::OnRemoveFromSolver(Chaos::TPBDRigi
 {
 	const FGeometryDynamicCollection& DynamicCollection = PhysicsThreadCollection;
 
+	Chaos::TPBDRigidsEvolutionGBF<Traits>* Evolution = RBDSolver->GetEvolution();
+
 	for (const FClusterHandle* Handle : SolverClusterHandles)
 	{
 		RBDSolver->RemoveParticleToProxy(Handle);
+	}
+
+	for (FClusterHandle* Handle : SolverParticleHandles)
+	{	
+		if (Handle)
+		{
+			if (Chaos::TPBDRigidClusteredParticleHandle<Chaos::FReal, 3>* Cluster = Handle->CastToClustered())
+			{
+				Evolution->GetRigidClustering().GetTopLevelClusterParents().Remove(Cluster);
+				Evolution->GetRigidClustering().GetChildrenMap().Remove(Cluster);
+				Evolution->DestroyParticle(Cluster);
+			}
+			else
+			{
+				Evolution->DestroyParticle(Handle);
+			}
+		}
 	}
 }
 

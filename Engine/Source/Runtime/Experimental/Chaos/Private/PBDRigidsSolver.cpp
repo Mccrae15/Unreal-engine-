@@ -546,7 +546,7 @@ namespace Chaos
 		UE_LOG(LogPBDRigidsSolver, Verbose, TEXT("TPBDRigidsSolver::RegisterObject(TGeometryCollectionPhysicsProxy*)"));
 		GeometryCollectionPhysicsProxies_External.AddUnique(InProxy);
 		InProxy->SetSolver(this);
-		InProxy->Initialize();
+		InProxy->Initialize(GetEvolution());
 		InProxy->NewData(); // Buffers data on the proxy.
 		FParticlesType* InParticles = &GetParticles();
 
@@ -568,6 +568,8 @@ namespace Chaos
 
 		RemoveDirtyProxy(InProxy);
 
+		// Particles are removed from acceleration structure in FPhysScene_Chaos::RemoveObject.
+		
 		int32 NumRemoved = GeometryCollectionPhysicsProxies_External.Remove(InProxy);
 
 		EnqueueCommandImmediate([InProxy, this]()
@@ -581,6 +583,7 @@ namespace Chaos
 				}
 
 				InProxy->SyncBeforeDestroy();
+				InProxy->OnRemoveFromSolver(this);
 				delete InProxy;
 			});
 
