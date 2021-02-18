@@ -488,7 +488,7 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(PrimitiveSceneData);
 
-			FRHIResourceCreateInfo CreateInfo(&PrimitiveSceneData);
+			FRHIResourceCreateInfo CreateInfo(TEXT("PrimitiveSceneDataBuffer"), &PrimitiveSceneData);
 			if (PrimitiveSceneData.GetResourceDataSize() == 0)
 			{
 				PrimitiveSceneData.Add(FPrimitiveSceneShaderData(GetIdentityPrimitiveParameters()));
@@ -501,7 +501,7 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(LightmapSceneData);
 
-			FRHIResourceCreateInfo CreateInfo(&LightmapSceneData);
+			FRHIResourceCreateInfo CreateInfo(TEXT("LightmapSceneDataBuffer"), &LightmapSceneData);
 			if (LightmapSceneData.GetResourceDataSize() == 0)
 			{
 				LightmapSceneData.Add(FLightmapSceneShaderData());
@@ -1164,7 +1164,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 					GPUBatchedTileRequests.BatchedTilesDesc.Add(TileDesc);
 				}
 
-				FRHIResourceCreateInfo CreateInfo;
+				FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
 				CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
 
 				GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
@@ -1217,13 +1217,13 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 					}
 
 					{
-						FRHIResourceCreateInfo CreateInfo(&SrcTilePositions);
+						FRHIResourceCreateInfo CreateInfo(TEXT("SrcTilePositionsBuffer"), &SrcTilePositions);
 						SrcTilePositionsBuffer = RHICreateStructuredBuffer(sizeof(FIntPoint), SrcTilePositions.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						SrcTilePositionsSRV = RHICreateShaderResourceView(SrcTilePositionsBuffer);
 					}
 
 					{
-						FRHIResourceCreateInfo CreateInfo(&DstTilePositions);
+						FRHIResourceCreateInfo CreateInfo(TEXT("DstTilePositionsBuffer"), &DstTilePositions);
 						DstTilePositionsBuffer = RHICreateStructuredBuffer(sizeof(FIntPoint), DstTilePositions.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						DstTilePositionsSRV = RHICreateShaderResourceView(DstTilePositionsBuffer);
 					}
@@ -1263,13 +1263,13 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 					}
 
 					{
-						FRHIResourceCreateInfo CreateInfo(&SrcTilePositions);
+						FRHIResourceCreateInfo CreateInfo(TEXT("SrcTilePositionsBuffer"), &SrcTilePositions);
 						SrcTilePositionsBuffer = RHICreateStructuredBuffer(sizeof(FIntPoint), SrcTilePositions.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						SrcTilePositionsSRV = RHICreateShaderResourceView(SrcTilePositionsBuffer);
 					}
 
 					{
-						FRHIResourceCreateInfo CreateInfo(&DstTilePositions);
+						FRHIResourceCreateInfo CreateInfo(TEXT("DstTilePositionsBuffer"), &DstTilePositions);
 						DstTilePositionsBuffer = RHICreateStructuredBuffer(sizeof(FIntPoint), DstTilePositions.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						DstTilePositionsSRV = RHICreateShaderResourceView(DstTilePositionsBuffer);
 					}
@@ -1309,13 +1309,13 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 					}
 
 					{
-						FRHIResourceCreateInfo CreateInfo(&SrcTilePositions);
+						FRHIResourceCreateInfo CreateInfo(TEXT("SrcTilePositionsBuffer"), &SrcTilePositions);
 						SrcTilePositionsBuffer = RHICreateStructuredBuffer(sizeof(FIntPoint), SrcTilePositions.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						SrcTilePositionsSRV = RHICreateShaderResourceView(SrcTilePositionsBuffer);
 					}
 
 					{
-						FRHIResourceCreateInfo CreateInfo(&DstTilePositions);
+						FRHIResourceCreateInfo CreateInfo(TEXT("DstTilePositionsBuffer"), &DstTilePositions);
 						DstTilePositionsBuffer = RHICreateStructuredBuffer(sizeof(FIntPoint), DstTilePositions.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						DstTilePositionsSRV = RHICreateShaderResourceView(DstTilePositionsBuffer);
 					}
@@ -1684,7 +1684,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 						}
 
 						FRWBuffer TilePositionsBuffer;
-						TilePositionsBuffer.Initialize(TilePositionsToClear.GetTypeSize(), TilePositionsToClear.Num(), PF_R32G32_UINT, 0, TEXT("TilePositionsBufferForClear"), &TilePositionsToClear);
+						TilePositionsBuffer.Initialize(TEXT("TilePositionsBufferForClear"), TilePositionsToClear.GetTypeSize(), TilePositionsToClear.Num(), PF_R32G32_UINT, 0, &TilePositionsToClear);
 
 						FMultiTileClearCS::FParameters* Parameters = GraphBuilder.AllocParameters<FMultiTileClearCS::FParameters>();
 						Parameters->NumTiles = TilePositionsToClear.Num();
@@ -1804,7 +1804,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 
 						if (GPUBatchedTileRequests.BatchedTilesDesc.Num() > 0)
 						{
-							FRHIResourceCreateInfo CreateInfo;
+							FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
 							CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
 
 							GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
@@ -1958,7 +1958,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 						}
 
 						FRWBuffer TilePositionsBuffer;
-						TilePositionsBuffer.Initialize(TilePositionsToClear.GetTypeSize(), TilePositionsToClear.Num(), PF_R32G32_UINT, 0, TEXT("TilePositionsBufferForClear"), &TilePositionsToClear);
+						TilePositionsBuffer.Initialize(TEXT("TilePositionsBufferForClear"), TilePositionsToClear.GetTypeSize(), TilePositionsToClear.Num(), PF_R32G32_UINT, 0, &TilePositionsToClear);
 
 						FMultiTileClearCS::FParameters* Parameters = GraphBuilder.AllocParameters<FMultiTileClearCS::FParameters>();
 						Parameters->NumTiles = TilePositionsToClear.Num();
@@ -2126,25 +2126,25 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 					check(PendingShadowTileRequests.Num() == LightTypeArray.Num());
 
 					{
-						FRHIResourceCreateInfo CreateInfo(&LightTypeArray);
+						FRHIResourceCreateInfo CreateInfo(TEXT("LightTypeBuffer"), &LightTypeArray);
 						LightTypeBuffer = RHICreateVertexBuffer(LightTypeArray.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						LightTypeSRV = RHICreateShaderResourceView(LightTypeBuffer, sizeof(int32), PF_R32_SINT);
 					}
 
 					{
-						FRHIResourceCreateInfo CreateInfo(&ChannelIndexArray);
+						FRHIResourceCreateInfo CreateInfo(TEXT("ChannelIndexBuffer"), &ChannelIndexArray);
 						ChannelIndexBuffer = RHICreateVertexBuffer(ChannelIndexArray.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						ChannelIndexSRV = RHICreateShaderResourceView(ChannelIndexBuffer, sizeof(int32), PF_R32_SINT);
 					}
 
 					{
-						FRHIResourceCreateInfo CreateInfo(&LightSampleIndexArray);
+						FRHIResourceCreateInfo CreateInfo(TEXT("LightSampleIndexSRV"), &LightSampleIndexArray);
 						LightSampleIndexBuffer = RHICreateVertexBuffer(LightSampleIndexArray.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						LightSampleIndexSRV = RHICreateShaderResourceView(LightSampleIndexBuffer, sizeof(int32), PF_R32_SINT);
 					}
 
 					{
-						FRHIResourceCreateInfo CreateInfo(&LightShaderParameterArray);
+						FRHIResourceCreateInfo CreateInfo(TEXT("LightShaderParameterBuffer"), &LightShaderParameterArray);
 						LightShaderParameterBuffer = RHICreateStructuredBuffer(sizeof(FLightShaderConstants), LightShaderParameterArray.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						LightShaderParameterSRV = RHICreateShaderResourceView(LightShaderParameterBuffer);
 					}
@@ -2228,7 +2228,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 							}
 
 							{
-								FRHIResourceCreateInfo CreateInfo;
+								FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
 								CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
 
 								GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
@@ -2335,7 +2335,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 				GPUBatchedTileRequests.BatchedTilesDesc.Add(TileDesc);
 			}
 
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
 			CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
 
 			GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
@@ -2502,7 +2502,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 					GPUBatchedTileRequests.BatchedTilesDesc.Add(TileDesc);
 				}
 
-				FRHIResourceCreateInfo CreateInfo;
+				FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
 				CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
 
 				GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);

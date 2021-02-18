@@ -11,7 +11,7 @@ static const float kVignetteHardness = 25;
 
 void FGoogleVRHMD::GenerateDistortionCorrectionIndexBuffer()
 {
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("DistortionMeshIndices"));
 	DistortionMeshIndices = RHICreateIndexBuffer(sizeof(uint16), sizeof(uint16) * 6 * DistortionPointsX * DistortionPointsY, BUF_Static, CreateInfo);
 	void* VoidPtr = RHILockBuffer(DistortionMeshIndices, 0, sizeof(uint16) * 6 * DistortionPointsX * DistortionPointsY, RLM_WriteOnly);
 	uint16* DistortionMeshIndicesPtr = reinterpret_cast<uint16*>(VoidPtr);
@@ -44,7 +44,7 @@ void FGoogleVRHMD::GenerateDistortionCorrectionIndexBuffer()
 void FGoogleVRHMD::GenerateDistortionCorrectionVertexBuffer(EStereoscopicPass Eye)
 {
 	FBufferRHIRef& DistortionMeshVertices = (Eye == eSSP_LEFT_EYE) ? DistortionMeshVerticesLeftEye : DistortionMeshVerticesRightEye;
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("DistortionMeshVertices"));
 	DistortionMeshVertices = RHICreateVertexBuffer(sizeof(FDistortionVertex) * NumVerts, BUF_Static, CreateInfo);
 	void* VoidPtr = RHILockBuffer(DistortionMeshVertices, 0, sizeof(FDistortionVertex) * NumVerts, RLM_WriteOnly);
 	FDistortionVertex* Verts = reinterpret_cast<FDistortionVertex*>(VoidPtr);
@@ -137,7 +137,7 @@ void FGoogleVRHMD::DrawDistortionMesh_RenderThread(struct FHeadMountedDisplayPas
 			{ FVector2D( 1.0f,  1.0f), FVector2D(1.0f, 0.0f), FVector2D(1.0f, 0.0f), FVector2D(1.0f, 0.0f), 1.0f, 0.0f },
 		};
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FGoogleVRHMD"));
 		FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FDistortionVertex) * 4, BUF_Volatile, CreateInfo);
 		void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FDistortionVertex) * 4, RLM_WriteOnly);
 		FPlatformMemory::Memcpy(VoidPtr, Verts, sizeof(FDistortionVertex) * 4);
@@ -182,7 +182,7 @@ static void ResolvePendingRenderTarget(FRHICommandListImmediate& RHICmdList, FGr
 			FMemory::Memcpy(IndexBuffer.GetData(), Indices, InternalNumIndices * sizeof(uint16));
 
 			// Create index buffer. Fill buffer with initial data upon creation
-			FRHIResourceCreateInfo CreateInfo(&IndexBuffer);
+			FRHIResourceCreateInfo CreateInfo(TEXT("FGoogleVRHMD"), &IndexBuffer);
 			IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfo);
 		}
 	};

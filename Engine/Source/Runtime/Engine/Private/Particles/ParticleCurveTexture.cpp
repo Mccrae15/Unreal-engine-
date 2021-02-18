@@ -227,7 +227,7 @@ static void InjectCurves(
 
 		// get a buffer for all curve textures at once, and copy curve data over
 		//
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("ScratchVertexBuffer"));
 		void* ScratchData = nullptr;
 		FBufferRHIRef ScratchVertexBufferRHI = RHICreateAndLockVertexBuffer(TotalSamples * sizeof(FColor), BUF_Volatile , CreateInfo, ScratchData);
 		FColor* RESTRICT DestSamples = (FColor*)ScratchData;
@@ -516,8 +516,7 @@ FParticleCurveTexture::FParticleCurveTexture()
 void FParticleCurveTexture::InitRHI()
 {
 	// 8-bit per channel RGBA texture for curves.
-	FRHIResourceCreateInfo CreateInfo = { FClearValueBinding(FLinearColor::Blue) };
-	CreateInfo.DebugName = TEXT("ParticleCurveTexture");
+	FRHIResourceCreateInfo CreateInfo(TEXT("ParticleCurveTexture"), FClearValueBinding(FLinearColor::Blue));
 
 	RHICreateTargetableShaderResource2D(
 		GParticleCurveTextureSizeX,

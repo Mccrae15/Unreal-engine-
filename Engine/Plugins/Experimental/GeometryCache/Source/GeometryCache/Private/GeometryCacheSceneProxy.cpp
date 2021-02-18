@@ -1275,7 +1275,7 @@ void FGeomCacheVertexFactory::Init(const FVertexBuffer* PositionBuffer, const FV
 
 void FGeomCacheIndexBuffer::InitRHI()
 {
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FGeomCacheIndexBuffer"));
 	void* Buffer = nullptr;
 	IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint32), NumIndices * sizeof(uint32), BUF_Dynamic | BUF_ShaderResource, CreateInfo, Buffer);
 	RHIUnlockBuffer(IndexBufferRHI);
@@ -1293,7 +1293,7 @@ void FGeomCacheIndexBuffer::Update(const TArray<uint32>& Indices)
 	if (Indices.Num() > NumIndices)
 	{
 		NumIndices = Indices.Num();
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FGeomCacheIndexBuffer"));
 		IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint32), NumIndices * sizeof(uint32), BUF_Dynamic | BUF_ShaderResource, CreateInfo, Buffer);
 	}
 	else
@@ -1319,7 +1319,7 @@ void FGeomCacheIndexBuffer::UpdateSizeOnly(int32 NewNumIndices)
 	// We only ever grow in size. Ok for now?
 	if (NewNumIndices > NumIndices)
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FGeomCacheIndexBuffer"));
 		IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint32), NewNumIndices * sizeof(uint32), BUF_Dynamic | BUF_ShaderResource, CreateInfo);
 		NumIndices = NewNumIndices;
 	}
@@ -1327,7 +1327,7 @@ void FGeomCacheIndexBuffer::UpdateSizeOnly(int32 NewNumIndices)
 
 void FGeomCacheVertexBuffer::InitRHI()
 {
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FGeomCacheVertexBuffer"));
 	void* BufferData = nullptr;
 	VertexBufferRHI = RHICreateAndLockVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);
 	RHIUnlockBuffer(VertexBufferRHI);
@@ -1344,7 +1344,7 @@ void FGeomCacheVertexBuffer::UpdateRaw(const void* Data, int32 NumItems, int32 I
 	if (NewSizeInBytes > SizeInBytes)
 	{
 		SizeInBytes = NewSizeInBytes;
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FGeomCacheVertexBuffer"));
 		VertexBufferRHI = RHICreateAndLockVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo, VertexBufferData);
 	}
 	else
@@ -1376,7 +1376,7 @@ void FGeomCacheVertexBuffer::UpdateSize(int32 NewSizeInBytes)
 	if (NewSizeInBytes > SizeInBytes)
 	{
 		SizeInBytes = NewSizeInBytes;
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FGeomCacheVertexBuffer"));
 		VertexBufferRHI = RHICreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
 	}
 }

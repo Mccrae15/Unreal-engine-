@@ -338,7 +338,7 @@ public:
 	virtual void InitRHI() override
 	{
 		const uint32 Size = 6 * sizeof(FScreenVertex);
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FQuadVertexBuffer"));
 
 		void* Buffer = nullptr;
 		VertexBufferRHI = RHICreateAndLockVertexBuffer(Size, BUF_Static, CreateInfo, Buffer);

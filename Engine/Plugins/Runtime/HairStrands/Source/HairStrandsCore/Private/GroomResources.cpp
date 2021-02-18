@@ -76,8 +76,7 @@ void CreateBuffer(const TArray<typename FormatType::Type>& InData, FHairCardsVer
 
 	if (DataSizeInBytes == 0) return;
 
-	FRHIResourceCreateInfo CreateInfo;
-	CreateInfo.DebugName = DebugName;
+	FRHIResourceCreateInfo CreateInfo(DebugName);
 	CreateInfo.ResourceArray = nullptr;
 
 	OutBuffer.VertexBufferRHI = RHICreateVertexBuffer(DataSizeInBytes, BUF_Static | BUF_ShaderResource, InitialAccess, CreateInfo);
@@ -280,7 +279,7 @@ void FHairCardIndexBuffer::InitRHI()
 {
 	const uint32 DataSizeInBytes = FHairCardsIndexFormat::SizeInByte * Indices.Num();
 
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FHairCardIndexBuffer"));
 	void* Buffer = nullptr;
 	IndexBufferRHI = RHICreateAndLockIndexBuffer(FHairCardsIndexFormat::SizeInByte, DataSizeInBytes, BUF_Static, CreateInfo, Buffer);
 	FMemory::Memcpy(Buffer, Indices.GetData(), DataSizeInBytes);

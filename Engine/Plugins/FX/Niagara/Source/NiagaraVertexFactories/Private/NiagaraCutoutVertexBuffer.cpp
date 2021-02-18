@@ -19,7 +19,7 @@ void FNiagaraCutoutVertexBuffer::InitRHI()
 	if (Data.Num())
 	{
 		// create a static vertex buffer
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FNiagaraCutoutVertexBuffer"));
 		void* BufferData = nullptr;
 
 		const int32 DataSize = Data.Num() * sizeof(FVector2D);

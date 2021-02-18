@@ -24,7 +24,7 @@ public:
 	virtual void InitRHI() override
 	{
 		// create a static vertex buffer
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FNiagaraNullSortedIndicesVertexBuffer"));
 		void* BufferData = nullptr;
 		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(int32), BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);
 		FMemory::Memzero(BufferData, sizeof(int32));

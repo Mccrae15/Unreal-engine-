@@ -79,12 +79,12 @@ public:
 
 	virtual void InitRHI() override final
 	{
-		FRHIResourceCreateInfo CreateInfo;
 		void* BufferData = nullptr;
 		uint32 SizeByte = MeshData.Num() * sizeof(FVector) * 2;
 		
 		if (SizeByte > 0)
 		{
+			FRHIResourceCreateInfo CreateInfo(TEXT("FNDIMeshRendererInfoGPUData"));
 			BufferMeshDataRHI = RHICreateAndLockVertexBuffer(SizeByte, BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);		
 			FVector* BufferDataVector = reinterpret_cast<FVector*>(BufferData);
 			for (const auto& Mesh : MeshData)

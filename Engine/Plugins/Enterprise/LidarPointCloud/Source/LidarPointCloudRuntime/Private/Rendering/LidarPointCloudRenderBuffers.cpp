@@ -39,7 +39,7 @@ void FLidarPointCloudIndexBuffer::Resize(const uint32 & RequestedCapacity)
 
 void FLidarPointCloudIndexBuffer::InitRHI()
 {
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FLidarPointCloudIndexBuffer"));
 	void* Buffer = nullptr;
 	uint32 Size = Capacity * 7 * sizeof(uint32);
 	PointOffset = Capacity * 6;
@@ -94,7 +94,7 @@ void FLidarPointCloudRenderBuffer::InitRHI()
 	// This must be called from Rendering thread
 	check(IsInRenderingThread());
 
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FLidarPointCloudRenderBuffer"));
 	Buffer = RHICreateVertexBuffer(sizeof(uint32) * Capacity, BUF_ShaderResource | BUF_Dynamic, CreateInfo);
 	SRV = RHICreateShaderResourceView(Buffer, sizeof(uint32), PF_R32_FLOAT);
 }

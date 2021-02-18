@@ -88,7 +88,7 @@ private:
 		const uint32 Stride = sizeof(IndexType);
 
 		// Create index buffer. Fill buffer with initial data upon creation
-		FRHIResourceCreateInfo CreateInfo(&Indices);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FWaterMeshIndexBuffer"), &Indices);
 		return RHICreateIndexBuffer(Stride, Size, BUF_Static, CreateInfo);
 	}
 
@@ -110,7 +110,7 @@ public:
 
 		NumVerts = NumVertsPerSide * NumVertsPerSide;
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FWaterMeshVertexBuffer"));
 		void* BufferData = nullptr;
 		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(FVector4) * NumVerts, BUF_Static, CreateInfo, BufferData);
 		FVector4* DummyContents = (FVector4*)BufferData;

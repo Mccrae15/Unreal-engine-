@@ -521,7 +521,7 @@ public:
 	{
 		const int32 NumTriangles = NumVertices - 2;
 		const uint32 Size = NumVertices * sizeof(FScreenVertex);
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FCircleRasterizeVertexBuffer"));
 		void* Buffer = nullptr;
 		VertexBufferRHI = RHICreateAndLockVertexBuffer(Size, BUF_Static, CreateInfo, Buffer);
 		FScreenVertex* DestVertex = (FScreenVertex*)Buffer;
@@ -574,7 +574,7 @@ public:
 		const uint32 Stride = sizeof(uint16);
 
 		// Create index buffer. Fill buffer with initial data upon creation
-		FRHIResourceCreateInfo CreateInfo(&Indices);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FCircleRasterizeIndexBuffer"), &Indices);
 		IndexBufferRHI = RHICreateIndexBuffer(Stride, Size, BUF_Static, CreateInfo);
 	}
 };

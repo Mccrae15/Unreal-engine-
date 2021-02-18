@@ -13,7 +13,7 @@ public:
 	virtual void InitRHI() override
 	{
 		const uint32 Size = sizeof(FVector2D) * 4 * NumTileQuadsInBuffer;
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FTileTexCoordVertexBuffer"));
 		void* BufferData = nullptr;
 		VertexBufferRHI = RHICreateAndLockVertexBuffer(Size, BUF_Static, CreateInfo, BufferData);
 		FVector2D* Vertices = (FVector2D*)BufferData;
@@ -43,7 +43,7 @@ public:
 	{
 		const uint32 Size = sizeof(uint16) * 6 * NumTileQuadsInBuffer;
 		const uint32 Stride = sizeof(uint16);
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FTileIndexBuffer"));
 		void* Buffer = nullptr;
 		IndexBufferRHI = RHICreateAndLockIndexBuffer(Stride, Size, BUF_Static, CreateInfo, Buffer);
 		uint16* Indices = (uint16*)Buffer;

@@ -91,7 +91,7 @@ public:
 		const uint32 SizeInBytes = PerVertexData.Num() * sizeof(DataType);
 
 		FMRMeshVertexResourceArray ResourceArray(PerVertexData.GetData(), SizeInBytes);
-		FRHIResourceCreateInfo CreateInfo(&ResourceArray);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FMRMeshVertexBuffer"), &ResourceArray);
 		VertexBufferRHI = RHICreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
 	}
 
@@ -105,7 +105,7 @@ public:
 	{
 		NumIndices = Indices.Num();
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FMRMeshIndexBuffer"));
 		void* Buffer = nullptr;
 		IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(int32), Indices.Num() * sizeof(int32), BUF_Static, CreateInfo, Buffer);
 
@@ -118,7 +118,7 @@ public:
 	{
 		NumIndices = Indices.Num();
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FMRMeshIndexBuffer"));
 		void* Buffer = nullptr;
 		IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint16), Indices.Num() * sizeof(uint16), BUF_Static, CreateInfo, Buffer);
 

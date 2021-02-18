@@ -162,7 +162,7 @@ private:
 	public:
 		virtual void InitRHI() override
 		{
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FPointCloudVertexBuffer"));
 			void* Buffer = nullptr;
 			VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(FVector), BUF_Static | BUF_ZeroStride, CreateInfo, Buffer);
 			FMemory::Memzero(Buffer, sizeof(FVector));

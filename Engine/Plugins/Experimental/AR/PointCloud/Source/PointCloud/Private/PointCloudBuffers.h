@@ -49,7 +49,7 @@ protected:
 		NumVerts = InNumVerts;
 
 		FPointCloudVertexResourceArray ResourceArray(InVertexData, InSizeInBytes);
-		FRHIResourceCreateInfo CreateInfo(&ResourceArray);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FPointCloudVertexBufferBase"), &ResourceArray);
 		VertexBufferRHI = RHICreateVertexBuffer(InSizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
 	}
 
@@ -130,7 +130,7 @@ public:
 		NumPrimitives = NumPoints;
 		const uint32 Size = sizeof(INDEX_TYPE) * 4 * NumPoints;
 		const uint32 Stride = sizeof(INDEX_TYPE);
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("PointCloudQuadList"));
 		void* Buffer = nullptr;
 		IndexBufferRHI = RHICreateAndLockIndexBuffer( Stride, Size, BUF_Static, CreateInfo, Buffer );
 		INDEX_TYPE* Indices = (INDEX_TYPE*)Buffer;
@@ -151,7 +151,7 @@ public:
 		NumPrimitives = 2 * NumPoints;
 		const uint32 Size = sizeof(INDEX_TYPE) * 6 * NumPoints;
 		const uint32 Stride = sizeof(INDEX_TYPE);
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("PointCloudTriList"));
 		void* Buffer = nullptr;
 		IndexBufferRHI = RHICreateAndLockIndexBuffer( Stride, Size, BUF_Static, CreateInfo, Buffer );
 		INDEX_TYPE* Indices = (INDEX_TYPE*)Buffer;

@@ -421,10 +421,10 @@ void FStreamingManager::InitRHI()
 	RequestsHashTable	= new FRequestsHashTable();
 	PageUploader		= new FStreamingPageUploader();
 
-	RootPages.DataBuffer.Initialize(sizeof(uint32), 0, TEXT("Nanite.StreamingManager.RootPagesInitial"));
-	ClusterPageData.DataBuffer.Initialize(sizeof(uint32), 0, TEXT("Nanite.StreamingManager.ClusterPageDataInitial"));
-	ClusterPageHeaders.DataBuffer.Initialize(sizeof(uint32), 0, TEXT("Nanite.StreamingManager.ClusterPageHeadersInitial"));
-	Hierarchy.DataBuffer.Initialize(sizeof(uint32), 0, TEXT("Nanite.StreamingManager.HierarchyInitial"));	// Dummy allocation to make sure it is a valid resource
+	RootPages.DataBuffer.Initialize(TEXT("Nanite.StreamingManager.RootPagesInitial"), sizeof(uint32), 0);
+	ClusterPageData.DataBuffer.Initialize(TEXT("Nanite.StreamingManager.ClusterPageDataInitial"), sizeof(uint32), 0);
+	ClusterPageHeaders.DataBuffer.Initialize(TEXT("Nanite.StreamingManager.ClusterPageHeadersInitial"), sizeof(uint32), 0);
+	Hierarchy.DataBuffer.Initialize(TEXT("Nanite.StreamingManager.HierarchyInitial"), sizeof(uint32), 0);	// Dummy allocation to make sure it is a valid resource
 }
 
 void FStreamingManager::ReleaseRHI()

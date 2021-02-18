@@ -2841,7 +2841,7 @@ public:
 	virtual void InitRHI() override
 	{
 		// create a static vertex buffer
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FNullDynamicParameterVertexBuffer"));
 		void* BufferData = nullptr;
 		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(FParticleVertexDynamicParameter), BUF_Static | BUF_ZeroStride, CreateInfo, BufferData);
 		FParticleVertexDynamicParameter* Vertices = (FParticleVertexDynamicParameter*)BufferData;

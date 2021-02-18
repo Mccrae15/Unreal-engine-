@@ -10,7 +10,7 @@ public:
 	{
 		const uint32 Size = sizeof(uint16) * 6 * NumSprites;
 		const uint32 Stride = sizeof(uint16);
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FSpriteIndexBuffer"));
 		void* Buffer = nullptr;
 		IndexBufferRHI = RHICreateAndLockIndexBuffer( Stride, Size, BUF_Static, CreateInfo, Buffer );
 		uint16* Indices = (uint16*)Buffer;

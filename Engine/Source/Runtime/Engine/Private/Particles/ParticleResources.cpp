@@ -16,7 +16,7 @@ const int32 GParticleScratchVertexBufferSize = 64 * (1 << 10); // 64KB
 void FParticleTexCoordVertexBuffer::InitRHI()
 {
 	const uint32 Size = sizeof(FVector2D) * 4 * MAX_PARTICLES_PER_INSTANCE;
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FParticleTexCoordVertexBuffer"));
 	void* BufferData = nullptr;
 	VertexBufferRHI = RHICreateAndLockVertexBuffer(Size, BUF_Static, CreateInfo, BufferData);
 	FVector2D* Vertices = (FVector2D*)BufferData;
@@ -39,7 +39,7 @@ TGlobalResource<FParticleTexCoordVertexBuffer> GParticleTexCoordVertexBuffer;
 void FParticleEightTexCoordVertexBuffer::InitRHI()
 {
 	const uint32 Size = sizeof(FVector2D) * 8 * MAX_PARTICLES_PER_INSTANCE;
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FParticleEightTexCoordVertexBuffer"));
 	void* BufferData = nullptr;
 	VertexBufferRHI = RHICreateAndLockVertexBuffer(Size, BUF_Static, CreateInfo, BufferData);
 	FVector2D* Vertices = (FVector2D*)BufferData;
@@ -72,7 +72,7 @@ void FParticleIndexBuffer::InitRHI()
 	const uint32 MaxParticles = 65536 / 4;
 	const uint32 Size = sizeof(uint16) * 6 * MaxParticles;
 	const uint32 Stride = sizeof(uint16);
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FParticleIndexBuffer"));
 	void* Buffer = nullptr;
 	IndexBufferRHI = RHICreateAndLockIndexBuffer( Stride, Size, BUF_Static, CreateInfo, Buffer);
 	uint16* Indices = (uint16*)Buffer;
@@ -102,7 +102,7 @@ void FSixTriangleParticleIndexBuffer::InitRHI()
 	const uint32 MaxParticles = 65536 / 8;
 	const uint32 Size = sizeof(uint16) * 6 * 3 * MaxParticles;
 	const uint32 Stride = sizeof(uint16);
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FSixTriangleParticleIndexBuffer"));
 	void* Buffer = nullptr;
 	IndexBufferRHI = RHICreateAndLockIndexBuffer( Stride, Size, BUF_Static, CreateInfo, Buffer);
 	uint16* Indices = (uint16*)Buffer;

@@ -211,7 +211,7 @@ void FLandscapeVertexBufferMobile::UpdateMemoryStat(int32 Delta)
 void FLandscapeVertexBufferMobile::InitRHI()
 {
 	// create a static vertex buffer
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FLandscapeVertexBufferMobile"));
 	void* VertexDataPtr = nullptr;
 	VertexBufferRHI = RHICreateAndLockVertexBuffer(VertexData.Num(), BUF_Static, CreateInfo, VertexDataPtr);
 

@@ -149,7 +149,7 @@ public:
 		SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
 		
 		// Default to an empty 1x1 texture if we don't have a camera image
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FARKitTextureResource"));
 		Size.X = Size.Y = 1;
 		TextureRHI = RHICreateTexture2D(Size.X, Size.Y, PF_B8G8R8A8, 1, 1, TexCreate_ShaderResource, CreateInfo);
 		
@@ -207,7 +207,7 @@ protected:
 			TextureRHI.SafeRelease();
 			
 			// Create the target texture that we'll update into
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FARKitTextureResource"));
 			TextureRHI = RHICreateTexture2D(Size.X, Size.Y, PixelFormat, 1, 1, TexCreate_Dynamic | TexCreate_ShaderResource | TexCreate_UAV, CreateInfo);
 		}
 	}
@@ -571,7 +571,7 @@ public:
 	 */
 	virtual void InitRHI() override
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FARMetalResource"));
 
 		id<MTLTexture> MetalTexture = Owner->GetMetalTexture();
 		if (MetalTexture != nullptr)
@@ -887,7 +887,7 @@ public:
 		SamplerStateRHI = RHICreateSamplerState(SamplerStateInitializer);
 		
 		// Default to an empty 1x1 texture if we don't have a camera image
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("DecodedTextureRef"));
 		Size.X = Size.Y = 1;
 		{
 			FScopeLock ScopeLock(&DecodedTextureLock);
@@ -940,7 +940,7 @@ public:
 		
 		{
 			// Update the RHI texture wrapper for the Y and CbCr images
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("VideoTexture"));
 			const ETextureCreateFlags CreateFlags = TexCreate_Dynamic | TexCreate_NoTiling | TexCreate_ShaderResource;
 			CreateInfo.BulkData = new FAppleARKitCameraTextureResourceWrapper(CapturedYImage);
 			CreateInfo.ResourceArray = nullptr;
@@ -981,7 +981,7 @@ public:
 		if (!DecodedTextureRef || Size != OutputSize)
 		{
 			Size = OutputSize;
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FARKitCameraVideoResource_DecodedTexture"));
 			{
 				FScopeLock ScopeLock(&DecodedTextureLock);
 				DecodedTextureRef = RHICreateTexture2D(Size.X, Size.Y, PF_B8G8R8A8, 1, 1, TexCreate_Dynamic | TexCreate_ShaderResource | TexCreate_UAV, CreateInfo);

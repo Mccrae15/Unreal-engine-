@@ -41,7 +41,7 @@ namespace
 
 		virtual void InitRHI() override
 		{
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FImagePlateIndexBuffer"));
 			void* Buffer = nullptr;
 			IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint16), Indices.Num() * sizeof(uint16), BUF_Static, CreateInfo, Buffer);
 

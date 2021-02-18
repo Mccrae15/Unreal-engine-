@@ -103,7 +103,7 @@ private:
 
 		virtual void InitRHI() override
 		{
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FLidarPointCloudCollisionVertexBuffer"));
 			void* Buffer = nullptr;
 			VertexBufferRHI = RHICreateAndLockVertexBuffer(DataLength * sizeof(FVector), BUF_Static | BUF_ShaderResource, CreateInfo, Buffer);
 			FMemory::Memcpy(Buffer, Data, DataLength * sizeof(FVector));
@@ -128,7 +128,7 @@ private:
 
 		virtual void InitRHI() override
 		{
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FLidarPointCloudCollisionIndexBuffer"));
 			void* Buffer = nullptr;
 			IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint32), DataLength * sizeof(uint32), BUF_Static, CreateInfo, Buffer);
 			FMemory::Memcpy(Buffer, Data, DataLength * sizeof(uint32));

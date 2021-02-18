@@ -109,7 +109,7 @@ void InitInternalBuffer(const uint32 ElementCount, FRWBuffer& OutputBuffer)
 		const uint32 BufferCount = ElementCount * ElementSize;
 		const uint32 BufferBytes = sizeof(BufferType) * BufferCount;
 		
-		OutputBuffer.Initialize(sizeof(BufferType), BufferCount, PixelFormat, BUF_Static);
+		OutputBuffer.Initialize(TEXT("FPhysicsFieldResource"), sizeof(BufferType), BufferCount, PixelFormat, BUF_Static);
 
 		if (OutputBuffer.UAV)
 		{
@@ -147,7 +147,7 @@ void InitInternalTexture(const uint32 SizeX, const uint32 SizeY, const uint32 Si
 	{
 		const uint32 BlockBytes = sizeof(BufferType) * ElementSize;
 
-		OutputBuffer.Initialize(BlockBytes, SizeX, SizeY, SizeZ, PixelFormat);
+		OutputBuffer.Initialize(TEXT("FPhysicsFieldResource"), BlockBytes, SizeX, SizeY, SizeZ, PixelFormat);
 
 		if (OutputBuffer.UAV)
 		{

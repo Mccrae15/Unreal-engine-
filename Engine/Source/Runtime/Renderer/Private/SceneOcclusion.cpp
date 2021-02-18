@@ -338,7 +338,7 @@ public:
 		const uint32 Stride = sizeof(uint16);
 		const uint32 SizeInBytes = MaxBatchedPrimitives * NUM_CUBE_VERTICES * Stride;
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FOcclusionQueryIndexBuffer"));
 
 		void* BufferData;
 		IndexBufferRHI = RHICreateAndLockIndexBuffer(Stride, SizeInBytes, BUF_Static, CreateInfo, BufferData);
@@ -1264,7 +1264,7 @@ static void BeginOcclusionTests(
 		if (NumVertices > 0)
 		{
 			uint32 BaseVertexOffset = 0;
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("ViewOcclusionTests"));
 			FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FVector) * NumVertices, BUF_Volatile, CreateInfo);
 			void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector) * NumVertices, RLM_WriteOnly);
 

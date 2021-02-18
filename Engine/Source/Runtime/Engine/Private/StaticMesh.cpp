@@ -218,7 +218,6 @@ void FStaticMeshSectionAreaWeightedTriangleSamplerBuffer::InitRHI()
 
 	if (Samplers && Samplers->Num() > 0)
 	{
-		FRHIResourceCreateInfo CreateInfo;
 		void* BufferData = nullptr;
 
 		// Count triangle count for all sections and required memory
@@ -230,6 +229,7 @@ void FStaticMeshSectionAreaWeightedTriangleSamplerBuffer::InitRHI()
 		}
 		uint32 SizeByte = TriangleCount * sizeof(SectionTriangleInfo);
 
+		FRHIResourceCreateInfo CreateInfo(TEXT("StaticMeshSectionAreaWeightedTriangleSamplerBuffer"));
 		BufferSectionTriangleRHI = RHICreateAndLockVertexBuffer(SizeByte, BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);
 
 		// Now compute the alias look up table for unifor; distribution for all section and all triangles
