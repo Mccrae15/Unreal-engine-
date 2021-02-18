@@ -58,8 +58,15 @@ namespace Chaos
 		void CreateRules();
 		void Enable(bool bEnable);
 
-		void SetMaxDistancesMultiplier(float InMaxDistancesMultiplier) { MaxDistancesMultiplier = InMaxDistancesMultiplier; }
-		void SetAnimDriveProperties(const TVector<float, 2>& InAnimDriveStiffness, const TVector<float, 2>& InAnimDriveDamping) { AnimDriveStiffness = InAnimDriveStiffness; AnimDriveDamping = InAnimDriveDamping; }
+		void SetEdgeProperties(float EdgeStiffness);
+		void SetBendingProperties(float BendingStiffness);
+		void SetAreaProperties(float AreaStiffness);
+		void SetThinShellVolumeProperties(float VolumeStiffness);
+		void SetVolumeProperties(float VolumeStiffness);
+		void SetLongRangeAttachmentProperties(float TetherStiffness);
+		void SetMaximumDistanceProperties(float MaxDistancesMultiplier);
+		void SetAnimDriveProperties(const TVector<float, 2>& AnimDriveStiffness, const TVector<float, 2>& AnimDriveDamping);
+		void SetSelfCollisionProperties(float SelfCollisionThickness);
 		// ---- End of Cloth interface ----
 
 		// ---- Debug functions ----
@@ -110,10 +117,5 @@ namespace Chaos
 		int32 ConstraintRuleOffset;
 		int32 NumConstraintInits;
 		int32 NumConstraintRules;
-
-		// Animatable parameters
-		float MaxDistancesMultiplier;
-		TVector<float, 2> AnimDriveStiffness;
-		TVector<float, 2> AnimDriveDamping;
 	};
 } // namespace Chaos

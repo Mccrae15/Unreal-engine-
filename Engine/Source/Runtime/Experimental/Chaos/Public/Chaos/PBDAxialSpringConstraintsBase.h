@@ -13,7 +13,7 @@ namespace Chaos
 template<class T, int d>
 class TPBDAxialSpringConstraintsBase
 {
-  public:
+public:
 	TPBDAxialSpringConstraintsBase(const TDynamicParticles<T, d>& InParticles, TArray<TVector<int32, 3>>&& Constraints, const T Stiffness = (T)1)
 	    : MConstraints(MoveTemp(Constraints)), MStiffness(Stiffness)
 	{
@@ -82,7 +82,9 @@ class TPBDAxialSpringConstraintsBase
 		return MStiffness * Delta / CombinedInvMass;
 	}
 
-  private:
+	void SetStiffness(T InStiffness) { MStiffness = FMath::Clamp(InStiffness, (T)0., (T)1.); }
+
+private:
 	T FindBary(const TDynamicParticles<T, d>& InParticles, const int32 i1, const int32 i2, const int32 i3)
 	{
 		const TVector<T, d>& P1 = InParticles.X(i1);
@@ -97,7 +99,7 @@ class TPBDAxialSpringConstraintsBase
 		return Bary;
 	}
 
-  protected:
+protected:
 	TArray<TVector<int32, 3>> MConstraints;
 	TArray<T> MBarys;
 	TArray<T> MDists;

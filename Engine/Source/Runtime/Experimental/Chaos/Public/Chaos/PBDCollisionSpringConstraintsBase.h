@@ -32,6 +32,8 @@ public:
 	const TArray<TVector<T, d>>& GetNormals() const { return Normals; }
 	float GetThickness() const { return Thickness; }
 
+	void SetThickness(T InThickness) { Thickness = FMath::Max(InThickness, (T)0.);  }
+
 protected:
 	TArray<TVector<int32, 4>> Constraints;
 	TArray<TVector<T, d>> Barys;

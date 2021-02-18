@@ -71,6 +71,8 @@ class TPBDBendingConstraintsBase
 		return MStiffness * SafeDivide(Delta, Denom);
 	}
 
+	void SetStiffness(T InStiffness) { MStiffness = FMath::Clamp(InStiffness, (T)0., (T)1.); }
+
   private:
 	template<class T2>
 	inline T2 SafeDivide(const T2& Numerator, const T& Denominator) const

@@ -10,9 +10,9 @@ namespace Chaos
 template<class T>
 class TPBDVolumeConstraintBase
 {
-  public:
-	TPBDVolumeConstraintBase(const TDynamicParticles<T, 3>& InParticles, TArray<TVector<int32, 3>>&& constraints, const T stiffness = (T)1)
-	    : MConstraints(constraints), Stiffness(stiffness)
+public:
+	TPBDVolumeConstraintBase(const TDynamicParticles<T, 3>& InParticles, TArray<TVector<int32, 3>>&& InConstraints, const T InStiffness = (T)1.)
+	    : Constraints(InConstraints), Stiffness(InStiffness)
 	{
 		TVector<T, 3> Com = TVector<T, 3>(0, 0, 0);
 		for (uint32 i = 0; i < InParticles.Size(); ++i)
@@ -20,15 +20,15 @@ class TPBDVolumeConstraintBase
 			Com += InParticles.X(i);
 		}
 		Com /= InParticles.Size();
-		MVolume = 0;
-		for (auto constraint : MConstraints)
+		RefVolume = 0;
+		for (const TVector<int32, 3>& Constraint : Constraints)
 		{
-			const TVector<T, 3>& P1 = InParticles.X(constraint[0]);
-			const TVector<T, 3>& P2 = InParticles.X(constraint[1]);
-			const TVector<T, 3>& P3 = InParticles.X(constraint[2]);
-			MVolume += GetVolume(P1, P2, P3, Com);
+			const TVector<T, 3>& P1 = InParticles.X(Constraint[0]);
+			const TVector<T, 3>& P2 = InParticles.X(Constraint[1]);
+			const TVector<T, 3>& P3 = InParticles.X(Constraint[2]);
+			RefVolume += GetVolume(P1, P2, P3, Com);
 		}
-		MVolume /= (T)9;
+		RefVolume /= (T)9.;
 	}
 	virtual ~TPBDVolumeConstraintBase() {}
 
@@ -61,26 +61,26 @@ class TPBDVolumeConstraintBase
 		Com /= InParticles.Size();
 		TArray<TVector<T, 3>> Grads;
 		Grads.SetNum(InParticles.Size());
-		for (auto& Elem : Grads)
+		for (TVector<T, 3>& Elem : Grads)
 		{
 			Elem = TVector<T, 3>(0, 0, 0);
 		}
-		for (int32 i = 0; i < MConstraints.Num(); ++i)
+		for (int32 i = 0; i < Constraints.Num(); ++i)
 		{
-			auto constraint = MConstraints[i];
-			const int32 i1 = constraint[0];
-			const int32 i2 = constraint[1];
-			const int32 i3 = constraint[2];
+			const TVector<int32, 3>& Constraint = Constraints[i];
+			const int32 i1 = Constraint[0];
+			const int32 i2 = Constraint[1];
+			const int32 i3 = Constraint[2];
 			const TVector<T, 3>& P1 = InParticles.P(i1);
 			const TVector<T, 3>& P2 = InParticles.P(i2);
 			const TVector<T, 3>& P3 = InParticles.P(i3);
-			auto area = GetArea(P1, P2, P3);
-			auto Normal = GetNormal(P1, P2, P3, Com);
-			Grads[i1] += area * Normal;
-			Grads[i2] += area * Normal;
-			Grads[i3] += area * Normal;
+			const T Area = GetArea(P1, P2, P3);
+			const TVector<T, 3> Normal = GetNormal(P1, P2, P3, Com);
+			Grads[i1] += Area * Normal;
+			Grads[i2] += Area * Normal;
+			Grads[i3] += Area * Normal;
 		}
-		for (auto& Elem : Grads)
+		for (TVector<T, 3>& Elem : Grads)
 		{
 			Elem *= (T)1 / (T)3;
 		}
@@ -96,11 +96,11 @@ class TPBDVolumeConstraintBase
 		}
 		Com /= InParticles.Size();
 		T Volume = 0;
-		for (auto constraint : MConstraints)
+		for (const TVector<int32, 3>& Constraint : Constraints)
 		{
-			const TVector<T, 3>& P1 = InParticles.P(constraint[0]);
-			const TVector<T, 3>& P2 = InParticles.P(constraint[1]);
-			const TVector<T, 3>& P3 = InParticles.P(constraint[2]);
+			const TVector<T, 3>& P1 = InParticles.P(Constraint[0]);
+			const TVector<T, 3>& P2 = InParticles.P(Constraint[1]);
+			const TVector<T, 3>& P3 = InParticles.P(Constraint[2]);
 			Volume += GetVolume(P1, P2, P3, Com);
 		}
 		Volume /= (T)9;
@@ -109,19 +109,21 @@ class TPBDVolumeConstraintBase
 		{
 			Denom += W[i] * Grads[i].SizeSquared();
 		}
-		T S = (Volume - MVolume) / Denom;
+		T S = (Volume - RefVolume) / Denom;
 		return Stiffness * S;
 	}
 
-  protected:
-	TArray<TVector<int32, 3>> MConstraints;
+	void SetStiffness(T InStiffness) { Stiffness = FMath::Clamp(InStiffness, (T)0., (T)1.); }
 
-  private:
+protected:
+	TArray<TVector<int32, 3>> Constraints;
+
+private:
 	// Utility functions for the triangle concept
 	TVector<T, 3> GetNormal(const TVector<T, 3> P1, const TVector<T, 3>& P2, const TVector<T, 3>& P3, const TVector<T, 3>& Com) const
 	{
-		auto Normal = TVector<T, 3>::CrossProduct(P2 - P1, P3 - P1).GetSafeNormal();
-		if (TVector<T, 3>::DotProduct((P1 + P2 + P3) / (T)3 - Com, Normal) < 0)
+		const TVector<T, 3> Normal = TVector<T, 3>::CrossProduct(P2 - P1, P3 - P1).GetSafeNormal();
+		if (TVector<T, 3>::DotProduct((P1 + P2 + P3) / (T)3. - Com, Normal) < 0)
 			return -Normal;
 		return Normal;
 	}
@@ -138,7 +140,7 @@ class TPBDVolumeConstraintBase
 		return GetArea(P1, P2, P3) * TVector<T, 3>::DotProduct(P1 + P2 + P3, GetNormal(P1, P2, P3, Com));
 	}
 
-	T MVolume;
+	T RefVolume;
 	T Stiffness;
 };
 }

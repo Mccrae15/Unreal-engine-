@@ -60,12 +60,9 @@ namespace Chaos
 		virtual ~TPBDAnimDriveConstraint() {}
 
 		// Set stiffness offset and range, as well as the simulation stiffness exponent
-		inline void SetProperties(const TVector<T, 2>& InStiffness, const TVector<T, 2>& InDamping, const T Dt, const int32 NumIterations)
+		inline void ApplyProperties(const T Dt, const int32 NumIterations)
 		{
 			SCOPE_CYCLE_COUNTER(STAT_PBD_AnimDriveConstraintSetStiffness);
-
-			Stiffness = InStiffness;
-			Damping = InDamping;
 
 			// Define the stiffness mapping function
 			static const T ParameterFitLogBase = FMath::Loge(ParameterFitBase);
@@ -106,6 +103,12 @@ namespace Chaos
 
 		// Return the damping input values used by the constraint
 		inline TVector<T, 2> GetDamping() const { return Damping; }
+
+		void SetProperties(const TVector<T, 2>& InStiffness, const TVector<T, 2>& InDamping)
+		{
+			Stiffness = InStiffness.ClampAxes((T)0., (T)1.);
+			Damping = InDamping.ClampAxes((T)0., (T)1.);
+		}
 
 		inline virtual void Apply(TPBDParticles<T, d>& InParticles, const T Dt) const override
 		{

@@ -48,6 +48,8 @@ namespace Chaos
 		virtual ~TPBDSpringConstraintsBase()
 		{}
 
+		void SetStiffness(T InStiffness) { MStiffness = FMath::Clamp(InStiffness, (T)0., (T)1.); }
+
 	protected:
 		template<class T_PARTICLES>
 		inline TVector<T, d> GetDelta(const T_PARTICLES& InParticles, const int32 i) const
