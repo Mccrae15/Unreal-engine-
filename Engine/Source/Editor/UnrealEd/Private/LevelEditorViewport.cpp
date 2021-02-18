@@ -2993,7 +2993,7 @@ void FLevelEditorViewportClient::TrackingStarted( const FInputEventState& InInpu
 		else
 		{
 			AActor* ActiveActorLock = GetActiveActorLock().Get();
-			if (ActiveActorLock && !ActiveActorLock->bLockLocation && TrackingTransaction.TransCount == 0)
+			if (ActiveActorLock && !ActiveActorLock->IsLockLocation() && TrackingTransaction.TransCount == 0)
 			{
 				// Open a tracking transaction to contain the locked actor changes
 				TrackingTransaction.TransCount++;
@@ -3388,7 +3388,7 @@ void FLevelEditorViewportClient::MoveLockedActorToCamera()
 	AActor* ActiveActorLock = GetActiveActorLock().Get();
 	if (ActiveActorLock)
 	{
-		if (!ActiveActorLock->bLockLocation)
+		if (!ActiveActorLock->IsLockLocation())
 		{
 			if (TrackingTransaction.TransCount > 0)
 			{
