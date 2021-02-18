@@ -18,15 +18,16 @@
 		{
 			"Name": "ControlRig",
 			"Enabled": true
-		},
-		{
-			"Name": "IKRig",
-			"Enabled": true
 		}
 	],
 	"Modules": [
 		{
 			"Name": "FullBodyIK",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "PBIK",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
 		}
