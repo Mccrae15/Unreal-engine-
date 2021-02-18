@@ -85,6 +85,7 @@ FClothingSimulationSolver::FClothingSimulationSolver()
 
 	// Add simulation groups arrays
 	Evolution->AddArray(&PreSimulationTransforms);
+	Evolution->AddArray(&FictitiousAngularDisplacement);
 
 	Evolution->Particles().AddArray(&Normals);
 	Evolution->Particles().AddArray(&OldAnimationPositions);
@@ -504,7 +505,8 @@ void FClothingSimulationSolver::SetReferenceVelocityScale(
 	const TRigidTransform<float, 3>& OldReferenceSpaceTransform,
 	const TRigidTransform<float, 3>& ReferenceSpaceTransform,
 	const TVector<float, 3>& LinearVelocityScale,
-	float AngularVelocityScale)
+	float AngularVelocityScale,
+	float FictitiousAngularScale)
 {
 	TRigidTransform<float, 3> OldRootBoneLocalTransform = OldReferenceSpaceTransform;
 	OldRootBoneLocalTransform.AddToTranslation(-OldLocalSpaceLocation);
@@ -526,11 +528,14 @@ void FClothingSimulationSolver::SetReferenceVelocityScale(
 		DeltaAngle -= 2.f * PI;
 	}
 
-	const float AngularRatio = FMath::Clamp(1.f - AngularVelocityScale, 0.f, 1.f);
-	DeltaRotation = FQuat(Axis, DeltaAngle * AngularRatio);
+	const float PartialDeltaAngle = DeltaAngle * FMath::Clamp(1.f - AngularVelocityScale, 0.f, 1.f);
+	DeltaRotation = FQuat(Axis, PartialDeltaAngle);
 
 	// Transform points back into the previous frame of reference before applying the adjusted deltas 
 	PreSimulationTransforms[GroupId] = OldRootBoneLocalTransform.Inverse() * FTransform(DeltaRotation, DeltaPosition) * OldRootBoneLocalTransform;
+
+	// Save the reference bone relative angular velocity for calculating the fictitious forces
+	FictitiousAngularDisplacement[GroupId] = ReferenceSpaceTransform.TransformVector(Axis * PartialDeltaAngle * FMath::Min(10.f, FictitiousAngularScale));  // Clamp to 10x the delta angle
 }
 
 float FClothingSimulationSolver::SetParticleMassPerArea(int32 Offset, int32 Size, const TTriangleMesh<float>& Mesh)
@@ -622,17 +627,28 @@ const TVelocityField<float, 3>& FClothingSimulationSolver::GetWindVelocityField(
 
 void FClothingSimulationSolver::SetLegacyWind(uint32 GroupId, bool bUseLegacyWind)
 {
+	const TVector<float, 3>& AngularDisplacement = FictitiousAngularDisplacement[GroupId];
+
 	if (!bUseLegacyWind)
 	{
-		// Clear force function
-		// NOTE: This assumes that the force function is only used for the legacy wind effect
-		Evolution->GetForceFunction(GroupId) = TFunction<void(TPBDParticles<float, 3>&, const float, const int32)>();
+		// Add fictitious forces
+		Evolution->GetForceFunction(GroupId) =
+			[this, AngularDisplacement](TPBDParticles<float, 3>& Particles, const float Dt, const int32 Index)
+		{
+			// Apply Fictitious forces
+			const TVector<float, 3>& X = Particles.X(Index);
+			const TVector<float, 3>& V = Particles.V(Index);
+			const TVector<float, 3> W = AngularDisplacement / Dt;
+			const float& M = Particles.M(Index);
+			//Particles.F(Index) -= (TVector<float, 3>::CrossProduct(W, V) * 2.f + TVector<float, 3>::CrossProduct(W, TVector<float, 3>::CrossProduct(W, X))) * M;  // Coriolis + Centrifugal seems a bit overkilled, but let's keep the code around in case it's needed
+			Particles.F(Index) -= TVector<float, 3>::CrossProduct(W, FVec3::CrossProduct(W, X)) * M;  // Centrifugal force
+		};
 	}
 	else
 	{
-		// Add legacy wind function
+		// Add legacy wind function and fictitious forces
 		Evolution->GetForceFunction(GroupId) = 
-			[this](TPBDParticles<float, 3>& Particles, const float /*Dt*/, const int32 Index)
+			[this, AngularDisplacement](TPBDParticles<float, 3>& Particles, const float Dt, const int32 Index)
 			{
 				// Calculate wind velocity delta
 				static const float LegacyWindMultiplier = 25.f;
@@ -646,6 +662,14 @@ void FClothingSimulationSolver::SetLegacyWind(uint32 GroupId, bool bUseLegacyWin
 					const float ScaleFactor = FMath::Min(1.f, FMath::Abs(DirectionDot) * LegacyWindAdaption);
 					Particles.F(Index) += VelocityDelta * ScaleFactor * Particles.M(Index);
 				}
+
+				// Apply Fictitious forces
+				const TVector<float, 3>& X = Particles.X(Index);
+				const TVector<float, 3>& V = Particles.V(Index);
+				const TVector<float, 3> W = AngularDisplacement / Dt;
+				const float& M = Particles.M(Index);
+				//Particles.F(Index) -= (TVector<float, 3>::CrossProduct(W, V) * 2.f + TVector<float, 3>::CrossProduct(W, TVector<float, 3>::CrossProduct(W, X))) * M;  // Coriolis + Centrifugal seems a bit overkilled, but let's keep the code around in case it's needed
+				Particles.F(Index) -= TVector<float, 3>::CrossProduct(W, TVector<float, 3>::CrossProduct(W, X)) * M;  // Centrifugal force
 			};
 	}
 }
