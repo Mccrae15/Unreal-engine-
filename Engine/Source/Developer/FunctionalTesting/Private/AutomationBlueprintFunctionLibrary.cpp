@@ -897,7 +897,7 @@ void UAutomationBlueprintFunctionLibrary::EnableStatGroup(UObject* WorldContextO
 	{
 		const FString GroupNameString = FString(TEXT("STATGROUP_")) + GroupName.ToString();
 		const FName GroupNameFull = FName(*GroupNameString, EFindName::FNAME_Find);
-		if(StatsData->GroupNames.Contains(GroupNameFull))
+		if (StatsData->GroupNames.Contains(GroupNameFull) || (GEngine && GEngine->IsEngineStat(GroupName.ToString())))
 		{
 			return;
 		}
@@ -959,6 +959,56 @@ float HelperGetStat(FName StatName)
 	return 0.f;
 }
 #endif
+// CVR - 09.02.2020 - kkowalczyk added functions for counters
+#if STATS
+
+float HelperGetCounter(FName StatName, EComplexStatField::Type Type)
+{
+	if (FGameThreadStatsData* StatsData = FLatestGameThreadStatsData::Get().Latest)
+	{
+		for (int32 GroupIndex = 0; GroupIndex < StatsData->ActiveStatGroups.Num(); ++GroupIndex)
+		{
+			const FActiveStatGroupInfo& StatGroup = StatsData->ActiveStatGroups[GroupIndex];
+
+			// If the stat isn't enabled for this particular viewport, skip
+			FString StatGroupName = StatsData->GroupNames[GroupIndex].ToString();
+			StatGroupName.RemoveFromStart(TEXT("STATGROUP_"), ESearchCase::IgnoreCase);
+			if (GEngine->GameViewport->IsStatEnabled(StatGroupName))
+			{
+				for (int32 CounterIndex = 0; CounterIndex < StatsData->ActiveStatGroups[GroupIndex].CountersAggregate.Num(); ++CounterIndex)
+				{
+					const FComplexStatMessage& Counter = StatsData->ActiveStatGroups[GroupIndex].CountersAggregate[CounterIndex];
+					if (Counter.GetShortName().IsEqual(StatName))
+					{
+						{
+							// Append the average.
+							if (Counter.NameAndInfo.GetField<EStatDataType>() == EStatDataType::ST_double)
+							{
+								return Counter.GetValue_double(Type);
+							}
+							else if (Counter.NameAndInfo.GetField<EStatDataType>() == EStatDataType::ST_int64)
+							{
+								return Counter.GetValue_int64(Type);
+							}
+						}
+					}
+				}
+			}
+
+		}
+	}
+
+#if WITH_EDITOR
+	FText WarningOut = FText::Format(LOCTEXT("StatNotFound", "Could not find stat data for {0}, did you call ToggleStatGroup with enough time to capture data?"), FText::FromName(StatName));
+	FMessageLog("PIE").Warning(WarningOut);
+	UE_LOG(AutomationFunctionLibrary, Warning, TEXT("%s"), *WarningOut.ToString());
+#endif
+
+	return 0.f;
+}
+#endif
+// CVR - 09.02.2020 END
+
 
 float UAutomationBlueprintFunctionLibrary::GetStatIncAverage(FName StatName)
 {
@@ -1004,6 +1054,41 @@ float UAutomationBlueprintFunctionLibrary::GetStatCallCount(FName StatName)
 	return 0.0f;
 #endif
 }
+
+// CVR - 09.02.2020 - kkowalczyk added functions for counters
+float UAutomationBlueprintFunctionLibrary::GetCounterAverage(FName StatName)
+{
+#if STATS
+	return HelperGetCounter(StatName, EComplexStatField::IncAve);
+#else
+	return 0.0f;
+#endif
+}
+
+float UAutomationBlueprintFunctionLibrary::GetCounterMax(FName StatName)
+{
+#if STATS
+	return HelperGetCounter(StatName, EComplexStatField::IncMax);
+#else
+	return 0.0f;
+#endif
+}
+
+float UAutomationBlueprintFunctionLibrary::GetCounterMin(FName StatName)
+{
+#if STATS
+	return HelperGetCounter(StatName, EComplexStatField::IncMin);
+#else
+	return 0.0f;
+#endif
+}
+void UAutomationBlueprintFunctionLibrary::FlushAllStats()
+{
+#if STATS
+
+#endif
+}
+// CVR - 09.02.2020 END
 
 bool UAutomationBlueprintFunctionLibrary::AreAutomatedTestsRunning()
 {
