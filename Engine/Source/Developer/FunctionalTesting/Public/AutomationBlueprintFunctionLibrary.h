@@ -122,6 +122,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Automation")
 	static float GetStatCallCount(FName StatName);
 
+	// CVR - 09.02.2020 - kkowalczyk added functions for counters
+	UFUNCTION(BlueprintCallable, Category = "Automation")
+	static float GetCounterAverage(FName StatName);
+
+	UFUNCTION(BlueprintCallable, Category = "Automation")
+	static float GetCounterMax(FName StatName);
+
+	UFUNCTION(BlueprintCallable, Category = "Automation")
+	static float GetCounterMin(FName StatName);
+
+	UFUNCTION(BlueprintCallable, Category = "Automation")
+	static void FlushAllStats();
+	// CVR - 09.02.2020 END
+
 	/**
 	 * Lets you know if any automated tests are running, or are about to run and the automation system is spinning up tests.
 	 */
