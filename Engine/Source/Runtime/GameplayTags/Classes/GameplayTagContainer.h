@@ -209,6 +209,7 @@ protected:
 	FName TagName;
 
 	friend class UGameplayTagsManager;
+	friend class FNativeGameplayTag;
 	friend struct FGameplayTagContainer;
 	friend struct FGameplayTagNode;
 };
