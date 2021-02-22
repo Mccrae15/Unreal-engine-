@@ -302,6 +302,11 @@ FMaterialVertexParameters GetMaterialVertexParameters(FVertexFactoryInput Input,
 		Result.TexCoords[CoordinateIndex] = Input.TexCoords[CoordinateIndex];
 	}
 #endif
+
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	Result.PrimitiveId = Intermediates.SceneData.PrimitiveId;
+#endif
+
 	return Result;
 }
 
@@ -962,6 +967,10 @@ FVertexFactoryInterpolantsVSToDS VertexFactoryInterpolate(FVertexFactoryInterpol
 	{
 		TESSELLATION_INTERPOLATE_MEMBER(InterpolantsVSToPS.TexCoords[tc]);
 	}
+#endif
+
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	O.InterpolantsVSToPS.PrimitiveId = a.InterpolantsVSToPS.PrimitiveId;
 #endif
 
 	return O;
