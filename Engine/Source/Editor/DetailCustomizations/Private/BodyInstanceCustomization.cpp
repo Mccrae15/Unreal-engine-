@@ -138,30 +138,24 @@ void FBodyInstanceCustomization::AddCollisionCategory(TSharedRef<class IProperty
 		]
 	]
 	.ValueContent()
-	.MinDesiredWidth(131.0f)
 	[
-		SNew(SVerticalBox)
-		+ SVerticalBox::Slot()
-		.Padding(0.f, 0.f, 10.f, 0.f)
+		SNew(SHorizontalBox)
+		.IsEnabled(this, &FBodyInstanceCustomization::IsCollisionEnabled)
+		+ SHorizontalBox::Slot()
+		.VAlign(VAlign_Center)
 		[
-			SNew(SHorizontalBox)
-			.IsEnabled(this, &FBodyInstanceCustomization::IsCollisionEnabled)
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
+			SAssignNew(CollsionProfileComboBox, SComboBox< TSharedPtr<FString> >)
+			.OptionsSource(&CollisionProfileComboList)
+			.OnGenerateWidget(this, &FBodyInstanceCustomization::MakeCollisionProfileComboWidget)
+			.OnSelectionChanged(this, &FBodyInstanceCustomization::OnCollisionProfileChanged, &CollisionGroup)
+			.OnComboBoxOpening(this, &FBodyInstanceCustomization::OnCollisionProfileComboOpening)
+			.InitiallySelectedItem(DisplayName)
+			.Content()
 			[
-				SAssignNew(CollsionProfileComboBox, SComboBox< TSharedPtr<FString> >)
-				.OptionsSource(&CollisionProfileComboList)
-				.OnGenerateWidget(this, &FBodyInstanceCustomization::MakeCollisionProfileComboWidget)
-				.OnSelectionChanged(this, &FBodyInstanceCustomization::OnCollisionProfileChanged, &CollisionGroup)
-				.OnComboBoxOpening(this, &FBodyInstanceCustomization::OnCollisionProfileComboOpening)
-				.InitiallySelectedItem(DisplayName)
-				.Content()
-				[
-					SNew(STextBlock)
-					.Text(this, &FBodyInstanceCustomization::GetCollisionProfileComboBoxContent)
-					.Font(IDetailLayoutBuilder::GetDetailFont())
-					.ToolTipText(this, &FBodyInstanceCustomization::GetCollisionProfileComboBoxToolTip)
-				]
+				SNew(STextBlock)
+				.Text(this, &FBodyInstanceCustomization::GetCollisionProfileComboBoxContent)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ToolTipText(this, &FBodyInstanceCustomization::GetCollisionProfileComboBoxToolTip)
 			]
 		]
 	];
