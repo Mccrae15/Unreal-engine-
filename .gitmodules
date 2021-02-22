@@ -1,4 +1,0 @@
-[submodule "Engine/Plugins/Animation/HoudiniLiveLink"]
-	path = Engine/Plugins/Animation/HoudiniLiveLink
-	url = https://github.com/sideeffects/HoudiniLiveLink.git
-	branch = master
