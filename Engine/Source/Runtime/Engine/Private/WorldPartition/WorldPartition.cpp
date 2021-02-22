@@ -99,6 +99,8 @@ struct FWorldPartionCellUpdateContext
 					});
 
 					GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->SetEditorGridLoadedCells(WorldPartition->GetWorld(), EditorGridLastLoadedCells);
+
+					GEditor->ResetTransaction(LOCTEXT("LoadingEditorCellsResetTrans", "Editor Cells Loading State Changed"));
 				}
 			}
 		}
@@ -619,11 +621,6 @@ bool UWorldPartition::UpdateEditorCells(TFunctionRef<bool(TArray<UWorldPartition
 	{
 		SlowTask.EnterProgressFrame(1);
 		UpdateLoadingEditorCell(Cell, bIsCellShouldBeLoaded);
-	}
-
-	if (bIsUpdateUnloadingActors)
-	{
-		GEditor->ResetTransaction(LOCTEXT("UnloadingEditorCellsResetTrans", "Unloading Cells"));
 	}
 
 	return true;
