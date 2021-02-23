@@ -43,7 +43,13 @@ class CHAOS_API TPBDRigidClustering
 	typedef typename T_FPBDCollisionConstraint::FPointContactConstraint FPointContactConstraint;
 public:
 	/** Parent to children */
-	typedef TMap<TPBDRigidParticleHandle<T, d>*, TArray<TPBDRigidParticleHandle<T, d>*> > FClusterMap;
+	typedef TPBDRigidParticleHandle<T, d>*				FRigidHandle;
+	typedef TArray<FRigidHandle>						FRigidHandleArray;
+
+	typedef TPBDRigidClusteredParticleHandle<T, d>*		FClusterHandle;
+
+	typedef TPair<FClusterHandle, FRigidHandleArray>	FClusterMapEntry;
+	typedef TMap<FClusterHandle, FRigidHandleArray>	    FClusterMap;
 
 	using FCollisionConstraintHandle = FPBDCollisionConstraintHandle;
 
@@ -185,7 +191,7 @@ public:
 	*    active id, see the GetActiveClusterIndex to find the active cluster.
 	*    INDEX_NONE represents a non-clustered body.
 	*/
-	TArrayCollectionArray<ClusterId>&             GetClusterIdsArray() { return MParticles.ClusterIdsArray(); }
+	TArrayCollectionArray<ClusterId>&					GetClusterIdsArray() { return MParticles.ClusterIdsArray(); }
 	const TArrayCollectionArray<ClusterId>&             GetClusterIdsArray() const { return MParticles.ClusterIdsArray(); }
 
 	/*
@@ -353,6 +359,7 @@ private:
 	float MClusterConnectionFactor;
 	typename FClusterCreationParameters<T>::EConnectionMethod MClusterUnionConnectionType;
 };
+
 
 template <typename T, int d>
 void UpdateClusterMassProperties(
