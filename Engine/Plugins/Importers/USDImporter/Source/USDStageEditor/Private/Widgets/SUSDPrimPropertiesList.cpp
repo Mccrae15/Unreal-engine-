@@ -166,8 +166,6 @@ namespace UsdPrimPropertiesListImpl
 	/** Always returns `NumLabels` widgets, regardless of LabelTypes. Those may be the NullWidget though */
 	TArray<TSharedRef<SWidget>> GetNumericEntryBoxLabels( int32 NumLabels, EPrimPropertyLabelTypes LabelType )
 	{
-		const static TArray<FString> XYZWLabels = { TEXT( "X" ), TEXT( "Y" ), TEXT( "Z" ), TEXT( "W" ) };
-		const static TArray<FString> RGBALabels = { TEXT( "R" ), TEXT( "G" ), TEXT( "B" ), TEXT( "A" ) };
 		const static TArray<const FLinearColor*> Colors = {
 			&SNumericEntryBox<int32>::RedLabelBackgroundColor,
 			&SNumericEntryBox<int32>::GreenLabelBackgroundColor,
@@ -188,13 +186,13 @@ namespace UsdPrimPropertiesListImpl
 		case EPrimPropertyLabelTypes::RGBA:
 			for ( int32 Index = 0; Index < NumLabels; ++Index )
 			{
-				Labels.Add( SNumericEntryBox<int32>::BuildLabel( FText::FromString( RGBALabels[ Index ] ), Index == 3 ? FLinearColor::Black : FLinearColor::White, *Colors[ Index ] ) );
+				Labels.Add( SNumericEntryBox<int32>::BuildNarrowColorLabel( *Colors[ Index ] ) );
 			}
 			break;
 		case EPrimPropertyLabelTypes::XYZW:
 			for ( int32 Index = 0; Index < NumLabels; ++Index )
 			{
-				Labels.Add( SNumericEntryBox<int32>::BuildLabel( FText::FromString( XYZWLabels[ Index ] ), Index == 3 ? FLinearColor::Black : FLinearColor::White, *Colors[ Index ] ) );
+				Labels.Add( SNumericEntryBox<int32>::BuildNarrowColorLabel( *Colors[ Index ] ) );
 			}
 			break;
 		case EPrimPropertyLabelTypes::NoLabel:
@@ -301,7 +299,6 @@ TSharedRef< SWidget > SUsdPrimPropertyRow::GenerateWidgetForColumn( const FName&
 
 	if ( ColumnName == TEXT("PropertyName") )
 	{
-		const bool bIsReadOnly = true;
 		ColumnWidget = GenerateTextWidget( { this, &SUsdPrimPropertyRow::GetLabel } );
 	}
 	else
@@ -350,7 +347,6 @@ TSharedRef< SWidget > SUsdPrimPropertyRow::GenerateWidgetForColumn( const FName&
 					.OptionsSource( Options )
 					.OnGenerateWidget_Lambda( [ & ]( TSharedPtr<FString> Option )
 					{
-						const bool bIsReadOnly = false;
 						return SUsdPrimPropertyRow::GenerateTextWidget( FText::FromString( *Option ) );
 					})
 					.OnSelectionChanged( this, &SUsdPrimPropertyRow::OnComboBoxSelectionChanged )
@@ -359,9 +355,10 @@ TSharedRef< SWidget > SUsdPrimPropertyRow::GenerateWidgetForColumn( const FName&
 						// also specify a custom kind/purpose/etc. if he wants to
 						SNew( SEditableTextBox )
 						.Text( this, &SUsdPrimPropertyRow::GetValueText )
-						.Font( FEditorStyle::GetFontStyle( UsdPrimPropertiesListConstants::NormalFont ) )
-						.Padding( FMargin( 0.0f ) )
-						.BackgroundColor( FLinearColor::White ) // This could be transparent, but white also hints that it's a regular text input field
+						.Font( FEditorStyle::GetFontStyle( "PropertyWindow.NormalFont" ) )
+						.Padding( FMargin( 3.0f ) )
+						// Fixed foreground color or else it will flip when our row is selected, and we already have a background
+						.ForegroundColor( FEditorStyle::GetSlateColor( TEXT( "Colors.ForegroundHover" ) ) )
 						.OnTextCommitted( this, &SUsdPrimPropertyRow::OnTextBoxTextCommitted )
 					]
 				];
@@ -426,7 +423,7 @@ TSharedRef< SWidget > SUsdPrimPropertyRow::GenerateTextWidget( const TAttribute<
 		[
 			SNew( STextBlock )
 			.Text( Attribute )
-			.Font( FEditorStyle::GetFontStyle( UsdPrimPropertiesListConstants::NormalFont ) )
+			.Font( FEditorStyle::GetFontStyle( "PropertyWindow.NormalFont" ) )
 			.Margin( UsdPrimPropertiesListConstants::RightRowPadding )
 		];
 }
@@ -441,8 +438,10 @@ TSharedRef< SWidget > SUsdPrimPropertyRow::GenerateEditableTextWidget( const TAt
 			SNew( SEditableTextBox )
 			.Text( Attribute )
 			.IsReadOnly( bIsReadOnly )
-			.Font( FEditorStyle::GetFontStyle( UsdPrimPropertiesListConstants::NormalFont ) )
+			.Font( FEditorStyle::GetFontStyle( "PropertyWindow.NormalFont" ) )
 			.OnTextCommitted( this, &SUsdPrimPropertyRow::OnTextBoxTextCommitted )
+			// Fixed foreground color or else it will flip when our row is selected, and we already have a background
+			.ForegroundColor( FEditorStyle::GetSlateColor( bIsReadOnly ? TEXT( "Colors.Foreground" ) : TEXT( "Colors.ForegroundHover" ) ) )
 		];
 }
 
@@ -492,7 +491,7 @@ TSharedRef< SWidget > SUsdPrimPropertyRow::GenerateSpinboxWidgets( const TArray<
 
 			TSharedRef<SWidget> EntryBox = SNew( SNumericEntryBox<T> )
 				.AllowSpin( true )
-				.LabelPadding( 0 )
+				.Font( FEditorStyle::GetFontStyle( "PropertyWindow.NormalFont" ) )
 				.ShiftMouseMovePixelPerDelta( 1 )
 				.SupportDynamicSliderMaxValue( true )
 				.SupportDynamicSliderMinValue( true )
@@ -505,6 +504,8 @@ TSharedRef< SWidget > SUsdPrimPropertyRow::GenerateSpinboxWidgets( const TArray<
 				.MaxSliderValue( TOptional<T>() )
 				.SliderExponent( T( 1 ) )
 				.Delta( T( 0 ) )
+				.LabelPadding( FMargin(3) )
+				.LabelLocation( SNumericEntryBox<T>::ELabelLocation::Inside )
 				.Label()
 				[
 					Labels[ ComponentIndex ]
