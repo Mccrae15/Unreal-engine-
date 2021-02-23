@@ -1906,10 +1906,6 @@ struct FBoundShaderStateInput
 	(
 		FRHIVertexDeclaration* InVertexDeclarationRHI
 		, FRHIVertexShader* InVertexShaderRHI
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		, FRHIHullShader* InHullShaderRHI
-		, FRHIDomainShader* InDomainShaderRHI
-#endif
 		, FRHIPixelShader* InPixelShaderRHI
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 		, FRHIGeometryShader* InGeometryShaderRHI
@@ -1917,10 +1913,6 @@ struct FBoundShaderStateInput
 	)
 		: VertexDeclarationRHI(InVertexDeclarationRHI)
 		, VertexShaderRHI(InVertexShaderRHI)
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		, HullShaderRHI(InHullShaderRHI)
-		, DomainShaderRHI(InDomainShaderRHI)
-#endif
 		, PixelShaderRHI(InPixelShaderRHI)
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 		, GeometryShaderRHI(InGeometryShaderRHI)

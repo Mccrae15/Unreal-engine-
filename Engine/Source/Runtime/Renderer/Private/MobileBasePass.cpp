@@ -680,8 +680,6 @@ bool FMobileBasePassMeshProcessor::Process(
 {
 	TMeshProcessorShaders<
 		TMobileBasePassVSPolicyParamType<FUniformLightMapPolicy>,
-		FBaseHS,
-		FBaseDS,
 		TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>> BasePassShaders;
 	
 	bool bEnableSkyLight = false;
