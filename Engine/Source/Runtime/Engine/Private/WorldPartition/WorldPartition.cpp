@@ -784,18 +784,6 @@ void UWorldPartition::UnhashActorDesc(FWorldPartitionActorDesc* ActorDesc)
 }
 #endif
 
-void UWorldPartition::Serialize(FArchive& Ar)
-{
-	Super::Serialize(Ar);
-
-#if WITH_EDITOR
-	if (Ar.GetPortFlags() & PPF_Duplicate)
-	{
-		Ar << EditorHash;
-	}
-#endif
-}
-
 void UWorldPartition::BeginDestroy()
 {
 	Super::BeginDestroy();
@@ -836,7 +824,10 @@ UWorldPartitionStreamingPolicy* UWorldPartition::GetStreamingPolicy() const
 void UWorldPartition::Tick(float DeltaSeconds)
 {
 #if WITH_EDITOR
-	EditorHash->Tick(DeltaSeconds);
+	if (EditorHash)
+	{
+		EditorHash->Tick(DeltaSeconds);
+	}
 
 	if (bForceGarbageCollection)
 	{
