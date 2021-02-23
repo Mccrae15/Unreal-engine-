@@ -1190,7 +1190,7 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 			FActorSpawnParameters SpawnParams;
 			SpawnParams.OverrideLevel = MainLevel;
 			ALevelInstance* LevelInstanceActor = MainWorld->SpawnActor<ALevelInstance>(SpawnParams);
-
+			
 			FTransform LevelTransform;
 			if (SubLevelPackage->WorldTileInfo)
 			{
@@ -1201,6 +1201,7 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 				LevelTransform = SubLevelStreaming->LevelTransform;
 			}
 
+			LevelInstanceActor->DesiredRuntimeBehavior = ELevelInstanceRuntimeBehavior::LevelStreaming;
 			LevelInstanceActor->SetActorTransform(LevelTransform);
 			LevelInstanceActor->SetWorldAsset(SubLevelWorld);
 		}
