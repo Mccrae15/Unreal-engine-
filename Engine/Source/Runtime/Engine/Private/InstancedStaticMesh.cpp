@@ -1151,6 +1151,11 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 	}
 
 	uint32 LOD = GetCurrentFirstLODIdx_RenderThread();
+	if (!RenderData->LODResources[LOD].RayTracingGeometry.IsInitialized())
+	{
+		return;
+	}
+
 	const int32 InstanceCount = InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetNumInstances();
 
 	if (InstanceCount == 0)
