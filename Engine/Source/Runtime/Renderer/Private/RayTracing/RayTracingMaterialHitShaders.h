@@ -94,7 +94,7 @@ protected:
 				}
 
 				RayTracingMeshCommand.GeometrySegmentIndex = uint32(MeshBatch.SegmentIndex) + BatchElementIndex;
-
+				RayTracingMeshCommand.bIsTranslucent = MeshBatch.IsTranslucent(MaterialResource.GetFeatureLevel());
 				CommandContext->FinalizeCommand(RayTracingMeshCommand);
 			}
 		}
