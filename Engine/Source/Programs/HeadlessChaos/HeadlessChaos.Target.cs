@@ -28,5 +28,11 @@ public class HeadlessChaosTarget : TargetRules
         bIsBuildingConsoleApplication = true;
 
 		GlobalDefinitions.Add("CHAOS_SERIALIZE_OUT=1");
-	}
+
+        bUseChaos = true;
+        bCompileChaos = true;
+        bCompilePhysX = false;
+        bCompileAPEX = false;
+        bCompileNvCloth = false;
+    }
 }
