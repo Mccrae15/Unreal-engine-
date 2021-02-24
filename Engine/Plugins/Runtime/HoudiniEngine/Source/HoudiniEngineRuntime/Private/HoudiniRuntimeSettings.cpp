@@ -50,9 +50,29 @@ FHoudiniStaticMeshGenerationProperties::FHoudiniStaticMeshGenerationProperties()
 	GeneratedStreamingDistanceMultiplier = 1.0f;
 	GeneratedDistanceFieldResolutionScale = 2.0f;
 
-	GeneratedWalkableSlopeOverride;
-	GeneratedFoliageDefaultSettings;
-	GeneratedAssetUserData;
+	/*Carbon Edit 23.02 start
+	Naprawa błędu przy kompilacji na androida:
+	Module.HoudiniEngineRuntime.cpp [arm64]
+		In file included from HoudiniEngineRuntime/Module.HoudiniEngineRuntime.cpp:37:
+		HoudiniRuntimeSettings.cpp(53,2): error: expression result unused [-Werror,-Wunused-value]
+				GeneratedWalkableSlopeOverride;
+				^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+		HoudiniRuntimeSettings.cpp(54,2): error: expression result unused [-Werror,-Wunused-value]
+				GeneratedFoliageDefaultSettings;
+				^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+		HoudiniRuntimeSettings.cpp(55,2): error: expression result unused [-Werror,-Wunused-value]
+				GeneratedAssetUserData;
+				^~~~~~~~~~~~~~~~~~~~~~
+		3 errors generated.
+	*/
+	const UHoudiniRuntimeSettings * HoudiniRuntimeSettings = GetDefault<UHoudiniRuntimeSettings>();
+	if (HoudiniRuntimeSettings)
+	{
+		GeneratedWalkableSlopeOverride = HoudiniRuntimeSettings->WalkableSlopeOverride;
+		GeneratedFoliageDefaultSettings = HoudiniRuntimeSettings->FoliageDefaultSettings;
+	}
+	GeneratedAssetUserData = TArray<UAssetUserData*>();
+	//Carbon Edit 23.02 End
 }
 
 
