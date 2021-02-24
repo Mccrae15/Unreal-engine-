@@ -268,6 +268,8 @@ TSharedRef<SWidget> SMemTagTreeView::ConstructTagsGroupingWidgetArea()
 		SAssignNew(TrackerComboBox, SComboBox<TSharedPtr<Insights::FMemoryTracker>>)
 		.ToolTipText(this, &SMemTagTreeView::Tracker_GetTooltipText)
 		.OptionsSource(GetAvailableTrackers())
+		.IsEnabled(this, &SMemTagTreeView::Tracker_IsEnabled)
+		.OnComboBoxOpening(this, &SMemTagTreeView::Tracker_OnComboBoxOpening)
 		.OnSelectionChanged(this, &SMemTagTreeView::Tracker_OnSelectionChanged)
 		.OnGenerateWidget(this, &SMemTagTreeView::Tracker_OnGenerateWidget)
 		[
@@ -2088,6 +2090,36 @@ const TArray<TSharedPtr<Insights::FMemoryTracker>>* SMemTagTreeView::GetAvailabl
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+bool SMemTagTreeView::Tracker_IsEnabled() const
+{
+	TSharedPtr<SMemoryProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
+
+	if (ProfilerWindow.IsValid())
+	{
+		FMemorySharedState& SharedState = ProfilerWindow->GetSharedState();
+		return SharedState.GetTrackers().Num() > 0;
+	}
+	return false;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SMemTagTreeView::Tracker_OnComboBoxOpening()
+{
+	TSharedPtr<SMemoryProfilerWindow> ProfilerWindow = ProfilerWindowWeakPtr.Pin();
+
+	if (ProfilerWindow.IsValid())
+	{
+		FMemorySharedState& SharedState = ProfilerWindow->GetSharedState();
+		if (SharedState.GetCurrentTracker() != TrackerComboBox->GetSelectedItem())
+		{
+			TrackerComboBox->SetSelectedItem(SharedState.GetCurrentTracker());
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void SMemTagTreeView::Tracker_OnSelectionChanged(TSharedPtr<Insights::FMemoryTracker> InTracker, ESelectInfo::Type SelectInfo)
 {
 	if (SelectInfo != ESelectInfo::Direct)
@@ -2111,16 +2143,8 @@ void SMemTagTreeView::Tracker_OnSelectionChanged(TSharedPtr<Insights::FMemoryTra
 TSharedRef<SWidget> SMemTagTreeView::Tracker_OnGenerateWidget(TSharedPtr<Insights::FMemoryTracker> InTracker)
 {
 	const FText TrackerText = FText::Format(LOCTEXT("TrackerComboBox_TextFmt", "{0} Tracker (id {1})"), FText::FromString(InTracker->GetName()), FText::AsNumber(InTracker->GetId()));
-	return SNew(SCheckBox)
-		.Style(FEditorStyle::Get(), "Toolbar.RadioButton")
-		.OnCheckStateChanged(this, &SMemTagTreeView::Tracker_OnCheckStateChanged, InTracker)
-		.IsChecked(this, &SMemTagTreeView::Tracker_IsChecked, InTracker)
-		.Content()
-		[
-			SNew(STextBlock)
-			.Text(TrackerText)
-			.Margin(2.0f)
-		];
+	return SNew(STextBlock)
+		.Text(TrackerText);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
