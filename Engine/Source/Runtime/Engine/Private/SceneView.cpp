@@ -836,7 +836,7 @@ FSceneView::FSceneView(const FSceneViewInitOptions& InitOptions)
 }
 
 
-#if DO_CHECK
+#if DO_CHECK || USING_CODE_ANALYSIS
 bool FSceneView::VerifyMembersChecks() const
 {
 	if (PrimaryScreenPercentageMethod == EPrimaryScreenPercentageMethod::TemporalUpscale)

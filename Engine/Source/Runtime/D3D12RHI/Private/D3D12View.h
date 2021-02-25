@@ -712,7 +712,7 @@ protected:
 	CViewSubresourceSubset ViewSubresourceSubset;
 	TDesc Desc;
 
-#if DO_CHECK
+#if DO_CHECK || USING_CODE_ANALYSIS
 	bool bInitialized;
 #endif
 
@@ -720,7 +720,7 @@ protected:
 		: Descriptor(InParent)
 		, Flags(InFlags)
 		, BaseShaderResource(nullptr)
-#if DO_CHECK
+#if DO_CHECK || USING_CODE_ANALYSIS
 		, bInitialized(false)
 #endif
 	{}
@@ -732,7 +732,7 @@ protected:
 			BaseShaderResource->RemoveRenameListener(this);
 		}
 
-#if DO_CHECK
+#if DO_CHECK || USING_CODE_ANALYSIS
 		bInitialized = false;
 #endif
 	}
@@ -763,7 +763,7 @@ private:
 			Resource->GetDesc().Format,
 			Flags);
 
-#if DO_CHECK
+#if DO_CHECK || USING_CODE_ANALYSIS
 		bInitialized = true;
 #endif
 	}
