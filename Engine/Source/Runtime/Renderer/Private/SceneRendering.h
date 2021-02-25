@@ -1687,9 +1687,7 @@ struct FSortedShadowMaps
 	TArray<FProjectedShadowInfo*, SceneRenderingAllocator> VirtualShadowMapShadows;
 
 	TArray<TSharedPtr<FVirtualShadowMapClipmap>, SceneRenderingAllocator> VirtualShadowMapClipmaps;
-#if ENABLE_NON_NANITE_VSM
 	TArray<FProjectedShadowInfo*, SceneRenderingAllocator> VirtualShadowClipmapsHw;
-#endif // ENABLE_NON_NANITE_VSM
 
 	TArray<FSortedShadowMapAtlas,SceneRenderingAllocator> CompleteShadowMapAtlases;
 
