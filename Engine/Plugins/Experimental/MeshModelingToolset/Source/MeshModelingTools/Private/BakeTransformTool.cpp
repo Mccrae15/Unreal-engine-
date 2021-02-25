@@ -17,7 +17,7 @@
 #include "DynamicMeshToMeshDescription.h"
 
 #include "AssetGenerationUtil.h"
-
+#include "Physics/ComponentCollisionUtil.h"
 
 #define LOCTEXT_NAMESPACE "UBakeTransformTool"
 
@@ -135,12 +135,21 @@ void UBakeTransformTool::SetAssetAPI(IToolsContextAssetAPI* AssetAPIIn)
 
 void UBakeTransformTool::UpdateAssets()
 {
+	// make sure mesh descriptions are deserialized before we open transaction
+	TArray<FMeshDescription*> MeshDescriptions;
+	for (int32 ComponentIdx = 0; ComponentIdx < ComponentTargets.Num(); ComponentIdx++)
+	{
+		MeshDescriptions.Add(ComponentTargets[ComponentIdx]->GetMesh());
+	}
+
 	GetToolManager()->BeginUndoTransaction(LOCTEXT("BakeTransformToolTransactionName", "Bake Transforms"));
 
 	TArray<FTransform3d> BakedTransforms;
 	for (int32 ComponentIdx = 0; ComponentIdx < ComponentTargets.Num(); ComponentIdx++)
 	{
-		
+		UPrimitiveComponent* Component = ComponentTargets[ComponentIdx]->GetOwnerComponent();
+		Component->Modify();
+
 		FTransform3d ComponentToWorld(ComponentTargets[ComponentIdx]->GetWorldTransform());
 		FTransform3d ToBakePart = FTransform3d::Identity();
 		FTransform3d NewWorldPart = ComponentToWorld;
@@ -231,11 +240,12 @@ void UBakeTransformTool::UpdateAssets()
 				}
 			});
 
+			// try to transform simple collision
+			UE::Geometry::TransformSimpleCollision(Component, ToBakePart);
+
 			BakedTransforms.Add(ToBakePart);
 		}
 
-		UPrimitiveComponent* Component = ComponentTargets[ComponentIdx]->GetOwnerComponent();
-		Component->Modify();
 		Component->SetWorldTransform((FTransform)NewWorldPart);
 		ComponentTargets[ComponentIdx]->GetOwnerActor()->MarkComponentsRenderStateDirty();
 	}
