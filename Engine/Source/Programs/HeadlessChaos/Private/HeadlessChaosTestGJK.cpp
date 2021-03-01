@@ -1396,8 +1396,14 @@ namespace ChaosTest
 		}
 	}
 
-	template <typename T>
-	void GJKCapsuleConvexInitialOverlapSweep()
+	// When we have a capsule and box that are reported as initially-overlapping because they are within
+	// the GJK epsilon opf each other (but actually positively separated), verify that we get a zero time of impact.
+	// Previously the slihjtly-positive separation would result in a negative penetration and a positiove TOI.
+	// Bug fix: CL 10942094.
+	// NOTE: this issue no longer manifests with this example because GJK no longer reports this case as
+	// overlapping> The GJK epsilon no longer takes part in the distance calculation when the near point
+	// is on the face of the convex.
+	GTEST_TEST(GJKTests, DISABLED_TestGJKCapsuleConvexInitialOverlapSweep_Fixed)
 	{
 		{
 			TArray<Chaos::FVec3> ConvexParticles;
@@ -1414,25 +1420,29 @@ namespace ChaosTest
 
 			TUniquePtr<FConvex> UniqueConvex = MakeUnique<FConvex>(ConvexParticles, 0.0f);
 			TSerializablePtr<FConvex> AConv(UniqueConvex);
-			const TImplicitObjectScaled<FConvex> A(AConv,TVec3<T>(1.0,1.0,1.0));
+			const TImplicitObjectScaled<FConvex> A(AConv,FVec3(1.0,1.0,1.0));
 
-			const TVec3<T> Pt0(0.0,0.0,-33.0);
-			TVec3<T> Pt1 = Pt0;
-			Pt1 += (TVec3<T>(0.0,0.0,1.0) * 66.0);
+			const FVec3 Pt0(0.0,0.0,-33.0);
+			FVec3 Pt1 = Pt0;
+			Pt1 += (FVec3(0.0,0.0,1.0) * 66.0);
 
-			const TCapsule<T> B(Pt0,Pt1,42.0);
+			const FImplicitCapsule3 B(Pt0,Pt1,42.0);
 
-			const TRigidTransform<T,3> BToATM(TVec3<T>(157.314758,-54.0000839,76.1436157),TRotation<T,3>::FromElements(0.0,0.0,0.704960823,0.709246278));
-			const TVec3<T> LocalDir(-0.00641351938,-0.999979556,0.0);
-			const T Length = 0.0886496082;
-			const TVec3<T> SearchDir(-3.06152344,166.296631,-76.1436157);
+			const FRigidTransform3 BToATM(FVec3(157.314758,-54.0000839,76.1436157),FRotation3::FromElements(0.0,0.0,0.704960823,0.709246278));
+			const FVec3 LocalDir(-0.00641351938,-0.999979556,0.0);
+			const FReal Length = 0.0886496082;
+			const FVec3 SearchDir(-3.06152344,166.296631,-76.1436157);
 
-			T Time;
-			TVec3<T> Position,Normal;
-			EXPECT_TRUE(GJKRaycast2<T>(A,B,BToATM,LocalDir,Length,Time,Position,Normal,0,true,SearchDir,0));
+			FReal Time;
+			FVec3 Position,Normal;
+			EXPECT_TRUE(GJKRaycast2<FReal>(A,B,BToATM,LocalDir,Length,Time,Position,Normal,0,true,SearchDir,0));
 			EXPECT_FLOAT_EQ(Time,0.0);
 		}
+	}
 
+	template <typename T>
+	void GJKCapsuleConvexInitialOverlapSweep()
+	{
 		{
 			TArray<TVec3<T>> ConvexParticles;
 			ConvexParticles.SetNum(16);
@@ -1793,6 +1803,79 @@ namespace ChaosTest
 		GJKConvexConvexEPABoundaryCondition();
 	}
 
+
+	void NegativeScaleConvexTest()
+	{
+		TArray<FVec3> ConvexVerts =
+		{
+			{512.000061, -1279.99988, -383.999939},
+			{511.999969, 6.81566016e-05, 2.23802308e-05},
+			{512.000000, -255.999939, 2.23802308e-05},
+			{-2.36513770e-05, -1.52587909e-05, -2.84217094e-14},
+			{1.80563184e-05, -256.000031, -2.84217094e-14},
+			{2.26354750e-05, -1024.00000, -383.999969},
+			{7.96019594e-05, -1280.00000, -383.999969},
+			{512.000061, -1023.99994, -383.999939}
+		};
+		TArray<FVec3> ConvexVertices(MoveTemp(ConvexVerts));
+		TUniquePtr<FImplicitConvex3> CoreConvex = MakeUnique<FImplicitConvex3>(ConvexVertices, 0.0f);
+		const TImplicitObjectScaled<FImplicitConvex3> ScaledConvex(MakeSerializable(CoreConvex), FVec3(-1,1,1), 38.4000015);
+		const TSphere<FReal, 3> Sphere(FVec3(0,0,0), 32);
+		const FRigidTransform3 StartTM(FVec3( -172.000000, -48.0000000, 52.0000000 ), FRotation3::FromIdentity());
+
+
+		FVec3 Dir(0, 0, -1);
+		FReal Length = 200;
+		FVec3 OutNormal;
+		FReal OutTime = -1;
+		FVec3 OutPos(0, 0, 0);
+		int32 OutFaceIdx = -1;
+		const bool bSuccess = GJKRaycast2(ScaledConvex, Sphere, StartTM, Dir, Length, OutTime, OutPos, OutNormal, 0.f, true);
+		EXPECT_TRUE(bSuccess);
+	}
+
+	void NegativeScaleConvexTest2()
+	{
+		//TArray<FVec3> ConvexVerts =
+		//{
+		//	// subset of verts from above test.
+		//	{512.000061, -1279.99988, -383.999939},    // Uncommenting this will cause sweep to miss. Why?
+		//	{511.999969, 6.81566016e-05, 2.23802308e-05},
+		//	{512.000000, -255.999939, 2.23802308e-05},
+		//	{-2.36513770e-05, -1.52587909e-05, -2.84217094e-14},
+		//	{1.80563184e-05, -256.000031, -2.84217094e-14},
+		//};
+		TArray<FVec3> ConvexVerts =
+		{
+			// subset of verts from above test.
+			FVec3(-512, -1280, -384),
+			FVec3(-512, 0, 0),
+			FVec3(-512, -256, 0),
+			FVec3(0, 0, 0),
+			FVec3(0, -256, 0),
+		};
+		TArray<FVec3> ConvexVertices(MoveTemp(ConvexVerts));
+		FImplicitConvex3 CoreConvex = FImplicitConvex3(ConvexVertices, 38.4000015);
+		const TSphere<FReal, 3> Sphere(FVec3(0, 0, 0), 32);
+		const FRigidTransform3 StartTM(FVec3(-172.000000, -48.0000000, 52.0000000), FRotation3::FromIdentity());
+
+
+		FVec3 Dir(0, 0, -1);
+		FReal Length = 200;
+		FVec3 OutNormal;
+		FReal OutTime = -1;
+		FVec3 OutPos(0, 0, 0);
+		int32 OutFaceIdx = -1;
+		const bool bSuccess = GJKRaycast2(CoreConvex, Sphere, StartTM, Dir, Length, OutTime, OutPos, OutNormal, 0.f, true);
+		EXPECT_TRUE(bSuccess);
+	}
+
+	// Disabled until we use different margins for sweeping
+	GTEST_TEST(GJKTests, DISABLED_TestGJKConvexNegativeScale)
+	{
+		NegativeScaleConvexTest();
+		NegativeScaleConvexTest2();
+	}
 
 	template void SimplexLine<float>();
 	template void SimplexTriangle<float>();
