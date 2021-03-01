@@ -1850,6 +1850,10 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 	if (bHasNeedBindingData && SkeletalMeshComponent)
 	{
 		SkeletalMeshComponent = ValidateBindingAsset(GroomAsset, BindingAsset, SkeletalMeshComponent, bIsBindingReloading, bValidationEnable, this);
+		if (SkeletalMeshComponent->SkeletalMesh == nullptr)
+		{
+			SkeletalMeshComponent = nullptr;
+		}
 	}
 	UGroomBindingAsset* LocalBindingAsset = bHasNeedBindingData ? BindingAsset : nullptr;
 
