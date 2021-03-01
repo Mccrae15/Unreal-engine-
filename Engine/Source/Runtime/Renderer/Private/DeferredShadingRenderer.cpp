@@ -869,6 +869,11 @@ bool FDeferredShadingSceneRenderer::GatherRayTracingWorldInstances(FRHICommandLi
 
 		Scene->GetRayTracingDynamicGeometryCollection()->BeginUpdate();
 
+		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+		{
+			Views[ViewIndex].RayTracingGeometryInstances.Reserve(RelevantPrimitives.Num());
+		}
+
 		for (const FRelevantPrimitive& RelevantPrimitive : RelevantPrimitives)
 		{
 			const uint8 RayTracedMeshElementsMask = RelevantPrimitive.RayTracedMeshElementsMask;
@@ -925,18 +930,31 @@ bool FDeferredShadingSceneRenderer::GatherRayTracingWorldInstances(FRHICommandLi
 					}
 					else 
 					{
-						RayTracingInstance.NumTransforms = Instance.InstanceTransforms.Num();
-						RayTracingInstance.Transforms.SetNumUninitialized(Instance.InstanceTransforms.Num());
-						FMemory::Memcpy(RayTracingInstance.Transforms.GetData(), Instance.InstanceTransforms.GetData(), Instance.InstanceTransforms.Num() * sizeof(RayTracingInstance.Transforms[0]));
-						static_assert(TIsSame<decltype(RayTracingInstance.Transforms[0]), decltype(Instance.InstanceTransforms[0])>::Value, "Unexpected transform type");
+						if (Instance.InstanceTransformsView.Num())
+						{
+							// Fast path: just reference persistently-allocated transforms and avoid a copy
+							checkf(Instance.InstanceTransforms.Num() == 0, TEXT("InstanceTransforms is expected to be empty if using InstanceTransformsView"));
+							RayTracingInstance.NumTransforms = Instance.InstanceTransformsView.Num();
+							RayTracingInstance.TransformsView = Instance.InstanceTransformsView;
+						}
+						else
+						{
+							// Slow path: copy transforms to the owned storage
+							checkf(Instance.InstanceTransformsView.Num() == 0, TEXT("InstanceTransformsView is expected to be empty if using InstanceTransforms"));
+							RayTracingInstance.NumTransforms = Instance.InstanceTransforms.Num();
+							RayTracingInstance.Transforms.SetNumUninitialized(Instance.InstanceTransforms.Num());
+							FMemory::Memcpy(RayTracingInstance.Transforms.GetData(), Instance.InstanceTransforms.GetData(), Instance.InstanceTransforms.Num() * sizeof(RayTracingInstance.Transforms[0]));
+							static_assert(TIsSame<decltype(RayTracingInstance.Transforms[0]), decltype(Instance.InstanceTransforms[0])>::Value, "Unexpected transform type");
+						}
 					}			
-
-					uint32 InstanceIndex = ReferenceView.RayTracingGeometryInstances.Add(RayTracingInstance);
 
 					for (int32 ViewIndex = 1; ViewIndex < Views.Num(); ViewIndex++)
 					{
 						Views[ViewIndex].RayTracingGeometryInstances.Add(RayTracingInstance);
 					}
+
+					uint32 InstanceIndex = ReferenceView.RayTracingGeometryInstances.AddDefaulted();
+					Swap(ReferenceView.RayTracingGeometryInstances.Last(), RayTracingInstance);
 
 #if DO_CHECK
 					ReferenceView.RayTracingGeometries.Add(Instance.Geometry);
