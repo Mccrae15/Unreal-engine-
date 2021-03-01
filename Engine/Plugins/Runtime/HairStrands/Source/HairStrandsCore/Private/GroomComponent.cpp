@@ -1027,7 +1027,7 @@ void UGroomComponent::ReleaseHairSimulation()
 
 void EnableHairSimulation(UGroomComponent* GroomComponent, const bool bEnableSimulation)
 {
-	if (!GroomComponent)
+	if (!GroomComponent || GroomComponent->GroomGroupsDesc.Num() == 0)
 	{
 		return;
 	}
