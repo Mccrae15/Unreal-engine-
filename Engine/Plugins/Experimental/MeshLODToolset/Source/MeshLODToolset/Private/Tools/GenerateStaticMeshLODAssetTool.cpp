@@ -196,6 +196,7 @@ void UGenerateStaticMeshLODAssetTool::Setup()
 
 	UInteractiveTool::Setup();
 
+	SetToolDisplayName(LOCTEXT("ToolName", "AutoLOD"));
 	GetToolManager()->DisplayMessage(
 		LOCTEXT("OnStartStaticMeshLODAssetTool", "Create a new LOD asset"),
 		EToolMessageLevel::UserNotification);
