@@ -138,11 +138,11 @@ namespace {
 struct FAssertInfo
 {
 	const TCHAR* ErrorMessage;
-	int32 NumStackFramesToIgnore;
+	void* ProgramCounter;
 
-	FAssertInfo(const TCHAR* InErrorMessage, int32 InNumStackFramesToIgnore)
+	FAssertInfo(const TCHAR* InErrorMessage, void* InProgramCounter)
 		: ErrorMessage(InErrorMessage)
-		, NumStackFramesToIgnore(InNumStackFramesToIgnore)
+		, ProgramCounter(InProgramCounter)
 	{
 	}
 };
@@ -624,7 +624,7 @@ int32 ReportCrashForMonitor(
 	LPEXCEPTION_POINTERS ExceptionInfo,
 	ECrashContextType Type,
 	const TCHAR* ErrorMessage,
-	int NumStackFramesToIgnore,
+	void* ErrorProgramCounter,
 	HANDLE CrashingThreadHandle,
 	DWORD CrashingThreadId,
 	FProcHandle& CrashMonitorHandle,
@@ -645,7 +645,8 @@ int32 ReportCrashForMonitor(
 	// Setup up the shared memory area so that the crash report
 	SharedContext->CrashType = Type;
 	SharedContext->CrashingThreadId = CrashingThreadId;
-	SharedContext->NumStackFramesToIgnore = NumStackFramesToIgnore;
+	SharedContext->ErrorProgramCounter = ErrorProgramCounter;
+	SharedContext->ExceptionProgramCounter = ExceptionInfo->ExceptionRecord->ExceptionAddress;
 
 	// Determine UI settings for the crash report. Suppress the user input dialog if we're running in unattended mode
 	// Usage data controls if we want analytics in the crash report client
@@ -1251,7 +1252,7 @@ public:
 	}
 
 	/** Ensures and Stalls are passed through this. */
-	FORCEINLINE int32 OnContinuableEvent(ECrashContextType InType, LPEXCEPTION_POINTERS InExceptionInfo, HANDLE InThreadHandle, uint32 InThreadId, int NumStackFramesToIgnore, const TCHAR* ErrorMessage, EErrorReportUI ReportUI)
+	FORCEINLINE int32 OnContinuableEvent(ECrashContextType InType, LPEXCEPTION_POINTERS InExceptionInfo, HANDLE InThreadHandle, uint32 InThreadId, void* ProgramCounter, const TCHAR* ErrorMessage, EErrorReportUI ReportUI)
 	{
 		if (CrashClientHandle.IsValid() && FPlatformProcess::IsProcRunning(CrashClientHandle))
 		{
@@ -1259,7 +1260,7 @@ public:
 				InExceptionInfo, 
 				InType,
 				ErrorMessage, 
-				NumStackFramesToIgnore, 
+				ProgramCounter, 
 				InThreadHandle,
 				InThreadId,
 				CrashClientHandle, 
@@ -1275,7 +1276,7 @@ public:
 			CrashContext.SetCrashedProcess(FProcHandle(::GetCurrentProcess()));
 			CrashContext.SetCrashedThreadId(InThreadId);
 			void* ContextWrapper = FWindowsPlatformStackWalk::MakeThreadContextWrapper(InExceptionInfo->ContextRecord, InThreadHandle);
-			CrashContext.CapturePortableCallStack(NumStackFramesToIgnore, ContextWrapper);
+			CrashContext.CapturePortableCallStack(ProgramCounter, ContextWrapper);
 
 			return ReportCrashUsingCrashReportClient(CrashContext, InExceptionInfo, ReportUI);
 		}
@@ -1300,10 +1301,15 @@ public:
 	/** Crashes during static init should be reported directly to crash monitor. */
 	FORCEINLINE int32 OnCrashDuringStaticInit(LPEXCEPTION_POINTERS InExceptionInfo)
 	{
+		void* ErrorProgramCounter = nullptr;
+        if (InExceptionInfo && InExceptionInfo->ExceptionRecord)
+        {
+            ErrorProgramCounter = InExceptionInfo->ExceptionRecord->ExceptionAddress;
+        }
+
 		if (CrashClientHandle.IsValid() && FPlatformProcess::IsProcRunning(CrashClientHandle))
 		{
 			const ECrashContextType Type = ECrashContextType::Crash;
-			const int NumStackFramesToIgnore = 1;
 			const TCHAR* ErrorMessage = TEXT("Crash during static initialization");
 
 			if (!FPlatformCrashContext::IsInitalized())
@@ -1315,7 +1321,7 @@ public:
 				InExceptionInfo,
 				Type,
 				ErrorMessage,
-				NumStackFramesToIgnore,
+				ErrorProgramCounter,
 				CrashingThreadHandle,
 				CrashingThreadId,
 				CrashClientHandle,
@@ -1352,7 +1358,7 @@ private:
 		ECrashContextType Type = ECrashContextType::Crash;
 		const TCHAR* ErrorMessage = TEXT("Unhandled exception");
 		TCHAR ErrorMessageLocal[UE_ARRAY_COUNT(GErrorExceptionDescription)];
-		int NumStackFramesToIgnore = 2;
+		void* ErrorProgramCounter = ExceptionInfo->ExceptionRecord->ExceptionAddress;
 
 		void* ContextWrapper = nullptr;
 
@@ -1362,20 +1368,27 @@ private:
 			const FAssertInfo& Info = *(const FAssertInfo*)ExceptionInfo->ExceptionRecord->ExceptionInformation[0];
 			Type = ECrashContextType::Assert;
 			ErrorMessage = Info.ErrorMessage;
-			NumStackFramesToIgnore += Info.NumStackFramesToIgnore;
+			ErrorProgramCounter = Info.ProgramCounter;
 		}
 		else if (ExceptionInfo->ExceptionRecord->ExceptionCode == GPUCrashExceptionCode && ExceptionInfo->ExceptionRecord->NumberParameters == 1)
 		{
 			const FAssertInfo& Info = *(const FAssertInfo*)ExceptionInfo->ExceptionRecord->ExceptionInformation[0];
 			Type = ECrashContextType::GPUCrash;
 			ErrorMessage = Info.ErrorMessage;
-			NumStackFramesToIgnore += Info.NumStackFramesToIgnore;
+			ErrorProgramCounter = Info.ProgramCounter;
 		}
 		// Generic exception description is stored in GErrorExceptionDescription
-		else if (ExceptionInfo->ExceptionRecord->ExceptionCode != EnsureExceptionCode)
+		else if (ExceptionInfo->ExceptionRecord->ExceptionCode == EnsureExceptionCode)
+		{
+			const FAssertInfo& Info = *(const FAssertInfo*)ExceptionInfo->ExceptionRecord->ExceptionInformation[0];
+			Type = ECrashContextType::Ensure;
+			ErrorMessage = Info.ErrorMessage;
+			ErrorProgramCounter = Info.ProgramCounter;
+		}
+		// Generic exception description is stored in GErrorExceptionDescription
+		else
 		{
 			// When a generic exception is thrown, it is important to get all the stack frames
-			NumStackFramesToIgnore = 0;
 			CreateExceptionInfoString(ExceptionInfo->ExceptionRecord, ErrorMessageLocal, UE_ARRAY_COUNT(ErrorMessageLocal));
 			ErrorMessage = ErrorMessageLocal;
 
@@ -1392,7 +1405,7 @@ private:
 				ExceptionInfo,
 				Type,
 				ErrorMessage,
-				NumStackFramesToIgnore,
+				ErrorProgramCounter,
 				CrashingThreadHandle,
 				CrashingThreadId,
 				CrashClientHandle,
@@ -1412,12 +1425,9 @@ private:
 			// Thread context wrapper for stack operations
 			ContextWrapper = FWindowsPlatformStackWalk::MakeThreadContextWrapper(ExceptionInfo->ContextRecord, CrashingThreadHandle);
 			CrashContext.SetCrashedProcess(FProcHandle(::GetCurrentProcess()));
-			CrashContext.CapturePortableCallStack(NumStackFramesToIgnore, ContextWrapper);
 			CrashContext.SetCrashedThreadId(CrashingThreadId);
 			CrashContext.CaptureAllThreadContexts();
-
-			// Also mark the same number of frames to be ignored if we symbolicate from the minidump
-			CrashContext.SetNumMinidumpFramesToIgnore(NumStackFramesToIgnore);
+			CrashContext.CapturePortableCallStack(ErrorProgramCounter, ContextWrapper);
 
 			// First launch the crash reporter client.
 #if WINVER > 0x502	// Windows Error Reporting is not supported on Windows XP
@@ -1450,7 +1460,7 @@ private:
 				ContextWrapper = FWindowsPlatformStackWalk::MakeThreadContextWrapper(ExceptionInfo->ContextRecord, CrashingThreadHandle);
 			}
 			
-			FPlatformStackWalk::StackWalkAndDump(StackTrace, StackTraceSize, 0, ContextWrapper);
+			FPlatformStackWalk::StackWalkAndDump(StackTrace, StackTraceSize, ErrorProgramCounter, ContextWrapper);
 			
 			if (ExceptionInfo->ExceptionRecord->ExceptionCode != EnsureExceptionCode && ExceptionInfo->ExceptionRecord->ExceptionCode != AssertExceptionCode)
 			{
@@ -1597,30 +1607,29 @@ static bool bReentranceGuard = false;
 /**
  * A wrapper for ReportCrashUsingCrashReportClient that creates a new ensure crash context
  */
-int32 ReportContinuableEventUsingCrashReportClient(ECrashContextType InType, EXCEPTION_POINTERS* ExceptionInfo, HANDLE InThreadHandle, uint32 InThreadId, int NumStackFramesToIgnore, const TCHAR* ErrorMessage, EErrorReportUI ReportUI)
+int32 ReportContinuableEventUsingCrashReportClient(ECrashContextType InType, EXCEPTION_POINTERS* ExceptionInfo, HANDLE InThreadHandle, uint32 InThreadId, void* ProgramCounter, const TCHAR* ErrorMessage, EErrorReportUI ReportUI)
 {
 #if !NOINITCRASHREPORTER
-	return GCrashReportingThread->OnContinuableEvent(InType, ExceptionInfo, InThreadHandle, InThreadId, NumStackFramesToIgnore, ErrorMessage, ReportUI);
+	return GCrashReportingThread->OnContinuableEvent(InType, ExceptionInfo, InThreadHandle, InThreadId, ProgramCounter, ErrorMessage, ReportUI);
 #else 
 	return EXCEPTION_EXECUTE_HANDLER;
 #endif
 }
 #endif
 
-static void ReportEventOnCallingThread(ECrashContextType InType, const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+static void ReportEventOnCallingThread(ECrashContextType InType, const TCHAR* ErrorMessage, void* ProgramCounter)
 {
-	// Skip this frame and the ::RaiseException call itself
-	NumStackFramesToIgnore += 2;
-
 #if WINVER > 0x502	// Windows Error Reporting is not supported on Windows XP
 #if !PLATFORM_SEH_EXCEPTIONS_DISABLED
 	__try
 #endif
 	{
-		::RaiseException(EnsureExceptionCode, 0, 0, nullptr);
+		FAssertInfo Info(ErrorMessage, ProgramCounter);
+		ULONG_PTR Arguments[] = { (ULONG_PTR)&Info };
+		::RaiseException(EnsureExceptionCode, 0, UE_ARRAY_COUNT(Arguments), Arguments);
 	}
 #if !PLATFORM_SEH_EXCEPTIONS_DISABLED
-	__except (ReportContinuableEventUsingCrashReportClient( InType, GetExceptionInformation(), GetCurrentThread(), GetCurrentThreadId(), NumStackFramesToIgnore, ErrorMessage, IsInteractiveEnsureMode() ? EErrorReportUI::ShowDialog : EErrorReportUI::ReportInUnattendedMode))
+	__except (ReportContinuableEventUsingCrashReportClient( InType, GetExceptionInformation(), GetCurrentThread(), GetCurrentThreadId(), ProgramCounter, ErrorMessage, IsInteractiveEnsureMode() ? EErrorReportUI::ShowDialog : EErrorReportUI::ReportInUnattendedMode))
 		CA_SUPPRESS(6322)
 	{
 	}
@@ -1628,7 +1637,7 @@ static void ReportEventOnCallingThread(ECrashContextType InType, const TCHAR* Er
 #endif	// WINVER
 }
 
-static void ReportEvent(ECrashContextType InType, const TCHAR* ErrorMessage, uint32 InThreadId, int NumStackFramesToIgnore)
+static void ReportEvent(ECrashContextType InType, const TCHAR* ErrorMessage, uint32 InThreadId, void* ProgramCounter)
 {
 	if (ReportCrashCallCount > 0 || FDebug::HasAsserted())
 	{
@@ -1658,7 +1667,7 @@ static void ReportEvent(ECrashContextType InType, const TCHAR* ErrorMessage, uin
 
 	if (FPlatformTLS::GetCurrentThreadId() == InThreadId)
 	{
-		ReportEventOnCallingThread(InType, ErrorMessage, NumStackFramesToIgnore);
+		ReportEventOnCallingThread(InType, ErrorMessage, ProgramCounter);
 	}
 	else
 	{
@@ -1685,6 +1694,11 @@ static void ReportEvent(ECrashContextType InType, const TCHAR* ErrorMessage, uin
 				{
 					// Success! Set the pointer to this state in the exception information block
 					ExceptionInformation.ContextRecord = &ThreadContext;
+
+					if (ProgramCounter == nullptr)
+					{
+						ProgramCounter = (void*)(ThreadContext.Rip);
+					}
 				}
 			}
 
@@ -1698,7 +1712,7 @@ static void ReportEvent(ECrashContextType InType, const TCHAR* ErrorMessage, uin
 				// The thread context and exception recard are the two things expected
 				ExceptionInformation.ExceptionRecord = &ExceptionRecord;
 
-				(void)ReportContinuableEventUsingCrashReportClient(InType, &ExceptionInformation, ThreadHandle, InThreadId, NumStackFramesToIgnore, ErrorMessage, IsInteractiveEnsureMode() ? EErrorReportUI::ShowDialog : EErrorReportUI::ReportInUnattendedMode);
+				(void)ReportContinuableEventUsingCrashReportClient(InType, &ExceptionInformation, ThreadHandle, InThreadId, ProgramCounter, ErrorMessage, IsInteractiveEnsureMode() ? EErrorReportUI::ShowDialog : EErrorReportUI::ReportInUnattendedMode);
 			}
 
 			if (SuspendCount != -1)
@@ -1711,19 +1725,24 @@ static void ReportEvent(ECrashContextType InType, const TCHAR* ErrorMessage, uin
 	}
 }
 
-FORCENOINLINE void ReportAssert(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+void ReportAssert(const TCHAR* ErrorMessage, void* ProgramCounter)
 {
 	/** This is the last place to gather memory stats before exception. */
 	FGenericCrashContext::SetMemoryStats(FPlatformMemory::GetStats());
 
-	FAssertInfo Info(ErrorMessage, NumStackFramesToIgnore + 2); // +2 for this function and RaiseException()
+	FAssertInfo Info(ErrorMessage, ProgramCounter);
 
 	ULONG_PTR Arguments[] = { (ULONG_PTR)&Info };
 	::RaiseException(AssertExceptionCode, 0, UE_ARRAY_COUNT(Arguments), Arguments);
 }
 
-FORCENOINLINE void ReportGPUCrash(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+FORCENOINLINE void ReportGPUCrash(const TCHAR* ErrorMessage, void* ProgramCounter)
 {
+	if (ProgramCounter == nullptr)
+	{
+		ProgramCounter = PLATFORM_RETURN_ADDRESS();
+	}
+
 	/** This is the last place to gather memory stats before exception. */
 	FGenericCrashContext::SetMemoryStats(FPlatformMemory::GetStats());
 	
@@ -1731,7 +1750,7 @@ FORCENOINLINE void ReportGPUCrash(const TCHAR* ErrorMessage, int NumStackFramesT
 #if !PLATFORM_SEH_EXCEPTIONS_DISABLED
 	__try
 	{
-		FAssertInfo Info(ErrorMessage, NumStackFramesToIgnore + 2); // +2 for this function and RaiseException()
+		FAssertInfo Info(ErrorMessage, ProgramCounter);
 
 		ULONG_PTR Arguments[] = { (ULONG_PTR)&Info };
 		::RaiseException(GPUCrashExceptionCode, 0, UE_ARRAY_COUNT(Arguments), Arguments);
@@ -1767,17 +1786,17 @@ void ReportHang(const TCHAR* ErrorMessage, const uint64* StackFrames, int32 NumS
 /**
  * Report an ensure to the crash reporting system
  */
-FORCENOINLINE void ReportEnsure(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+void ReportEnsure(const TCHAR* ErrorMessage, void* ProgramCounter)
 {
-	ReportEvent(ECrashContextType::Ensure, ErrorMessage, FPlatformTLS::GetCurrentThreadId(), NumStackFramesToIgnore + 1);
+	ReportEvent(ECrashContextType::Ensure, ErrorMessage, FPlatformTLS::GetCurrentThreadId(), ProgramCounter);
 }
 
 /**
  * Report a hitch to the crash reporting system
  */
-FORCENOINLINE void ReportStall(const TCHAR* ErrorMessage, uint32 HitchThreadId, int NumStackFramesToIgnore)
+FORCENOINLINE void ReportStall(const TCHAR* ErrorMessage, uint32 HitchThreadId)
 {
-	ReportEvent(ECrashContextType::Stall, ErrorMessage, HitchThreadId, FPlatformTLS::GetCurrentThreadId() == HitchThreadId ? NumStackFramesToIgnore + 1 : NumStackFramesToIgnore);
+	ReportEvent(ECrashContextType::Stall, ErrorMessage, HitchThreadId, nullptr);
 }
 
 #if !IS_PROGRAM && 0
@@ -1811,6 +1830,7 @@ namespace {
 	static StaticInitCrasher GCrasher;
 }
 #endif
+
 
 
 

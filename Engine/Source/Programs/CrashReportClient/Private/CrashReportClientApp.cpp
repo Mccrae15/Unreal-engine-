@@ -449,7 +449,7 @@ FPlatformErrorReport CollectErrorReport(FRecoveryService* RecoveryService, uint3
 	FPlatformCrashContext CrashContext(SharedCrashContext.CrashType, SharedCrashContext.ErrorMessage);
 	CrashContext.SetCrashedProcess(ProcessHandle);
 	CrashContext.SetCrashedThreadId(SharedCrashContext.CrashingThreadId);
-	CrashContext.SetNumMinidumpFramesToIgnore(SharedCrashContext.NumStackFramesToIgnore);
+	CrashContext.SetNumMinidumpFramesToIgnore(0);
 
 	// Initialize the stack walking for the monitored process
 	FPlatformStackWalk::InitStackWalkingForProcess(ProcessHandle);
@@ -458,7 +458,7 @@ FPlatformErrorReport CollectErrorReport(FRecoveryService* RecoveryService, uint3
 	{
 		const uint32 ThreadId = SharedCrashContext.ThreadIds[ThreadIdx];
 		uint64 StackFrames[CR_MAX_STACK_FRAMES] = {0};
-		const uint32 StackFrameCount = FPlatformStackWalk::CaptureThreadStackBackTrace(
+		uint32 StackFrameCount = FPlatformStackWalk::CaptureThreadStackBackTrace(
 			ThreadId, 
 			StackFrames,
 			CR_MAX_STACK_FRAMES
@@ -474,10 +474,38 @@ FPlatformErrorReport CollectErrorReport(FRecoveryService* RecoveryService, uint3
 		// Add the crashing stack specifically. Is this really needed?
 		if (ThreadId == SharedCrashContext.CrashingThreadId)
 		{
-			CrashContext.SetPortableCallStack(
-				StackFrames,
-				StackFrameCount - SharedCrashContext.NumStackFramesToIgnore
-			);
+			const uint64* StackFrameCursor = StackFrames;
+
+			// If the address of where the error occurred has been provided then
+			// we can remove the boilerplate noise from the callstack.
+			if (uint64 ErrorPc = uint64(SharedCrashContext.ErrorProgramCounter))
+			{
+				uint64 ExceptionPc = uint64(SharedCrashContext.ExceptionProgramCounter);
+				int32 ExceptionDepth = -1;
+				for (uint32 i = 0; i < StackFrameCount; ++i)
+				{
+					if (StackFrames[i] == ExceptionPc)
+					{
+						ExceptionDepth = i;
+					}
+
+					if (StackFrames[i] != ErrorPc)
+					{
+						continue;
+					}
+
+					if (ExceptionDepth >= 0)
+					{
+						CrashContext.SetNumMinidumpFramesToIgnore(i - ExceptionDepth);
+					}
+
+					StackFrameCursor = StackFrames + i;
+					StackFrameCount -= i;
+					break;
+				}
+			}
+
+			CrashContext.SetPortableCallStack(StackFrameCursor, StackFrameCount);
 		}
 	}
 

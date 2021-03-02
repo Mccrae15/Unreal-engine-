@@ -1813,11 +1813,9 @@ static void DefaultCrashHandler(FMacCrashContext const& Context)
 	return Context.GenerateCrashInfoAndLaunchReporter();
 }
 
-/** Number of stack entries to ignore in backtrace */
-static uint32 GMacStackIgnoreDepth = 6;
-
 /** Message for the assert triggered on this thread */
 thread_local const TCHAR* GCrashErrorMessage = nullptr;
+thread_local void* GCrashErrorProgramCounter = nullptr;
 thread_local ECrashContextType GCrashErrorType = ECrashContextType::Crash;
 thread_local uint8* GCrashContextMemory[sizeof(FMacCrashContext)];
 
@@ -1829,21 +1827,24 @@ static void PlatformCrashHandler(int32 Signal, siginfo_t* Info, void* Context)
 
 	ECrashContextType Type;
 	const TCHAR* ErrorMessage;
+	void* ErrorProgramCounter;
 
 	if (GCrashErrorMessage == nullptr)
 	{
 		Type = ECrashContextType::Crash;
 		ErrorMessage = TEXT("Caught signal");
+		ErrorProgramCounter = Info->si_addr;
 	}
 	else
 	{
 		Type = GCrashErrorType;
 		ErrorMessage = GCrashErrorMessage;
+		ErrorProgramCounter = GCrashErrorProgramCounter;
 	}
 
 	FMacCrashContext* CrashContext = new (GCrashContextMemory) FMacCrashContext(Type, ErrorMessage);
-	CrashContext->IgnoreDepth = GMacStackIgnoreDepth;
 	CrashContext->InitFromSignal(Signal, Info, Context);
+	CrashContext->ErrorFrame = ErrorProgramCounter;
 
 	// Switch to crash handler malloc to avoid malloc reentrancy
 	check(GCrashMalloc);
@@ -1973,7 +1974,7 @@ void FMacPlatformMisc::SetCrashHandler(void (* CrashHandler)(const FGenericCrash
 		NSError* Error = nil;
 		if ([FMacApplicationInfo::CrashReporter enableCrashReporterAndReturnError: &Error])
 		{
-			GMacStackIgnoreDepth = 0;
+			/* GMacStackIgnoreDepth = 0; */
 		}
 		else
 		{
@@ -2413,16 +2414,23 @@ bool FMacCrashContext::GetPlatformAllThreadContextsString(FString& OutStr) const
 	return !OutStr.IsEmpty();
 }
 
-void ReportAssert(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+void ReportAssert(const TCHAR* ErrorMessage, void* ErrorProgramCounter)
 {
 	GCrashErrorMessage = ErrorMessage;
+	GCrashErrorProgramCounter = ErrorProgramCounter;
 	GCrashErrorType = ECrashContextType::Assert;
 	FPlatformMisc::RaiseException(1);
 }
 
-void ReportGPUCrash(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+void ReportGPUCrash(const TCHAR* ErrorMessage, void* ErrorProgramCounter)
 {
+	if (ErrorProgramCounter == nullptr)
+	{
+		ErrorProgramCounter = PLATFORM_RETURN_ADDRESS();
+	}
+
 	GCrashErrorMessage = ErrorMessage;
+	GCrashErrorProgramCounter = ErrorProgramCounter;
 	GCrashErrorType = ECrashContextType::GPUCrash;
 	FPlatformMisc::RaiseException(1);
 }
@@ -2430,7 +2438,7 @@ void ReportGPUCrash(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
 static FCriticalSection EnsureLock;
 static bool bReentranceGuard = false;
 
-void ReportEnsure( const TCHAR* ErrorMessage, int NumStackFramesToIgnore )
+void ReportEnsure( const TCHAR* ErrorMessage, void* ErrorProgramCounter )
 {
 	// Simple re-entrance guard.
 	EnsureLock.Lock();
@@ -2448,10 +2456,11 @@ void ReportEnsure( const TCHAR* ErrorMessage, int NumStackFramesToIgnore )
 		siginfo_t Signal;
 		Signal.si_signo = SIGTRAP;
 		Signal.si_code = TRAP_TRACE;
-		Signal.si_addr = __builtin_return_address(0);
+		Signal.si_addr = ErrorProgramCounter;
 		
 		FMacCrashContext EnsureContext(ECrashContextType::Ensure, ErrorMessage);
 		EnsureContext.InitFromSignal(SIGTRAP, &Signal, nullptr);
+		EnsureContext.ErrorFrame = ErrorProgramCounter;
 		EnsureContext.GenerateEnsureInfoAndLaunchReporter();
 	}
 	
