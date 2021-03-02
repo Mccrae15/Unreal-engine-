@@ -72,7 +72,7 @@ struct FStrataBSDF
 #define STATE_BIT_OFFSET_THINFILM		(STATE_BIT_OFFSET_EDGECOLOR			+ STATE_BITS_EDGECOLOR)
 #define STATE_BIT_OFFSET_WEIGHT10F		22
 
-#define TO_BITMASK(BitCount)							((1<<BitCount)-1)
+#define TO_BITMASK(BitCount)							((1u<<BitCount)-1u)
 #define BSDF_GETSTATE(X, BitCount, BitOffset)			uint((X.State>>BitOffset) & TO_BITMASK(BitCount))
 #define BSDF_SETSTATE(X, BitCount, BitOffset, Value)	X.State = (X.State & (~(TO_BITMASK(BitCount)<<BitOffset))) | ((Value & TO_BITMASK(BitCount)) << BitOffset)
 
