@@ -53,7 +53,7 @@ namespace Chaos
 		    : FImplicitObject(EImplicitObject::IsConvex | EImplicitObject::HasBoundingBox, ImplicitObjectType::Convex)
 			, Planes(MoveTemp(InPlanes))
 		    , Vertices(MoveTemp(InVertices))
-		    , LocalBoundingBox(TAABB<FReal, 3>::EmptyAABB())
+		    , LocalBoundingBox(FAABB3::EmptyAABB())
 		{
 			for (int32 ParticleIndex = 0; ParticleIndex < Vertices.Num(); ++ParticleIndex)
 			{
@@ -113,7 +113,7 @@ namespace Chaos
 			return 0.0f;
 		}
 
-		virtual const TAABB<FReal, 3> BoundingBox() const override
+		virtual const FAABB3 BoundingBox() const override
 		{
 			return LocalBoundingBox;
 		}
@@ -549,6 +549,11 @@ namespace Chaos
 			return LocalBoundingBox.GetInertiaTensor(Mass);
 		}
 
+		FRotation3 GetRotationOfMass() const
+		{
+			return FRotation3::FromIdentity();
+		}
+
 		const FVec3 GetCenterOfMass() const
 		{
 			return CenterOfMass;
@@ -719,7 +724,7 @@ namespace Chaos
 	private:
 		TArray<TPlaneConcrete<FReal, 3>> Planes;
 		TArray<FVec3> Vertices; //copy of the vertices that are just on the convex hull boundary
-		TAABB<FReal, 3> LocalBoundingBox;
+		FAABB3 LocalBoundingBox;
 		FConvexStructureData StructureData;
 		float Volume;
 		FVec3 CenterOfMass;
