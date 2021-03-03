@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "Templates/SharedPointer.h"
+#include "Templates/SharedPointerInternals.h"
 #include "Templates/UniquePtr.h"
 
 // Forward declares.
@@ -15,7 +17,5 @@ namespace Audio
 	using FSoundWaveProxyPtr = TSharedPtr<FSoundWaveProxy, ESPMode::ThreadSafe>;
 
 	// Just loose for now.
-	AUDIOCODECENGINE_API TUniquePtr<IDecoderInput> CreateBackCompatDecoderInput(
-		FName InOldFormatName,
-		const FSoundWaveProxyPtr& InSoundWave );
+	AUDIOCODECENGINE_API TUniquePtr<IDecoderInput> CreateBackCompatDecoderInput(FName InOldFormatName, const FSoundWaveProxyPtr& InSoundWave);
 }
