@@ -280,8 +280,8 @@ void FHairCardIndexBuffer::InitRHI()
 	const uint32 DataSizeInBytes = FHairCardsIndexFormat::SizeInByte * Indices.Num();
 
 	FRHIResourceCreateInfo CreateInfo(TEXT("FHairCardIndexBuffer"));
-	void* Buffer = nullptr;
-	IndexBufferRHI = RHICreateAndLockIndexBuffer(FHairCardsIndexFormat::SizeInByte, DataSizeInBytes, BUF_Static, CreateInfo, Buffer);
+	IndexBufferRHI = RHICreateBuffer(DataSizeInBytes, BUF_Static | BUF_IndexBuffer, FHairCardsIndexFormat::SizeInByte, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+	void* Buffer = RHILockBuffer(IndexBufferRHI, 0, DataSizeInBytes, RLM_WriteOnly);
 	FMemory::Memcpy(Buffer, Indices.GetData(), DataSizeInBytes);
 	RHIUnlockBuffer(IndexBufferRHI);
 }
@@ -392,8 +392,8 @@ void FHairCardsProceduralResource::ReleaseRHI()
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-FHairCardsDeformedResource::FHairCardsDeformedResource(const FHairCardsDatas::FRenderData& HairCardsRenderData, bool bInInitializedData, bool bInDynamic) :
-	RenderData(HairCardsRenderData), bInitializedData(!bInDynamic || bInInitializedData), bDynamic(bInDynamic)
+FHairCardsDeformedResource::FHairCardsDeformedResource(const FHairCardsDatas::FRenderData& HairCardsRenderData, bool bInInitializedData) :
+	RenderData(HairCardsRenderData), bInitializedData(bInInitializedData)
 {}
 
 void FHairCardsDeformedResource::InitRHI()
@@ -407,18 +407,12 @@ void FHairCardsDeformedResource::InitRHI()
 	if (bInitializedData)
 	{
 		InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, RenderData.Positions, DeformedPositionBuffer[0], TEXT("Hair.CardsDeformed_Position0"));
-		if (bDynamic)
-		{
-			InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, RenderData.Positions, DeformedPositionBuffer[1], TEXT("Hair.CardsDeformed_Position1"));
-		}
+		InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, RenderData.Positions, DeformedPositionBuffer[1], TEXT("Hair.CardsDeformed_Position1"));
 	}
 	else
 	{
 		InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, VertexCount, DeformedPositionBuffer[0], TEXT("Hair.CardsDeformed_Position0"));
-		if (bDynamic)
-		{
-			InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, VertexCount, DeformedPositionBuffer[1], TEXT("Hair.CardsDeformed_Position1"));
-		}
+		InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, VertexCount, DeformedPositionBuffer[1], TEXT("Hair.CardsDeformed_Position1"));
 	}
 	GraphBuilder.Execute();
 }
@@ -426,10 +420,7 @@ void FHairCardsDeformedResource::InitRHI()
 void FHairCardsDeformedResource::ReleaseRHI()
 {
 	DeformedPositionBuffer[0].Release();
-	if (bDynamic)
-	{
-		DeformedPositionBuffer[1].Release();
-	}
+	DeformedPositionBuffer[1].Release();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -481,8 +472,8 @@ void FHairMeshesRestResource::ReleaseResource()
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-FHairMeshesDeformedResource::FHairMeshesDeformedResource(const FHairMeshesDatas::FRenderData& HairMeshesData, bool bInInitializedData, bool bInDynamic) :
-	RenderData(HairMeshesData), bInitializedData(!bInDynamic || bInInitializedData), bDynamic(bInDynamic)
+FHairMeshesDeformedResource::FHairMeshesDeformedResource(const FHairMeshesDatas::FRenderData& HairMeshesData, bool bInInitializedData) :
+	RenderData(HairMeshesData), bInitializedData(bInInitializedData)
 {}
 
 void FHairMeshesDeformedResource::InitRHI()
@@ -496,18 +487,12 @@ void FHairMeshesDeformedResource::InitRHI()
 	if (bInitializedData)
 	{
 		InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, RenderData.Positions, DeformedPositionBuffer[0], TEXT("Hair.MeshesDeformed_Positions0"));
-		if (bDynamic)
-		{
-			InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, RenderData.Positions, DeformedPositionBuffer[1], TEXT("Hair.MeshesDeformed_Positions1"));
-		}
+		InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, RenderData.Positions, DeformedPositionBuffer[1], TEXT("Hair.MeshesDeformed_Positions1"));
 	}
 	else
 	{
 		InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, VertexCount, DeformedPositionBuffer[0], TEXT("Hair.MeshesDeformed_Positions0"));
-		if (bDynamic)
-		{
-			InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, VertexCount, DeformedPositionBuffer[1], TEXT("Hair.MeshesDeformed_Positions1"));
-		}
+		InternalCreateVertexBufferRDG<FHairCardsPositionFormat>(GraphBuilder, VertexCount, DeformedPositionBuffer[1], TEXT("Hair.MeshesDeformed_Positions1"));
 	}
 
 	GraphBuilder.Execute();
@@ -516,16 +501,13 @@ void FHairMeshesDeformedResource::InitRHI()
 void FHairMeshesDeformedResource::ReleaseRHI()
 {
 	DeformedPositionBuffer[0].Release();
-	if (bDynamic)
-	{
-		DeformedPositionBuffer[1].Release();
-	}
+	DeformedPositionBuffer[1].Release();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
 FHairStrandsRestResource::FHairStrandsRestResource(const FHairStrandsDatas::FRenderData& HairStrandRenderData, const FVector& InPositionOffset) :
-	RestPositionBuffer(), AttributeBuffer(), MaterialBuffer(), PositionOffset(InPositionOffset), RenderData(HairStrandRenderData)
+	PositionBuffer(), AttributeBuffer(), MaterialBuffer(), PositionOffset(InPositionOffset), RenderData(HairStrandRenderData)
 {}
 
 void FHairStrandsRestResource::InitRHI()
@@ -535,24 +517,58 @@ void FHairStrandsRestResource::InitRHI()
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 	FRDGBuilder GraphBuilder(RHICmdList);
 
-	InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, RenderData.Positions, RestPositionBuffer, TEXT("Hair.StrandsRest_RestPositionBuffer"));
+	InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, RenderData.Positions, PositionBuffer, TEXT("Hair.StrandsRest_PositionBuffer"));
 	InternalCreateVertexBufferRDG<FHairStrandsAttributeFormat>(GraphBuilder, RenderData.Attributes, AttributeBuffer, TEXT("Hair.StrandsRest_AttributeBuffer"));
 	InternalCreateVertexBufferRDG<FHairStrandsMaterialFormat>(GraphBuilder, RenderData.Materials, MaterialBuffer, TEXT("Hair.StrandsRest_MaterialBuffer"));
 
+	TArray<FVector4> RestOffset;
+	RestOffset.Add(PositionOffset);
+	InternalCreateVertexBufferRDG<FHairStrandsPositionOffsetFormat>(GraphBuilder, RestOffset, PositionOffsetBuffer, TEXT("Hair.StrandsRest_PositionOffsetBuffer"));
+	
 	GraphBuilder.Execute();
+}
+
+void AddHairTangentPass(
+	FRDGBuilder& GraphBuilder,
+	FGlobalShaderMap* ShaderMap,
+	uint32 VertexCount,
+	FHairGroupPublicData* HairGroupPublicData,
+	FRDGBufferSRVRef PositionBuffer,
+	FRDGImportedBuffer OutTangentBuffer);
+
+FRDGExternalBuffer FHairStrandsRestResource::GetTangentBuffer(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap)
+{
+	// Lazy allocation and update
+	if (TangentBuffer.Buffer == nullptr)
+	{
+		const uint32 VertexCount = RenderData.Positions.Num();
+		InternalCreateVertexBufferRDG<FHairStrandsTangentFormat>(GraphBuilder, VertexCount * FHairStrandsTangentFormat::ComponentCount, TangentBuffer, TEXT("Hair.StrandsRest_TangentBuffer"));
+
+		AddHairTangentPass(
+			GraphBuilder,
+			ShaderMap,
+			VertexCount,
+			nullptr,
+			RegisterAsSRV(GraphBuilder, PositionBuffer),
+			Register(GraphBuilder, TangentBuffer, ERDGImportedBufferFlags::CreateUAV));
+	}
+
+	return TangentBuffer;
 }
 
 void FHairStrandsRestResource::ReleaseRHI()
 {
-	RestPositionBuffer.Release();
+	PositionBuffer.Release();
+	PositionOffsetBuffer.Release();
 	AttributeBuffer.Release();
 	MaterialBuffer.Release();
+	TangentBuffer.Release();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-FHairStrandsDeformedResource::FHairStrandsDeformedResource(const FHairStrandsDatas::FRenderData& HairStrandRenderData, bool bInInitializedData, bool bInDynamic, const FVector& InDefaultOffset) :
-	RenderData(HairStrandRenderData), bInitializedData(bInInitializedData), bDynamic(bInDynamic), DefaultOffset(InDefaultOffset)
+FHairStrandsDeformedResource::FHairStrandsDeformedResource(const FHairStrandsDatas::FRenderData& HairStrandRenderData, bool bInInitializedData, const FVector& InDefaultOffset) :
+	RenderData(HairStrandRenderData), bInitializedData(bInInitializedData), DefaultOffset(InDefaultOffset)
 {}
 
 void FHairStrandsDeformedResource::InitRHI()
@@ -566,18 +582,12 @@ void FHairStrandsDeformedResource::InitRHI()
 	if (bInitializedData)
 	{
 		InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, RenderData.Positions, DeformedPositionBuffer[0], TEXT("Hair.StrandsDeformed_DeformedPositionBuffer0")); // , bDynamic ? ERHIAccess::UAVCompute : ERHIAccess::SRVMask
-		if (bDynamic)
-		{
-			InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, RenderData.Positions, DeformedPositionBuffer[1], TEXT("Hair.StrandsDeformed_DeformedPositionBuffer1")); // , ERHIAccess::UAVCompute
-		}
+		InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, RenderData.Positions, DeformedPositionBuffer[1], TEXT("Hair.StrandsDeformed_DeformedPositionBuffer1")); // , ERHIAccess::UAVCompute
 	}
 	else
 	{
 		InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, VertexCount, DeformedPositionBuffer[0], TEXT("Hair.StrandsDeformed_DeformedPositionBuffer0"));
-		if (bDynamic)
-		{
-			InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, VertexCount, DeformedPositionBuffer[1], TEXT("Hair.StrandsDeformed_DeformedPositionBuffer1"));
-		}
+		InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, VertexCount, DeformedPositionBuffer[1], TEXT("Hair.StrandsDeformed_DeformedPositionBuffer1"));
 	}
 	InternalCreateVertexBufferRDG<FHairStrandsTangentFormat>(GraphBuilder, VertexCount * FHairStrandsTangentFormat::ComponentCount, TangentBuffer, TEXT("Hair.StrandsDeformed_TangentBuffer"));
 
@@ -592,28 +602,11 @@ void FHairStrandsDeformedResource::InitRHI()
 void FHairStrandsDeformedResource::ReleaseRHI()
 {
 	DeformedPositionBuffer[0].Release();
-	if (bDynamic)
-	{
-		DeformedPositionBuffer[1].Release();
-	}
+	DeformedPositionBuffer[1].Release();
 	TangentBuffer.Release();
 
 	DeformedOffsetBuffer[0].Release();
 	DeformedOffsetBuffer[1].Release();
-}
-
-bool FHairStrandsDeformedResource::NeedsToUpdateTangent()
-{ 
-	if (bDynamic)
-	{
-		return true;
-	}
-	else
-	{ 
-		const bool bInit = bInitializedTangent;
-		bInitializedTangent = false;
-		return bInit;
-	} 
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////

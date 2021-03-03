@@ -727,13 +727,13 @@ static void AddDrawDebugCardsGuidesPass(
 	Parameters->SimVertexCount = Instance->Guides.RestResource->GetVertexCount();
 
 	Parameters->RenRestOffset = LOD.Guides.RestResource->PositionOffset;
-	Parameters->RenRestPosition = RegisterAsSRV(GraphBuilder, LOD.Guides.RestResource->RestPositionBuffer);
+	Parameters->RenRestPosition = RegisterAsSRV(GraphBuilder, LOD.Guides.RestResource->PositionBuffer);
 
 	Parameters->RenDeformedOffset = LOD.Guides.DeformedResource->GetPositionOffset(FHairStrandsDeformedResource::Current);
 	Parameters->RenDeformedPosition = RegisterAsSRV(GraphBuilder, LOD.Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current));
 
 	Parameters->SimRestOffset = Instance->Guides.RestResource->PositionOffset;
-	Parameters->SimRestPosition = RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->RestPositionBuffer);
+	Parameters->SimRestPosition = RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->PositionBuffer);
 
 	Parameters->SimDeformedOffset = Instance->Guides.DeformedResource->GetPositionOffset(FHairStrandsDeformedResource::Current);
 	Parameters->SimDeformedPosition = RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current));
@@ -826,13 +826,10 @@ void RunHairStrandsDebug(
 			for (FHairGroupInstance* Instance : Instances)
 			{
 				const bool bIsActive = Instance->WorldType == WorldType;
-				const bool bHasSkinInterpolation = Instance->Strands.RestRootResource != nullptr;
-				const bool bHasBindingAsset = bHasSkinInterpolation && !Instance->Strands.bOwnRootResourceAllocation;
-
 				if (!bIsActive)
 					continue;
 
-				Line = FString::Printf(TEXT(" * Group:%d/%d | LOD:%1.1f/%d | GeometryType:%s | BindingType:%s | Sim:%d | RBF:%d | VertexCount:%d | Name: %s"),
+				Line = FString::Printf(TEXT(" * Group:%d/%d | LOD:%1.2f/%d | GeometryType:%s | BindingType:%s | Sim:%d | RBF:%d | VertexCount:%d | Name: %s"),
 					Instance->Debug.GroupIndex,
 					Instance->Debug.GroupCount,
 
@@ -841,8 +838,8 @@ void RunHairStrandsDebug(
 
 					ToString(Instance->GeometryType),
 					ToString(Instance->BindingType),
-					0, // TODO: Instance->bHasSimulation,
-					0, // TODO: Instance->bHasRBF,
+					Instance->Guides.bIsSimulationEnable,
+					Instance->Guides.bHasGlobalInterpolation,
 					Instance->HairGroupPublicData->VertexCount,
 					*Instance->Debug.GroomAssetName);
 				Canvas.DrawShadowedString(X, Y += YStep, *Line, GetStatsFont(), bIsActive ? DebugGroupColor : InactiveColor);

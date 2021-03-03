@@ -23,9 +23,6 @@
 #include "GroomManager.h"
 #include "GroomInstance.h"
 
-static int32 GHairDeformationType = 0;
-static FAutoConsoleVariableRef CVarHairDeformationType(TEXT("r.HairStrands.DeformationType"), GHairDeformationType, TEXT("Type of procedural deformation applied on hair strands (0:use simulation's output, 1:use rest strands, 2: use rest guides, 3:wave pattern, 4:follow root normal)"));
-
 static float GHairRaytracingRadiusScale = 0;
 static FAutoConsoleVariableRef CVarHairRaytracingRadiusScale(TEXT("r.HairStrands.RaytracingRadiusScale"), GHairRaytracingRadiusScale, TEXT("Override the per instance scale factor for raytracing hair strands geometry (0: disabled, >0:enabled)"));
 
@@ -57,8 +54,6 @@ EHairCardsSimulationType GetHairCardsSimulationType()
 		EHairCardsSimulationType::RBF : 
 		(GHairCardsInterpolationType >= 1 ? EHairCardsSimulationType::Guide : EHairCardsSimulationType::None);
 }
-
-bool IsHairLODSimulationEnabled(const int32 LODIndex);
 
 bool NeedsUpdateCardsMeshTriangles()
 {
@@ -104,26 +99,9 @@ inline uint32 GetGroupSizePermutation(uint32 GroupSize)
 enum class EDeformationType : uint8
 {
 	Simulation,		// Use the output of the hair simulation
-	RestStrands,	// Use the rest strands position (no weighted interpolation)
 	RestGuide,		// Use the rest guide as input of the interpolation (no deformation), only weighted interpolation
-	Wave,			// Apply a wave pattern to deform the guides
-	NormalDirection,// Apply a stretch pattern aligned with the guide root's normal
 	OffsetGuide		// Offset the guides
 };
-
-static EDeformationType GetDeformationType()
-{
-	switch (GHairDeformationType)
-	{
-	case 0: return EDeformationType::Simulation;
-	case 1: return EDeformationType::RestStrands;
-	case 2: return EDeformationType::RestGuide;
-	case 3: return EDeformationType::Wave;
-	case 4: return EDeformationType::NormalDirection;
-	}
-
-	return EDeformationType::Simulation;
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 class FTransferVelocityPassCS : public FGlobalShader
@@ -185,12 +163,11 @@ class FDeformGuideCS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FDeformGuideCS, FGlobalShader);
 
 	class FGroupSize : SHADER_PERMUTATION_INT("PERMUTATION_GROUP_SIZE", 2);
-	class FDeformationType : SHADER_PERMUTATION_INT("PERMUTATION_DEFORMATION", 6);
+	class FDeformationType : SHADER_PERMUTATION_INT("PERMUTATION_DEFORMATION", 4);
 	using FPermutationDomain = TShaderPermutationDomain<FGroupSize, FDeformationType>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(uint32, VertexCount)
-		SHADER_PARAMETER(uint32, IterationCount)
 		SHADER_PARAMETER(FVector, SimRestOffset)
 		SHADER_PARAMETER(uint32, DispatchCountX)
 
@@ -234,19 +211,23 @@ static void AddDeformSimHairStrandsPass(
 	FRDGBufferSRVRef SimDeformedOffsetBuffer,
 	const bool bHasGlobalInterpolation)
 {
-	static uint32 IterationCount = 0;
-	++IterationCount;
+	enum EInternalDeformationType
+	{
+		InternalDeformationType_ByPass = 0,
+		InternalDeformationType_Offset = 1,
+		InternalDeformationType_Skinned = 2,
+		InternalDeformationType_RBF = 3,
+		InternalDeformationTypeCount
+	};
 
-	int32 InternalDeformationType = -1;
+	EInternalDeformationType InternalDeformationType = InternalDeformationTypeCount;
 	switch (DeformationType)
 	{
-	case EDeformationType::RestGuide: InternalDeformationType = 0; break;
-	case EDeformationType::Wave: InternalDeformationType = 1; break;
-	case EDeformationType::NormalDirection: InternalDeformationType = 2; break;
-	case EDeformationType::OffsetGuide : InternalDeformationType = 3; break;
+	case EDeformationType::RestGuide   : InternalDeformationType = InternalDeformationType_ByPass; break;
+	case EDeformationType::OffsetGuide : InternalDeformationType = InternalDeformationType_Offset; break;
 	}
 
-	if (InternalDeformationType < 0) return;
+	if (InternalDeformationType == InternalDeformationTypeCount) return;
 
 	const uint32 GroupSize = ComputeGroupSize();
 	const uint32 DispatchCount = FMath::DivideAndRoundUp(VertexCount, GroupSize);
@@ -257,7 +238,6 @@ static void AddDeformSimHairStrandsPass(
 	Parameters->SimRestPosePositionBuffer = SimRestPosePositionBuffer;
 	Parameters->OutSimDeformedPositionBuffer = OutSimDeformedPositionBuffer.UAV;
 	Parameters->VertexCount = VertexCount;
-	Parameters->IterationCount = IterationCount % 10000;
 	Parameters->SimDeformedOffsetBuffer = SimDeformedOffsetBuffer;
 	Parameters->SimRestOffset = SimRestOffset;
 	Parameters->DispatchCountX = DispatchCountX;
@@ -289,7 +269,7 @@ static void AddDeformSimHairStrandsPass(
 			bSupportGlobalInterpolation = bHasGlobalInterpolation && (RestLODDatas.SampleCount > 0);
 			if (!bSupportGlobalInterpolation) 
 			{
-				InternalDeformationType = 4;
+				InternalDeformationType = InternalDeformationType_Skinned;
 				Parameters->SimRestPosition0Buffer = RegisterAsSRV(GraphBuilder, RestLODDatas.RestRootTrianglePosition0Buffer);
 				Parameters->SimRestPosition1Buffer = RegisterAsSRV(GraphBuilder, RestLODDatas.RestRootTrianglePosition1Buffer);
 				Parameters->SimRestPosition2Buffer = RegisterAsSRV(GraphBuilder, RestLODDatas.RestRootTrianglePosition2Buffer);
@@ -302,7 +282,7 @@ static void AddDeformSimHairStrandsPass(
 			}
 			else
 			{
-				InternalDeformationType = 5;
+				InternalDeformationType = InternalDeformationType_RBF;
 				Parameters->MeshSampleWeightsBuffer = RegisterAsSRV(GraphBuilder, DeformedLODDatas.MeshSampleWeightsBuffer);
 				Parameters->RestSamplePositionsBuffer = RegisterAsSRV(GraphBuilder, RestLODDatas.RestSamplePositionsBuffer);
 				Parameters->SampleCount = RestLODDatas.SampleCount;
@@ -470,18 +450,26 @@ public:
 
 IMPLEMENT_GLOBAL_SHADER(FHairInterpolationCS, "/Engine/Private/HairStrands/HairStrandsInterpolation.usf", "MainCS", SF_Compute);
 
+// AddHairStrandsInterpolationPass takes in input
+// * Guide resources (optional)
+// * Guide root triangles (optional)
+// * Strands resources
+// * Strands root triangles (optional)
+// 
+// This functions is in charge of deforming the rendering strands (OutRenderPositionBuffer) based on the guides
+// The guides are either the result of a simulation deformation, or a global interpolation deformation (aka RBF deformation), or both
 static void AddHairStrandsInterpolationPass(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
 	const FShaderDrawDebugData* ShaderDrawData,
-	FHairGroupInstance* Instance,
+	const FHairGroupInstance* Instance,
 	const uint32 VertexCount,
 	const FHairScaleAndClipDesc ScaleAndClipDesc,
 	const int32 MeshLODIndex,
-	const bool bPatchedAttributeBuffer, 	
-	const uint32 HairInterpolationType,
+	const bool bPatchedAttributeBuffer,
+	const EHairInterpolationType HairInterpolationType,
 	const EHairGeometryType InstanceGeometryType,
-	FRDGHairStrandsCullingData& CullingData,
+	const FRDGHairStrandsCullingData& CullingData,
 	const FVector& InRenderHairWorldOffset,
 	const FVector& InSimHairWorldOffset,
 	const FRDGBufferSRVRef& OutRenHairPositionOffsetBuffer,
@@ -535,16 +523,20 @@ static void AddHairStrandsInterpolationPass(
 	Parameters->HairLengthClipEnable = ScaleAndClipDesc.IsEnable() ? 1 : 0;
 	Parameters->AttributeBuffer = RenderAttributeBuffer;	
 	
-	const bool bIsVertexToCurveBuffersValid =
+	const bool bIsVertexToCurveBuffersValid_Sim =
 		SimRestRootResources &&
-		SimRestRootResources->VertexToCurveIndexBuffer.Buffer != nullptr &&
+		SimRestRootResources->VertexToCurveIndexBuffer.Buffer != nullptr;
+	if (bIsVertexToCurveBuffersValid_Sim)
+	{
+		Parameters->SimVertexToRootIndexBuffer = RegisterAsSRV(GraphBuilder, SimRestRootResources->VertexToCurveIndexBuffer);
+	}
+
+	const bool bIsVertexToCurveBuffersValid_Ren =
 		RenRestRootResources &&
 		RenRestRootResources->VertexToCurveIndexBuffer.Buffer != nullptr;
-
-	if (bIsVertexToCurveBuffersValid)
+	if (bIsVertexToCurveBuffersValid_Ren)
 	{
 		Parameters->RenVertexToRootIndexBuffer = RegisterAsSRV(GraphBuilder, RenRestRootResources->VertexToCurveIndexBuffer);
-		Parameters->SimVertexToRootIndexBuffer = RegisterAsSRV(GraphBuilder, SimRestRootResources->VertexToCurveIndexBuffer);
 	}
 
 	Parameters->VertexToClusterIdBuffer = VertexToClusterIdBuffer;
@@ -555,7 +547,7 @@ static void AddHairStrandsInterpolationPass(
 	Parameters->HairDebugMode = 0;
 	{
 		const FHairCullInfo Info = GetHairStrandsCullInfo();
-		const bool bCullingEnable = Info.CullMode != EHairCullMode::None && bIsVertexToCurveBuffersValid;
+		const bool bCullingEnable = Info.CullMode != EHairCullMode::None && bIsVertexToCurveBuffersValid_Ren;
 
 		if (bPatchedAttributeBuffer && OutRenderAttributeBuffer)
 		{
@@ -589,7 +581,7 @@ static void AddHairStrandsInterpolationPass(
 	}
 
 	const bool bSupportDynamicMesh = 
-		bIsVertexToCurveBuffersValid &&
+		bIsVertexToCurveBuffersValid_Ren &&
 		RenRestRootResources &&
 		RenRestRootResources->RootData.RootCount > 0 && 
 		MeshLODIndex >= 0 && 
@@ -598,22 +590,14 @@ static void AddHairStrandsInterpolationPass(
 		RenRestRootResources->LODs[MeshLODIndex].IsValid() &&
 		RenDeformedRootResources->LODs[MeshLODIndex].IsValid();
 
+	// Guides
 	bool bSupportGlobalInterpolation = false;
-	if (bSupportDynamicMesh)
+	if (bSupportDynamicMesh && (Instance->Guides.bIsSimulationEnable || Instance->Guides.bHasGlobalInterpolation))
 	{
 		const FHairStrandsRestRootResource::FLOD& Sim_RestLODDatas = SimRestRootResources->LODs[MeshLODIndex];
-		const FHairStrandsRestRootResource::FLOD& Ren_RestLODDatas = RenRestRootResources->LODs[MeshLODIndex];
-		const FHairStrandsDeformedRootResource::FLOD& Sim_DeformedLODDatas = SimDeformedRootResources->LODs[MeshLODIndex];
-		const FHairStrandsDeformedRootResource::FLOD& Ren_DeformedLODDatas = RenDeformedRootResources->LODs[MeshLODIndex];
-
+		const FHairStrandsDeformedRootResource::FLOD& Sim_DeformedLODDatas = SimDeformedRootResources->LODs[MeshLODIndex];\
 		bSupportGlobalInterpolation = Instance->Guides.bHasGlobalInterpolation && (Sim_RestLODDatas.SampleCount > 0);
 		{
-			Parameters->RestPosition0Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestRootTrianglePosition0Buffer);
-			Parameters->RestPosition1Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestRootTrianglePosition1Buffer);
-			Parameters->RestPosition2Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestRootTrianglePosition2Buffer);
-
-			Parameters->RootBarycentricBuffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RootTriangleBarycentricBuffer);
-
 			Parameters->SimRestPosition0Buffer = RegisterAsSRV(GraphBuilder, Sim_RestLODDatas.RestRootTrianglePosition0Buffer);
 			Parameters->SimRestPosition1Buffer = RegisterAsSRV(GraphBuilder, Sim_RestLODDatas.RestRootTrianglePosition1Buffer);
 			Parameters->SimRestPosition2Buffer = RegisterAsSRV(GraphBuilder, Sim_RestLODDatas.RestRootTrianglePosition2Buffer);
@@ -621,13 +605,27 @@ static void AddHairStrandsInterpolationPass(
 			Parameters->SimRootBarycentricBuffer = RegisterAsSRV(GraphBuilder, Sim_RestLODDatas.RootTriangleBarycentricBuffer);
 		}
 		{
-			Parameters->DeformedPosition0Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.DeformedRootTrianglePosition0Buffer);
-			Parameters->DeformedPosition1Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.DeformedRootTrianglePosition1Buffer);
-			Parameters->DeformedPosition2Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.DeformedRootTrianglePosition2Buffer);
-
 			Parameters->SimDeformedPosition0Buffer = RegisterAsSRV(GraphBuilder, Sim_DeformedLODDatas.DeformedRootTrianglePosition0Buffer);
 			Parameters->SimDeformedPosition1Buffer = RegisterAsSRV(GraphBuilder, Sim_DeformedLODDatas.DeformedRootTrianglePosition1Buffer);
 			Parameters->SimDeformedPosition2Buffer = RegisterAsSRV(GraphBuilder, Sim_DeformedLODDatas.DeformedRootTrianglePosition2Buffer);
+		}
+	}
+
+	// Strands
+	if (bSupportDynamicMesh)
+	{
+		const FHairStrandsRestRootResource::FLOD& Ren_RestLODDatas = RenRestRootResources->LODs[MeshLODIndex];
+		const FHairStrandsDeformedRootResource::FLOD& Ren_DeformedLODDatas = RenDeformedRootResources->LODs[MeshLODIndex];
+		{
+			Parameters->RestPosition0Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestRootTrianglePosition0Buffer);
+			Parameters->RestPosition1Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestRootTrianglePosition1Buffer);
+			Parameters->RestPosition2Buffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RestRootTrianglePosition2Buffer);
+			Parameters->RootBarycentricBuffer = RegisterAsSRV(GraphBuilder, Ren_RestLODDatas.RootTriangleBarycentricBuffer);
+		}
+		{
+			Parameters->DeformedPosition0Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.DeformedRootTrianglePosition0Buffer);
+			Parameters->DeformedPosition1Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.DeformedRootTrianglePosition1Buffer);
+			Parameters->DeformedPosition2Buffer = RegisterAsSRV(GraphBuilder, Ren_DeformedLODDatas.DeformedRootTrianglePosition2Buffer);
 		}
 	}
 
@@ -636,16 +634,32 @@ static void AddHairStrandsInterpolationPass(
 		ShaderDrawDebug::SetParameters(GraphBuilder, *ShaderDrawData, Parameters->ShaderDrawParameters);
 	}
 
-	const bool bUseSingleGuide = GHairStrandsUseSingleGuideInterpolation > 0;
-	const bool bHasLocalDeformation = (Instance->Guides.bIsSimulationEnable && ((MeshLODIndex < 0) || ((MeshLODIndex >= 0) && IsHairLODSimulationEnabled(MeshLODIndex)))) || bSupportGlobalInterpolation;
-	const bool bCullingEnable = InstanceGeometryType == EHairGeometryType::Strands && CullingData.bCullingResultAvailable;
+	const bool bUseSingleGuide		= GHairStrandsUseSingleGuideInterpolation > 0;
+	const bool bHasLocalDeformation = Instance->Guides.bIsSimulationEnable || bSupportGlobalInterpolation;
+	const bool bCullingEnable		= InstanceGeometryType == EHairGeometryType::Strands && CullingData.bCullingResultAvailable;
 	Parameters->HairStrandsVF_bIsCullingEnable = bCullingEnable ? 1 : 0;
+
+	// Select dynamic geometry permutation, based on the Simulation/RBF/InterpolationType
+	int32 DynamicGeometryType = 0;
+	{
+		switch (HairInterpolationType)
+		{
+		case EHairInterpolationType::NoneSkinning			: DynamicGeometryType = 0; break; // INTERPOLATION_RIGID
+		case EHairInterpolationType::RigidSkinning			: DynamicGeometryType = 1; break; // INTERPOLATION_SKINNING_OFFSET
+		case EHairInterpolationType::OffsetSkinning			: DynamicGeometryType = 2; break; // INTERPOLATION_SKINNING_TRANSLATION
+		case EHairInterpolationType::SmoothSkinning			: DynamicGeometryType = 3; break; // INTERPOLATION_SKINNING_ROTATION
+		//case EHairInterpolationType::SmoothOffsetSkinning	: DynamicGeometryType = 4; break; // INTERPOLATION_SKINNING_TRANSLATION_AND_ROTATION - Experimental, not used
+		}		
+
+		if ( bSupportDynamicMesh && !bHasLocalDeformation) DynamicGeometryType = 1; // INTERPOLATION_SKINNING_OFFSET
+		if (!bSupportDynamicMesh && !bHasLocalDeformation) DynamicGeometryType = 0; // INTERPOLATION_RIGID
+		if (!bSupportDynamicMesh &&  bHasLocalDeformation) DynamicGeometryType = 0; // INTERPOLATION_RIGID
+	}
 
 	FHairInterpolationCS::FPermutationDomain PermutationVector;
 	PermutationVector.Set<FHairInterpolationCS::FGroupSize>(GroupSize);
 	PermutationVector.Set<FHairInterpolationCS::FDebug>(Parameters->HairDebugMode > 0 ? 1 : 0);
-	PermutationVector.Set<FHairInterpolationCS::FDynamicGeometry>((bSupportDynamicMesh && bHasLocalDeformation) ? HairInterpolationType+1 :
-							(bSupportDynamicMesh && !bHasLocalDeformation) ? 1 : 0);
+	PermutationVector.Set<FHairInterpolationCS::FDynamicGeometry>(DynamicGeometryType);
 	PermutationVector.Set<FHairInterpolationCS::FSimulation>(bHasLocalDeformation ? 1 : 0);
 	PermutationVector.Set<FHairInterpolationCS::FSingleGuide>(bUseSingleGuide ? 1 : 0);
 	PermutationVector.Set<FHairInterpolationCS::FCulling>(bCullingEnable ? 1 : 0);
@@ -736,7 +750,7 @@ static void AddHairClusterAABBPass(
 
 	FRDGHairStrandsCullingData& ClusterAABBData,
 
-	FRDGImportedBuffer& RenderPositionBuffer)
+	FRDGBufferSRVRef RenderPositionBufferSRV)
 {
 	const uint32 GroupSize = ComputeGroupSize();
 	const FIntVector DispatchCount = ComputeDispatchGroupCount2D(ClusterData.ClusterCount);
@@ -748,7 +762,7 @@ static void AddHairClusterAABBPass(
 	Parameters->DispatchCountX = DispatchCount.X;
 	Parameters->ClusterCount = ClusterData.ClusterCount;
 	Parameters->LocalToWorldMatrix = InRenLocalToWorld.ToMatrixWithScale();
-	Parameters->RenderDeformedPositionBuffer = RenderPositionBuffer.SRV;
+	Parameters->RenderDeformedPositionBuffer = RenderPositionBufferSRV;
 	Parameters->RenderDeformedOffsetBuffer = RenderDeformedOffsetBuffer;
 	Parameters->ClusterVertexIdBuffer = RegisterAsSRV(GraphBuilder, *ClusterData.ClusterVertexIdBuffer);
 	Parameters->ClusterIdBuffer = GraphBuilder.CreateSRV(ClusterIdBuffer, PF_R32_UINT);
@@ -835,7 +849,7 @@ static void AddHairCardsDeformationPass(
 	FHairCardsDeformationCS::FParameters* Parameters = GraphBuilder.AllocParameters<FHairCardsDeformationCS::FParameters>();
 	Parameters->GuideVertexCount			= LOD.Guides.RestResource->GetVertexCount();
 	Parameters->GuideRestPositionOffset		= LOD.Guides.RestResource->PositionOffset;
-	Parameters->GuideRestPositionBuffer		= RegisterAsSRV(GraphBuilder, LOD.Guides.RestResource->RestPositionBuffer);
+	Parameters->GuideRestPositionBuffer		= RegisterAsSRV(GraphBuilder, LOD.Guides.RestResource->PositionBuffer);
 	Parameters->GuideDeformedPositionBuffer = RegisterAsSRV(GraphBuilder, LOD.Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current));
 	Parameters->GuideDeformedPositionOffsetBuffer = RegisterAsSRV(GraphBuilder, LOD.Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current));
 	
@@ -927,7 +941,7 @@ public:
 
 IMPLEMENT_GLOBAL_SHADER(FHairTangentCS, "/Engine/Private/HairStrands/HairStrandsTangent.usf", "MainCS", SF_Compute);
 
-static void AddHairTangentPass(
+void AddHairTangentPass(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
 	uint32 VertexCount,
@@ -937,7 +951,7 @@ static void AddHairTangentPass(
 {
 	const uint32 GroupSize = ComputeGroupSize();
 	const FIntVector DispatchCount = ComputeDispatchCount(VertexCount, GroupSize);
-	const bool bCullingEnable = HairGroupPublicData->GetCullingResultAvailable();
+	const bool bCullingEnable = HairGroupPublicData && HairGroupPublicData->GetCullingResultAvailable();
 
 	FHairTangentCS::FParameters* Parameters = GraphBuilder.AllocParameters<FHairTangentCS::FParameters>();
 	Parameters->PositionBuffer = PositionBuffer;
@@ -1163,7 +1177,11 @@ static void BuildHairAccelerationStructure_Cards(FRHICommandList& RHICmdList,
 	Initializer.bFastBuild = true;
 	Initializer.bAllowUpdate = true;
 
-	FBufferRHIRef PositionBuffer(DeformedResource->GetBuffer(FHairCardsDeformedResource::Current).Buffer->GetRHI()); // This will likely flicker result in half speed motion as everyother frame will use the wrong buffer
+	FBufferRHIRef PositionBuffer = RestResource->RestPositionBuffer.VertexBufferRHI;
+	if (DeformedResource)
+	{
+		PositionBuffer = DeformedResource->GetBuffer(FHairCardsDeformedResource::Current).Buffer->GetRHI(); // This will likely flicker result in half speed motion as everyother frame will use the wrong buffer
+	}
 
 	FRayTracingGeometrySegment Segment;
 	Segment.VertexBuffer = PositionBuffer;
@@ -1192,7 +1210,11 @@ static void BuildHairAccelerationStructure_Meshes(FRHICommandList& RHICmdList,
 	Initializer.bFastBuild = true;
 	Initializer.bAllowUpdate = true;
 
-	FBufferRHIRef PositionBuffer(DeformedResource->GetBuffer(FHairMeshesDeformedResource::Current).Buffer->GetRHI()); // This will likely flicker result in half speed motion as everyother frame will use the wrong buffer
+	FBufferRHIRef PositionBuffer = RestResource->RestPositionBuffer.VertexBufferRHI;
+	if (DeformedResource)
+	{	
+		PositionBuffer = DeformedResource->GetBuffer(FHairMeshesDeformedResource::Current).Buffer->GetRHI(); // This will likely flicker result in half speed motion as everyother frame will use the wrong buffer
+	}
 
 	FRayTracingGeometrySegment Segment;
 	Segment.VertexBuffer = PositionBuffer;
@@ -1237,7 +1259,18 @@ void RegisterClusterData(FHairGroupInstance* Instance, FHairStrandClusterData* I
 
 EHairStrandsDebugMode GetHairStrandsGeometryDebugMode(FHairGroupInstance* Instance)
 {
-	return Instance->Debug.DebugMode != EHairStrandsDebugMode::NoneDebug ? Instance->Debug.DebugMode : GetHairStrandsDebugStrandsMode();
+	// 1. Use the per-instance debug mode by default, and fallback on the global debug otherwise
+	EHairStrandsDebugMode DebugMode = Instance->Debug.DebugMode != EHairStrandsDebugMode::NoneDebug ? Instance->Debug.DebugMode : GetHairStrandsDebugStrandsMode();
+
+	// 2. If groom does not have guides (e.g., because it does not have simulation/RBF data), then we fallback to default view mode
+	if ((DebugMode == EHairStrandsDebugMode::SimHairStrands ||
+		 DebugMode == EHairStrandsDebugMode::RenderHairStrands ||
+		 DebugMode == EHairStrandsDebugMode::RenderVisCluster)
+		&& Instance->Guides.Data == nullptr)
+	{
+		DebugMode = EHairStrandsDebugMode::NoneDebug;
+	}
+	return DebugMode;
 }
 
 FHairScaleAndClipDesc ComputeHairScaleAndClipDesc(FHairGroupInstance* Instance)
@@ -1246,11 +1279,22 @@ FHairScaleAndClipDesc ComputeHairScaleAndClipDesc(FHairGroupInstance* Instance)
 	Out.bEnable = true;
 	Out.InHairLength = Instance->Strands.Data->StrandsCurves.MaxLength;
 	Out.InHairRadius = Instance->Strands.Modifier.HairWidth * 0.5f;
-	Out.OutHairRadius = (GStrandHairWidth > 0 ? GStrandHairWidth : Instance->Strands.Modifier.HairWidth) * 0.5f;
-	Out.MaxOutHairRadius = Out.OutHairRadius * FMath::Max(1.f, FMath::Max(Instance->Strands.Modifier.HairRootScale, Instance->Strands.Modifier.HairTipScale));
-	Out.HairRadiusRootScale = Instance->Strands.Modifier.HairRootScale;
-	Out.HairRadiusTipScale = Instance->Strands.Modifier.HairTipScale;
-	Out.HairLengthClip = FMath::Clamp(Instance->Strands.Modifier.HairClipLength / Instance->Strands.Data->StrandsCurves.MaxLength, 0.f, 1.f);
+
+	Out.OutHairRadius = Out.InHairRadius;
+	Out.MaxOutHairRadius = Out.OutHairRadius;
+	Out.HairRadiusRootScale = 1.f;
+	Out.HairRadiusTipScale = 1.f;
+	Out.HairLengthClip = 1.f;
+
+	const bool bSupportDeformation = Instance->Strands.DeformedResource != nullptr;
+	if (bSupportDeformation)
+	{
+		Out.OutHairRadius = (GStrandHairWidth > 0 ? GStrandHairWidth : Instance->Strands.Modifier.HairWidth) * 0.5f;
+		Out.MaxOutHairRadius = Out.OutHairRadius * FMath::Max(1.f, FMath::Max(Instance->Strands.Modifier.HairRootScale, Instance->Strands.Modifier.HairTipScale));
+		Out.HairRadiusRootScale = Instance->Strands.Modifier.HairRootScale;
+		Out.HairRadiusTipScale = Instance->Strands.Modifier.HairTipScale;
+		Out.HairLengthClip = FMath::Clamp(Instance->Strands.Modifier.HairClipLength / Instance->Strands.Data->StrandsCurves.MaxLength, 0.f, 1.f);
+	}
 	
 	return Out;
 }
@@ -1260,6 +1304,7 @@ bool NeedsPatchAttributeBuffer(EHairStrandsDebugMode DebugMode)
 	return DebugMode == EHairStrandsDebugMode::RenderHairStrands || DebugMode == EHairStrandsDebugMode::RenderVisCluster;
 }
 
+// Compute/Update the hair strands description which will be used for rendering (VF) / voxelization & co.
 FHairGroupPublicData::FVertexFactoryInput ComputeHairStrandsVertexInputData(FHairGroupInstance* Instance)
 {
 	FHairGroupPublicData::FVertexFactoryInput OutVFInput;
@@ -1271,8 +1316,12 @@ FHairGroupPublicData::FVertexFactoryInput ComputeHairStrandsVertexInputData(FHai
 	const EHairStrandsDebugMode DebugMode = GetHairStrandsGeometryDebugMode(Instance);
 	const bool bDebugModePatchedAttributeBuffer = NeedsPatchAttributeBuffer(DebugMode);
 
+	const bool bSupportDeformation = Instance->Strands.DeformedResource != nullptr;
+
+	// 1. Guides
 	if (DebugMode == EHairStrandsDebugMode::SimHairStrands)
 	{
+
 		OutVFInput.Strands.PositionBuffer = Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::EFrameType::Current).SRV;
 		OutVFInput.Strands.PrevPositionBuffer = Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::EFrameType::Previous).SRV;
 		OutVFInput.Strands.TangentBuffer = Instance->Guides.DeformedResource->TangentBuffer.SRV;
@@ -1292,8 +1341,10 @@ FHairGroupPublicData::FVertexFactoryInput ComputeHairStrandsVertexInputData(FHai
 		OutVFInput.Strands.bUseStableRasterization = Instance->Strands.Modifier.bUseStableRasterization;
 		OutVFInput.Strands.bScatterSceneLighting = Instance->Strands.Modifier.bScatterSceneLighting;
 	}
-	else
+	// 2. Render Strands with deformation
+	else if (bSupportDeformation)
 	{
+
 		OutVFInput.Strands.PositionBuffer = Instance->Strands.DeformedResource->GetBuffer(FHairStrandsDeformedResource::EFrameType::Current).SRV;
 		OutVFInput.Strands.PrevPositionBuffer = Instance->Strands.DeformedResource->GetBuffer(FHairStrandsDeformedResource::EFrameType::Previous).SRV;
 		OutVFInput.Strands.TangentBuffer = Instance->Strands.DeformedResource->TangentBuffer.SRV;
@@ -1305,6 +1356,28 @@ FHairGroupPublicData::FVertexFactoryInput ComputeHairStrandsVertexInputData(FHai
 
 		OutVFInput.Strands.PositionOffset = Instance->Strands.DeformedResource->GetPositionOffset(FHairStrandsDeformedResource::EFrameType::Current);
 		OutVFInput.Strands.PrevPositionOffset = Instance->Strands.DeformedResource->GetPositionOffset(FHairStrandsDeformedResource::EFrameType::Previous);
+		OutVFInput.Strands.VertexCount = Instance->Strands.RestResource->GetVertexCount();
+		OutVFInput.Strands.HairRadius = ScaleAndClipDesc.MaxOutHairRadius;
+		OutVFInput.Strands.HairLength = Instance->Strands.Modifier.HairLength;
+		OutVFInput.Strands.HairDensity = Instance->Strands.Modifier.HairShadowDensity;
+		OutVFInput.Strands.bScatterSceneLighting = Instance->Strands.Modifier.bScatterSceneLighting;
+		OutVFInput.Strands.bUseStableRasterization = Instance->Strands.Modifier.bUseStableRasterization;
+	}
+	// 3. Render Strands in rest position: used when there are no skinning (rigid binding or no binding), no simulation, and no RBF
+	else
+	{
+
+		OutVFInput.Strands.PositionBuffer = Instance->Strands.RestResource->PositionBuffer.SRV;
+		OutVFInput.Strands.PrevPositionBuffer = Instance->Strands.RestResource->PositionBuffer.SRV;
+		OutVFInput.Strands.TangentBuffer = Instance->Strands.RestResource->TangentBuffer.SRV;
+		OutVFInput.Strands.AttributeBuffer = Instance->Strands.RestResource->AttributeBuffer.SRV;
+		OutVFInput.Strands.MaterialBuffer = Instance->Strands.RestResource->MaterialBuffer.SRV;
+
+		OutVFInput.Strands.PositionOffsetBuffer = Instance->Strands.RestResource->PositionOffsetBuffer.SRV;
+		OutVFInput.Strands.PrevPositionOffsetBuffer = Instance->Strands.RestResource->PositionOffsetBuffer.SRV;
+
+		OutVFInput.Strands.PositionOffset = Instance->Strands.RestResource->PositionOffset;
+		OutVFInput.Strands.PrevPositionOffset = Instance->Strands.RestResource->PositionOffset;
 		OutVFInput.Strands.VertexCount = Instance->Strands.RestResource->GetVertexCount();
 		OutVFInput.Strands.HairRadius = ScaleAndClipDesc.MaxOutHairRadius;
 		OutVFInput.Strands.HairLength = Instance->Strands.Modifier.HairLength;
@@ -1331,65 +1404,36 @@ void ComputeHairStrandsInterpolation(
 	FHairGroupInstance* Instance,
 	int32 MeshLODIndex,
 	FHairStrandClusterData* InClusterData)
-{
-	// Note: We are breaking this code up into several, larger for loops. In the previous version, the typical code path was:
-	// for each group:
-	//     AddClearClusterAABBPass()
-	//     AddHairStrandsInterpolationPass()
-	//     AddHairClusterAABBPass()
-	//     AddHairTangentPass()
-	//     AddGenerateRaytracingGeometryPass()
-	// 
-	// The problem is that it creates bubbles in the GPU, since each pass was dependent on the previous one. So it has been
-	// modified to be of the form:
-	//
-	// for each group:
-	//     AddClearClusterAABBPass()
-	// for each group:
-	//     AddHairStrandsInterpolationPass()
-	// ...
-
-	if (!Instance) return;
+{	
+	if (!Instance)
+	{
+		return;
+	}
 
 	// Reset
 	Instance->HairGroupPublicData->VFInput.Strands	= FHairGroupPublicData::FVertexFactoryInput::FStrands();
 	Instance->HairGroupPublicData->VFInput.Cards	= FHairGroupPublicData::FVertexFactoryInput::FCards();
 	Instance->HairGroupPublicData->VFInput.Meshes	= FHairGroupPublicData::FVertexFactoryInput::FMeshes();
-	const EHairGeometryType InstanceGeometryType = Instance->GeometryType;
+	const EHairGeometryType InstanceGeometryType	= Instance->GeometryType;
 
-	DECLARE_GPU_STAT(HairStrandsInterpolation);
-	RDG_EVENT_SCOPE(GraphBuilder, "HairStrandsInterpolation");
-	RDG_GPU_STAT_SCOPE(GraphBuilder, HairStrandsInterpolation);
 
-	// Debug mode:
-	// * None	: Display hair normally
-	// * Sim	: Show sim strands
-	// * Render : Show rendering strands with sim color influence
-	const EDeformationType DeformationType = GetDeformationType();
-	const EHairStrandsDebugMode DebugMode = GetHairStrandsGeometryDebugMode(Instance);
-	const bool bDebugModePatchedAttributeBuffer = NeedsPatchAttributeBuffer(DebugMode);
-
-	if (DeformationType != EDeformationType::RestStrands && DeformationType != EDeformationType::Simulation)
+	if (InstanceGeometryType == EHairGeometryType::Strands)
 	{
-		AddDeformSimHairStrandsPass(
-			GraphBuilder,
-			ShaderMap,
-			DeformationType,
-			MeshLODIndex,
-			Instance->Guides.RestResource->GetVertexCount(),
-			Instance->Guides.RestRootResource,
-			Instance->Guides.DeformedRootResource,
-			RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->RestPositionBuffer),
-			Register(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current), ERDGImportedBufferFlags::CreateUAV),
-			Instance->Guides.RestResource->PositionOffset,
-			RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current)),
-			Instance->Guides.bHasGlobalInterpolation);
-	}
+		DECLARE_GPU_STAT(HairStrandsInterpolation);
+		RDG_EVENT_SCOPE(GraphBuilder, "HairStrandsInterpolation");
+		RDG_GPU_STAT_SCOPE(GraphBuilder, HairStrandsInterpolation);
 
-	if (DebugMode == EHairStrandsDebugMode::SimHairStrands && InstanceGeometryType == EHairGeometryType::Strands)
-	{
-		if (Instance->Guides.DeformedResource->NeedsToUpdateTangent())
+		// Debug mode:
+		// * None	: Display hair normally
+		// * Sim	: Show sim strands
+		// * Render : Show rendering strands with sim color influence
+		const EHairStrandsDebugMode DebugMode = GetHairStrandsGeometryDebugMode(Instance);
+		const bool bDebugModePatchedAttributeBuffer = NeedsPatchAttributeBuffer(DebugMode);
+		const FHairScaleAndClipDesc ScaleAndClipDesc = ComputeHairScaleAndClipDesc(Instance);
+
+		if (DebugMode == EHairStrandsDebugMode::SimHairStrands)
 		{
+			check(Instance->Guides.DeformedResource);
 			AddHairTangentPass(
 				GraphBuilder,
 				ShaderMap,
@@ -1397,46 +1441,49 @@ void ComputeHairStrandsInterpolation(
 				Instance->HairGroupPublicData,
 				RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current)),
 				Register(GraphBuilder, Instance->Guides.DeformedResource->TangentBuffer, ERDGImportedBufferFlags::CreateUAV));
+
+			Instance->HairGroupPublicData->VFInput = ComputeHairStrandsVertexInputData(Instance);
 		}
-
-		Instance->HairGroupPublicData->VFInput = ComputeHairStrandsVertexInputData(Instance);
-	}
-	else if (InstanceGeometryType == EHairGeometryType::Strands)
-	{
-
-		FRDGHairStrandsCullingData CullingData = ImportCullingData(GraphBuilder, Instance->HairGroupPublicData);
-
+		else
 		{
+			const bool bNeedDeformation = Instance->Strands.DeformedResource != nullptr;
+
+			// 1. Clear cluster AABBs (use for voxel allocation & optionally for culling)
+			FRDGHairStrandsCullingData CullingData = ImportCullingData(GraphBuilder, Instance->HairGroupPublicData);
 			AddClearClusterAABBPass(
 				GraphBuilder,
 				ShaderMap,
 				CullingData.ClusterCount,
 				CullingData.ClusterAABBBuffer,
 				CullingData.GroupAABBBuffer);
-		}
 
-		FRDGImportedBuffer Strands_DeformedPosition		= Register(GraphBuilder, Instance->Strands.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current), ERDGImportedBufferFlags::CreateViews);
-		FRDGImportedBuffer Strands_DeformedPrevPosition = Register(GraphBuilder, Instance->Strands.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Previous), ERDGImportedBufferFlags::CreateViews);
-		FRDGImportedBuffer Strands_DeformedTangent		= Register(GraphBuilder, Instance->Strands.DeformedResource->TangentBuffer, ERDGImportedBufferFlags::CreateViews);		
-		#if WITH_EDITOR
-		FRDGImportedBuffer Strands_DebugAttributeReg	= Register(GraphBuilder, Instance->Strands.DebugAttributeBuffer, ERDGImportedBufferFlags::CreateUAV);
-		FRDGImportedBuffer*Strands_DebugAttribute		= &Strands_DebugAttributeReg;
-		#else
-		FRDGImportedBuffer*Strands_DebugAttribute		= nullptr;
-		#endif
-
-		// Note: This code needs to exactly match the values FHairScaleAndClipDesc set int the previous loop.
-		const FHairScaleAndClipDesc ScaleAndClipDesc = ComputeHairScaleAndClipDesc(Instance);
-		Instance->HairGroupPublicData->VFInput = ComputeHairStrandsVertexInputData(Instance);
-		{
+			// 2. Deform hair if needed (e.g.: skinning, simulation, RBF) and recompute tangent
+			FRDGBufferSRVRef Strands_PositionSRV = nullptr;
+			FRDGBufferSRVRef Strands_PositionOffsetSRV = nullptr;
+			if (bNeedDeformation)
 			{
+				FRDGImportedBuffer Strands_DeformedPosition = Register(GraphBuilder, Instance->Strands.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current), ERDGImportedBufferFlags::CreateViews);
+				FRDGImportedBuffer Strands_DeformedPrevPosition = Register(GraphBuilder, Instance->Strands.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Previous), ERDGImportedBufferFlags::CreateViews);
+				FRDGImportedBuffer Strands_DeformedTangent = Register(GraphBuilder, Instance->Strands.DeformedResource->TangentBuffer, ERDGImportedBufferFlags::CreateViews);
+			#if WITH_EDITOR
+				FRDGImportedBuffer Strands_DebugAttributeReg = Register(GraphBuilder, Instance->Strands.DebugAttributeBuffer, ERDGImportedBufferFlags::CreateUAV);
+				FRDGImportedBuffer* Strands_DebugAttribute = &Strands_DebugAttributeReg;
+			#else
+				FRDGImportedBuffer* Strands_DebugAttribute = nullptr;
+			#endif
+				Strands_PositionSRV = Strands_DeformedPosition.SRV;
+				Strands_PositionOffsetSRV = RegisterAsSRV(GraphBuilder, Instance->Strands.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::EFrameType::Current));
+
+				// "WITH_EDITOR && bDebugModePatchedAttributeBuffer" is a special path when visualizing groom within the groom editor, so that we can diplay guides even when there is no simulation or global interpolation enabled
+				const bool bValidGuide = Instance->Guides.bIsSimulationEnable || Instance->Guides.bHasGlobalInterpolation || (WITH_EDITOR && bDebugModePatchedAttributeBuffer);
 				const bool bHasSkinning = Instance->BindingType == EHairBindingType::Skinning;
 
+				// 2.1 Compute deformation position based on simulation/skinning/RBF
 				AddHairStrandsInterpolationPass(
 					GraphBuilder,
 					ShaderMap,
 					ShaderDrawData,
-					Instance, 
+					Instance,
 					Instance->Strands.RestResource->GetVertexCount(),
 					ScaleAndClipDesc,
 					MeshLODIndex,
@@ -1445,31 +1492,49 @@ void ComputeHairStrandsInterpolation(
 					InstanceGeometryType,
 					CullingData,
 					Instance->Strands.RestResource->PositionOffset,
-					Instance->Guides.RestResource->PositionOffset,
-					RegisterAsSRV(GraphBuilder, Instance->Strands.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current)),
-					RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current)),
+					bValidGuide ? Instance->Guides.RestResource->PositionOffset : FVector::ZeroVector,
+					Strands_PositionOffsetSRV,
+					bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current)) : nullptr,
 					bHasSkinning ? Instance->Strands.RestRootResource : nullptr,
-					bHasSkinning ? Instance->Guides.RestRootResource : nullptr,
+					bHasSkinning && bValidGuide ? Instance->Guides.RestRootResource : nullptr,
 					bHasSkinning ? Instance->Strands.DeformedRootResource : nullptr,
-					bHasSkinning ? Instance->Guides.DeformedRootResource : nullptr,
-					RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->RestPositionBuffer),
+					bHasSkinning && bValidGuide ? Instance->Guides.DeformedRootResource : nullptr,
+					RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->PositionBuffer),
 					RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->AttributeBuffer),
 					RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->Interpolation0Buffer),
 					RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->Interpolation1Buffer),
-					RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->RestPositionBuffer),
-					RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current)),
-					RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->AttributeBuffer),
+					bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->PositionBuffer) : nullptr,
+					bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current)) : nullptr,
+					bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->AttributeBuffer) : nullptr,
 					Strands_DeformedPosition,
-					&Strands_DeformedPrevPosition, 
+					&Strands_DeformedPrevPosition,
 					Strands_DebugAttribute,
 					RegisterAsSRV(GraphBuilder, Instance->Strands.ClusterCullingResource->VertexToClusterIdBuffer),
 					RegisterAsSRV(GraphBuilder, Instance->Strands.InterpolationResource->SimRootPointIndexBuffer));
 
+				// 2.2 Update tangent data based on the deformed positions
+				AddHairTangentPass(
+					GraphBuilder,
+					ShaderMap,
+					Instance->Strands.RestResource->GetVertexCount(),
+					Instance->HairGroupPublicData,
+					Strands_DeformedPosition.SRV,
+					Strands_DeformedTangent);
 			}
-		}
+			else
+			{
+				Strands_PositionSRV = RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->PositionBuffer);
+				Strands_PositionOffsetSRV = RegisterAsSRV(GraphBuilder, Instance->Strands.RestResource->PositionOffsetBuffer);
+				// Generated the static tangent if they haven;t been generated yet
+				Instance->Strands.RestResource->GetTangentBuffer(GraphBuilder, ShaderMap);
 
-		{		
-			FHairStrandClusterData::FHairGroup& HairGroupCluster =  InClusterData->HairGroups[Instance->HairGroupPublicData->ClusterDataIndex];
+			}
+
+			// 2.1 Update the VF input with the update resources
+			Instance->HairGroupPublicData->VFInput = ComputeHairStrandsVertexInputData(Instance);
+
+			// 3. Compute cluster AABBs (used for LODing and voxelization)
+			FHairStrandClusterData::FHairGroup& HairGroupCluster = InClusterData->HairGroups[Instance->HairGroupPublicData->ClusterDataIndex];
 			if (HairGroupCluster.bVisible)
 			{
 				// Optim: If an instance is using CPU selection and does not voxelize it's data, then there is no need for having valid AABB
@@ -1481,152 +1546,169 @@ void ComputeHairStrandsInterpolation(
 						GraphBuilder,
 						ShaderMap,
 						Instance->LocalToWorld,
-						RegisterAsSRV(GraphBuilder, Instance->Strands.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::EFrameType::Current)),
+						Strands_PositionOffsetSRV,
 						HairGroupCluster,
 						CullingData,
-						Strands_DeformedPosition);
+						Strands_PositionSRV);
 				}
 			}
-		}
 
-		if (Instance->Strands.DeformedResource->NeedsToUpdateTangent())
-		{
-			AddHairTangentPass(
-				GraphBuilder,
-				ShaderMap,
-				Instance->Strands.RestResource->GetVertexCount(),
-				Instance->HairGroupPublicData,
-				Strands_DeformedPosition.SRV,
-				Strands_DeformedTangent);
-		}
-
-		#if RHI_RAYTRACING
-		if (Instance->Strands.RenRaytracingResource)
-		{
-			const float HairRadiusScaleRT = (GHairRaytracingRadiusScale > 0 ? GHairRaytracingRadiusScale : Instance->Strands.Modifier.HairRaytracingRadiusScale);
-
-			FRDGImportedBuffer Raytracing_PositionBuffer = Register(GraphBuilder, Instance->Strands.RenRaytracingResource->PositionBuffer, ERDGImportedBufferFlags::CreateViews);
-			AddGenerateRaytracingGeometryPass(
-				GraphBuilder,
-				ShaderMap,
-				Instance->Strands.RestResource->GetVertexCount(),
-				ScaleAndClipDesc.MaxOutHairRadius * HairRadiusScaleRT,
-				RegisterAsSRV(GraphBuilder, Instance->Strands.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::EFrameType::Current)),
-				CullingData,
-				Strands_DeformedPosition.SRV,
-				Raytracing_PositionBuffer.UAV);
-
-			GraphBuilder.AddPass(
-			RDG_EVENT_NAME("HairStrandsUpdateBLAS"),
-			ERDGPassFlags::NeverCull,
-			[Instance](FRHICommandList& RHICmdList)
+			// 4. Update raytracing geometry
+			#if RHI_RAYTRACING
+			if (Instance->Strands.RenRaytracingResource)
 			{
-				const bool bNeedFullBuild = !Instance->Strands.RenRaytracingResource->bIsRTGeometryInitialized;
-				if (bNeedFullBuild)
+				const float HairRadiusScaleRT = (GHairRaytracingRadiusScale > 0 ? GHairRaytracingRadiusScale : Instance->Strands.Modifier.HairRaytracingRadiusScale);
+				const bool bNeedUpdate = !Instance->Strands.RenRaytracingResource->bIsRTGeometryInitialized || Instance->BindingType == EHairBindingType::Skinning;
+				if (bNeedUpdate)
 				{
-					FBufferRHIRef PositionBuffer(Instance->Strands.RenRaytracingResource->PositionBuffer.Buffer->GetRHI());
-					BuildHairAccelerationStructure_Strands(RHICmdList, Instance->Strands.RenRaytracingResource->VertexCount, PositionBuffer, &Instance->Strands.RenRaytracingResource->RayTracingGeometry);
+					FRDGImportedBuffer Raytracing_PositionBuffer = Register(GraphBuilder, Instance->Strands.RenRaytracingResource->PositionBuffer, ERDGImportedBufferFlags::CreateViews);
+					AddGenerateRaytracingGeometryPass(
+						GraphBuilder,
+						ShaderMap,
+						Instance->Strands.RestResource->GetVertexCount(),
+						ScaleAndClipDesc.MaxOutHairRadius * HairRadiusScaleRT,
+						Strands_PositionOffsetSRV,
+						CullingData,
+						Strands_PositionSRV,
+						Raytracing_PositionBuffer.UAV);
+
+					GraphBuilder.AddPass(
+						RDG_EVENT_NAME("HairStrandsUpdateBLAS"),
+						ERDGPassFlags::NeverCull,
+					[Instance](FRHICommandList& RHICmdList)
+					{
+						const bool bNeedFullBuild = !Instance->Strands.RenRaytracingResource->bIsRTGeometryInitialized;
+						if (bNeedFullBuild)
+						{
+							FBufferRHIRef PositionBuffer(Instance->Strands.RenRaytracingResource->PositionBuffer.Buffer->GetRHI());
+							BuildHairAccelerationStructure_Strands(RHICmdList, Instance->Strands.RenRaytracingResource->VertexCount, PositionBuffer, &Instance->Strands.RenRaytracingResource->RayTracingGeometry);
+						}
+						else
+						{
+							UpdateHairAccelerationStructure(RHICmdList, &Instance->Strands.RenRaytracingResource->RayTracingGeometry);
+						}
+						Instance->Strands.RenRaytracingResource->bIsRTGeometryInitialized = true;
+					});
 				}
-				else
-				{
-					UpdateHairAccelerationStructure(RHICmdList, &Instance->Strands.RenRaytracingResource->RayTracingGeometry);
-				}
-				Instance->Strands.RenRaytracingResource->bIsRTGeometryInitialized = true;
-			});
+			}
+			#endif
 		}
-		#endif
+
+		// Sanity check
+		check(Instance->HairGroupPublicData->VFInput.Strands.PositionBuffer);
 	}
 	else if (InstanceGeometryType == EHairGeometryType::Cards)
 	{	
+		DECLARE_GPU_STAT(HairCardsInterpolation);
+		RDG_EVENT_SCOPE(GraphBuilder, "HairCardsInterpolation");
+		RDG_GPU_STAT_SCOPE(GraphBuilder, HairCardsInterpolation);
+
 		const uint32 HairLODIndex = Instance->HairGroupPublicData->GetIntLODIndex();
 		const bool bIsCardsValid = Instance->Cards.IsValid(HairLODIndex);
 		if (bIsCardsValid)
 		{
+			const bool bValidGuide = Instance->Guides.bIsSimulationEnable || Instance->Guides.bHasGlobalInterpolation;
+			const bool bHasSkinning = Instance->BindingType == EHairBindingType::Skinning;
+			const bool bNeedDeformation = bValidGuide || bHasSkinning;
+
 			FHairGroupInstance::FCards::FLOD& LOD = Instance->Cards.LODs[HairLODIndex];
-			const EHairCardsSimulationType CardsSimulationType = GetHairCardsSimulationType();
-			if (LOD.Guides.Data && CardsSimulationType == EHairCardsSimulationType::Guide)
+
+			if (bNeedDeformation)
 			{
-				FRDGImportedBuffer Guides_DeformedPositionBuffer = Register(GraphBuilder, LOD.Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current), ERDGImportedBufferFlags::CreateViews);
+				check(LOD.Guides.Data);
 
-				FHairScaleAndClipDesc ScaleAndClipDesc;
-				ScaleAndClipDesc.bEnable = false;
-				ScaleAndClipDesc.InHairLength = LOD.Guides.Data->StrandsCurves.MaxLength;
-				ScaleAndClipDesc.InHairRadius = LOD.Guides.Data->StrandsCurves.MaxRadius;
-				ScaleAndClipDesc.OutHairRadius = (GStrandHairWidth > 0 ? GStrandHairWidth * 0.5f : ScaleAndClipDesc.InHairRadius);
-				ScaleAndClipDesc.MaxOutHairRadius = ScaleAndClipDesc.OutHairRadius;
-				ScaleAndClipDesc.HairRadiusRootScale = 1;
-				ScaleAndClipDesc.HairRadiusTipScale = 1;
-				ScaleAndClipDesc.HairLengthClip = 1;
+				const EHairCardsSimulationType CardsSimulationType = 
+					bHasSkinning || bValidGuide ?
+					GetHairCardsSimulationType() :
+					EHairCardsSimulationType::None;
 
-				const bool bHasSkinning = Instance->BindingType == EHairBindingType::Skinning;
+				// 1. Cards are deformed based on guides motion (simulation or RBF applied on guides)
+				if (CardsSimulationType == EHairCardsSimulationType::Guide)
+				{
+					FRDGImportedBuffer Guides_DeformedPositionBuffer = Register(GraphBuilder, LOD.Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current), ERDGImportedBufferFlags::CreateViews);
 
-				FRDGHairStrandsCullingData CullingData;
-				AddHairStrandsInterpolationPass(
-					GraphBuilder,
-					ShaderMap,
-					ShaderDrawData,
-					Instance,
-					LOD.Guides.RestResource->GetVertexCount(),
-					ScaleAndClipDesc,
-					MeshLODIndex,
-					false,
-					LOD.Guides.HairInterpolationType,
-					InstanceGeometryType,
-					CullingData,
-					LOD.Guides.RestResource->PositionOffset,
-					Instance->Guides.RestResource->PositionOffset,
-					RegisterAsSRV(GraphBuilder, LOD.Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current)),
-					RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current)),
-					bHasSkinning ? LOD.Guides.RestRootResource : nullptr ,
-					bHasSkinning ? Instance->Guides.RestRootResource : nullptr,
-					bHasSkinning ? LOD.Guides.DeformedRootResource : nullptr,
-					bHasSkinning ? Instance->Guides.DeformedRootResource : nullptr,
-					RegisterAsSRV(GraphBuilder, LOD.Guides.RestResource->RestPositionBuffer),
-					RegisterAsSRV(GraphBuilder, LOD.Guides.RestResource->AttributeBuffer),
-					RegisterAsSRV(GraphBuilder, LOD.Guides.InterpolationResource->Interpolation0Buffer),
-					RegisterAsSRV(GraphBuilder, LOD.Guides.InterpolationResource->Interpolation1Buffer),
-					RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->RestPositionBuffer),
-					RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current)),
-					RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->AttributeBuffer),
-					Guides_DeformedPositionBuffer,
-					nullptr,
-					nullptr,
-					nullptr,
-					RegisterAsSRV(GraphBuilder, LOD.Guides.InterpolationResource->SimRootPointIndexBuffer)); // <- this should be optional
+					FHairScaleAndClipDesc ScaleAndClipDesc;
+					ScaleAndClipDesc.bEnable = false;
+					ScaleAndClipDesc.InHairLength = LOD.Guides.Data->StrandsCurves.MaxLength;
+					ScaleAndClipDesc.InHairRadius = LOD.Guides.Data->StrandsCurves.MaxRadius;
+					ScaleAndClipDesc.OutHairRadius = (GStrandHairWidth > 0 ? GStrandHairWidth * 0.5f : ScaleAndClipDesc.InHairRadius);
+					ScaleAndClipDesc.MaxOutHairRadius = ScaleAndClipDesc.OutHairRadius;
+					ScaleAndClipDesc.HairRadiusRootScale = 1;
+					ScaleAndClipDesc.HairRadiusTipScale = 1;
+					ScaleAndClipDesc.HairLengthClip = 1;
 
-				AddHairCardsDeformationPass(
-					GraphBuilder,
-					ShaderMap,
-					ShaderDrawData,
-					Instance,
-					MeshLODIndex);
-			}
-			else if (LOD.Guides.Data && CardsSimulationType == EHairCardsSimulationType::RBF)
-			{
-				AddHairCardsRBFInterpolationPass(
-					GraphBuilder,
-					ShaderMap,
-					MeshLODIndex,
-					LOD.RestResource,
-					LOD.DeformedResource,
-					Instance->Guides.RestRootResource,
-					Instance->Guides.DeformedRootResource);
+					FRDGHairStrandsCullingData CullingData;
+					AddHairStrandsInterpolationPass(
+						GraphBuilder,
+						ShaderMap,
+						ShaderDrawData,
+						Instance,
+						LOD.Guides.RestResource->GetVertexCount(),
+						ScaleAndClipDesc,
+						MeshLODIndex,
+						false,
+						LOD.Guides.HairInterpolationType,
+						InstanceGeometryType,
+						CullingData,
+						LOD.Guides.RestResource->PositionOffset,
+						bValidGuide ? Instance->Guides.RestResource->PositionOffset : FVector::ZeroVector,
+						RegisterAsSRV(GraphBuilder, LOD.Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current)),
+						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current)) : nullptr,
+						bHasSkinning ? LOD.Guides.RestRootResource : nullptr ,
+						bHasSkinning && bValidGuide ? Instance->Guides.RestRootResource : nullptr,
+						bHasSkinning ? LOD.Guides.DeformedRootResource : nullptr,
+						bHasSkinning && bValidGuide ? Instance->Guides.DeformedRootResource : nullptr,
+						RegisterAsSRV(GraphBuilder, LOD.Guides.RestResource->PositionBuffer),
+						RegisterAsSRV(GraphBuilder, LOD.Guides.RestResource->AttributeBuffer),
+						RegisterAsSRV(GraphBuilder, LOD.Guides.InterpolationResource->Interpolation0Buffer),
+						RegisterAsSRV(GraphBuilder, LOD.Guides.InterpolationResource->Interpolation1Buffer),
+						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->PositionBuffer) : nullptr,
+						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetBuffer(FHairStrandsDeformedResource::Current)) : nullptr,
+						bValidGuide ? RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->AttributeBuffer) : nullptr,
+						Guides_DeformedPositionBuffer,
+						nullptr,
+						nullptr,
+						nullptr,
+						RegisterAsSRV(GraphBuilder, LOD.Guides.InterpolationResource->SimRootPointIndexBuffer)); // <- this should be optional
+
+					AddHairCardsDeformationPass(
+						GraphBuilder,
+						ShaderMap,
+						ShaderDrawData,
+						Instance,
+						MeshLODIndex);
+				}
+				// 2. Cards are deformed only based on skel. mesh RBF data)
+				else if (CardsSimulationType == EHairCardsSimulationType::RBF)
+				{
+					AddHairCardsRBFInterpolationPass(
+						GraphBuilder,
+						ShaderMap,
+						MeshLODIndex,
+						LOD.RestResource,
+						LOD.DeformedResource,
+						Instance->Guides.RestRootResource,
+						Instance->Guides.DeformedRootResource);
+				}
 			}
 
 			#if RHI_RAYTRACING
 			if (LOD.RaytracingResource)
 			{
-				GraphBuilder.AddPass(
-					RDG_EVENT_NAME("HairCardsUpdateBLAS"),
-					ERDGPassFlags::NeverCull,
-					[Instance, HairLODIndex](FRHICommandList& RHICmdList)
+				const bool bNeedUpdate = !LOD.RaytracingResource->bIsRTGeometryInitialized || Instance->BindingType == EHairBindingType::Skinning;
+				if (bNeedUpdate)
+				{
+					GraphBuilder.AddPass(
+						RDG_EVENT_NAME("HairCardsUpdateBLAS"),
+						ERDGPassFlags::NeverCull,
+						[Instance, HairLODIndex](FRHICommandList& RHICmdList)
 					{
 						FHairGroupInstance::FCards::FLOD& LocalLOD = Instance->Cards.LODs[HairLODIndex];
 
 						const bool bNeedFullBuild = !LocalLOD.RaytracingResource->bIsRTGeometryInitialized;
 						if (bNeedFullBuild)
 						{
-							BuildHairAccelerationStructure_Cards(RHICmdList, LocalLOD.RestResource, LocalLOD.DeformedResource,  &LocalLOD.RaytracingResource->RayTracingGeometry);
+							BuildHairAccelerationStructure_Cards(RHICmdList, LocalLOD.RestResource, LocalLOD.DeformedResource, &LocalLOD.RaytracingResource->RayTracingGeometry);
 						}
 						else
 						{
@@ -1634,18 +1716,31 @@ void ComputeHairStrandsInterpolation(
 						}
 						LocalLOD.RaytracingResource->bIsRTGeometryInitialized = true;
 					});
+				}
 			}
 			#endif
 		}
 	}
 	else if (InstanceGeometryType == EHairGeometryType::Meshes)
 	{
+		DECLARE_GPU_STAT(HairMeshesInterpolation);
+		RDG_EVENT_SCOPE(GraphBuilder, "HairMeshesInterpolation");
+		RDG_GPU_STAT_SCOPE(GraphBuilder, HairMeshesInterpolation);
+
 		const uint32 HairLODIndex = Instance->HairGroupPublicData->GetIntLODIndex();
 		if (Instance->Meshes.IsValid(HairLODIndex))
 		{
-			FHairGroupInstance::FMeshes::FLOD& MeshesInstance = Instance->Meshes.LODs[HairLODIndex];
-			if (Instance->Guides.IsValid() && Instance->Guides.HasValidRootData() && Instance->Guides.DeformedRootResource->IsValid(MeshLODIndex))
+			const bool bNeedDeformation = Instance->Meshes.LODs[HairLODIndex].DeformedResource != nullptr;
+			if (bNeedDeformation)
 			{
+				FHairGroupInstance::FMeshes::FLOD& MeshesInstance = Instance->Meshes.LODs[HairLODIndex];
+
+				check(Instance->BindingType == EHairBindingType::Skinning)
+				check(Instance->Guides.IsValid());
+				check(Instance->Guides.HasValidRootData());
+				check(Instance->Guides.DeformedRootResource);
+				check(Instance->Guides.DeformedRootResource->IsValid(MeshLODIndex));
+
 				AddHairMeshesRBFInterpolationPass(
 					GraphBuilder,
 					ShaderMap,
@@ -1655,33 +1750,35 @@ void ComputeHairStrandsInterpolation(
 					Instance->Guides.RestRootResource,
 					Instance->Guides.DeformedRootResource);
 			}
-		}
 
-		#if RHI_RAYTRACING
-		FHairGroupInstance::FMeshes::FLOD& LOD = Instance->Meshes.LODs[HairLODIndex];
-		if (LOD.RaytracingResource && !LOD.RaytracingResource->bIsRTGeometryInitialized)
-		{
-			GraphBuilder.AddPass(
-				RDG_EVENT_NAME("HairMeshesUpdateBLAS"),
-				ERDGPassFlags::NeverCull,
-				[Instance, HairLODIndex](FRHICommandList& RHICmdList)
+			#if RHI_RAYTRACING
+			FHairGroupInstance::FMeshes::FLOD& LOD = Instance->Meshes.LODs[HairLODIndex];
+			if (LOD.RaytracingResource)
 			{
-
-				FHairGroupInstance::FMeshes::FLOD& LocalLOD = Instance->Meshes.LODs[HairLODIndex];
-				
-				const bool bNeedFullBuild = !LocalLOD.RaytracingResource->bIsRTGeometryInitialized;
-				if (bNeedFullBuild)
+				const bool bNeedUpdate = !LOD.RaytracingResource->bIsRTGeometryInitialized || bNeedDeformation;
+				if (bNeedUpdate)
 				{
-					BuildHairAccelerationStructure_Meshes(RHICmdList, LocalLOD.RestResource, LocalLOD.DeformedResource,  &LocalLOD.RaytracingResource->RayTracingGeometry);
+					GraphBuilder.AddPass(
+						RDG_EVENT_NAME("HairMeshesUpdateBLAS"),
+						ERDGPassFlags::NeverCull,
+						[Instance, HairLODIndex](FRHICommandList& RHICmdList)
+					{
+						FHairGroupInstance::FMeshes::FLOD& LocalLOD = Instance->Meshes.LODs[HairLODIndex];				
+						const bool bNeedFullBuild = !LocalLOD.RaytracingResource->bIsRTGeometryInitialized;
+						if (bNeedFullBuild)
+						{
+							BuildHairAccelerationStructure_Meshes(RHICmdList, LocalLOD.RestResource, LocalLOD.DeformedResource,  &LocalLOD.RaytracingResource->RayTracingGeometry);
+						}
+						else
+						{
+							UpdateHairAccelerationStructure(RHICmdList, &LocalLOD.RaytracingResource->RayTracingGeometry);
+						}
+						LocalLOD.RaytracingResource->bIsRTGeometryInitialized = true;
+					});
 				}
-				else
-				{
-					UpdateHairAccelerationStructure(RHICmdList, &LocalLOD.RaytracingResource->RayTracingGeometry);
-				}
-				LocalLOD.RaytracingResource->bIsRTGeometryInitialized = true;
-			});
+			}
+			#endif
 		}
-		#endif
 	}
 
 	Instance->HairGroupPublicData->VFInput.GeometryType = InstanceGeometryType;
@@ -1692,22 +1789,16 @@ void ComputeHairStrandsInterpolation(
 	Instance->HairGroupPublicData->bSupportVoxelization = Instance->Strands.Modifier.bSupportVoxelization && Instance->bCastShadow;
 }
 
-bool HasHairInstanceSimulationEnable(FHairGroupInstance* Instance, int32 MeshLODIndex)
-{
-	const bool bHasNoSimulation = !Instance || (Instance && Instance->Guides.bIsSimulationEnable && IsHairLODSimulationEnabled(MeshLODIndex)) || !IsHairStrandsBindingEnable();
-	return !bHasNoSimulation;
-}
-
 void ResetHairStrandsInterpolation(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
 	FHairGroupInstance* Instance,
 	int32 MeshLODIndex)
 {
-	if (!HasHairInstanceSimulationEnable(Instance, MeshLODIndex))
-	{
-		return;
-	}
+	if (!Instance || 
+		(Instance && Instance->Guides.bIsSimulationEnable) ||
+		(!Instance->Guides.bHasGlobalInterpolation && !Instance->Guides.bIsSimulationEnable) ||
+		!IsHairStrandsBindingEnable()) return;
 
 	DECLARE_GPU_STAT(HairStrandsGuideDeform);
 	RDG_EVENT_SCOPE(GraphBuilder, "HairStrandsGuideDeform");
@@ -1724,7 +1815,7 @@ void ResetHairStrandsInterpolation(
 		Instance->Guides.RestResource->GetVertexCount(),
 		Instance->Guides.RestRootResource,
 		Instance->Guides.DeformedRootResource,
-		RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->RestPositionBuffer),
+		RegisterAsSRV(GraphBuilder, Instance->Guides.RestResource->PositionBuffer),
 		DeformedPositionBuffer,
 		Instance->Guides.RestResource->PositionOffset,
 		RegisterAsSRV(GraphBuilder, Instance->Guides.DeformedResource->GetPositionOffsetBuffer(FHairStrandsDeformedResource::Current)),

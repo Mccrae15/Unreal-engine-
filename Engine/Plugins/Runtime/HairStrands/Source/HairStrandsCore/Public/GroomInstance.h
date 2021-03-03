@@ -42,7 +42,7 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance
 	struct FStrandsBase
 	{
 		bool HasValidData() const { return Data != nullptr && Data->GetNumPoints() > 0; }
-		bool IsValid() const { return DeformedResource != nullptr; }
+		bool IsValid() const { return RestResource != nullptr; }
 
 		// Data - Render & sim (rest) data
 		FHairStrandsDatas* Data = nullptr;
@@ -54,7 +54,6 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance
 
 		// Resources - Rest root data, for deforming strands attached to a skinned mesh surface
 		// Resources - Deformed root data, for deforming strands attached to a skinned mesh surface
-		bool bOwnRootResourceAllocation = true;
 		FHairStrandsRestRootResource* RestRootResource = nullptr;
 		FHairStrandsDeformedRootResource* DeformedRootResource = nullptr;
 
@@ -68,7 +67,7 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance
 		FHairStrandsInterpolationDatas* InterpolationData = nullptr;
 		FHairStrandsInterpolationResource* InterpolationResource = nullptr;
 
-		uint32 HairInterpolationType = 0;
+		EHairInterpolationType HairInterpolationType = EHairInterpolationType::NoneSkinning;
 	};
 
 	//////////////////////////////////////////////////////////////////////////////////////////
@@ -102,10 +101,10 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance
 	struct FCards
 	{
 		bool IsValid() const { for (const FLOD& LOD: LODs) { if (LOD.IsValid()) { return true; } } return false; }
-		bool IsValid(int32 LODIndex) const { return LODIndex >= 0 && LODIndex < LODs.Num() && LODs[LODIndex].DeformedResource != nullptr; }
+		bool IsValid(int32 LODIndex) const { return LODIndex >= 0 && LODIndex < LODs.Num() && LODs[LODIndex].RestResource != nullptr; }
 		struct FLOD
 		{
-			bool IsValid() const { return DeformedResource != nullptr; }
+			bool IsValid() const { return RestResource != nullptr; }
 
 			// Data
 			FHairCardsDatas* Data = nullptr;
@@ -134,10 +133,10 @@ struct HAIRSTRANDSCORE_API FHairGroupInstance
 	struct FMeshes
 	{
 		bool IsValid() const { for (const FLOD& LOD : LODs) { if (LOD.IsValid()) { return true; } } return false; }
-		bool IsValid(int32 LODIndex) const { return LODIndex >= 0 && LODIndex < LODs.Num() && LODs[LODIndex].DeformedResource != nullptr; }
+		bool IsValid(int32 LODIndex) const { return LODIndex >= 0 && LODIndex < LODs.Num() && LODs[LODIndex].RestResource != nullptr; }
 		struct FLOD
 		{
-			bool IsValid() const { return DeformedResource != nullptr; }
+			bool IsValid() const { return RestResource != nullptr; }
 
 			// Data
 			FHairMeshesDatas* Data = nullptr;
