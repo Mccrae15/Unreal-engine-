@@ -71,7 +71,6 @@ DEFINE_LOG_CATEGORY(LogContentCommandlet);
 #include "HierarchicalLODUtilitiesModule.h"
 #include "HierarchicalLOD.h"
 #include "HierarchicalLODProxyProcessor.h"
-#include "HLOD/HLODEngineSubsystem.h"
 #include "GenericPlatform/GenericPlatformProcess.h"
 #include "HAL/ThreadManager.h"
 #include "ShaderCompiler.h"
@@ -604,7 +603,7 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 		
 		if (bSavePackage)
 		{
-			PackagesConsideredForResave++;
+			PackagesRequiringResave++;
 
 			// Only rebuild static meshes on load for the to be saved package.
 			extern ENGINE_API FName GStaticMeshPackageNameToRebuild;
@@ -946,24 +945,17 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 
 	/** determine if we are building HLODs for the map packages on the pass. **/
 	bShouldBuildHLOD = Switches.Contains(TEXT("BuildHLOD"));
+	FString HLODOptions;
+	FParse::Value(*Params, TEXT("BuildOptions="), HLODOptions);	
+	bGenerateClusters = HLODOptions.Contains("Clusters");
+	bGenerateMeshProxies = HLODOptions.Contains("Proxies");
+	bForceClusterGeneration = HLODOptions.Contains("ForceClusters");
+	bForceProxyGeneration = HLODOptions.Contains("ForceProxies");
+	bForceEnableHLODForLevel = HLODOptions.Contains("ForceEnableHLOD");
+	bForceSingleClusterForLevel = HLODOptions.Contains("ForceSingleCluster");
+
 	if (bShouldBuildHLOD)
 	{
-		FString HLODOptions;
-		FParse::Value(*Params, TEXT("BuildOptions="), HLODOptions);
-		bGenerateClusters = HLODOptions.Contains("Clusters");
-		bGenerateMeshProxies = HLODOptions.Contains("Proxies");
-		bForceClusterGeneration = HLODOptions.Contains("ForceClusters");
-		bForceProxyGeneration = HLODOptions.Contains("ForceProxies");
-		bForceEnableHLODForLevel = HLODOptions.Contains("ForceEnableHLOD");
-		bForceSingleClusterForLevel = HLODOptions.Contains("ForceSingleCluster");
-		bHLODMapCleanup = HLODOptions.Contains("MapCleanup");
-
-		ForceHLODSetupAsset = FString();
-		FParse::Value(*Params, TEXT("ForceHLODSetupAsset="), ForceHLODSetupAsset);
-		
-		HLODSkipToMap = FString();
-		FParse::Value(*Params, TEXT("SkipToMap="), HLODSkipToMap);
-
 		UE_LOG(LogContentCommandlet, Display, TEXT("Rebuilding HLODs... Options are:"));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] Clusters"), bGenerateClusters ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] Proxies"), bGenerateMeshProxies ? TEXT("X") : TEXT(" "));
@@ -971,22 +963,25 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceProxies"), bForceProxyGeneration ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceEnableHLOD"), bForceEnableHLODForLevel ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceSingleCluster"), bForceSingleClusterForLevel ? TEXT("X") : TEXT(" "));
-		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] Map Cleanup"), bHLODMapCleanup ? TEXT("X") : TEXT(" "));
+	}
 
-		// Allow multiple instances when building HLODs
+	ForceHLODSetupAsset = FString();
+	FParse::Value(*Params, TEXT("ForceHLODSetupAsset="), ForceHLODSetupAsset);
+
+	HLODSkipToMap = FString();
+	FParse::Value(*Params, TEXT("SkipToMap="), HLODSkipToMap);
+
+	bForceUATEnvironmentVariableSet = false;
+	if (bShouldBuildHLOD)
+	{
 		FString MutexVariableValue = FPlatformMisc::GetEnvironmentVariable(TEXT("uebp_UATMutexNoWait"));
 		if (MutexVariableValue != TEXT("1"))
 		{
 			FPlatformMisc::SetEnvironmentVar(TEXT("uebp_UATMutexNoWait"), TEXT("1"));
 			bForceUATEnvironmentVariableSet = true;
 		}
-
-		if (bHLODMapCleanup)
-		{
-			GEngine->GetEngineSubsystem<UHLODEngineSubsystem>()->DisableHLODCleanupOnLoad(true);
-		}
 	}
-		
+
 	if (bShouldBuildLighting || bShouldBuildHLOD || bShouldBuildReflectionCaptures)
 	{
 		check( Switches.Contains(TEXT("AllowCommandletRendering")) );
@@ -1036,8 +1031,7 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	}
 
 	int32 GCIndex = 0;
-	PackagesConsideredForResave = 0;
-	PackagesResaved = 0;
+	PackagesRequiringResave = 0;
 
 	// allow for an option to restart at a given package name (in case it dies during a run, etc)
 	bool bCanProcessPackage = true;
@@ -1094,7 +1088,7 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 		}
 
 		// Break out if we've resaved enough packages
-		if( MaxPackagesToResave > -1 && PackagesResaved >= MaxPackagesToResave )
+		if( MaxPackagesToResave > -1 && PackagesRequiringResave >= MaxPackagesToResave )
 		{
 			UE_LOG(LogContentCommandlet, Warning, TEXT( "Attempting to resave more than MaxPackagesToResave; exiting" ) );
 			break;
@@ -1137,16 +1131,30 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	}
 
 	// Submit the results to source control
-	CheckInFiles(FilesToSubmit, GetChangelistDescription());
+	if( bAutoCheckIn )
+	{
+		ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+		SourceControlProvider.Init();
+
+		// Check in all changed files
+		if( FilesToSubmit.Num() > 0 )
+		{
+			TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckInOperation = ISourceControlOperation::Create<FCheckIn>();
+			CheckInOperation->SetDescription( GetChangelistDescription() );
+			SourceControlProvider.Execute(CheckInOperation, SourceControlHelpers::PackageFilenames(FilesToSubmit));
+		}
+
+		// toss the SCC manager
+		SourceControlProvider.Close();
+	}
 
 	if (bForceUATEnvironmentVariableSet)
 	{
 		FPlatformMisc::SetEnvironmentVar(TEXT("uebp_UATMutexNoWait"), TEXT("0"));		
 	}
 
-	UE_LOG(LogContentCommandlet, Display, TEXT("[REPORT] %d/%d packages were considered for resaving"), PackagesConsideredForResave, PackageNames.Num());
-	UE_LOG(LogContentCommandlet, Display, TEXT("[REPORT] %d/%d packages were resaved"), PackagesResaved, PackagesConsideredForResave);
-
+	UE_LOG(LogContentCommandlet, Display, TEXT( "[REPORT] %d/%d packages required resaving" ), PackagesRequiringResave, PackageNames.Num() );
+	
 
 	return 0;
 }
@@ -1649,20 +1657,6 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 					World->GetWorldSettings()->bGenerateSingleClusterForLevel = true;
 				}
 
-				bool bHLODLeaveMapUntouched = GetDefault<UHierarchicalLODSettings>()->bSaveLODActorsToHLODPackages && !bHLODMapCleanup;
-
-				// Maintain a list of packages that needs to be saved after cluster rebuilding.
-				TSet<UPackage*> PackagesToSave;
-
-				if (bHLODMapCleanup)
-				{
-					bool bPerformedCleanup = GEngine->GetEngineSubsystem<UHLODEngineSubsystem>()->CleanupHLODs(World);
-					if (bPerformedCleanup)
-					{
-						PackagesToSave.Add(World->GetOutermost());
-					}
-				}
-
 				FHierarchicalLODBuilder Builder(World);
 
 				if (bForceClusterGeneration)
@@ -1697,7 +1691,8 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 					GShaderCompilingManager->ProcessAsyncResults(false, false);
 				}
 
-				// Get the list of packages needs to be saved after proxy mesh generation.
+				// Get the list of packages needs to be saved.
+				TSet<UPackage*> PackagesToSave;
 				for(ULevel* Level : World->GetLevels())
 				{
 					if(Level->bIsVisible)
@@ -1720,7 +1715,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 
 				// If the only operation performed by this commandlet is to update HLOD proxy packages,
 				// avoid saving the level files.
-				if (bHLODLeaveMapUntouched && !bBuildingNonHLODData && !bShouldBuildNavigationData)
+				if (!bBuildingNonHLODData && !bShouldBuildNavigationData)
 				{
 					bRevertCheckedOutFilesIfNotSaving  = false;
 					bShouldProceedWithRebuild = false;
