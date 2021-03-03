@@ -2066,13 +2066,14 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	CSV_CUSTOM_STAT(LightCount, ShadowOn, float(SortedLightSet.SortedLights.Num()) - float(SortedLightSet.AttenuationLightStart), ECsvCustomStatOp::Set);
 
 	// Local helper function to perform virtual shadow map allocation, which can occur early, or late.
+	FHairStrandsRenderingData* HairDatas = nullptr;
 	const auto AllocateVirtualShadowMaps = [&](bool bPostBasePass)
 	{
 		if (VirtualShadowMapArray.IsEnabled())
 		{
 			ensureMsgf(AreLightsInLightGrid(), TEXT("Virtual shadow map setup requires local lights to be injected into the light grid (this may be caused by 'r.LightCulling.Quality=0')."));
 			// ensure(ShadowMapSetupDone)
-			VirtualShadowMapArray.BuildPageAllocations(GraphBuilder, SceneTextures, Views, SortedLightSet, VisibleLightInfos, NaniteRasterResults, bPostBasePass, Scene->VirtualShadowMapArrayCacheManager);
+			VirtualShadowMapArray.BuildPageAllocations(GraphBuilder, SceneTextures, Views, SortedLightSet, VisibleLightInfos, NaniteRasterResults, bPostBasePass, Scene->VirtualShadowMapArrayCacheManager, HairDatas);
 		}
 	};
 
@@ -2089,7 +2090,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	};
 
 	// Early occlusion queries
-	const bool bOcclusionBeforeBasePass = !bNaniteEnabled && !bAnyLumenEnabled && ((DepthPass.EarlyZPassMode == EDepthDrawingMode::DDM_AllOccluders) || bIsEarlyDepthComplete);
+	const bool bOcclusionBeforeBasePass = !bNaniteEnabled && !bAnyLumenEnabled && !bHairEnable && ((DepthPass.EarlyZPassMode == EDepthDrawingMode::DDM_AllOccluders) || bIsEarlyDepthComplete);
 
 	if (bOcclusionBeforeBasePass)
 	{
@@ -2183,8 +2184,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 		bool bSkipPerPixelTracing = true;
 		bAsyncComputeVolumetricCloud = RenderVolumetricCloud(GraphBuilder, SceneTextures, bSkipVolumetricRenderTarget, bSkipPerPixelTracing, HalfResolutionDepthCheckerboardMinMaxTexture, true, InstanceCullingManager);
 	}
-
-	FHairStrandsRenderingData* HairDatas = nullptr;
+	
 	FHairStrandsRenderingData* HairDatasStorage = GraphBuilder.AllocObject<FHairStrandsRenderingData>();
 
 	FRDGTextureRef ForwardScreenSpaceShadowMaskTexture = nullptr;
@@ -2317,6 +2317,14 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 		AddResolveSceneColorPass(GraphBuilder, Views, SceneTextures.Color);
 	}
 
+	// Render hair
+	if (bHairEnable && !IsForwardShadingEnabled(ShaderPlatform))
+	{
+		RenderHairPrePass(GraphBuilder, Scene, Views, InstanceCullingManager, *HairDatasStorage);
+		RenderHairBasePass(GraphBuilder, Scene, SceneTextures, Views, InstanceCullingManager, *HairDatasStorage);
+		HairDatas = HairDatasStorage;
+	}
+
 #if RHI_RAYTRACING
 	const bool bRayTracingEnabled = IsRayTracingEnabled();
 	if (bRayTracingEnabled)
@@ -2408,13 +2416,6 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 		// TODO: Populate velocity buffer from Nanite visibility buffer.
 	}
 
-	// Hair base pass for deferred shading
-	if (bHairEnable && !IsForwardShadingEnabled(ShaderPlatform))
-	{
-		RenderHairPrePass(GraphBuilder, Scene, Views, InstanceCullingManager, *HairDatasStorage);
-		HairDatas = HairDatasStorage;
-	}
-
 	// Copy lighting channels out of stencil before deferred decals which overwrite those values
 	FRDGTextureRef LightingChannelsTexture = CopyStencilToLightingChannelTexture(GraphBuilder, SceneTextures.Stencil);
 
@@ -2444,13 +2445,6 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	if (Strata::IsStrataEnabled())
 	{
 		Strata::AddStrataMaterialClassificationPass(GraphBuilder, SceneTextures, Views);
-	}
-
-	// Hair base pass for deferred shading
-	if (bHairEnable && !IsForwardShadingEnabled(ShaderPlatform))
-	{
-		check(HairDatas);
-		RenderHairBasePass(GraphBuilder, Scene,  SceneTextures, Views, InstanceCullingManager, *HairDatasStorage);
 	}
 
 	// Rebuild scene textures to include velocity, custom depth, and SSAO.

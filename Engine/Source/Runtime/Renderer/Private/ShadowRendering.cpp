@@ -1879,6 +1879,7 @@ void FDeferredShadingSceneRenderer::RenderShadowProjections(
 		}
 	}
 
+	FRDGTextureRef HairCatgorizationTexture = HairDatas && HairDatas->HairVisibilityViews.HairDatas.Num() > 0 ? HairDatas->HairVisibilityViews.HairDatas[0].CategorizationTexture : nullptr;
 	if (NormalShadows.Num() > 0)
 	{
 		const auto RenderNormalShadows = [&](FRDGTextureRef OutputTexture, FExclusiveDepthStencil ExclusiveDepthStencil, bool bSubPixel)
@@ -1889,7 +1890,7 @@ void FDeferredShadingSceneRenderer::RenderShadowProjections(
 
 			FShadowProjectionPassParameters CommonPassParameters;
 			CommonPassParameters.SceneTextures = GetSceneTextureShaderParameters(SceneTextures.UniformBuffer);
-			CommonPassParameters.HairCategorizationTexture = bSubPixel && HairDatas && HairDatas->HairVisibilityViews.HairDatas.Num() > 0 ? HairDatas->HairVisibilityViews.HairDatas[0].CategorizationTexture : nullptr;
+			CommonPassParameters.HairCategorizationTexture = bSubPixel && HairCatgorizationTexture ? HairCatgorizationTexture : nullptr;
 			CommonPassParameters.RenderTargets[0] = FRenderTargetBinding(OutputTexture, ERenderTargetLoadAction::ELoad);
 			CommonPassParameters.RenderTargets.DepthStencil = 
 				bSubPixel && HairDatas && HairDatas->HairVisibilityViews.HairDatas.Num() > 0 ?
@@ -1912,7 +1913,7 @@ void FDeferredShadingSceneRenderer::RenderShadowProjections(
 			RenderNormalShadows(ScreenShadowMaskTexture, FExclusiveDepthStencil::DepthRead_StencilWrite, false);
 		}
 
-		if (ScreenShadowMaskSubPixelTexture && HairDatas && HairDatas->HairVisibilityViews.HairDatas.Num() > 0 && HairDatas->HairVisibilityViews.HairDatas[0].CategorizationTexture)
+		if (ScreenShadowMaskSubPixelTexture && HairCatgorizationTexture)
 		{
 			RDG_EVENT_SCOPE(GraphBuilder, "SubPixelShadows");
 
@@ -2023,6 +2024,7 @@ void FDeferredShadingSceneRenderer::RenderShadowProjections(
 								VirtualShadowMapArray,
 								ScissorRect,
 								ScreenShadowMaskTexture,
+								nullptr,
 								bProjectingForForwardShading);
 						}
 						else
@@ -2035,6 +2037,37 @@ void FDeferredShadingSceneRenderer::RenderShadowProjections(
 								VirtualShadowMapArray,
 								ScissorRect,
 								ScreenShadowMaskTexture,
+								nullptr,
+								bProjectingForForwardShading);
+						}
+					}
+
+					// Sub-pixel shadow (no filtering for hair)
+					if (ScreenShadowMaskSubPixelTexture && HairCatgorizationTexture)
+					{
+						if (VisibleLightInfo.VirtualShadowMapClipmaps.Num() > 0)
+						{
+							RenderVirtualShadowMapProjection(
+								VisibleLightInfo.FindShadowClipmapForView(&View),
+								GraphBuilder,
+								View,
+								VirtualShadowMapArray,
+								ScissorRect,
+								ScreenShadowMaskSubPixelTexture,
+								HairCatgorizationTexture,
+								bProjectingForForwardShading);
+						}
+						else
+						{
+							check(VirtualShadowMaps.Num() == 1);
+							RenderVirtualShadowMapProjection(
+								VirtualShadowMaps[0],
+								GraphBuilder,
+								View,
+								VirtualShadowMapArray,
+								ScissorRect,
+								ScreenShadowMaskSubPixelTexture,
+								HairCatgorizationTexture,
 								bProjectingForForwardShading);
 						}
 					}
