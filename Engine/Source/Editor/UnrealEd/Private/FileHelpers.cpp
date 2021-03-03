@@ -4199,6 +4199,7 @@ void FEditorFileUtils::GetDirtyWorldPackages(TArray<UPackage*>& OutDirtyPackages
 	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
 	const TSharedRef<FBlacklistPaths>& WritableFolderFilter = AssetToolsModule.Get().GetWritableFolderBlacklist();
 	const bool bHasWritableFolderFilter = WritableFolderFilter->HasFiltering();
+	bool bHLODSystemEnabled = false;
 
 	for (TObjectIterator<UWorld> WorldIt; WorldIt; ++WorldIt)
 	{
@@ -4255,18 +4256,24 @@ void FEditorFileUtils::GetDirtyWorldPackages(TArray<UPackage*>& OutDirtyPackages
 			if (WorldIt->HierarchicalLODBuilder)
 			{
 				const AWorldSettings* WorldSettings = WorldIt->GetWorldSettings();
-				if (WorldSettings && WorldSettings->bEnableHierarchicalLODSystem)
+				
+				// CVR - 03.03.2021 - kkowalczyk save Hlods even if only persistent level has hlod system flag set
+				if (WorldSettings)
 				{
-					TSet<UPackage*> HLODPackages;
-					WorldIt->HierarchicalLODBuilder->GetMeshesPackagesToSave(WorldIt->PersistentLevel, HLODPackages);
-					for (UPackage* HLODPackage : HLODPackages)
-					{
-						if (HLODPackage->IsDirty())
+					bHLODSystemEnabled |= WorldSettings->bEnableHierarchicalLODSystem;
+					if (bHLODSystemEnabled) {
+						TSet<UPackage*> HLODPackages;
+						WorldIt->HierarchicalLODBuilder->GetMeshesPackagesToSave(WorldIt->PersistentLevel, HLODPackages);
+						for (UPackage* HLODPackage : HLODPackages)
 						{
-							OutDirtyPackages.Add(HLODPackage);
+							if (HLODPackage->IsDirty())
+							{
+								OutDirtyPackages.Add(HLODPackage);
+							}
 						}
 					}
 				}
+				// CVR - 03.03.2021 END
 			}
 
 			// Now gather the world external packages and save them if needed
