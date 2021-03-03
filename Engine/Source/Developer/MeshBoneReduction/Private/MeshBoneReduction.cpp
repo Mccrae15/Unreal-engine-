@@ -12,6 +12,7 @@
 #include "Rendering/SkeletalMeshModel.h"
 #include "AnimationBlueprintLibrary.h"
 #include "Async/ParallelFor.h"
+#include "Animation/AnimSequence.h"
 
 class FMeshBoneReductionModule : public IMeshBoneReductionModule
 {

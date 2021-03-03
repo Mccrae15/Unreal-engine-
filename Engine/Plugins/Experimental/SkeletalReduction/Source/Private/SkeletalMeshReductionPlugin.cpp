@@ -25,7 +25,7 @@
 #include "ClothingAsset.h"
 #include "Factories/FbxSkeletalMeshImportData.h"
 #include "LODUtilities.h"
-
+#include "Animation/AnimSequence.h"
 
 #define LOCTEXT_NAMESPACE "SkeletalMeshReduction"
 
