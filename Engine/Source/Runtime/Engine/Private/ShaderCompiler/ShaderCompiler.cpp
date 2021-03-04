@@ -224,6 +224,12 @@ static FShaderCommonCompileJob* CloneJob_Single(const FShaderCompileJob* SrcJob)
 	Job->ShaderParameters = SrcJob->ShaderParameters;
 	Job->PendingShaderMap = SrcJob->PendingShaderMap;
 	Job->Input = SrcJob->Input;
+	if (SrcJob->bInputHashSet)
+	{
+		Job->InputHash = SrcJob->InputHash;
+		Job->bInputHashSet = true;
+	}
+	ensure(Job->bInputHashSet == SrcJob->bInputHashSet);
 	return Job;
 }
 
@@ -237,6 +243,13 @@ static FShaderCommonCompileJob* CloneJob_Pipeline(const FShaderPipelineCompileJo
 	{
 		Job->StageJobs[i]->Input = SrcJob->StageJobs[i]->Input;
 	}
+
+	if (SrcJob->bInputHashSet)
+	{
+		Job->InputHash = SrcJob->InputHash;
+		Job->bInputHashSet = true;
+	}
+	ensure(Job->bInputHashSet == SrcJob->bInputHashSet);
 	return Job;
 }
 
@@ -264,6 +277,7 @@ void FShaderCompileJobCollection::InternalSetPriority(FShaderCommonCompileJob* J
 		Job->Unlink();
 
 		NumPendingJobs[PriorityIndex]++;
+		ensure(!ShaderCompiler::IsJobCacheEnabled() || Job->bInputHashSet);
 		Job->LinkHead(PendingJobs[PriorityIndex]);
 		Job->Priority = InPriority;
 		Job->PendingPriority = InPriority;
@@ -276,10 +290,16 @@ void FShaderCompileJobCollection::InternalSetPriority(FShaderCommonCompileJob* J
 		NewJob->Priority = InPriority;
 		const int32 NewNumPendingJobs = NewJob->PendingShaderMap->NumPendingJobs.Increment();
 		checkf(NewNumPendingJobs > 1, TEXT("Invalid number of pending jobs %d, should have had at least 1 job previously"), NewNumPendingJobs);
-
 		InternalAddJob(NewJob);
 
 		NumPendingJobs[PriorityIndex]++;
+		ensureMsgf(NewJob->bInputHashSet == Job->bInputHashSet, TEXT("Cloned and original jobs should either both have input hash, or both not have it. Job->bInputHashSet=%d, NewJob->bInputHashSet=%d"),
+			Job->bInputHashSet,
+			NewJob->bInputHashSet
+			);
+		ensureMsgf(!ShaderCompiler::IsJobCacheEnabled() || NewJob->GetInputHash() == Job->GetInputHash(),
+			TEXT("If shader jobs cache is enabled, cloned job should have the same input hash as the original, and it doesn't.")
+			);
 		NewJob->LinkHead(PendingJobs[PriorityIndex]);
 		NewJob->PendingPriority = InPriority;
 		NumOutstandingJobs.Increment();
@@ -452,6 +472,7 @@ void FShaderCompileJobCollection::SubmitJobs(const TArray<FShaderCommonCompileJo
 				// new job
 				if (bNewJob)
 				{
+					ensure(!ShaderCompiler::IsJobCacheEnabled() || Job->bInputHashSet);
 					Job->LinkHead(PendingJobs[PriorityIndex]);
 
 					NumPendingJobs[PriorityIndex]++;
@@ -483,8 +504,6 @@ void FShaderCompileJobCollection::HandleLogJobsCacheStats()
 
 void FShaderCompileJobCollection::ProcessFinishedJob(FShaderCommonCompileJob* FinishedJob, bool bWasCached)
 {
-	const FSHAHash& InputHash = FinishedJob->GetInputHash();
-
 	// TODO: have a pending shader map critical section? not clear at this point if we can be accessing the results on another thread at the same time
 	FShaderMapCompileResults& ShaderMapResults = *(FinishedJob->PendingShaderMap);
 	ShaderMapResults.FinishedJobs.Add(FinishedJob);
@@ -494,9 +513,12 @@ void FShaderCompileJobCollection::ProcessFinishedJob(FShaderCommonCompileJob* Fi
 	checkf(NumPendingJobsForSM >= 0, TEXT("Problem tracking pending jobs for a SM (%d), number of pending jobs (%d) is negative!"), FinishedJob->Id, NumPendingJobsForSM);
 
 	InternalSubtractNumOutstandingJobs(1);
-	if (!bWasCached)
+	if (!bWasCached && ShaderCompiler::IsJobCacheEnabled())
 	{
 		AddToCacheAndProcessPending(FinishedJob);
+
+		ensureMsgf(FinishedJob->bInputHashSet, TEXT("Finished job didn't have input hash set, was shader compiler jobs cache toggled runtime?"));
+		const FSHAHash& InputHash = FinishedJob->GetInputHash();
 
 		// remove ourselves from the jobs in flight, if we were there (if this job is a cloned job it might not have been)
 		JobsInFlight.Remove(InputHash);
@@ -529,6 +551,7 @@ void FShaderCompileJobCollection::AddToCacheAndProcessPending(FShaderCommonCompi
 
 			FMemoryReader MemReader(Output);
 			CurHead->SerializeOutput(MemReader);
+			checkf(CurHead->bSucceeded == FinishedJob->bSucceeded, TEXT("Different success status for the job with the same ihash"));
 
 			// finish the job instantly
 			ProcessFinishedJob(CurHead, true);
@@ -611,6 +634,7 @@ int32 FShaderCompileJobCollection::GetPendingJobs(EShaderCompilerWorkerType InWo
 			// Temporary commented out until r.ShaderDevelopmentMode=1 shader error retry crash gets fixed
 			//check(Job.CurrentWorker == EShaderCompilerWorkerType::None);
 			//check(Job.PendingPriority == InPriority);
+			ensure(!ShaderCompiler::IsJobCacheEnabled() || Job.bInputHashSet);
 
 			It.Next();
 			Job.Unlink();
@@ -1546,6 +1570,7 @@ void FShaderCompileUtilities::DoReadTaskResults(const TArray<FShaderCommonCompil
 				// cannot reissue a single stage of a pipeline job
 				ReadSingleJob(SingleJob, OutputFile);
 				CurrentJob->bFailedRemovingUnused = CurrentJob->bFailedRemovingUnused | SingleJob->Output.bFailedRemovingUnused;
+				CurrentJob->bSucceeded = CurrentJob->bSucceeded && SingleJob->bSucceeded;
 			}
 		}
 	}
@@ -1972,6 +1997,23 @@ void FShaderCompileThreadRunnable::WriteNewTasks()
 			}
 			delete TransferFile;
 
+#if 0 // debugging code to dump the worker inputs
+			static FCriticalSection ArchiveLock;
+			{
+				FScopeLock Locker(&ArchiveLock);
+				static int ArchivedTransferFileNum = 0;
+				FString JobCacheDir = ShaderCompiler::IsJobCacheEnabled() ? TEXT("JobCache") : TEXT("NoJobCache");
+				FString ArchiveDir = FPaths::ProjectSavedDir() / TEXT("ArchivedWorkerInputs") / JobCacheDir;
+				FString ArchiveName = FString::Printf(TEXT("Input-%d"), ArchivedTransferFileNum++);
+				FString ArchivePath = ArchiveDir / ArchiveName;
+				if (!IFileManager::Get().Copy(*ArchivePath, *TransferFileName))
+				{
+					UE_LOG(LogInit, Error, TEXT("Could not copy file %s to %s"), *TransferFileName, *ArchivePath);
+					ensure(false);
+				}
+			}
+#endif
+
 			// Change the transfer file name to proper one
 			FString ProperTransferFileName = WorkingDirectory / TEXT("WorkerInputOnly.in");
 			if (!IFileManager::Get().Move(*ProperTransferFileName, *TransferFileName))
@@ -2083,11 +2125,10 @@ void FShaderCompileThreadRunnable::ReadAvailableResults()
 			TRACE_CPUPROFILER_EVENT_SCOPE(FShaderCompileThreadRunnable::ReadAvailableResults);
 
 			// Distributed compiles always use the same directory
-			const FString WorkingDirectory = Manager->AbsoluteShaderBaseWorkingDirectory + FString::FromInt(WorkerIndex) + TEXT("/");
 			// 'Only' indicates to the worker that it should log and continue checking for the input file after the first one is processed
-			const TCHAR* InputFileName = TEXT("WorkerInputOnly.in");
-			const FString OutputFileNameAndPath = WorkingDirectory + TEXT("WorkerOutputOnly.out");
-
+			TStringBuilder<512> OutputFileNameAndPath;
+			OutputFileNameAndPath << Manager->AbsoluteShaderBaseWorkingDirectory << WorkerIndex << TEXT("/WorkerOutputOnly.out");
+			
 			// In the common case the output file will not exist, so check for existence before opening
 			// This is only a win if FileExists is faster than CreateFileReader, which it is on Windows
 			if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*OutputFileNameAndPath))
@@ -6198,14 +6239,21 @@ FSHAHash FShaderCompileJob::GetInputHash()
 
 	auto SerializeInputs = [this](FArchive& Archive)
 	{
+		checkf(Archive.IsSaving() && !Archive.IsLoading(), TEXT("A loading archive is passed to FShaderCompileJob::GetInputHash(), this is not supported as it may corrupt its data"));
+
 		Archive << Input;
 		Archive << Input.Environment;
+
+		// hash the source file so changes to files during the development are picked up
+		const FSHAHash &SourceHash = GetShaderFileHash(*Input.VirtualSourceFilePath, Input.Target.GetPlatform());
+		Archive << const_cast<FSHAHash &>(SourceHash);
+
 		for (TMap<FString, FThreadSafeSharedStringPtr>::TConstIterator It(Input.Environment.IncludeVirtualPathToExternalContentsMap); It; ++It)
 		{
-			FString VirtualPath = It.Key();
-			Archive << VirtualPath;
+			const FString& VirtualPath = It.Key();
+			Archive << const_cast<FString&>(VirtualPath);
 			check(It.Value());
-			FString Contents = *It.Value();
+			FString& Contents = *It.Value();
 			Archive << Contents;
 		}
 
@@ -6214,10 +6262,10 @@ FSHAHash FShaderCompileJob::GetInputHash()
 			Archive << *Input.SharedEnvironment;
 			for (TMap<FString, FThreadSafeSharedStringPtr>::TConstIterator It(Input.SharedEnvironment->IncludeVirtualPathToExternalContentsMap); It; ++It)
 			{
-				FString VirtualPath = It.Key();
-				Archive << VirtualPath;
+				const FString& VirtualPath = It.Key();
+				Archive << const_cast<FString&>(VirtualPath);
 				check(It.Value());
-				FString Contents = *It.Value();
+				FString& Contents = *It.Value();
 				Archive << Contents;
 			}
 		}
@@ -6320,9 +6368,17 @@ FSHAHash FShaderPipelineCompileJob::GetInputHash()
 
 void FShaderPipelineCompileJob::SerializeOutput(FArchive& Ar)
 {
+	bool bAllStagesSucceeded = true;
 	for (int32 Index = 0, Num = StageJobs.Num(); Index < Num; ++Index)
 	{
 		StageJobs[Index]->SerializeOutput(Ar);
+		bAllStagesSucceeded = bAllStagesSucceeded && StageJobs[Index]->bSucceeded;
+	}
+
+	if (Ar.IsLoading())
+	{
+		bFinalized = true;
+		bSucceeded = bAllStagesSucceeded;
 	}
 }
 
