@@ -297,7 +297,7 @@ FString FGenericPlatformProcess::GetApplicationName( uint32 ProcessId )
 	return FString(TEXT(""));
 }
 
-bool FGenericPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory)
+bool FGenericPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory, bool bShouldEndWithParentProcess)
 {
 	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::ExecProcess not implemented on this platform"));
 	return false;
@@ -648,6 +648,10 @@ void FGenericPlatformProcess::ModifyThreadAssignmentForUObjectReferenceCollector
 	// On devices with overridden affinity only HiPri threads can run on big cores
 	NormalThreadName = ENamedThreads::AnyHiPriThreadHiPriTask; 
 	NumBackgroundThreads = 0; // run on single group
+#elif WITH_EDITOR
+	// Avoid the ReferenceCollector being slowed down by long running background tasks, async compilation, etc...
+	NormalThreadName = ENamedThreads::AnyHiPriThreadHiPriTask;
+	BackgroundThreadName = ENamedThreads::AnyHiPriThreadHiPriTask;
 #endif
 }
 
