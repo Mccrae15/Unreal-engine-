@@ -501,11 +501,22 @@ namespace CADLibrary
 					for (int32 Index = 0; Index < VerticesPerTriangle; Index++)
 					{
 						const FVertexInstanceID VertexInstanceID = MeshVertexInstanceIDs[IndexFace + Orientation[Index]];
-						VertexInstanceUVs.Set(VertexInstanceID, UVChannel, Tessellation.TexCoordArray[NewFaceIndex[IndexFace + Index]]);
 
 						VertexInstanceColors[VertexInstanceID] = FLinearColor::White;
 						VertexInstanceTangents[VertexInstanceID] = FVector::ZeroVector;
 						VertexInstanceBinormalSigns[VertexInstanceID] = 0.0f;
+					}
+				}
+
+				if (Tessellation.TexCoordArray.Num())
+				{
+					for (int32 IndexFace = 0; IndexFace < MeshVertexInstanceIDs.Num(); IndexFace += 3)
+					{
+						for (int32 Index = 0; Index < VerticesPerTriangle; Index++)
+						{
+							FVertexInstanceID VertexInstanceID = MeshVertexInstanceIDs[IndexFace + Orientation[Index]];
+							VertexInstanceUVs.Set(VertexInstanceID, UVChannel, Tessellation.TexCoordArray[NewFaceIndex[IndexFace + Index]]);
+						}
 					}
 				}
 
