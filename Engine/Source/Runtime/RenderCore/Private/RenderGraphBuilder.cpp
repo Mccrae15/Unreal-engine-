@@ -225,6 +225,11 @@ void EnumerateTextureParameters(FRDGParameterStruct PassParameters, TParameterFu
 			{
 				ParameterFunction(Texture);
 			}
+
+			if (FRDGTextureRef Texture = RenderTargets.FoveationTexture)
+			{
+				ParameterFunction(Texture);
+			}
 		}
 		break;
 		}
