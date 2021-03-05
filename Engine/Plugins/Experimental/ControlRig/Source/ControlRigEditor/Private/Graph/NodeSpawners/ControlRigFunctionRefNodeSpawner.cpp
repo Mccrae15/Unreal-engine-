@@ -33,6 +33,7 @@ UControlRigFunctionRefNodeSpawner* UControlRigFunctionRefNodeSpawner::CreateFrom
 	UControlRigFunctionRefNodeSpawner* NodeSpawner = NewObject<UControlRigFunctionRefNodeSpawner>(GetTransientPackage());
 	NodeSpawner->ReferencedFunctionPtr = InFunction;
 	NodeSpawner->NodeClass = UControlRigGraphNode::StaticClass();
+	NodeSpawner->bIsLocalFunction = true;
 
 	FBlueprintActionUiSpec& MenuSignature = NodeSpawner->DefaultMenuSignature;
 
@@ -168,5 +169,22 @@ UControlRigGraphNode* UControlRigFunctionRefNodeSpawner::SpawnNode(UEdGraph* Par
 	return NewNode;
 }
 
+bool UControlRigFunctionRefNodeSpawner::IsTemplateNodeFilteredOut(FBlueprintActionFilter const& Filter) const
+{
+	if(bIsLocalFunction)
+	{
+		if(ReferencedFunctionPtr.IsValid())
+		{
+			for (UBlueprint* Blueprint : Filter.Context.Blueprints)
+			{
+				if(Blueprint->GetOutermost() != ReferencedFunctionPtr.Get()->GetOutermost())
+				{
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
 
 #undef LOCTEXT_NAMESPACE

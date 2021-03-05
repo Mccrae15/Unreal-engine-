@@ -39,12 +39,17 @@ public:
 	virtual FBlueprintNodeSignature GetSpawnerSignature() const override;
 	virtual FBlueprintActionUiSpec GetUiSpec(FBlueprintActionContext const& Context, FBindingSet const& Bindings) const override;
 	virtual UEdGraphNode* Invoke(UEdGraph* ParentGraph, FBindingSet const& Bindings, FVector2D const Location) const override;
+	virtual bool IsTemplateNodeFilteredOut(FBlueprintActionFilter const& Filter) const override;
 	// End UBlueprintNodeSpawner interface
 
 private:
 	/** The unit type we will spawn */
 	UPROPERTY(Transient)
 	TWeakObjectPtr<URigVMLibraryNode> ReferencedFunctionPtr;
+
+	/** Marked as true for local function definitions */
+	UPROPERTY(Transient)
+	bool bIsLocalFunction;
 
 	static UControlRigGraphNode* SpawnNode(UEdGraph* ParentGraph, UBlueprint* Blueprint, URigVMLibraryNode* InFunction, FVector2D const Location);
 
