@@ -1933,7 +1933,10 @@ void FControlRigEditMode::OnWidgetModeChanged(UE::Widget::EWidgetMode InWidgetMo
 		TGuardValue<bool> ReentrantGuardSelf(bIsChangingCoordSystem, true);
 
 		int32 WidgetMode = (int32)GLevelEditorModeTools().GetWidgetMode();
-		GLevelEditorModeTools().SetCoordSystem(CoordSystemPerWidgetMode[WidgetMode]);
+		if (WidgetMode >= 0 && WidgetMode < CoordSystemPerWidgetMode.Num())
+		{
+			GLevelEditorModeTools().SetCoordSystem(CoordSystemPerWidgetMode[WidgetMode]);
+		}
 	}
 }
 
@@ -1943,7 +1946,10 @@ void FControlRigEditMode::OnCoordSystemChanged(ECoordSystem InCoordSystem)
 
 	int32 WidgetMode = (int32)GLevelEditorModeTools().GetWidgetMode();
 	ECoordSystem CoordSystem = GLevelEditorModeTools().GetCoordSystem();
-	CoordSystemPerWidgetMode[WidgetMode] = CoordSystem;
+	if (WidgetMode >= 0 && WidgetMode < CoordSystemPerWidgetMode.Num())
+	{
+		CoordSystemPerWidgetMode[WidgetMode] = CoordSystem;
+	}
 }
 
 void FControlRigEditMode::SetGizmoTransform(AControlRigGizmoActor* GizmoActor, const FTransform& InTransform)
@@ -2126,6 +2132,8 @@ bool FControlRigEditMode::ModeSupportedByGizmoActor(const AControlRigGizmoActor*
 			{
 				switch (InMode)
 				{
+					case UE::Widget::WM_None:
+						return true;
 					case UE::Widget::WM_Rotate:
 					{
 						switch (RigControl->ControlType)
