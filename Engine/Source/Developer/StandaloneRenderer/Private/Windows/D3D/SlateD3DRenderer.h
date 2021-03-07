@@ -66,6 +66,7 @@ public:
 	virtual void RemoveDynamicBrushResource( TSharedPtr<FSlateDynamicImageBrush> BrushToRemove ) override;
 	virtual void LoadStyleResources( const ISlateStyle& Style ) override;
 	virtual FSlateUpdatableTexture* CreateUpdatableTexture(uint32 Width, uint32 Height) override;
+	virtual FSlateUpdatableTexture* CreateSharedHandleTexture(void* SharedHandle) override;
 	virtual void ReleaseUpdatableTexture(FSlateUpdatableTexture* Texture) override;
 	virtual ISlateAtlasProvider* GetTextureAtlasProvider() override;
 	virtual FCriticalSection* GetResourceCriticalSection() override;

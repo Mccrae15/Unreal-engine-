@@ -12,6 +12,8 @@
 
 #if PLATFORM_LINUX
 	#include "HAL/PlatformApplicationMisc.h"
+#elif PLATFORM_MAC
+	#include "Mac/CocoaThread.h"
 #endif
 
 class FSlateOpenGLFontAtlasFactory : public ISlateFontAtlasFactory
@@ -284,6 +286,13 @@ FSlateUpdatableTexture* FSlateOpenGLRenderer::CreateUpdatableTexture(uint32 Widt
 	RawData.AddZeroed(Width * Height * 4);
 	FSlateOpenGLTexture* NewTexture = new FSlateOpenGLTexture(Width, Height);
 	NewTexture->Init(GL_RGBA, RawData);
+	return NewTexture;
+}
+
+FSlateUpdatableTexture* FSlateOpenGLRenderer::CreateSharedHandleTexture(void* SharedHandle)
+{
+	FSlateOpenGLTexture* NewTexture = new FSlateOpenGLTexture();
+	NewTexture->Init(SharedHandle);
 	return NewTexture;
 }
 

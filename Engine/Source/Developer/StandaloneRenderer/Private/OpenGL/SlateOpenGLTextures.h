@@ -20,13 +20,29 @@ public:
 		: TSlateTexture( FSlateOpenGLTexture::NullTexture )
 		, SizeX(InSizeX)
 		, SizeY(InSizeY)
+		, TextureTargetType(GL_TEXTURE_2D)
 	{
 
+	}
+
+	FSlateOpenGLTexture()
+	: TSlateTexture( FSlateOpenGLTexture::NullTexture )
+	, SizeX(0)
+	, SizeY(0)
+#if PLATFORM_LINUX
+	, TextureTargetType(GL_TEXTURE_RECTANGLE)
+#else
+	, TextureTargetType(GL_TEXTURE_RECTANGLE_ARB)
+#endif
+	{
+		
 	}
 
 	void Init( GLenum InTexFormat, const TArray<uint8>& TextureData );
 
 	void Init( GLuint TextureID );
+
+	void Init( void* TextureHandle );
 
 	~FSlateOpenGLTexture()
 	{
@@ -45,6 +61,14 @@ public:
 	virtual void UpdateTextureThreadSafe(const TArray<uint8>& Bytes) override { UpdateTexture(Bytes); }
 	virtual void UpdateTextureThreadSafeRaw(uint32 Width, uint32 Height, const void* Buffer, const FIntRect& Dirty = FIntRect()) override;
 	virtual void UpdateTextureThreadSafeWithTextureData(FSlateTextureData* TextureData) override;
+#if PLATFORM_MAC
+	// only macOS has support for texture handles currently
+	virtual void UpdateTextureThreadSafeWithKeyedTextureHandle(void* TextureHandle, int KeyLockVal, int KeyUnlockVal, const FIntRect& Dirty = FIntRect()) override;
+#else
+	virtual void UpdateTextureThreadSafeWithKeyedTextureHandle(void* TextureHandle, int KeyLockVal, int KeyUnlockVal, const FIntRect& Dirty = FIntRect()) override {}
+#endif
+	
+	uint32 GetTextureTargetType() const { return TextureTargetType; }
 private:
 	// Helper method used by the different UpdateTexture* methods
 	void UpdateTextureRaw(const void* Buffer, const FIntRect& Dirty);
@@ -55,6 +79,7 @@ private:
 	uint32 SizeX;
 	uint32 SizeY;
 	bool bHasPendingResize;
+	uint32 TextureTargetType;
 };
 
 /** 

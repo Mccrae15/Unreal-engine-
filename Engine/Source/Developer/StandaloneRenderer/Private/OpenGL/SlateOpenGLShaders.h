@@ -8,6 +8,7 @@
 #include "CoreMinimal.h"
 #include "StandaloneRendererPlatformHeaders.h"
 #include "Rendering/RenderingCommon.h"
+#include "SlateOpenGLTextures.h"
 
 /**
  * Base class for all OpenGL shaders                   
@@ -66,7 +67,7 @@ public:
 	virtual void CreateProgram( const FSlateOpenGLVS& VertexShader, const FSlateOpenGLPS& PixelShader );
 	void SetViewProjectionMatrix( const FMatrix& InVP ); 
 	void SetVertexShaderParams( const FVector4& ShaderParams );
-	void SetTexture( GLuint Texture, uint32 AddressU, uint32 AddressV  );
+	void SetTexture( FSlateOpenGLTexture *Texture, uint32 AddressU, uint32 AddressV  );
 	void SetDrawEffects(ESlateDrawEffect InDrawEffects );
 	void SetShaderType( uint32 InShaderType );
 	void SetShaderParams(const FShaderParams& InShaderParams);
@@ -77,6 +78,11 @@ private:
 	GLint TextureParam;
 	GLint EffectsDisabledParam;
 	GLint IgnoreTextureAlphaParam;
+#if PLATFORM_MAC
+	GLint TextureRectParam;
+	GLint SizeParam;
+	GLint UseTextureRectangle;
+#endif
 	GLint ShaderTypeParam;
 	GLint ShaderParamsParam;
 	GLint ShaderParams2Param;
