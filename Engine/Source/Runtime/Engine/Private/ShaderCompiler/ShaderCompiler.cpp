@@ -3075,7 +3075,7 @@ void FShaderCompilingManager::BlockOnShaderMapCompletion(const TArray<int32>& Sh
 			}
 		}
 
-		FScopedSlowTask SlowTask(NumJobs, FText::Format(LOCTEXT("BlockOnShaderMapCompletion", "Blocking on {0} shader jobs..."), NumJobs), GIsEditor && !IsRunningCommandlet());
+		FScopedSlowTask SlowTask(NumJobs, FText::Format(LOCTEXT("BlockOnShaderMapCompletion", "Compiling Shaders ({0})"), NumJobs), GIsEditor && !IsRunningCommandlet());
 
 		int32 NumPendingJobs = 0;
 		// Keep track of previous number of pending jobs so we can update the slow task with the amount of work done.
@@ -3143,7 +3143,7 @@ void FShaderCompilingManager::BlockOnShaderMapCompletion(const TArray<int32>& Sh
 				// Progress the slow task with how many jobs we've completed since last tick.  Update the slow task message with the current number of pending jobs
 				// we are waiting on.
 				const int32 CompletedJobsSinceLastTick = NumPreviousPendingJobs - NumPendingJobs;
-				SlowTask.EnterProgressFrame(CompletedJobsSinceLastTick, FText::Format(LOCTEXT("BlockOnShaderMapCompletion", "Blocking on {0} shader jobs..."), NumPendingJobs));
+				SlowTask.EnterProgressFrame(CompletedJobsSinceLastTick, FText::Format(LOCTEXT("BlockOnShaderMapCompletion", "Compiling Shaders ({0})"), NumPendingJobs));
 				NumPreviousPendingJobs = NumPendingJobs;
 				
 				// Yield CPU time while waiting
@@ -3208,7 +3208,7 @@ void FShaderCompilingManager::BlockOnAllShaderMapCompletion(TMap<int32, FShaderM
 			}
 		}
 
-		FScopedSlowTask SlowTask(NumJobs, FText::Format(LOCTEXT("BlockOnAllShaderMapCompletion", "Blocking on {0} shader jobs..."), NumJobs), GIsEditor && !IsRunningCommandlet());
+		FScopedSlowTask SlowTask(NumJobs, FText::Format(LOCTEXT("BlockOnAllShaderMapCompletion", "Compiling Shaders ({0})"), NumJobs), GIsEditor && !IsRunningCommandlet());
 
 		int32 NumPendingJobs = 0;
 		// Keep track of previous number of pending jobs so we can update the slow task with the amount of work done.
@@ -3259,7 +3259,7 @@ void FShaderCompilingManager::BlockOnAllShaderMapCompletion(TMap<int32, FShaderM
 				// Progress the slow task with how many jobs we've completed since last tick.  Update the slow task message with the current number of pending jobs
 				// we are waiting on.
 				const int32 CompletedJobsSinceLastTick = NumPreviousPendingJobs - NumPendingJobs;
-				SlowTask.EnterProgressFrame(CompletedJobsSinceLastTick, FText::Format(LOCTEXT("BlockOnAllShaderMapCompletion", "Blocking on {0} shader jobs..."), NumPendingJobs));
+				SlowTask.EnterProgressFrame(CompletedJobsSinceLastTick, FText::Format(LOCTEXT("BlockOnAllShaderMapCompletion", "Compiling Shaders ({0})"), NumPendingJobs));
 				NumPreviousPendingJobs = NumPendingJobs;
 				
 				// Yield CPU time while waiting
