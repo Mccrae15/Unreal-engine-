@@ -97,10 +97,7 @@ const FResolvedSymbol* TModuleProvider<SymbolProvider>::GetSymbol(uint64 Address
 		{
 			return SymbolCache[Address];
 		}
-		ResolvedSymbol = &Symbols.EmplaceBack();
-		ResolvedSymbol->Result = QR_NotLoaded;
-		ResolvedSymbol->Name = nullptr;
-		ResolvedSymbol->FileAndLine = nullptr;
+		ResolvedSymbol = &Symbols.EmplaceBack(QR_NotLoaded, nullptr, nullptr);
 		SymbolCache.Add(Address, ResolvedSymbol);
 	}
 

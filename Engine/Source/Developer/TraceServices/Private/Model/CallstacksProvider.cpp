@@ -12,11 +12,7 @@ namespace TraceServices
 {
 
 /////////////////////////////////////////////////////////////////////
-static const FResolvedSymbol GNeverResolveSymbol = {
-	QueryResult::QR_NotLoaded,
-	nullptr,
-	nullptr
-};
+static const FResolvedSymbol GNeverResolveSymbol(QueryResult::QR_NotLoaded, nullptr, nullptr);
 
 /////////////////////////////////////////////////////////////////////
 #ifdef TRACE_CALLSTACK_STATS

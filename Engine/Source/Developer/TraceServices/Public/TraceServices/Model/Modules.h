@@ -29,6 +29,12 @@ struct FResolvedSymbol
 	std::atomic<QueryResult> Result;
 	const TCHAR* Name;
 	const TCHAR* FileAndLine;
+
+	FResolvedSymbol(QueryResult InResult, const TCHAR* InName, const TCHAR* InFileAndLine)
+		: Result(InResult)
+		, Name(InName)
+		, FileAndLine(InFileAndLine)
+	{}
 };
 
 ////////////////////////////////////////////////////////////////////////////////
