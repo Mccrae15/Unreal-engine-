@@ -1969,8 +1969,7 @@ void FOpenGLDynamicRHI::SetupVertexArrays(FOpenGLContextState& ContextState, uin
 	{
 		FOpenGLVertexElement& VertexElement = VertexDeclaration->VertexElements[ElementIndex];
 		uint32 AttributeIndex = VertexElement.AttributeIndex;
-		const bool bAttribInUse = (Bindings.InOutMask & (0x1 << AttributeIndex)) != 0;
-		if (!bAttribInUse)
+		if (!Bindings.InOutMask.IsFieldEnabled((int32)AttributeIndex))
 		{
 			continue; // skip unused attributes.
 		}
@@ -2051,9 +2050,9 @@ void FOpenGLDynamicRHI::SetupVertexArraysVAB(FOpenGLContextState& ContextState, 
 
 	check(IsValidRef(PendingState.BoundShaderState));
 	FOpenGLVertexDeclaration* VertexDeclaration = PendingState.BoundShaderState->VertexDeclaration;
-	uint32 AttributeMask = PendingState.BoundShaderState->GetVertexShader()->Bindings.InOutMask;
+	const CrossCompiler::FShaderBindingInOutMask& AttributeMask = PendingState.BoundShaderState->GetVertexShader()->Bindings.InOutMask;
 
-	if (ContextState.VertexDecl != VertexDeclaration || AttributeMask != ContextState.VertexAttrs_EnabledBits)
+	if (ContextState.VertexDecl != VertexDeclaration || AttributeMask.Bitmask != ContextState.VertexAttrs_EnabledBits)
 	{
 		StreamMask = 0;
 		UpdateDivisors = true;
@@ -2064,12 +2063,11 @@ void FOpenGLDynamicRHI::SetupVertexArraysVAB(FOpenGLContextState& ContextState, 
 		{
 			FOpenGLVertexElement& VertexElement = VertexDeclaration->VertexElements[ElementIndex];
 			uint32 AttributeIndex = VertexElement.AttributeIndex;
-			const bool bAttribInUse = (AttributeMask & (0x1 << AttributeIndex)) != 0;
 			const uint32 StreamIndex = VertexElement.StreamIndex;
 
 			//only setup/track attributes actually in use
 			FOpenGLCachedAttr &Attr = ContextState.VertexAttrs[AttributeIndex];
-			if (bAttribInUse)
+			if (AttributeMask.IsFieldEnabled(AttributeIndex))
 			{
 				if (VertexElement.StreamIndex < NumStreams)
 				{
@@ -2140,7 +2138,7 @@ void FOpenGLDynamicRHI::SetupVertexArraysVAB(FOpenGLContextState& ContextState, 
 	}
 
 	// Disable remaining vertex arrays
-	uint32 NotUsedButEnabledAttrMask = (ContextState.VertexAttrs_EnabledBits & ~(AttributeMask));
+	uint32 NotUsedButEnabledAttrMask = (ContextState.VertexAttrs_EnabledBits & ~(AttributeMask.Bitmask));
 	for (GLuint AttribIndex = 0; AttribIndex < NUM_OPENGL_VERTEX_STREAMS && NotUsedButEnabledAttrMask; AttribIndex++)
 	{
 		if (NotUsedButEnabledAttrMask & 1)
@@ -2235,8 +2233,7 @@ void FOpenGLDynamicRHI::SetupVertexArraysUP(FOpenGLContextState& ContextState, v
 		check(VertexElement.StreamIndex < 1);
 
 		uint32 AttributeIndex = VertexElement.AttributeIndex;
-		const bool bAttribInUse = (Bindings.InOutMask & (0x1 << AttributeIndex)) != 0;
-		if (bAttribInUse)
+		if (Bindings.InOutMask.IsFieldEnabled(AttributeIndex))
 		{
 			check(Stride > 0);
 			EnableVertexElementCached(
