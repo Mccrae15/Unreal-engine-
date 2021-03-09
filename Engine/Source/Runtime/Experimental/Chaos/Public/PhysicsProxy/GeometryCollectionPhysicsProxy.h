@@ -228,6 +228,18 @@ public:
 		const Chaos::TPBDRigidsSolver<Traits>* RigidSolver,
 		const EFieldFilterType FilterType);
 
+	int32 GetTransformGroupIndexFromHandle(const FParticleHandle* Handle) const
+	{
+		if (HandleToTransformGroupIndex.Contains(Handle))
+		{
+			return HandleToTransformGroupIndex[Handle];
+		}
+		else
+		{
+			return INDEX_NONE;
+		}
+	}
+
 protected:
 	/**
 	 * Build a physics thread cluster parent particle.
