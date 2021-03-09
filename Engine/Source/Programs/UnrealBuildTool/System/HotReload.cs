@@ -340,7 +340,7 @@ namespace UnrealBuildTool
 								RunningProcess = null;
 							}
 
-							if(RunningProcess == null)
+							if(RunningProcess == null || RunningProcess.HasExited)
 							{
 								FileReference.Delete(EditorInstanceFile);
 								continue;
@@ -356,7 +356,7 @@ namespace UnrealBuildTool
 								MainModuleFile = null;
 							}
 
-							if(!bIsRunning && EditorLocation == MainModuleFile)
+							if (!bIsRunning && EditorLocation == MainModuleFile)
 							{
 								bIsRunning = true;
 							}
