@@ -2763,6 +2763,7 @@ public:
 			, bForceUseMovementComponentInNonGameWorld(false)
 			, bTransactional(true)
 			, bCreateFXSystem(true)
+			, bCreateWorldPartition(false)
 		{
 		}
 
@@ -2799,6 +2800,9 @@ public:
 		/** Should the FX system be created for this world. */
 		uint32 bCreateFXSystem:1;
 
+		/** Should the world be partitioned */
+		uint32 bCreateWorldPartition:1;
+
 		/** The default game mode for this world (if any) */
 		TSubclassOf<class AGameModeBase> DefaultGameMode;
 
@@ -2813,6 +2817,7 @@ public:
 		InitializationValues& ForceUseMovementComponentInNonGameWorld(const bool bInForceUseMovementComponentInNonGameWorld) { bForceUseMovementComponentInNonGameWorld = bInForceUseMovementComponentInNonGameWorld; return *this; }
 		InitializationValues& SetTransactional(const bool bInTransactional) { bTransactional = bInTransactional; return *this; }
 		InitializationValues& CreateFXSystem(const bool bCreate) { bCreateFXSystem = bCreate; return *this; }
+		InitializationValues& CreateWorldPartition(const bool bCreate) { bCreateWorldPartition = bCreate; return *this; }
 		InitializationValues& SetDefaultGameMode(TSubclassOf<class AGameModeBase> GameMode) { DefaultGameMode = GameMode; return *this; }
 	};
 
@@ -3685,6 +3690,7 @@ public:
 	{
 		SubsystemCollection.Deinitialize();
 		SubsystemCollection.Initialize(this);
+		PostInitializeSubsystems();
 	}
 
 	/**
