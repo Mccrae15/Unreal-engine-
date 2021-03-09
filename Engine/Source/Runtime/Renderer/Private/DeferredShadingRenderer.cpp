@@ -1525,9 +1525,6 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 {
 	const bool bNaniteEnabled = UseNanite(ShaderPlatform) && ViewFamily.EngineShowFlags.NaniteMeshes;
 
-	// Important that this uses consistent logic for whether or not nanite is enabled, so pass in the flag from here
-	VirtualShadowMapArray.Initialize(UseVirtualShadowMaps(ShaderPlatform, FeatureLevel));
-
 	Scene->UpdateAllPrimitiveSceneInfos(GraphBuilder, true);
 
 	FGPUSceneScopeBeginEndHelper GPUSceneScopeBeginEndHelper(Scene->GPUScene, GPUSceneDynamicContext, Scene);
@@ -1607,6 +1604,10 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 		FVirtualTextureSystem::Get().CallPendingCallbacks();
 		VirtualTextureFeedbackBegin(GraphBuilder, Views, SceneTexturesConfig.Extent);
 	}
+
+	// Important that this uses consistent logic throughout the frame, so evaluate once and pass in the flag from here
+	// NOTE: Must be done after  system texture initialization
+	VirtualShadowMapArray.Initialize(GraphBuilder, UseVirtualShadowMaps(ShaderPlatform, FeatureLevel));
 
 	// Nanite materials do not currently support most debug view modes.
 	const bool bShouldApplyNaniteMaterials

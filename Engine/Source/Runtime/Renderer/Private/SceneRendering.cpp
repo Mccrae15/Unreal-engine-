@@ -460,6 +460,18 @@ TSharedPtr<FVirtualShadowMapClipmap> FVisibleLightInfo::FindShadowClipmapForView
 	return TSharedPtr<FVirtualShadowMapClipmap>();
 }
 
+int32 FVisibleLightInfo::GetVirtualShadowMapId( const FViewInfo* View ) const
+{
+	if( VirtualShadowMapClipmaps.Num() )
+	{
+		return FindShadowClipmapForView( View )->GetVirtualShadowMap(0)->ID;
+	}
+	else
+	{
+		return VirtualShadowMapId;
+	}
+}
+
 
 #if !UE_BUILD_SHIPPING
 namespace
@@ -2835,6 +2847,7 @@ FSceneRenderer::~FSceneRenderer()
 					// Their memory will be freed when the stack is freed with no destructor call, so invoke the destructor explicitly
 					VisibleLightInfo.MemStackProjectedShadows[ShadowIndex]->~FProjectedShadowInfo();
 				}
+				VisibleLightInfo.VirtualShadowMapId = INDEX_NONE;
 			}
 		}
 	}
