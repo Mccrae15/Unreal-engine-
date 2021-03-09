@@ -80,6 +80,12 @@ void SMemAllocTableTreeView::Tick(const FGeometry& AllottedGeometry, const doubl
 {
 	STableTreeView::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 
+	if (bHasPendingQueryReset && !bIsUpdateRunning)
+	{
+		ResetAndStartQuery();
+		bHasPendingQueryReset = false;
+	}
+
 	if (!bIsUpdateRunning)
 	{
 		RebuildTree(false);
@@ -179,6 +185,20 @@ void SMemAllocTableTreeView::OnQueryInvalidated()
 {
 	CancelQuery();
 
+	if (bIsUpdateRunning)
+	{
+		bHasPendingQueryReset = true;
+	}
+	else
+	{
+		ResetAndStartQuery();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SMemAllocTableTreeView::ResetAndStartQuery()
+{
 	TableTreeNodes.Reset();
 
 	TSharedPtr<Insights::FMemAllocTable> MemAllocTable = GetMemAllocTable();
