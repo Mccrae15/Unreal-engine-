@@ -696,23 +696,29 @@ void FRigHierarchyContainer::UpdateDepthIndexIfRequired() const
 				return;
 			}
 
+			const int32 ChildIndex = Hierarchy->GetIndex(Child);
+			if(ChildIndex == INDEX_NONE)
+			{
+				return;
+			}
+
 			switch (Child.Type)
 			{
 				case ERigElementType::Bone:
 				{
-					const FRigBone& Bone = Hierarchy->BoneHierarchy[Child.Name];
+					const FRigBone& Bone = Hierarchy->BoneHierarchy[ChildIndex];
 					CollectChildren(Child, Bone.GetParentElementKey(true), Hierarchy, ChildMap);
 					break;
 				}
 				case ERigElementType::Space:
 				{
-					const FRigSpace& Space = Hierarchy->SpaceHierarchy[Child.Name];
+					const FRigSpace& Space = Hierarchy->SpaceHierarchy[ChildIndex];
 					CollectChildren(Child, Space.GetParentElementKey(true), Hierarchy, ChildMap);
 					break;
 				}
 				case ERigElementType::Control:
 				{
-					const FRigControl& Control = Hierarchy->ControlHierarchy[Child.Name];
+					const FRigControl& Control = Hierarchy->ControlHierarchy[ChildIndex];
 					CollectChildren(Child, Control.GetSpaceElementKey(true), Hierarchy, ChildMap);
 					CollectChildren(Child, Control.GetParentElementKey(true), Hierarchy, ChildMap);
 					break;
