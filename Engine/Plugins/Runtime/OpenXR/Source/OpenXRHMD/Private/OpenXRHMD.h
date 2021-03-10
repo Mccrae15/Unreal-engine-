@@ -60,6 +60,8 @@ public:
 		TArray<XrCompositionLayerDepthInfoKHR> DepthLayers;
 		TArray<XrSwapchainSubImage> ColorImages;
 		TArray<XrSwapchainSubImage> DepthImages;
+		FXRSwapChainPtr ColorSwapchain;
+		FXRSwapChainPtr DepthSwapchain;
 	};
 
 	class FVulkanExtensions : public IHeadMountedDisplayVulkanExtensions
@@ -185,7 +187,7 @@ public:
 	virtual void DrawVisibleAreaMesh_RenderThread(class FRHICommandList& RHICmdList, EStereoscopicPass StereoPass) const override final;
 	virtual void OnBeginRendering_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& ViewFamily) override;
 	virtual void OnBeginRendering_GameThread() override;
-	virtual void OnLateUpdateApplied_RenderThread(const FTransform& NewRelativeTransform) override;
+	virtual void OnLateUpdateApplied_RenderThread(FRHICommandListImmediate& RHICmdList, const FTransform& NewRelativeTransform) override;
 	virtual bool OnStartGameFrame(FWorldContext& WorldContext) override;
 
 	/** IStereoRendering interface */
@@ -231,7 +233,6 @@ public:
 	/** Destructor */
 	virtual ~FOpenXRHMD();
 
-
 	void OnBeginRendering_RHIThread();
 	void OnFinishRendering_RHIThread();
 
@@ -270,11 +271,11 @@ private:
 	bool					bNeedReBuildOcclusionMesh;
 	bool					bIsMobileMultiViewEnabled;
 	bool					bSupportsHandTracking;
+	bool					bNeedsAcquireOnRHI;
 	float					WorldToMetersScale = 100.0f;
 
 	XrSessionState			CurrentSessionState;
-	FEvent*					FrameEventRHI;
-	FCriticalSection		BeginEndFrameMutex;
+	FRWLock					SessionHandleMutex;
 
 	TArray<const char*>		EnabledExtensions;
 	TArray<class IOpenXRExtensionPlugin*> ExtensionPlugins;
@@ -294,7 +295,7 @@ private:
 	FPipelinedLayerState	PipelinedLayerStateRendering;
 	FPipelinedLayerState	PipelinedLayerStateRHI;
 
-	FCriticalSection		DeviceMutex;
+	FRWLock					DeviceMutex;
 	TArray<FDeviceSpace>	DeviceSpaces;
 
 	TRefCountPtr<FOpenXRRenderBridge> RenderBridge;
