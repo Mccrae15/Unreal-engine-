@@ -74,14 +74,6 @@ void UFieldSystemComponent::OnCreatePhysicsState()
 		check(ChaosModule);
 
 		bHasPhysicsState = true;
-
-		if(FieldSystem)
-		{
-			for(FFieldSystemCommand& Cmd : FieldSystem->Commands)
-			{
-				DispatchCommand(Cmd);
-			}
-		}
 	}
 }
 
@@ -236,6 +228,8 @@ void UFieldSystemComponent::ResetFieldSystem()
 	{
 		BlueprintBufferedCommands.Reset();
 	}
+	ConstructionCommands.ResetFieldCommands();
+	BufferCommands.ResetFieldCommands();
 }
 
 void UFieldSystemComponent::AddFieldCommand(bool Enabled, EFieldPhysicsType Target, UFieldSystemMetaData* MetaData, UFieldNodeBase* Field)
@@ -261,6 +255,7 @@ void UFieldSystemComponent::AddFieldCommand(bool Enabled, EFieldPhysicsType Targ
 			}
 			ensure(!Command.TargetAttribute.IsEqual("None"));
 			BlueprintBufferedCommands.Add(Command);
+			BufferCommands.AddFieldCommand(GetFieldPhysicsName(Target), Field, MetaData);
 		}
 	}
 }

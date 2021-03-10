@@ -2504,20 +2504,32 @@ void UGeometryCollectionComponent::DispatchCommand(const FFieldSystemCommand& In
 void UGeometryCollectionComponent::GetInitializationCommands(TArray<FFieldSystemCommand>& CombinedCommmands)
 {
 	CombinedCommmands.Reset();
-	for (const AFieldSystemActor * FieldSystemActor : InitializationFields)
+	for (const AFieldSystemActor* FieldSystemActor : InitializationFields)
 	{
 		if (FieldSystemActor != nullptr)
 		{
-			if (FieldSystemActor->GetFieldSystemComponent() && FieldSystemActor->GetFieldSystemComponent()->GetFieldSystem())
+			if (FieldSystemActor->GetFieldSystemComponent())
 			{
-				for (const FFieldSystemCommand& Command : FieldSystemActor->GetFieldSystemComponent()->GetFieldSystem()->Commands)
+				const int32 NumCommands = FieldSystemActor->GetFieldSystemComponent()->ConstructionCommands.GetNumCommands();
+				if (NumCommands > 0)
 				{
-					FFieldSystemCommand NewCommand = { Command.TargetAttribute, Command.RootNode->NewCopy() };
-					for (auto & Elem : Command.MetaData)
+					for (int32 CommandIndex = 0; CommandIndex < NumCommands; ++CommandIndex)
 					{
-						NewCommand.MetaData.Add(Elem.Key, TUniquePtr<FFieldSystemMetaData>(Elem.Value->NewCopy()));
+						CombinedCommmands.Add(FieldSystemActor->GetFieldSystemComponent()->ConstructionCommands.BuildFieldCommand(CommandIndex));
 					}
-					CombinedCommmands.Add(NewCommand);
+				}
+				// Legacy path : only there for old levels. New ones will have the commands directly saved onto the component
+				else if (FieldSystemActor->GetFieldSystemComponent()->GetFieldSystem())
+				{
+					for (const FFieldSystemCommand& Command : FieldSystemActor->GetFieldSystemComponent()->GetFieldSystem()->Commands)
+					{
+						FFieldSystemCommand NewCommand = { Command.TargetAttribute, Command.RootNode->NewCopy() };
+						for (auto& Elem : Command.MetaData)
+						{
+							NewCommand.MetaData.Add(Elem.Key, TUniquePtr<FFieldSystemMetaData>(Elem.Value->NewCopy()));
+						}
+						CombinedCommmands.Add(NewCommand);
+					}
 				}
 			}
 		}

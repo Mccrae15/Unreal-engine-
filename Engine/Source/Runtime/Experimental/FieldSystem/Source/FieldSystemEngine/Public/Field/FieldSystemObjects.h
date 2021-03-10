@@ -645,6 +645,96 @@ public:
 
 };
 
+/**
+* Field Commands container that will be stored in the construction script
+*/
+USTRUCT(BlueprintType)
+struct FIELDSYSTEMENGINE_API FFieldObjectCommands
+{
+	GENERATED_BODY()
+
+		FFieldObjectCommands()
+		: TargetNames()
+		, RootNodes()
+		, MetaDatas()
+	{}
+
+	~FFieldObjectCommands() {}
+
+	/** Add a command to the container */
+	void AddFieldCommand(const FName& TargetName, UFieldNodeBase* RootNode, UFieldSystemMetaData* MetaData)
+	{
+		TargetNames.Add(TargetName);
+		RootNodes.Add(RootNode);
+		MetaDatas.Add(MetaData);
+	}
+
+	/** Reset the commands container to empty */
+	void ResetFieldCommands()
+	{
+		TargetNames.Reset();
+		RootNodes.Reset();
+		MetaDatas.Reset();
+	}
+
+	/** Get the number of commands in the container */
+	int32 GetNumCommands() const
+	{
+		return TargetNames.Num();
+	}
+
+	/** Create a FFieldCommand from a given target + node + metadata + transform */
+	static FFieldSystemCommand CreateFieldCommand(const FName& TargetName, UFieldNodeBase* RootNode, UFieldSystemMetaData* MetaData)
+	{
+		if (RootNode)
+		{
+			TArray<const UFieldNodeBase*> Nodes;
+			FFieldSystemCommand Command = { TargetName, RootNode->NewEvaluationGraph(Nodes) };
+			if (ensureMsgf(Command.RootNode,
+				TEXT("Failed to generate physics field command for target attribute.")))
+			{
+				if (MetaData)
+				{
+					switch (MetaData->Type())
+					{
+					case FFieldSystemMetaData::EMetaType::ECommandData_ProcessingResolution:
+						Command.MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_ProcessingResolution).Reset(new FFieldSystemMetaDataProcessingResolution(static_cast<UFieldSystemMetaDataProcessingResolution*>(MetaData)->ResolutionType));
+						break;
+					case FFieldSystemMetaData::EMetaType::ECommandData_Iteration:
+						Command.MetaData.Add(FFieldSystemMetaData::EMetaType::ECommandData_Iteration).Reset(new FFieldSystemMetaDataIteration(static_cast<UFieldSystemMetaDataIteration*>(MetaData)->Iterations));
+						break;
+					}
+				}
+				ensure(!Command.TargetAttribute.IsEqual("None"));
+			}
+			return Command;
+		}
+		else
+		{
+			return FFieldSystemCommand();
+		}
+	}
+
+	/** Build the FFieldCommand from one item in the container */
+	FFieldSystemCommand BuildFieldCommand(const int32 CommandIndex) const
+	{
+		return (CommandIndex < GetNumCommands()) ? CreateFieldCommand(TargetNames[CommandIndex], RootNodes[CommandIndex], MetaDatas[CommandIndex]) : FFieldSystemCommand();
+	}
+
+	/**Commands Target Name */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Target Names")
+	TArray<FName> TargetNames;
+
+	/** Commands Root Node */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Root Nodes")
+	TArray<UFieldNodeBase*> RootNodes;
+
+	/** Commands Meta Data*/
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Field", DisplayName = "Meta Datas")
+	TArray<UFieldSystemMetaData*> MetaDatas;
+};
+
+
 
 
 

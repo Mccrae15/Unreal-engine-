@@ -41,6 +41,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Field")
 	UFieldSystem* FieldSystem;
 
+	/** List of all the construction command */
+	UPROPERTY()
+	FFieldObjectCommands ConstructionCommands;
+
+	/** List of all the buffer command */
+	UPROPERTY()
+	FFieldObjectCommands BufferCommands;
+
 	//
 	// Blueprint based field interface
 	//
