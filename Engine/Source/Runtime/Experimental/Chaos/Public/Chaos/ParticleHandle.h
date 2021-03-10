@@ -1415,6 +1415,15 @@ public:
 		return 0.0f;
 	}
 
+	const FShapesArray& ShapesArray() const
+	{
+		return MHandle->ShapesArray();
+	}
+
+	const FPerShapeData* GetImplicitShape(const FImplicitObject* InImplicit) const
+	{
+		return MHandle->GetImplicitShape(InImplicit);
+	}
 
 #if CHAOS_CHECKED
 	const FName& DebugName() const
@@ -1504,6 +1513,8 @@ const PMatrix<T, d, d> TGenericParticleHandleHandleImp<T, d>::ZeroMatrix = PMatr
 template <typename T, int d>
 const TUniquePtr<TBVHParticles<T, d>> TGenericParticleHandleHandleImp<T, d>::NullBVHParticles = TUniquePtr<TBVHParticles<T, d>>();
 
+using FGenericParticleHandle = TGenericParticleHandle<FReal, 3>;
+using FConstGenericParticleHandle = TConstGenericParticleHandle<FReal, 3>;
 
 
 template <typename T, int d>

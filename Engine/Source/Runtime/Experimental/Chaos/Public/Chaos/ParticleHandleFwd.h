@@ -96,6 +96,9 @@ namespace Chaos
 	template <typename T, int d>
 	class TGenericParticleHandle;
 
+	template <typename T, int d>
+	class TConstGenericParticleHandle;
+
 	// TParticleIterator
 
 	template <typename TSOA>
