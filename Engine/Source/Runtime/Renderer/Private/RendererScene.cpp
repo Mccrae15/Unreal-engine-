@@ -3736,6 +3736,10 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 	RDG_EVENT_SCOPE(GraphBuilder, "UpdateAllPrimitiveSceneInfos");
 
 	TArray<FPrimitiveSceneInfo*> RemovedLocalPrimitiveSceneInfos(RemovedPrimitiveSceneInfos.Array());
+	// NOTE: We clear this early because IsPrimitiveBeingRemoved gets called from the CreateLightPrimitiveInteraction (to make sure that old primitives are not accessed) 
+	// we cannot safely kick off the AsyncCreateLightPrimitiveInteractionsTask before the RemovedPrimitiveSceneInfos has been cleared.
+	RemovedPrimitiveSceneInfos.Reset();
+
 	RemovedLocalPrimitiveSceneInfos.Sort(FPrimitiveArraySortKey());
 
 	if (VirtualShadowMapArrayCacheManager)
@@ -4302,7 +4306,6 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 	UpdatedCustomPrimitiveParams.Reset();
 	OverridenPreviousTransforms.Reset();
 	DistanceFieldSceneDataUpdates.Reset();
-	RemovedPrimitiveSceneInfos.Reset();
 	AddedPrimitiveSceneInfos.Reset();
 }
 
