@@ -3005,8 +3005,12 @@ void UNiagaraComponent::FixInvalidUserParameterOverrideData()
 
 void UNiagaraComponent::AssetExposedParametersChanged()
 {
-	SynchronizeWithSourceSystem();
-	ReinitializeSystem();
+	// don't worry about doing anything based on the change broadcast if we haven't finished loading
+	if (!HasAnyFlags(RF_NeedPostLoad))
+	{
+		SynchronizeWithSourceSystem();
+		ReinitializeSystem();
+	}
 }
 
 #if WITH_EDITOR
