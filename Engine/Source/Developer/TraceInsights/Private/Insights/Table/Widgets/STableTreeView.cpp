@@ -219,7 +219,6 @@ void STableTreeView::ConstructWidget(TSharedPtr<FTable> InTablePtr)
 					//.TextStyle(FEditorStyle::Get(), "Tutorials.Browser.PathText")
 					//.ShowLeadingDelimiter(true)
 					//.PersistentBreadcrumbs(true)
-					.InvertTextColorOnHover(true)
 					.OnCrumbClicked(this, &STableTreeView::OnGroupingCrumbClicked)
 					.GetCrumbMenuContent(this, &STableTreeView::GetGroupingCrumbMenuContent)
 				]
