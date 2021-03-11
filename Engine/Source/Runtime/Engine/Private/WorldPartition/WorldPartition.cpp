@@ -876,7 +876,7 @@ void UWorldPartition::BeginDestroy()
 }
 
 #if WITH_EDITOR
-UObject* UWorldPartition::LoadSubobject(const TCHAR* SubObjectPath)
+bool UWorldPartition::LoadSubobject(const TCHAR* SubObjectPath, UObject*& OutObject, bool bOnlyTestExistence)
 {
 	for (UActorDescContainer::TIterator<> ActorDescIterator(this); ActorDescIterator; ++ActorDescIterator)
 	{
@@ -884,12 +884,18 @@ UObject* UWorldPartition::LoadSubobject(const TCHAR* SubObjectPath)
 
 		if (FString(ActorDesc->ActorPath.ToString()).EndsWith(SubObjectPath))
 		{
-			int32 ReferenceIndex = LoadedSubobjects.Emplace(this, ActorDesc->GetGuid());
-			return LoadedSubobjects[ReferenceIndex]->GetActor();
+			if (!bOnlyTestExistence)
+			{
+				LoadedSubobjects.Emplace(this, ActorDesc->GetGuid());
+			}
+
+			OutObject = ActorDescIterator->GetActor();
+
+			return true;
 		}
 	}
 
-	return nullptr;
+	return false;
 }
 #endif
 
