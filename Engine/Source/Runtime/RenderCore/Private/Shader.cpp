@@ -1799,4 +1799,10 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 	{
 		KeyString += TEXT("_VED");
 	}
+
+	{
+		// add shader compression format
+		KeyString += TEXT("_Compr");
+		KeyString += GetShaderCompressionFormat().ToString();
+	}
 }
