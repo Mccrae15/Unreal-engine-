@@ -30,7 +30,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogPBDRigidsSolver, Log, All);
 #if CHAOS_DEBUG_DRAW
 
 // Must be 0 when checked in...
-#define CHAOS_SOLVER_ENABLE_DEBUG_DRAW 1
+#define CHAOS_SOLVER_ENABLE_DEBUG_DRAW 0
 
 int32 ChaosSolverDebugDrawShapes = CHAOS_SOLVER_ENABLE_DEBUG_DRAW;
 int32 ChaosSolverDebugDrawCollisions = CHAOS_SOLVER_ENABLE_DEBUG_DRAW;
@@ -58,9 +58,9 @@ Chaos::DebugDraw::FChaosDebugDrawSettings ChaosSolverDebugDebugDrawSettings(
 	/* FontScale =			*/ 1.5f,
 	/* ShapeThicknesScale = */ 1.0f,
 	/* PointSize =			*/ 5.0f,
-	/* VelScale =			*/ 1.0f,
+	/* VelScale =			*/ 0.0f,
 	/* AngVelScale =		*/ 0.0f,
-	/* ImpulseScale =		*/ 0.05f,
+	/* ImpulseScale =		*/ 0.0f,
 	/* DrawPriority =		*/ 10.0f
 );
 FAutoConsoleVariableRef CVarChaosSolverArrowSize(TEXT("p.Chaos.Solver.DebugDraw.ArrowSize"), ChaosSolverDebugDebugDrawSettings.ArrowSize, TEXT("ArrowSize."));
