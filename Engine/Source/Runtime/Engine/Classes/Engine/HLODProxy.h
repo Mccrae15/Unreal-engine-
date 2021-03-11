@@ -106,6 +106,8 @@ public:
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	/** Check if we contain data for the specified actor */
 	bool ContainsDataForActor(const ALODActor* InLODActor) const;
+	bool ContainsDataForActorPermissive(const ALODActor * InLODActor) const;
+	void RemoveLODActorFromProxy(const ALODActor * LODActor);
 #endif
 
 #if WITH_EDITORONLY_DATA

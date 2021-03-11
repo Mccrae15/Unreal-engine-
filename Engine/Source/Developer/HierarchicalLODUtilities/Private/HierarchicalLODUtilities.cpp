@@ -361,6 +361,8 @@ bool FHierarchicalLODUtilities::BuildStaticMeshForLODActor(ALODActor* LODActor, 
 
 	// Clean out the proxy as we are rebuilding meshes
 	Proxy->Clean();
+	// Clean now DOES not remove the LODActor that is being built it has to be done manually
+	Proxy->RemoveLODActorFromProxy(LODActor);
 	UPackage* AssetsOuter = Proxy->GetOutermost();
 
 	TArray<UPrimitiveComponent*> AllComponents;
