@@ -451,11 +451,9 @@ bool UHLODProxy::ContainsDataForActorPermissive(const ALODActor* InLODActor) con
 	return false;
 }
 
-#endif
-
-
 void UHLODProxy::RemoveLODActorFromProxy(const ALODActor* LODActor)
 {
+#if WITH_EDITOR
 	TArray<FHLODProxyMesh> ProxyMeshesCopy = ProxyMeshes;
 	for (const FHLODProxyMesh& ProxyMesh : ProxyMeshesCopy)
 	{
@@ -464,5 +462,9 @@ void UHLODProxy::RemoveLODActorFromProxy(const ALODActor* LODActor)
 			ProxyMeshes.Remove(ProxyMesh);
 		}
 	}
-	
+
+#endif
 }
+#endif
+
+
