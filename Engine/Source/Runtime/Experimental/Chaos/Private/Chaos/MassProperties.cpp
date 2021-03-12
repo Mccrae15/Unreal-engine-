@@ -173,13 +173,13 @@ namespace Chaos
 	template<class T, int d>
 	TMassProperties<T, d> Combine(const TArray<TMassProperties<T, d>>& MPArray)
 	{
-		TMassProperties<T, d> NewMP = CombineWorldSpace(MPArray, 1.f);
+		TMassProperties<T, d> NewMP = CombineWorldSpace(MPArray);
 		NewMP.RotationOfMass = TransformToLocalSpace<T, d>(NewMP.InertiaTensor);
 		return NewMP;
 	}
 
 	template<class T, int d>
-	TMassProperties<T, d> CombineWorldSpace(const TArray<TMassProperties<T, d>>& MPArray, float InDensityKGPerCM)
+	TMassProperties<T, d> CombineWorldSpace(const TArray<TMassProperties<T, d>>& MPArray)
 	{
 		check(MPArray.Num() > 0);
 		if (MPArray.Num() == 1)
@@ -198,7 +198,7 @@ namespace Chaos
 		NewMP.CenterOfMass /= NewMP.Mass;
 		for (const TMassProperties<T, d>& Child : MPArray)
 		{
-			const T M = Child.Volume * InDensityKGPerCM;
+			const T M = Child.Mass;
 			const TVector<T, d> ParentToChild = Child.CenterOfMass - NewMP.CenterOfMass;
 			const T P0 = ParentToChild[0];
 			const T P1 = ParentToChild[1];
@@ -231,7 +231,7 @@ namespace Chaos
 
 	template CHAOS_API TMassProperties<float, 3> Combine(const TArray<TMassProperties<float, 3>>& MPArray);
 
-	template CHAOS_API TMassProperties<float, 3> CombineWorldSpace(const TArray<TMassProperties<float, 3>>& MPArray, float InDensityKGPerCM);
+	template CHAOS_API TMassProperties<float, 3> CombineWorldSpace(const TArray<TMassProperties<float, 3>>& MPArray);
 
 	template CHAOS_API TRotation<float, 3> TransformToLocalSpace(PMatrix<float, 3, 3>& Inertia);
 }

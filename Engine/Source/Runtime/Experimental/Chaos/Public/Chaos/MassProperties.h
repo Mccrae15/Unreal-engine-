@@ -49,11 +49,17 @@ namespace Chaos
 	void CalculateInertiaAndRotationOfMass(const TParticles<T, d>& Vertices, const TSurfaces& Surfaces, const T Density, const TVector<T, d>& CenterOfMass,
 	    PMatrix<T, d, d>& OutInertiaTensor, TRotation<T, d>& OutRotationOfMass);
 
+
+	// Combine a list of transformed inertia tensors into a single inertia. Also diagonalize the inertia
+	// and set the rotation of mass accordingly.
 	template<class T, int d>
 	TMassProperties<T, d> Combine(const TArray<TMassProperties<T, d>>& MPArray);
 
+	// Combine a list of transformed inertia tensors into a single inertia. 
+	// NOTE: If there is more than one item in the list, the output may be non-diagonaly and will have a zero rotation.
+	// If there is only 1 item in the list it will return it directly, so the rotation of mass may be non-zero.
 	template<class T, int d>
-	TMassProperties<T, d> CombineWorldSpace(const TArray<TMassProperties<T, d>>& MPArray, float InDensityKGPerCM);
+	TMassProperties<T, d> CombineWorldSpace(const TArray<TMassProperties<T, d>>& MPArray);
 
 }
 #endif
