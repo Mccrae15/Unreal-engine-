@@ -45,20 +45,24 @@ void UHLODProxy::Clean()
 	ProxyMeshes.RemoveAll([](const FHLODProxyMesh& InProxyMesh)
 	{ 
 		TLazyObjectPtr<ALODActor> LODActor = InProxyMesh.GetLODActor();
+		//FString LODActorName = LODActor->GetName();
 
 		// Invalid actor means that it has been deleted so we shouldnt hold onto its data
 		if(!LODActor.IsValid())
 		{
+			//UE_LOG(LogTemp, Log,TEXT("% is invalid"),*LODActorName)
 			return true;
 		}
 		else if(LODActor.Get()->Proxy == nullptr)
 		{
 			// No proxy means we are also invalid
+			//UE_LOG(LogTemp, Log, TEXT("%->Proxy is invalid"), *LODActorName)
 			return true;
 		}
 		else if(!LODActor.Get()->Proxy->ContainsDataForActorPermissive(LODActor.Get()))
 		{
 			// actor and proxy are valid, but key differs (unbuilt)
+			//UE_LOG(LogTemp, Log, TEXT("%->Proxy->ContainsDataForActorPermissive(LODActor.Get()) Does Not contain"), *LODActorName)
 			return true;
 		}
 
@@ -418,36 +422,14 @@ bool UHLODProxy::ContainsDataForActor(const ALODActor* InLODActor) const
 
 bool UHLODProxy::ContainsDataForActorPermissive(const ALODActor* InLODActor) const
 {
-	FName Key;
-#if WITH_EDITOR
-
-	// Only re-generate the key in non-PIE worlds
-	if (InLODActor->GetOutermost()->HasAnyPackageFlags(PKG_PlayInEditor))
+	TArray<FHLODProxyMesh> ProxyMeshesCopy = ProxyMeshes;
+	for (const FHLODProxyMesh& ProxyMesh : ProxyMeshesCopy)
 	{
-		Key = InLODActor->GetKey();
-	}
-	else
-	{
-		//Key = GenerateKeyForActor(InLODActor);
-		Key = InLODActor->GetKey();
-	}
-#else
-	Key = InLODActor->GetKey();
-#endif
-
-	if (Key == NAME_None)
-	{
-		return false;
-	}
-
-	for (const FHLODProxyMesh& ProxyMesh : ProxyMeshes)
-	{
-		if (ProxyMesh.GetKey() == Key)
+		if (ProxyMesh.LODActor == InLODActor)
 		{
 			return true;
 		}
 	}
-
 	return false;
 }
 
