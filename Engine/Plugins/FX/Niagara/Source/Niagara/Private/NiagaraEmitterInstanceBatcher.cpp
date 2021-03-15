@@ -969,7 +969,7 @@ void NiagaraEmitterInstanceBatcher::BuildTickStagePasses(FRHICommandListImmediat
 			}
 
 			uint32 PrevNumInstances = 0;
-			if (bResetCounts)
+			if (ExecContext->TicksThisFrame == 0)
 			{
 				ExecContext->ScratchMaxInstances = InstanceData.SpawnInfo.MaxParticleCount;
 				PrevNumInstances = Tick.bNeedsReset ? 0 : ExecContext->MainDataSet->GetCurrentData()->GetNumInstances();
@@ -978,6 +978,10 @@ void NiagaraEmitterInstanceBatcher::BuildTickStagePasses(FRHICommandListImmediat
 			{
 				PrevNumInstances = Tick.bNeedsReset ? 0 : ExecContext->ScratchNumInstances;
 			}
+
+			/** Track the number of ticks processed so we can accumulate instance counts correctly across multiple ticks that may or may not include this emitter. */
+			++ExecContext->TicksThisFrame;
+
 			ExecContext->ScratchNumInstances = InstanceData.SpawnInfo.SpawnRateInstances + InstanceData.SpawnInfo.EventSpawnTotal + PrevNumInstances;
 
 			const uint32 MaxInstanceCount = ExecContext->MainDataSet->GetMaxInstanceCount();
@@ -1205,6 +1209,14 @@ void NiagaraEmitterInstanceBatcher::ExecuteAll(FRHICommandList& RHICmdList, FRHI
 				{
 					// Reset to default as it will no longer be used.
 					SharedContext->ScratchIndex = INDEX_NONE;
+
+					//Reset per instance data also
+					for (uint32 i = 0; i < Tick->Count; ++i)
+					{
+						FNiagaraComputeInstanceData& InstanceData = Tick->GetInstanceData()[i];
+						FNiagaraComputeExecutionContext* ExecContext = InstanceData.Context;
+						ExecContext->TicksThisFrame = 0;
+					}
 				}
 				else
 				{
