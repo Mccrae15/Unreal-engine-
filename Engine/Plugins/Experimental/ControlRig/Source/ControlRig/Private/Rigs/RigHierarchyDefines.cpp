@@ -190,7 +190,7 @@ FRigElementKeyCollection FRigElementKeyCollection::MakeFromCompleteHierarchy(
 	return Collection.FilterByType(InElementTypes);
 }
 
-FRigElementKeyCollection FRigElementKeyCollection::MakeUnion(const FRigElementKeyCollection& A, const FRigElementKeyCollection& B)
+FRigElementKeyCollection FRigElementKeyCollection::MakeUnion(const FRigElementKeyCollection& A, const FRigElementKeyCollection& B, bool bAllowDuplicates)
 {
 	FRigElementKeyCollection Collection;
 	for (const FRigElementKey& Key : A)
@@ -199,7 +199,14 @@ FRigElementKeyCollection FRigElementKeyCollection::MakeUnion(const FRigElementKe
 	}
 	for (const FRigElementKey& Key : B)
 	{
-		Collection.AddUnique(Key);
+		if(bAllowDuplicates)
+		{
+			Collection.Add(Key);
+		}
+		else
+		{
+			Collection.AddUnique(Key);
+		}
 	}
 	return Collection;
 }
