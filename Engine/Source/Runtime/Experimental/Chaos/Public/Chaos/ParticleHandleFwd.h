@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/Core.h"
+
 // Use to define out code blocks that need to be adapted to use Particle Handles in a searchable way (better than #if 0)
 #define CHAOS_PARTICLEHANDLE_TODO 0
 
@@ -81,6 +83,12 @@ namespace Chaos
 
 	template <typename T, int d>
 	class TGenericParticleHandle;
+
+	template <typename T, int d>
+	class TConstGenericParticleHandle;
+
+	using FGenericParticleHandle = TGenericParticleHandle<FReal, 3>;
+	using FConstGenericParticleHandle = TConstGenericParticleHandle<FReal, 3>;
 
 	// TParticleIterator
 

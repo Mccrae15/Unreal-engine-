@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/Core.h"
 #include "Chaos/Defines.h"
 #include "Chaos/Matrix.h"
 #include "Chaos/Rotation.h"
@@ -33,6 +34,8 @@ namespace Chaos
 		PMatrix<T, d, d> InertiaTensor;
 	};
 
+	using FMassProperties = TMassProperties<FReal, 3>;
+
 	template<class T, int d>
 	TRotation<T, d> TransformToLocalSpace(PMatrix<T, d, d>& Inertia);
 
@@ -53,7 +56,7 @@ namespace Chaos
 	TMassProperties<T, d> Combine(const TArray<TMassProperties<T, d>>& MPArray);
 
 	template<class T, int d>
-	TMassProperties<T, d> CombineWorldSpace(const TArray<TMassProperties<T, d>>& MPArray, float InDensityKGPerCM);
+	TMassProperties<T, d> CombineWorldSpace(const TArray<TMassProperties<T, d>>& MPArray);
 
 }
 #endif

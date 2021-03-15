@@ -1490,8 +1490,10 @@ class TConstGenericParticleHandle
 {
 public:
 	TConstGenericParticleHandle(const TGeometryParticleHandle<T, d>* InHandle) : Imp(const_cast<TGeometryParticleHandle<T, d>*>(InHandle)) {}
+	TConstGenericParticleHandle(const TGenericParticleHandle<T, d> InHandle) : Imp(InHandle->Handle()) {}
 
 	const TGenericParticleHandleHandleImp<T, d>* operator->() const { return &Imp; }
+	const TGenericParticleHandleHandleImp<T, d>* Get() const { return &Imp; }
 
 private:
 	TGenericParticleHandleHandleImp<T, d> Imp;
