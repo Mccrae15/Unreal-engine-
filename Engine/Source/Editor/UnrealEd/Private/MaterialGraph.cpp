@@ -327,7 +327,7 @@ void UMaterialGraph::LinkGraphNodesFromMaterial()
 						if (UMaterialGraphNode* GraphNode = Cast<UMaterialGraphNode>(ExpressionInputs[InputIndex]->Expression->GraphNode))
 						{
 							// if GraphNode is a material function call for a missing material function, it may not have any output pins
-							UEdGraphPin* OutputPin = GraphNode->TryGetOutputPin(GetValidOutputIndex(ExpressionInputs[InputIndex]));
+							UEdGraphPin* OutputPin = GraphNode->GetOutputPin(GetValidOutputIndex(ExpressionInputs[InputIndex]));
 							if (LIKELY(OutputPin))
 							{
 								InputPin->MakeLinkTo(OutputPin);
