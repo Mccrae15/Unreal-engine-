@@ -25,8 +25,10 @@ class UMaterialGraphNode_Base : public UEdGraphNode
 	class UEdGraphPin* GetInputPin(int32 InputIndex) const;
 	/** Get all of the Input Pins */
 	UNREALED_API void GetInputPins(TArray<class UEdGraphPin*>& OutInputPins) const;
-	/** Get a single Output Pin via its index */
+	/** Get a single Output Pin via its index (trusting the caller to provide a valid index) */
 	class UEdGraphPin* GetOutputPin(int32 OutputIndex) const;
+	/** Get a single Output Pin via its index (can return null if an invalid index is provided) */
+	class UEdGraphPin* TryGetOutputPin(int32 OutputIndex) const { return (OutputIndex >= 0 && OutputIndex < OutputPins.Num()) ? OutputPins[OutputIndex] : nullptr; }
 	/** Get all of the Output Pins */
 	UNREALED_API void GetOutputPins(TArray<class UEdGraphPin*>& OutOutputPins) const;
 	/** Replace a given node with this one, changing all pin links */
