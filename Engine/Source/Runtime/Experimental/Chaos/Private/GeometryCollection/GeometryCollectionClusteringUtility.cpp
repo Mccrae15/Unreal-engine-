@@ -854,7 +854,6 @@ void FGeometryCollectionClusteringUtility::RemoveDanglingClusters(FGeometryColle
 {
 	check(GeometryCollection);
 
-	const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
 	const TManagedArray<FTransform>& Transforms = GeometryCollection->Transform;
 	const TManagedArray<int32>& SimulationType = GeometryCollection->SimulationType;
 
@@ -864,7 +863,9 @@ void FGeometryCollectionClusteringUtility::RemoveDanglingClusters(FGeometryColle
 	{
 		if(GeometryCollection->IsClustered(Idx))
 		{
-			if (Children[Idx].Num() == 0)
+			TArray<int32> LeafBones;
+			GetLeafBones(GeometryCollection, Idx, true, LeafBones);
+			if (LeafBones.Num() == 0)
 			{
 				DeletionList.Add(Idx);
 			}
@@ -873,6 +874,7 @@ void FGeometryCollectionClusteringUtility::RemoveDanglingClusters(FGeometryColle
 
 	if (DeletionList.Num())
 	{
+		DeletionList.Sort();
 		GeometryCollection->RemoveElements(FGeometryCollection::TransformGroup, DeletionList);
 	}
 }
