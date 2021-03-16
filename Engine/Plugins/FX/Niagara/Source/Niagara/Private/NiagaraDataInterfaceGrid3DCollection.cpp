@@ -2569,6 +2569,7 @@ void FNiagaraDataInterfaceProxyGrid3DCollectionProxy::PreStage(FRHICommandList& 
 		// #todo(dmp): for now, if there is an output DI that is NOT an iteration DI AND if both the iteration DI and this DI have the same total number of instances, do not do the UAV clear prior to the stage.
 		// this isn't optimal, but should work to some degree to reduce overhead in cases where we have multiple grids of the same resolution being processed/written to in 1 stage
 		FNiagaraDataInterfaceProxyRW* IterationInterface = Context.ComputeInstanceData->SimStageData[Context.SimulationStageIndex].AlternateIterationSource;
+		RHICmdList.Transition(FRHITransitionInfo(ProxyData->DestinationData->GridBuffer.UAV, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
 		if (!Context.IsIterationStage)
 		{
 			if (IterationInterface != nullptr)
@@ -2583,7 +2584,6 @@ void FNiagaraDataInterfaceProxyGrid3DCollectionProxy::PreStage(FRHICommandList& 
 			}
 
 			check(ProxyData->DestinationData);
-			RHICmdList.Transition(FRHITransitionInfo(ProxyData->DestinationData->GridBuffer.UAV, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
 			RHICmdList.ClearUAVFloat(ProxyData->DestinationData->GridBuffer.UAV, FVector4(ForceInitToZero));
 			RHICmdList.Transition(FRHITransitionInfo(ProxyData->DestinationData->GridBuffer.UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 		}
@@ -2608,18 +2608,23 @@ void FNiagaraDataInterfaceProxyGrid3DCollectionProxy::PostSimulate(FRHICommandLi
 	{
 		FRHITexture* Source = ProxyData->CurrentData->GridBuffer.Buffer;
 		FRHITexture* Destination = ProxyData->RenderTargetToCopyTo;
-		FRHITransitionInfo TransitionsBefore[] = {
-			FRHITransitionInfo(Source, ERHIAccess::SRVMask, ERHIAccess::CopySrc),
-			FRHITransitionInfo(Destination, ERHIAccess::SRVMask, ERHIAccess::CopyDest)
-		};
+
+		RHICmdList.Transition(
+			{
+				FRHITransitionInfo(Source, ERHIAccess::SRVMask, ERHIAccess::CopySrc),
+				FRHITransitionInfo(Destination, ERHIAccess::SRVMask, ERHIAccess::CopyDest)
+			}
+		);
 
 		FRHICopyTextureInfo CopyInfo;
 		RHICmdList.CopyTexture(ProxyData->CurrentData->GridBuffer.Buffer, ProxyData->RenderTargetToCopyTo, CopyInfo);
-		FRHITransitionInfo TransitionsAfter[] = {
-			FRHITransitionInfo(Source, ERHIAccess::CopySrc, ERHIAccess::SRVMask),
-			FRHITransitionInfo(Destination, ERHIAccess::CopyDest, ERHIAccess::SRVMask)
-		};
 
+		RHICmdList.Transition(
+			{
+				FRHITransitionInfo(Source, ERHIAccess::CopySrc, ERHIAccess::SRVMask),
+				FRHITransitionInfo(Destination, ERHIAccess::CopyDest, ERHIAccess::SRVMask)
+			}
+		);
 	}
 
 #if WITH_EDITOR
