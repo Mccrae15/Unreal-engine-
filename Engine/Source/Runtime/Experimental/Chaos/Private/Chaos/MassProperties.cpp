@@ -178,7 +178,7 @@ namespace Chaos
 	}
 
 	template<class T, int d>
-	TMassProperties<T, d> CombineWorldSpace(const TArray<FMassProperties>& MPArray)
+	TMassProperties<T, d> CombineWorldSpace(const TArray<TMassProperties<T, d>>& MPArray)
 	{
 		check(MPArray.Num() > 0);
 		if (MPArray.Num() == 1)
