@@ -196,8 +196,7 @@ public:
 		const TArray<FVisibleLightInfo, SceneRenderingAllocator> &VisibleLightInfos, 
 		const TArray<Nanite::FRasterResults, TInlineAllocator<2>> &NaniteRasterResults, 
 		bool bPostBasePass, 
-		FVirtualShadowMapArrayCacheManager *VirtualShadowMapArrayCacheManager,
-		struct FHairStrandsRenderingData* HairDatas);
+		FVirtualShadowMapArrayCacheManager *VirtualShadowMapArrayCacheManager);
 
 	bool IsAllocated() const
 	{

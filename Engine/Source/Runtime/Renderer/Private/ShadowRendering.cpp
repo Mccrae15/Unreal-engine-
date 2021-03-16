@@ -1955,7 +1955,7 @@ void FDeferredShadingSceneRenderer::RenderShadowProjections(
 							View,
 							VirtualShadowMapArray,
 							ScissorRect,
-							nullptr,	// Hair
+							EVirtualShadowMapProjectionInputType::GBuffer,
 							VisibleLightInfo.FindShadowClipmapForView(&View));
 					}
 					else
@@ -1968,7 +1968,7 @@ void FDeferredShadingSceneRenderer::RenderShadowProjections(
 							View,
 							VirtualShadowMapArray,
 							ScissorRect,
-							nullptr,	// Hair
+							EVirtualShadowMapProjectionInputType::GBuffer,
 							VirtualShadowMaps[0]);
 					}
 
@@ -1999,34 +1999,35 @@ void FDeferredShadingSceneRenderer::RenderShadowProjections(
 					CompositeVirtualShadowMapMask(GraphBuilder, ScissorRect, SignalTexture, ScreenShadowMaskTexture);
 
 					// Sub-pixel shadow (no denoising for hair)
-					if (ScreenShadowMaskSubPixelTexture && HairCatgorizationTexture)
+					if (HairStrands::HasViewHairStrandsData(View) && ScreenShadowMaskSubPixelTexture)
 					{
+						FRDGTextureRef HairSignalTexture;
 						if (VisibleLightInfo.VirtualShadowMapClipmaps.Num() > 0)
 						{
-							SignalTexture = RenderVirtualShadowMapProjection(
+							HairSignalTexture = RenderVirtualShadowMapProjection(
 								GraphBuilder,
 								SceneTextures,
 								View,
 								VirtualShadowMapArray,
 								ScissorRect,
-								HairCatgorizationTexture,
+								EVirtualShadowMapProjectionInputType::HairStrands,
 								VisibleLightInfo.FindShadowClipmapForView(&View));
 						}
 						else
 						{
 							check(VirtualShadowMaps.Num() == 1);
-							SignalTexture = RenderVirtualShadowMapProjection(
+							HairSignalTexture = RenderVirtualShadowMapProjection(
 								GraphBuilder,
 								SceneTextures,
 								View,
 								VirtualShadowMapArray,
 								ScissorRect,
-								HairCatgorizationTexture,
+								EVirtualShadowMapProjectionInputType::HairStrands,
 								VirtualShadowMaps[0]);
 						}
 
 						// Composite into sub pixel mask
-						CompositeVirtualShadowMapMask(GraphBuilder, ScissorRect, SignalTexture, ScreenShadowMaskSubPixelTexture);
+						CompositeVirtualShadowMapMask(GraphBuilder, ScissorRect, HairSignalTexture, ScreenShadowMaskSubPixelTexture);
 					}
 				}
 			}

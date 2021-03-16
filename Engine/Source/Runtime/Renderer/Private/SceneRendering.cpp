@@ -960,7 +960,8 @@ void FViewInfo::Init()
 	NumVisibleDynamicEditorPrimitives = 0;
 
 	StrataSceneData = nullptr;
-	
+	HairStrandsViewData = FHairStrandsViewData();
+
 	GPUSceneViewId = INDEX_NONE;
 }
 
