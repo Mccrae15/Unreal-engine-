@@ -306,7 +306,7 @@ void UControlRigBlueprint::PostLoad()
 	GraphsToDetach.Add(GetModel());
 	GraphsToDetach.Add(GetLocalFunctionLibrary());
 
-	ensure(IsInGameThread());
+	check(IsInGameThread());
 	{
 		for (URigVMGraph* GraphToDetach : GraphsToDetach)
 		{
