@@ -174,6 +174,8 @@ EGeometryFlowResult FGenerateSimpleCollisionNode::EvaluateInternal(const FDynami
 	 case ESimpleCollisionGeometryType::MinVolume:
 		 ShapeApproximator.Generate_MinVolume(OutCollisionGeometry.Geometry);
 		 break;
+	 case ESimpleCollisionGeometryType::None:
+		 break;
 	 }
 
 	 if (EvaluationInfo && EvaluationInfo->Progress && EvaluationInfo->Progress->Cancelled())
