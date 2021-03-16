@@ -1995,6 +1995,11 @@ void UCharacterMovementComponent::UpdateBasedMovement(float DeltaSeconds)
 		return;
 	}
 
+	if (CharacterOwner->GetRootComponent() && CharacterOwner->GetRootComponent()->GetAttachParent())
+	{
+		return;
+	}
+
 	const UPrimitiveComponent* MovementBase = CharacterOwner->GetMovementBase();
 	if (!MovementBaseUtility::UseRelativeLocation(MovementBase))
 	{
