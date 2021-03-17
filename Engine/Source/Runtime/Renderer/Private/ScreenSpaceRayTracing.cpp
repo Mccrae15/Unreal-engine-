@@ -478,7 +478,7 @@ class FScreenSpaceReflectionsPS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSSRCommonParameters, CommonParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSSRPassCommonParameters, SSRPassCommonParameter)
-		SHADER_PARAMETER_RDG_BUFFER(Buffer<uint>, IndirectDrawParameter)			// FScreenSpaceReflectionsTileVS
+		RDG_BUFFER_ACCESS(IndirectDrawParameter, ERHIAccess::IndirectArgs)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, TileListData)		// FScreenSpaceReflectionsTileVS
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
@@ -558,7 +558,7 @@ class FScreenSpaceTraceProbeCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenProbeHierarchy::FHierarchyParameters, HierarchyParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenProbeHierarchy::FHierarchyLevelParameters, LevelParameters)
 		SHADER_PARAMETER(float, FurthestHZBStartMipLevel)
-		SHADER_PARAMETER_RDG_BUFFER(Buffer<uint>, DispatchParameters)
+		RDG_BUFFER_ACCESS(DispatchParameters, ERHIAccess::IndirectArgs)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D, ProbeAtlasColorOutput)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>, ProbeAtlasSampleMaskOutput)
 	END_SHADER_PARAMETER_STRUCT()
@@ -605,7 +605,7 @@ class FScreenSpaceCastProbeOcclusionCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenProbeHierarchy::FIndirectLightingProbeOcclusionParameters, ProbeOcclusionParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenProbeHierarchy::FIndirectLightingProbeOcclusionOutputParameters, ProbeOcclusionOutputParameters)
 		SHADER_PARAMETER(int32, DispatchOffset)
-		SHADER_PARAMETER_RDG_BUFFER(Buffer<uint>, DispatchParameters)
+		RDG_BUFFER_ACCESS(DispatchParameters, ERHIAccess::IndirectArgs)
 	END_SHADER_PARAMETER_STRUCT()
 		
 	class FTileClassificationDim : SHADER_PERMUTATION_ENUM_CLASS("DIM_PROBE_OCCLUSION_CLASSIFICATION", LumenProbeHierarchy::EProbeOcclusionClassification);
