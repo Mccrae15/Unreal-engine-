@@ -144,6 +144,8 @@ namespace Chaos
 		void RegisterObject(Chaos::FSuspensionConstraint* GTConstraint);
 		void UnregisterObject(Chaos::FSuspensionConstraint* GTConstraint);
 
+		void SetSuspensionTargetOnPhysicsThread(Chaos::FSuspensionConstraint* GTConstraint, const FVector& TargetPos, bool Enabled);
+
 		void EnableRewindCapture(int32 NumFrames, bool InUseCollisionResimCache);
 		FRewindData* GetRewindData()
 		{
