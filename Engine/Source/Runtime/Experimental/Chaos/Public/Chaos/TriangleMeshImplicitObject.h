@@ -21,6 +21,9 @@ namespace Chaos
 	template<typename T>
 	class TCapsule;
 
+	template<typename T>
+	class TTriangle;
+
 	class FConvex;
 	struct FMTDInfo;
 
@@ -288,6 +291,8 @@ namespace Chaos
 		const FTrimeshIndexBuffer& Elements() const;
 
 		void UpdateVertices(const TArray<FVector>& Positions);
+
+		void VisitTriangles(const FAABB3& InQueryBounds, const TFunction<void(const TTriangle<FReal>& Triangle)>& Visitor) const;
 
 	private:
 		void RebuildBV();
