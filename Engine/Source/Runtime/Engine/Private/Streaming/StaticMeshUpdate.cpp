@@ -231,6 +231,7 @@ void FStaticMeshStreamIn::DoFinishUpdate(const FContext& Context)
 		}
 #endif
 		RenderData->CurrentFirstLODIdx = ResourceState.LODCountToAssetFirstLODIdx(ResourceState.NumRequestedLODs);
+		MarkAsSuccessfullyFinished();
 	}
 	else
 	{
@@ -348,6 +349,7 @@ void FStaticMeshStreamOut::ReleaseRHIBuffers(const FContext& Context)
 #endif
 		}
 	}
+	MarkAsSuccessfullyFinished();
 }
 
 void FStaticMeshStreamOut::Cancel(const FContext& Context)
