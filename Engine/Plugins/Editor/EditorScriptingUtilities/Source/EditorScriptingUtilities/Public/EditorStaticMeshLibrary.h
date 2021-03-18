@@ -101,6 +101,12 @@ public:
 		return SetLodsWithNotification(StaticMesh, ReductionOptions, true);
 	}
 
+	UFUNCTION(BlueprintPure, Category = "Editor Scripting | StaticMesh")
+	static void GetLightMapResolution(const UStaticMesh* StaticMesh, int32& Resolution);
+
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
+		static void SetLightMapResolution(UStaticMesh* StaticMesh, int32 Resolution);
+
 	/**
 	 * Copy the reduction options with the specified LOD reduction settings.
 	 * @param StaticMesh - Mesh to process.
