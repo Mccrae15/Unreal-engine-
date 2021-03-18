@@ -306,7 +306,7 @@ public:
 	// FDynamicRHI interface.
 	virtual void Init();
 	virtual void PostInit();
-
+	virtual bool IsProgramBinaryCacheValid();
 	virtual void Shutdown();
 	virtual const TCHAR* GetName() override { return TEXT("OpenGL"); }
 
@@ -1177,6 +1177,7 @@ public:
 private:
 
 	void RegisterSharedShaderCodeDelegates();
+
 	void UnregisterSharedShaderCodeDelegates();
 
 	void SetupRecursiveResources();
