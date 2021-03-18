@@ -5024,6 +5024,11 @@ void FOpenGLDynamicRHI::RegisterSharedShaderCodeDelegates()
 	//OnSharedShaderCodeRelease = FShaderCodeLibrary::RegisterSharedShaderCodeReleaseDelegate_Handle(FSharedShaderCodeRelease::FDelegate::CreateStatic(&OnShaderLibraryReleaseShaderCode));
 }
 
+bool FOpenGLDynamicRHI::IsProgramBinaryCacheValid()
+{
+	return FOpenGLProgramBinaryCache::IsEnabled() && !FOpenGLProgramBinaryCache::IsBuildingCache();
+}
+
 void FOpenGLDynamicRHI::UnregisterSharedShaderCodeDelegates()
 {
 	FShaderCodeLibrary::UnregisterSharedShaderCodeRequestDelegate_Handle(OnSharedShaderCodeRequest);
