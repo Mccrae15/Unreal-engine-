@@ -205,8 +205,6 @@ public:
 	};
 	void GetDerivedMaterialsPreview(FPreviewMaterials& MaterialSetOut);
 
-	bool bUseParallelExecutor = false;
-
 	FCriticalSection GraphEvalCriticalSection;
 
 protected:
