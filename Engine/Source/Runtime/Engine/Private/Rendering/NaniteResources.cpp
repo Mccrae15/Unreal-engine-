@@ -507,9 +507,9 @@ FSceneProxy::FSceneProxy(UStaticMeshComponent* Component)
 	if (IsRayTracingEnabled())
 	{
 		RayTracingGeometries.AddDefaulted(RenderData->LODResources.Num());
-		for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); LODIndex++)
+		for (int32 RTLODIndex = 0; RTLODIndex < RenderData->LODResources.Num(); RTLODIndex++)
 		{
-			RayTracingGeometries[LODIndex] = &Component->GetStaticMesh()->GetRenderData()->LODResources[LODIndex].RayTracingGeometry;
+			RayTracingGeometries[RTLODIndex] = &Component->GetStaticMesh()->GetRenderData()->LODResources[RTLODIndex].RayTracingGeometry;
 		}
 	}
 #endif
