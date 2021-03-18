@@ -134,7 +134,7 @@ void appCreateBitmapWithAlpha( const TCHAR* File, int32 Width, int32 Height, FCo
 
 // I know there's a TextureFormatDXT module, but it's too intertwined with the rest of the engine,
 // and I prefer this small function to be kept independent of everything, as it's only for one simple debug job, and
-// to not introduce a lot of UE4 types like FImage that aren't really necessary.
+// to not introduce a lot of UnrealEditor types like FImage that aren't really necessary.
 
 #ifndef MAKEFOURCC
 #define MAKEFOURCC(ch0, ch1, ch2, ch3)\
