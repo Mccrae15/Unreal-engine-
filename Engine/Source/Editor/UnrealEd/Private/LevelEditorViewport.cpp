@@ -3022,11 +3022,6 @@ void FLevelEditorViewportClient::TrackingStarted( const FInputEventState& InInpu
 			// Suspend actor/component modification during each delta step to avoid recording unnecessary overhead into the transaction buffer
 			GEditor->DisableDeltaModification(true);
 		}
-		else if (!IsFlightCameraActive() && !ShouldOrbitCamera())
-		{
-			// Give the interactive tools context a shot at tracking.
-			ModeTools->GetInteractiveToolsContext()->StartTracking(this, Viewport);
-		}
 	}
 }
 
@@ -3109,10 +3104,6 @@ void FLevelEditorViewportClient::TrackingStopped()
 		
 		// Restore actor/component delta modification
 		GEditor->DisableDeltaModification(false);
-	}
-	else
-	{
-		ModeTools->GetInteractiveToolsContext()->EndTracking(this, Viewport);
 	}
 
 	ModeTools->ActorMoveNotify();
