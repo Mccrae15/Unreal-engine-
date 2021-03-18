@@ -501,6 +501,42 @@ void UEditorStaticMeshLibrary::SetLodReductionSettings(UStaticMesh* StaticMesh, 
 	}
 }
 
+void UEditorStaticMeshLibrary::GetLightMapResolution(const UStaticMesh* StaticMesh, int32& Resolution)
+{
+	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
+
+	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	{
+		return;
+	}
+
+	if (StaticMesh == nullptr)
+	{
+		UE_LOG(LogEditorScripting, Error, TEXT("GetLodBuildSettings: The StaticMesh is null."));
+		return;
+	}
+
+	Resolution = StaticMesh->LightMapResolution;
+}
+
+void UEditorStaticMeshLibrary::SetLightMapResolution(UStaticMesh* StaticMesh, int32 Resolution)
+{
+	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
+
+	if (!EditorScriptingUtils::CheckIfInEditorAndPIE())
+	{
+		return;
+	}
+
+	if (StaticMesh == nullptr)
+	{
+		UE_LOG(LogEditorScripting, Error, TEXT("GetLodBuildSettings: The StaticMesh is null."));
+		return;
+	}
+
+	StaticMesh->LightMapResolution = Resolution;
+}
+
 void UEditorStaticMeshLibrary::GetLodBuildSettings(const UStaticMesh* StaticMesh, const int32 LodIndex, FMeshBuildSettings& OutBuildOptions)
 {
 	TGuardValue<bool> UnattendedScriptGuard(GIsRunningUnattendedScript, true);
