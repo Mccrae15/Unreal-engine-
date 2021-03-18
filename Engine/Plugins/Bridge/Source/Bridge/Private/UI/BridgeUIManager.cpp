@@ -173,7 +173,7 @@ TSharedRef<SDockTab> FBridgeUIManagerImpl::CreateBridgeTab(const FSpawnTabArgs& 
 		.OnTabClosed_Lambda([](TSharedRef<class SDockTab> InParentTab)
 		{
 			FBridgeUIManager::Instance->WebBrowserWidget.Reset();
-			FBridgeUIManager::BrowserBinding->OnExitDelegate.Execute(TEXT("test"));
+			FBridgeUIManager::BrowserBinding->OnExitDelegate.ExecuteIfBound(TEXT("test"));
 		})
 		.TabRole(ETabRole::NomadTab)
 		[

@@ -98,7 +98,11 @@ void FImportProgressiveSurfaces::ImportAsset(TSharedPtr<FJsonObject> AssetImport
 		FString MInstancePath = AssetMetaData.materialInstances[0].instancePath;
 		FAssetData MInstanceData = AssetRegistry.GetAssetByObjectPath(FName(*MInstancePath));
 
-		if (!MInstanceData.IsValid()) return;
+		if (!MInstanceData.IsValid())
+		{
+			PreviewDetails[ImportData->AssetId]->PreviewInstance = nullptr;
+			return;
+		}
 
 		FSoftObjectPath ItemToStream = MInstanceData.ToSoftObjectPath();
 		Streamable.RequestAsyncLoad(ItemToStream, FStreamableDelegate::CreateRaw(this, &FImportProgressiveSurfaces::HandlePreviewInstanceLoad, MInstanceData, ImportData->AssetId, LocationOffset));
