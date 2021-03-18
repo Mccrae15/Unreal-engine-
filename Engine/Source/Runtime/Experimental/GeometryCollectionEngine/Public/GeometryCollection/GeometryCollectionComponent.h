@@ -341,6 +341,7 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type ReasonEnd) override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void InitializeComponent() override;
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	//~ Begin UActorComponent Interface. 
 
 
@@ -653,6 +654,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ChaosPhysics|General")
 	bool bNotifyCollisions;
 
+	/** Display Bone Colors instead of assigned materials */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ChaosPhysics|General")
+	bool bShowBoneColors;
+
 	/** Populate the static geometry structures for the render thread. */
 	void InitConstantData(FGeometryCollectionConstantData* ConstantData) const;
 
@@ -715,7 +720,6 @@ private:
 	void NetAbandonCluster(int32 TransformIndex);
 
 	bool bRenderStateDirty;
-	bool bShowBoneColors;
 	bool bEnableBoneSelection;
 	int ViewLevel;
 
