@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Chaos/GJK.h"
 #include "ImplicitObject.h"
 #include "Plane.h"
 

@@ -34,8 +34,12 @@ namespace Chaos
 				float InVelScale,
 				float InAngVelScale,
 				float InImpulseScale,
-				int InDrawPriority
-			)
+				float InInertiaScale,
+				int InDrawPriority,
+				bool bInShowSimpleCollision,
+				bool bInShowComplexCollision,
+				bool bInShowLevelSetCollision
+				)
 				: ArrowSize(InArrowSize)
 				, BodyAxisLen(InBodyAxisLen)
 				, ContactLen(InContactLen)
@@ -53,7 +57,11 @@ namespace Chaos
 				, VelScale(InVelScale)
 				, AngVelScale(InAngVelScale)
 				, ImpulseScale(InImpulseScale)
+				, InertiaScale(InInertiaScale)
 				, DrawPriority(InDrawPriority)
+				, bShowSimpleCollision(bInShowSimpleCollision)
+				, bShowComplexCollision(bInShowComplexCollision)
+				, bShowLevelSetCollision(bInShowLevelSetCollision)
 			{}
 
 			float ArrowSize;
@@ -73,7 +81,11 @@ namespace Chaos
 			float VelScale;
 			float AngVelScale;
 			float ImpulseScale;
+			float InertiaScale;
 			int DrawPriority;
+			bool bShowSimpleCollision;
+			bool bShowComplexCollision;
+			bool bShowLevelSetCollision;
 		};
 
 
