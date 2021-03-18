@@ -1130,7 +1130,7 @@ void FMaterialShaderMap::GetAllOutdatedTypes(TArray<const FShaderType*>& Outdate
 #endif
 }
 
-void FMaterialShaderMap::LoadFromDerivedDataCache(const FMaterial* Material, const FMaterialShaderMapId& ShaderMapId, EShaderPlatform InPlatform, const ITargetPlatform* TargetPlatform, TRefCountPtr<FMaterialShaderMap>& InOutShaderMap)
+void FMaterialShaderMap::LoadFromDerivedDataCache(const FMaterial* Material, const FMaterialShaderMapId& ShaderMapId, EShaderPlatform InPlatform, const ITargetPlatform* TargetPlatform, TRefCountPtr<FMaterialShaderMap>& InOutShaderMap, FString& OutDDCKeyDesc)
 {
 	if (InOutShaderMap != NULL)
 	{
@@ -1148,6 +1148,14 @@ void FMaterialShaderMap::LoadFromDerivedDataCache(const FMaterial* Material, con
 
 			TArray<uint8> CachedData;
 			const FString DataKey = GetMaterialShaderMapKeyString(ShaderMapId, InPlatform, TargetPlatform);
+			{
+				FSHAHash DDCKeyHash;
+				FSHA1 HashState;
+				HashState.UpdateWithString(*DataKey, DataKey.Len());
+				HashState.Final();
+				HashState.GetHash(&DDCKeyHash.Hash[0]);
+				OutDDCKeyDesc = DDCKeyHash.ToString();
+			}
 
 			bool CheckCache = true;
 
