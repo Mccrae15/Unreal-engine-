@@ -325,6 +325,9 @@ namespace Chaos
 		// Get the index of the plane that most opposes the normal
 		int32 GetMostOpposingPlane(const FVec3& Normal) const;
 
+		// Get the index of the plane that most opposes the normal
+		int32 GetMostOpposingPlaneScaled(const FVec3& Normal, const FVec3& Scale) const;
+
 		// Get the index of the plane that most opposes the normal, assuming it passes through the specified vertex
 		int32 GetMostOpposingPlaneWithVertex(int32 VertexIndex, const FVec3& Normal) const;
 
@@ -369,6 +372,8 @@ namespace Chaos
 
 
 		virtual int32 FindMostOpposingFace(const FVec3& Position, const FVec3& UnitDir, int32 HintFaceIndex, FReal SearchDist) const override;
+
+		virtual int32 FindMostOpposingFaceScaled(const FVec3& Position, const FVec3& UnitDir, int32 HintFaceIndex, FReal SearchDist, const FVec3& Scale) const override;
 
 		FVec3 FindGeometryOpposingNormal(const FVec3& DenormDir, int32 FaceIndex, const FVec3& OriginalNormal) const
 		{
@@ -579,6 +584,11 @@ namespace Chaos
 		{
 			// TODO: More precise inertia!
 			return LocalBoundingBox.GetInertiaTensor(Mass);
+		}
+
+		FRotation3 GetRotationOfMass() const
+		{
+			return FRotation3::FromIdentity();
 		}
 
 		const FVec3 GetCenterOfMass() const
