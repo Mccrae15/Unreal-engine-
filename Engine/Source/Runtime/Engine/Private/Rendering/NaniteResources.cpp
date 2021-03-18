@@ -328,6 +328,59 @@ SIZE_T FSceneProxyBase::GetTypeHash() const
 	return reinterpret_cast<size_t>(&UniquePointer);
 }
 
+void FSceneProxyBase::DrawStaticElementsInternal(FStaticPrimitiveDrawInterface* PDI, const FLightCacheInterface* LCI)
+{
+	LLM_SCOPE_BYTAG(Nanite);
+
+	FMeshBatch MeshBatch;
+	MeshBatch.VertexFactory = GGlobalResources.GetVertexFactory();
+	MeshBatch.Type = GRHISupportsRectTopology ? PT_RectList : PT_TriangleList;
+	MeshBatch.ReverseCulling = false;
+	MeshBatch.bDisableBackfaceCulling = true;
+	MeshBatch.DepthPriorityGroup = SDPG_World;
+	MeshBatch.LODIndex = INDEX_NONE;
+	MeshBatch.bWireframe = false;
+	MeshBatch.bCanApplyViewModeOverrides = false;
+	MeshBatch.LCI = LCI;
+	MeshBatch.Elements[0].IndexBuffer = &GScreenRectangleIndexBuffer;
+	MeshBatch.Elements[0].NumInstances = 1;
+	MeshBatch.Elements[0].PrimitiveIdMode = PrimID_ForceZero;
+	MeshBatch.Elements[0].PrimitiveUniformBufferResource = &GIdentityPrimitiveUniformBuffer;
+	if (GRHISupportsRectTopology)
+	{
+		MeshBatch.Elements[0].FirstIndex = 9;
+		MeshBatch.Elements[0].NumPrimitives = 1;
+		MeshBatch.Elements[0].MinVertexIndex = 1;
+		MeshBatch.Elements[0].MaxVertexIndex = 3;
+	}
+	else
+	{
+		MeshBatch.Elements[0].FirstIndex = 0;
+		MeshBatch.Elements[0].NumPrimitives = 2;
+		MeshBatch.Elements[0].MinVertexIndex = 0;
+		MeshBatch.Elements[0].MaxVertexIndex = 3;
+	}
+
+	for (int32 SectionIndex = 0; SectionIndex < MaterialSections.Num(); ++SectionIndex)
+	{
+		const FMaterialSection& Section = MaterialSections[SectionIndex];
+		const UMaterialInterface* Material = Section.Material;
+		if (!Material)
+		{
+			continue;
+		}
+
+		MeshBatch.SegmentIndex = SectionIndex;
+		MeshBatch.MaterialRenderProxy = Material->GetRenderProxy();
+
+	#if WITH_EDITOR
+		HHitProxy* HitProxy = Section.HitProxy;
+		PDI->SetHitProxy(HitProxy);
+	#endif
+		PDI->DrawMesh(MeshBatch, FLT_MAX);
+	}
+}
+
 FSceneProxy::FSceneProxy(UStaticMeshComponent* Component)
 : FSceneProxyBase(Component)
 , MeshInfo(Component)
@@ -381,8 +434,13 @@ FSceneProxy::FSceneProxy(UStaticMeshComponent* Component)
 		bHasMaterialErrors = true;
 	}
 
-	const FStaticMeshLODResources& MeshResources = RenderData->LODResources[0];
+	const uint32 LODIndex = 0; // Only data from LOD0 is used.
+	const FStaticMeshLODResources& MeshResources = RenderData->LODResources[LODIndex];
 	const FStaticMeshSectionArray& MeshSections = MeshResources.Sections;
+
+	// Copy the pointer to the volume data, async building of the data may modify the one on FStaticMeshLODResources while we are rendering
+	DistanceFieldData = MeshResources.DistanceFieldData;
+	CardRepresentationData = MeshResources.CardRepresentationData;
 	
 	MaterialSections.SetNumZeroed(MeshSections.Num());
 
@@ -390,6 +448,12 @@ FSceneProxy::FSceneProxy(UStaticMeshComponent* Component)
 	{
 		const FStaticMeshSection& MeshSection = MeshSections[SectionIndex];
 		const bool bValidMeshSection = MeshSection.MaterialIndex != INDEX_NONE;
+
+		if (MeshSection.MaterialIndex > MaterialMaxIndex)
+		{
+			// Keep track of highest observed material index.
+			MaterialMaxIndex = MeshSection.MaterialIndex;
+		}
 
 		UMaterialInterface* MaterialInterface = bValidMeshSection ? Component->GetMaterial(MeshSection.MaterialIndex) : nullptr;
 
@@ -423,11 +487,8 @@ FSceneProxy::FSceneProxy(UStaticMeshComponent* Component)
 		check(MaterialInterface->GetBlendMode() == BLEND_Opaque);
 
 		MaterialSections[SectionIndex].Material = MaterialInterface;
+		MaterialSections[SectionIndex].MaterialIndex = MeshSection.MaterialIndex;
 	}
-
-	// Copy the pointer to the volume data, async building of the data may modify the one on FStaticMeshLODResources while we are rendering
-	DistanceFieldData = MeshResources.DistanceFieldData;
-	CardRepresentationData = MeshResources.CardRepresentationData;
 
 	Instances.SetNumZeroed(1);
 	FPrimitiveInstance& Instance = Instances[0];
@@ -510,11 +571,11 @@ FSceneProxy::FSceneProxy(UHierarchicalInstancedStaticMeshComponent* Component)
 
 void FSceneProxy::CreateRenderThreadResources()
 {
-	// These couldn't be copied on the game-thread because they are initialized
-	// by the StreamingManager on the render thread. Initialize them now.
+	// These couldn't be copied on the game thread because they are initialized
+	// by the streaming manager on the render thread - initialize them now.
 	check(Resources->RuntimeResourceID != 0xFFFFFFFFu);
 	check(Resources->HierarchyOffset != -1);
-	bool bHasImposter = Resources->ImposterAtlas.Num() > 0;
+	const bool bHasImposter = Resources->ImposterAtlas.Num() > 0;
 	FNaniteInfo NaniteInfo = FNaniteInfo(Resources->RuntimeResourceID, Resources->HierarchyOffset, bHasImposter);
 	for (int32 InstanceIndex = 0; InstanceIndex < Instances.Num(); ++InstanceIndex)
 	{
@@ -681,60 +742,8 @@ FLightInteraction FSceneProxy::FMeshInfo::GetInteraction(const FLightSceneProxy*
 
 void FSceneProxy::DrawStaticElements(FStaticPrimitiveDrawInterface* PDI)
 {
-	// TODO: Refactor into FSceneProxyBase
-
-	LLM_SCOPE_BYTAG(Nanite);
-
-	for (int32 SectionIndex = 0; SectionIndex < MaterialSections.Num(); ++SectionIndex)
-	{
-		const FMaterialSection& Section = MaterialSections[SectionIndex];
-		const UMaterialInterface* Material = Section.Material;
-		if (!Material)
-		{
-			continue;
-		}
-
-		FMaterialRenderProxy* MaterialProxy = Material->GetRenderProxy();
-		check(MaterialProxy);
-
-		FMeshBatch MeshBatch;
-		MeshBatch.SegmentIndex = SectionIndex;
-		MeshBatch.VertexFactory = GGlobalResources.GetVertexFactory();
-		MeshBatch.Type = GRHISupportsRectTopology ? PT_RectList : PT_TriangleList;
-		MeshBatch.ReverseCulling = false;
-		MeshBatch.bDisableBackfaceCulling = true;
-		MeshBatch.DepthPriorityGroup = SDPG_World;
-		MeshBatch.LODIndex = INDEX_NONE;
-		MeshBatch.MaterialRenderProxy = MaterialProxy;
-		MeshBatch.bWireframe = false;
-		MeshBatch.bCanApplyViewModeOverrides = false;
-		MeshBatch.LCI = &MeshInfo;
-		MeshBatch.Elements[0].IndexBuffer = &GScreenRectangleIndexBuffer;
-		if (GRHISupportsRectTopology)
-		{
-			MeshBatch.Elements[0].FirstIndex = 9;
-			MeshBatch.Elements[0].NumPrimitives = 1;
-			MeshBatch.Elements[0].MinVertexIndex = 1;
-			MeshBatch.Elements[0].MaxVertexIndex = 3;
-		}
-		else
-		{
-			MeshBatch.Elements[0].FirstIndex = 0;
-			MeshBatch.Elements[0].NumPrimitives = 2;
-			MeshBatch.Elements[0].MinVertexIndex = 0;
-			MeshBatch.Elements[0].MaxVertexIndex = 3;
-		}
-		MeshBatch.Elements[0].NumInstances = 1;
-		MeshBatch.Elements[0].PrimitiveIdMode = PrimID_ForceZero;
-		MeshBatch.Elements[0].PrimitiveUniformBufferResource = &GIdentityPrimitiveUniformBuffer;
-
-	#if WITH_EDITOR
-		HHitProxy* HitProxy = Section.HitProxy;
-		//check(HitProxy); // TODO: Is this valid? SME seems to have null proxies, but normal editor doesn't
-		PDI->SetHitProxy(HitProxy);
-	#endif
-		PDI->DrawMesh(MeshBatch, FLT_MAX);
-	}
+	const FLightCacheInterface* LCI = &MeshInfo;
+	DrawStaticElementsInternal(PDI, LCI);
 }
 
 void FSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const
