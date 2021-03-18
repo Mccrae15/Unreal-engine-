@@ -71,6 +71,11 @@ void SPaletteViewItem::OnFavoriteToggled(ECheckBoxState InNewState)
 	}
 }
 
+EVisibility SPaletteViewItem::GetFavoritedStateVisibility() const
+{
+	return GetFavoritedState() == ECheckBoxState::Checked || IsHovered() ? EVisibility::Visible : EVisibility::Hidden;
+}
+
 void SPaletteViewItem::Construct(const FArguments& InArgs, TSharedPtr<FWidgetTemplateViewModel> InWidgetViewModel)
 {
 	WidgetViewModel = InWidgetViewModel;
@@ -88,13 +93,14 @@ void SPaletteViewItem::Construct(const FArguments& InArgs, TSharedPtr<FWidgetTem
 				.IsChecked(this, &SPaletteViewItem::GetFavoritedState)
 				.OnCheckStateChanged(this, &SPaletteViewItem::OnFavoriteToggled)
 				.Style(FEditorStyle::Get(), "UMGEditor.Palette.FavoriteToggleStyle")
+				.Visibility(this, &SPaletteViewItem::GetFavoritedStateVisibility)
 			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
 			[
 				SNew(SImage)
-				.ColorAndOpacity(FLinearColor(1, 1, 1, 0.5))
+				.ColorAndOpacity(FSlateColor::UseForeground())
 				.Image(WidgetViewModel->Template->GetIcon())
 			]
 
@@ -163,7 +169,12 @@ void SPaletteView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetBluepri
 		[
 			SNew(SScrollBorder, WidgetTemplatesView.ToSharedRef())
 			[
-				WidgetTemplatesView.ToSharedRef()
+				SNew(SBorder)
+				.BorderImage(FAppStyle::Get().GetBrush("Brushes.Recessed"))
+				.Padding(0)
+				[
+					WidgetTemplatesView.ToSharedRef()
+				]
 			]
 		]
 	];
