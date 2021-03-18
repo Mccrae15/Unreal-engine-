@@ -252,7 +252,7 @@ void FResources::Serialize(FArchive& Ar, UObject* Owner)
 		Ar << PageDependencies;
 		Ar << ImposterAtlas;
 		
-		check(!Ar.IsLoading() || RootClusterPage.Num() == 0 || bLZCompressed == !FPlatformProperties::SupportsHardwareLZDecompression());		
+		check(!Ar.IsLoading() || RootClusterPage.Num() == 0 || bLZCompressed == !FPlatformProperties::SupportsHardwareLZDecompression());
 
 #if WITH_EDITOR
 		if (Ar.IsLoading() && bHasDecompressedData)
@@ -663,8 +663,6 @@ FSceneProxy::FMeshInfo::FMeshInfo(const UStaticMeshComponent* InComponent)
 			IrrelevantLights = MeshMapBuildData->IrrelevantLights;
 		}
 	}
-
-	//const bool bHasSurfaceStaticLighting = GetLightMap() != nullptr || GetShadowMap() != nullptr;
 }
 
 FLightInteraction FSceneProxy::FMeshInfo::GetInteraction(const FLightSceneProxy* LightSceneProxy) const
