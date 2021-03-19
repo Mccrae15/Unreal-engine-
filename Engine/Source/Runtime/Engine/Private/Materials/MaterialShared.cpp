@@ -881,6 +881,7 @@ void FMaterial::SetInlineShaderMap(FMaterialShaderMap* InMaterialShaderMap)
 	{
 		Material->RenderingThreadShaderMap = MoveTemp(ShaderMap);
 		Material->bRenderingThreadShaderMapIsComplete = false;
+		Material->RenderingThreadShaderMapSubmittedPriority = -1;
 	});
 }
 
@@ -902,6 +903,7 @@ void FMaterial::SetCompilingShaderMap(FMaterialShaderMap* InMaterialShaderMap)
 		{
 			Material->RenderingThreadCompilingShaderMapId = CompilingShaderMapId;
 			Material->RenderingThreadPendingCompilerEnvironment = MoveTemp(PendingCompilerEnvironment);
+			Material->RenderingThreadShaderMapSubmittedPriority = -1;
 		});
 	}
 }
@@ -944,6 +946,7 @@ void FMaterial::SetRenderingThreadShaderMap(TRefCountPtr<FMaterialShaderMap>& In
 	check(IsInRenderingThread());
 	RenderingThreadShaderMap = MoveTemp(InMaterialShaderMap);
 	bRenderingThreadShaderMapIsComplete = RenderingThreadShaderMap ? RenderingThreadShaderMap->IsComplete(this, true) : false;
+	RenderingThreadShaderMapSubmittedPriority = -1;
 }
 
 void FMaterial::AddReferencedObjects(FReferenceCollector& Collector)
@@ -3087,7 +3090,16 @@ void FMaterial::SubmitCompileJobs(EShaderCompileJobPriority Priority) const
 {
 	if (RenderingThreadCompilingShaderMapId != 0u && RenderingThreadShaderMap)
 	{
-		RenderingThreadShaderMap->SubmitCompileJobs(RenderingThreadCompilingShaderMapId, this, RenderingThreadPendingCompilerEnvironment, Priority);
+		// std::atomic don't support enum class, so we have to make sure our cast assumptions are respected.
+		static_assert((int8)EShaderCompileJobPriority::None == -1 && EShaderCompileJobPriority::Low < EShaderCompileJobPriority::ForceLocal, "Revise EShaderCompileJobPriority cast assumptions");
+		EShaderCompileJobPriority SubmittedPriority = (EShaderCompileJobPriority)RenderingThreadShaderMapSubmittedPriority.load(std::memory_order_relaxed);
+
+		// To avoid as much useless work as possible, we make sure to submit our compile jobs only once per priority upgrade.
+		if (SubmittedPriority == EShaderCompileJobPriority::None || Priority > SubmittedPriority)
+		{
+			RenderingThreadShaderMapSubmittedPriority = (int8)Priority;
+			RenderingThreadShaderMap->SubmitCompileJobs(RenderingThreadCompilingShaderMapId, this, RenderingThreadPendingCompilerEnvironment, Priority);
+		}
 	}
 }
 
