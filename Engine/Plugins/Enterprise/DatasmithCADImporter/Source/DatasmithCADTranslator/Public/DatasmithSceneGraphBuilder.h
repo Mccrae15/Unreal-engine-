@@ -56,7 +56,7 @@ class DATASMITHCADTRANSLATOR_API FDatasmithSceneGraphBuilder
 {
 public:
 	FDatasmithSceneGraphBuilder(
-		TMap<uint32, FString>& InCADFileToUE4FileMap, 
+		TMap<uint32, FString>& InCADFileToUEFileMap, 
 		const FString& InCachePath, 
 		TSharedRef<IDatasmithScene> InScene, 
 		const FDatasmithSceneSource& InSource, 
