@@ -1941,10 +1941,6 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 			SkeletalMeshComponent = nullptr;
 		}
 	}
-	else if (bHasNeedSkeletalMesh && ParentMeshComponent)
-	{
-		ValidatedMeshComponent = Cast<USkeletalMeshComponent>(ParentMeshComponent)->SkeletalMesh ? ParentMeshComponent : nullptr;
-	}
 
 	// Insure the ticking of the Groom component always happens after the skeletalMeshComponent.
 	UGroomBindingAsset* LocalBindingAsset = nullptr;
