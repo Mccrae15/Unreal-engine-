@@ -1259,6 +1259,12 @@ void FDeferredShadingSceneRenderer::RenderLights(
 	const int32 AttenuationLightStart = SortedLightSet.AttenuationLightStart;
 	const int32 SimpleLightsEnd = SortedLightSet.SimpleLightsEnd;
 
+	FHairStrandsTransmittanceMaskData DummyTransmittanceMaskData;
+	if (bUseHairLighting && Views.Num() > 0)
+	{
+		DummyTransmittanceMaskData = CreateDummyHairStrandsTransmittanceMaskData(GraphBuilder, Views[0].ShaderMap);
+	}
+
 	{
 		RDG_EVENT_SCOPE(GraphBuilder, "DirectLighting");
 
@@ -1372,12 +1378,6 @@ void FDeferredShadingSceneRenderer::RenderLights(
 			if (bUseHairLighting)
 			{
 				FRDGTextureRef NullScreenShadowMaskSubPixelTexture = nullptr;
-				FHairStrandsTransmittanceMaskData DummyTransmittanceMaskData;
-				if (Views.Num() > 0)
-				{
-					DummyTransmittanceMaskData = CreateDummyHairStrandsTransmittanceMaskData(GraphBuilder, Views[0].ShaderMap);
-				}
-
 				// Draw non-shadowed non-light function lights without changing render targets between them
 				for (int32 LightIndex = StandardDeferredStart; LightIndex < AttenuationLightStart; LightIndex++)
 				{
@@ -2003,13 +2003,15 @@ void FDeferredShadingSceneRenderer::RenderLights(
 
 				if (bUseHairLighting)
 				{
-					FHairStrandsTransmittanceMaskData TransmittanceMaskData;
+					FHairStrandsTransmittanceMaskData TransmittanceMaskData = DummyTransmittanceMaskData;
 					if (bDrawHairShadow)
 					{
 						TransmittanceMaskData = RenderHairStrandsTransmittanceMask(GraphBuilder, Views, &LightSceneInfo, HairDatas, ScreenShadowMaskSubPixelTexture);
-					}
 
-					RenderLightForHair(GraphBuilder, SceneTextures.UniformBuffer, &LightSceneInfo, ScreenShadowMaskSubPixelTexture, LightingChannelsTexture, TransmittanceMaskData, InHairVisibilityViews);
+						// Note: ideally the light should still be evaluated for hair when not casting shadow, but for preserving the old behavior, and not adding 
+						// any perf. regression, we disable this light for hair rendering 
+						RenderLightForHair(GraphBuilder, SceneTextures.UniformBuffer, &LightSceneInfo, ScreenShadowMaskSubPixelTexture, LightingChannelsTexture, TransmittanceMaskData, InHairVisibilityViews);
+					}
 				}
 			}
 		}
