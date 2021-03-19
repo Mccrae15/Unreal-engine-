@@ -159,8 +159,6 @@ public:
 	virtual void PostRenderOpaque(
 		class FRDGBuilder& GraphBuilder,
 		FRHIUniformBuffer* ViewUniformBuffer,
-		const FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-		FRHIUniformBuffer* SceneTexturesUniformBuffer,
 		bool bAllowGPUParticleUpdate) override;
 	// End FFXSystemInterface.
 
@@ -214,6 +212,8 @@ public:
 
 	/** Get the shared SortManager, used in the rendering loop to call FGPUSortManager::OnPreRender() and FGPUSortManager::OnPostRenderOpaque() */
 	virtual FGPUSortManager* GetGPUSortManager() const override;
+
+	virtual void SetSceneTexturesUniformBuffer(FRHIUniformBuffer* InSceneTexturesUniformParams) override { SceneTexturesUniformParams = InSceneTexturesUniformParams; }
 
 private:
 
@@ -284,9 +284,7 @@ private:
 		FRHICommandListImmediate& RHICmdList,
 		EParticleSimulatePhase::Type Phase,
 		FRHIUniformBuffer* ViewUniformBuffer,
-		const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData,
-		const FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-		FRHIUniformBuffer* SceneTexturesUniformBuffer
+		const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData
 		);
 
 	/**
@@ -338,5 +336,7 @@ private:
 	EParticleSimulatePhase::Type PhaseToWaitForTemporalEffect = EParticleSimulatePhase::First;
 	EParticleSimulatePhase::Type PhaseToBroadcastTemporalEffect = EParticleSimulatePhase::Last;
 #endif
+
+	FRHIUniformBuffer* SceneTexturesUniformParams = nullptr;
 };
 
