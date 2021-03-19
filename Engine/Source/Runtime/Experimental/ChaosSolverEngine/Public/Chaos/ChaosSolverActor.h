@@ -31,10 +31,10 @@ namespace Chaos
 UENUM()
 enum class EClusterConnectionTypeEnum : uint8
 {
-	Chaos_PointImplicit = Chaos::FClusterCreationParameters<float>::PointImplicit UMETA(Hidden),
+	Chaos_PointImplicit = Chaos::FClusterCreationParameters<float>::PointImplicit,
 	Chaos_DelaunayTriangulation = Chaos::FClusterCreationParameters<float>::DelaunayTriangulation UMETA(Hidden),
-	Chaos_MinimalSpanningSubsetDelaunayTriangulation = Chaos::FClusterCreationParameters<float>::MinimalSpanningSubsetDelaunayTriangulation UMETA(Hidden),
-	Chaos_PointImplicitAugmentedWithMinimalDelaunay = Chaos::FClusterCreationParameters<float>::PointImplicitAugmentedWithMinimalDelaunay UMETA(Hidden),
+	Chaos_MinimalSpanningSubsetDelaunayTriangulation = Chaos::FClusterCreationParameters<float>::MinimalSpanningSubsetDelaunayTriangulation,
+	Chaos_PointImplicitAugmentedWithMinimalDelaunay = Chaos::FClusterCreationParameters<float>::PointImplicitAugmentedWithMinimalDelaunay,
 	Chaos_None = Chaos::FClusterCreationParameters<float>::None UMETA(Hidden),
 	//
 	Chaos_EClsuterCreationParameters_Max UMETA(Hidden)
