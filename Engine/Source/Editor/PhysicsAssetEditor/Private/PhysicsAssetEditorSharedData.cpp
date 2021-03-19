@@ -1953,7 +1953,7 @@ void FPhysicsAssetEditorSharedData::EnableSimulation(bool bEnableSimulation)
 		EditorSkelComp->SetPhysicsBlendWeight(0.f);
 		EditorSkelComp->ResetAllBodiesSimulatePhysics();
 		EditorSkelComp->SetSimulatePhysics(false);
-		EditorSkelComp->DisableAllBodiesSimulatePhysics();
+		ForceDisableSimulation();
 
 		// Since simulation, actor location changes. Reset to identity 
 		EditorSkelComp->SetWorldTransform(ResetTM);
@@ -2159,6 +2159,21 @@ void FPhysicsAssetEditorSharedData::AddReferencedObjects(FReferenceCollector& Co
 	}
 }
 
+void FPhysicsAssetEditorSharedData::ForceDisableSimulation()
+{
+	// Reset simulation state of body instances so we dont actually simulate outside of 'simulation mode'
+	for (int32 BodyIdx = 0; BodyIdx < EditorSkelComp->Bodies.Num(); ++BodyIdx)
+	{
+		if (FBodyInstance* BodyInst = EditorSkelComp->Bodies[BodyIdx])
+		{
+			if (UBodySetup* PhysAssetBodySetup = PhysicsAsset->SkeletalBodySetups[BodyIdx])
+			{
+				BodyInst->SetInstanceSimulatePhysics(false);
+			}
+		}
+	}
+}
+
 void FPhysicsAssetEditorSharedData::UpdateClothPhysics()
 {
 	if(EditorSkelComp && EditorSkelComp->GetClothingSimulationInteractor())
@@ -2166,5 +2181,7 @@ void FPhysicsAssetEditorSharedData::UpdateClothPhysics()
 		EditorSkelComp->GetClothingSimulationInteractor()->PhysicsAssetUpdated();
 	}
 }
+
+
 
 #undef LOCTEXT_NAMESPACE
