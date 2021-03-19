@@ -58,7 +58,8 @@ extern TRDGUniformBufferRef<FMobileBasePassUniformParameters> CreateMobileBasePa
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	EMobileBasePass BasePass,
-	FRDGTextureRef ScreenSpaceAO = nullptr);
+	FRDGTextureRef ScreenSpaceAO = nullptr,
+	FTextureRHIRef PixelProjectedReflectionTexture = nullptr);
 
 extern void SetupMobileDirectionalLightUniformParameters(
 	const FScene& Scene,

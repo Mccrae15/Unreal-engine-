@@ -252,6 +252,8 @@ public:
 	/** Render the view family's hit proxies. */
 	virtual void RenderHitProxies(FRDGBuilder& GraphBuilder) override;
 
+	virtual bool ShouldRenderPrePass() const override;
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	void RenderVisualizeTexturePool(FRHICommandListImmediate& RHICmdList);
 #endif

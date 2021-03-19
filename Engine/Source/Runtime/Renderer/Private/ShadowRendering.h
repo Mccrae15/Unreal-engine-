@@ -497,11 +497,33 @@ public:
 		const FShadowProjectionPassParameters& CommonPassParameters,
 		int32 ViewIndex,
 		const FViewInfo* View,
+		const FLightSceneProxy* LightSceneProxy,
 		const FSceneRenderer* SceneRender,
 		bool bProjectingForForwardShading,
 		bool bMobileModulatedProjections,
 		const FHairStrandsVisibilityData* HairVisibilityData,
 		const struct FHairStrandsMacroGroupDatas* HairMacroGroupData) const;
+
+	void RenderProjectionInternal(
+		FRHICommandListImmediate& RHICmdList,
+		int32 ViewIndex,
+		const FViewInfo* View,
+		const FLightSceneProxy* LightSceneProxy,
+		const FSceneRenderer* SceneRender,
+		bool bProjectingForForwardShading,
+		bool bMobileModulatedProjections,
+		const FHairStrandsVisibilityData* HairVisibilityData,
+		const FInstanceCullingDrawParams& InstanceCullingDrawParams) const;
+
+	/**
+	 * Projects the mobile modulated shadow onto the scene for a particular view.
+	 */
+	void RenderMobileModulatedShadowProjection(
+		FRHICommandListImmediate& RHICmdList,
+		int32 ViewIndex,
+		const FViewInfo* View,
+		const FLightSceneProxy* LightSceneProxy,
+		const FSceneRenderer* SceneRender) const;
 
 	/**
 	* Renders the shadow subject depth, to a particular hacked view
@@ -532,6 +554,7 @@ public:
 		const FShadowProjectionPassParameters& CommonPassParameters,
 		int32 ViewIndex,
 		const FViewInfo& View,
+		const FLightSceneProxy* LightSceneProxy,
 		bool bProjectingForForwardShading,
 		const FHairStrandsVisibilityData* HairVisibilityData,
 		const struct FHairStrandsMacroGroupDatas* HairMacroGroupData) const;
