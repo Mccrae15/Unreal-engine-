@@ -1912,6 +1912,7 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 	bool bHasNeedSkinningBinding = false;			   
 	bool bHasNeedGlobalDeformation = false;
 	bool bHasNeedSimulation = false;
+	bool bHasNeedSkeletalMesh = false;
 	for (int32 GroupIt = 0, GroupCount = GroomAsset->HairGroupsData.Num(); GroupIt < GroupCount; ++GroupIt)
 	{
 		for (uint32 LODIt = 0, LODCount = GroomAsset->GetLODCount(); LODIt < LODCount; ++LODIt)
@@ -1922,6 +1923,7 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 			// Note on Global Deformation:
 			// * Global deformation require to have skinning binding
 			// * Force global interpolation to be enable for meshes with skinning binding as we use RBF defomation for 'sticking' meshes onto skel. mesh surface			
+			bHasNeedSkeletalMesh	  = bHasNeedSkeletalMesh || BindingType == EGroomBindingType::Rigid;
 			bHasNeedSkinningBinding   = bHasNeedSkinningBinding || BindingType == EGroomBindingType::Skinning;
 			bHasNeedSimulation		  = bHasNeedSimulation || GroomAsset->IsSimulationEnable(GroupIt, LODIt);
 			bHasNeedGlobalDeformation = bHasNeedGlobalDeformation || (BindingType == EGroomBindingType::Skinning && (GroomAsset->IsGlobalInterpolationEnable(GroupIt, LODIt) || GeometryType == EGroomGeometryType::Meshes));
@@ -1938,6 +1940,10 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 		{
 			SkeletalMeshComponent = nullptr;
 		}
+	}
+	else if (bHasNeedSkeletalMesh && ParentMeshComponent)
+	{
+		ValidatedMeshComponent = Cast<USkeletalMeshComponent>(ParentMeshComponent)->SkeletalMesh ? ParentMeshComponent : nullptr;
 	}
 
 	// Insure the ticking of the Groom component always happens after the skeletalMeshComponent.
