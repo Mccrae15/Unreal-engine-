@@ -93,7 +93,7 @@ class FHairStrandsClearTransmittanceMaskCS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(uint32, ElementCount)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(StructuredBuffer, OutputMask)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer, OutputMask)
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
