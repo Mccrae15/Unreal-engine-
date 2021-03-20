@@ -501,8 +501,7 @@ public:
 		const FSceneRenderer* SceneRender,
 		bool bProjectingForForwardShading,
 		bool bMobileModulatedProjections,
-		const FHairStrandsVisibilityData* HairVisibilityData,
-		const struct FHairStrandsMacroGroupDatas* HairMacroGroupData) const;
+		bool bSubPixelShadow) const;
 
 	void RenderProjectionInternal(
 		FRHICommandListImmediate& RHICmdList,
@@ -512,8 +511,8 @@ public:
 		const FSceneRenderer* SceneRender,
 		bool bProjectingForForwardShading,
 		bool bMobileModulatedProjections,
-		const FHairStrandsVisibilityData* HairVisibilityData,
-		const FInstanceCullingDrawParams& InstanceCullingDrawParams) const;
+		const FInstanceCullingDrawParams& InstanceCullingDrawParams, 
+		FRHIUniformBuffer* HairStrandsUniformBuffer) const;
 
 	/**
 	 * Projects the mobile modulated shadow onto the scene for a particular view.
@@ -556,8 +555,7 @@ public:
 		const FViewInfo& View,
 		const FLightSceneProxy* LightSceneProxy,
 		bool bProjectingForForwardShading,
-		const FHairStrandsVisibilityData* HairVisibilityData,
-		const struct FHairStrandsMacroGroupDatas* HairMacroGroupData) const;
+		bool bSubPixelShadow) const;
 
 	/**
 	 * Renders the projected shadow's frustum wireframe with the given FPrimitiveDrawInterface.
@@ -959,14 +957,13 @@ public:
 		InvFadePlaneLength.Bind(ParameterMap,TEXT("InvFadePlaneLength"));
 		ShadowTileOffsetAndSizeParam.Bind(ParameterMap, TEXT("ShadowTileOffsetAndSize"));
 		LightPositionOrDirection.Bind(ParameterMap, TEXT("LightPositionOrDirection"));
-		HairCategorizationTexture.Bind(ParameterMap, TEXT("HairCategorizationTexture"));
 		PerObjectShadowFadeStart.Bind(ParameterMap, TEXT("PerObjectShadowFadeStart"));
 		InvPerObjectShadowFadeLength.Bind(ParameterMap, TEXT("InvPerObjectShadowFadeLength"));
 		ShadowNearAndFarDepth.Bind(ParameterMap, TEXT("ShadowNearAndFarDepth"));
 		bCascadeUseFadePlane.Bind(ParameterMap, TEXT("bCascadeUseFadePlane"));
 	}
 
-	void Set(FRHICommandList& RHICmdList, FShader* Shader, const FSceneView& View, const FProjectedShadowInfo* ShadowInfo, const FHairStrandsVisibilityData* HairVisibilityData, bool bModulatedShadows, bool bUseFadePlane)
+	void Set(FRHICommandList& RHICmdList, FShader* Shader, const FSceneView& View, const FProjectedShadowInfo* ShadowInfo, bool bModulatedShadows, bool bUseFadePlane, bool SubPixelShadow)
 	{
 		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
@@ -1053,10 +1050,8 @@ public:
 			SetShaderValue(RHICmdList, ShaderRHI, LightPositionOrDirection, bIsDirectional ? FVector4(LightDirection,0) : FVector4(LightPosition,1));
 		}
 
-		if (HairVisibilityData && HairVisibilityData->CategorizationTexture)
+		if (SubPixelShadow)
 		{
-			SetTextureParameter(RHICmdList, ShaderRHI, HairCategorizationTexture, HairVisibilityData->CategorizationTexture->GetPooledRenderTarget()->GetRenderTargetItem().ShaderResourceTexture);
-
 			float DeviceZNear = 1;
 			float DeviceZFar = 0;
 			const bool bIsCascadedShadow = ShadowInfo->bDirectionalLight && !(ShadowInfo->bPerObjectOpaqueShadow || ShadowInfo->bPreShadow);
@@ -1090,7 +1085,6 @@ private:
 	LAYOUT_FIELD(FShaderParameter, InvFadePlaneLength);
 	LAYOUT_FIELD(FShaderParameter, ShadowTileOffsetAndSizeParam);
 	LAYOUT_FIELD(FShaderParameter, LightPositionOrDirection);
-	LAYOUT_FIELD(FShaderResourceParameter, HairCategorizationTexture);
 	LAYOUT_FIELD(FShaderParameter, PerObjectShadowFadeStart);
 	LAYOUT_FIELD(FShaderParameter, InvPerObjectShadowFadeLength);
 	LAYOUT_FIELD(FShaderParameter, ShadowNearAndFarDepth);
@@ -1155,14 +1149,13 @@ public:
 		FRHICommandList& RHICmdList, 
 		int32 ViewIndex,
 		const FSceneView& View,
-		const FHairStrandsVisibilityData* HairVisibilityData,
 		const FProjectedShadowInfo* ShadowInfo)
 	{
 		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
 		const bool bUseFadePlaneEnable = ShadowInfo->CascadeSettings.FadePlaneLength > 0;
 
-		ProjectionParameters.Set(RHICmdList, this, View, ShadowInfo, HairVisibilityData, bModulatedShadows, bUseFadePlaneEnable);
+		ProjectionParameters.Set(RHICmdList, this, View, ShadowInfo, bModulatedShadows, bUseFadePlaneEnable, SubPixelShadow);
 		const FLightSceneProxy& LightProxy = *(ShadowInfo->GetLightSceneInfo().Proxy);
 
 		SetShaderValue(RHICmdList, ShaderRHI, ShadowFadeFraction, ShadowInfo->FadeAlphas[ViewIndex] );
@@ -1237,10 +1230,9 @@ public:
 		FRHICommandList& RHICmdList,
 		int32 ViewIndex,
 		const FSceneView& View,
-		const FHairStrandsVisibilityData* HairVisibilityData,
 		const FProjectedShadowInfo* ShadowInfo)
 	{
-		TShadowProjectionPS<Quality, false, true>::SetParameters(RHICmdList, ViewIndex, View, HairVisibilityData, ShadowInfo);
+		TShadowProjectionPS<Quality, false, true>::SetParameters(RHICmdList, ViewIndex, View, ShadowInfo);
 		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 		SetShaderValue(RHICmdList, ShaderRHI, ModulatedShadowColorParameter, ShadowInfo->GetLightSceneInfo().Proxy->GetModulatedShadowColor());
 	}
@@ -1305,10 +1297,9 @@ public:
 		FRHICommandList& RHICmdList, 
 		int32 ViewIndex,
 		const FSceneView& View,
-		const FHairStrandsVisibilityData* HairVisibilityData,
 		const FProjectedShadowInfo* ShadowInfo)
 	{
-		TShadowProjectionPS<Quality>::SetParameters(RHICmdList, ViewIndex, View, HairVisibilityData, ShadowInfo);
+		TShadowProjectionPS<Quality>::SetParameters(RHICmdList, ViewIndex, View, ShadowInfo);
 
 		FTranslucentSelfShadowUniformParameters TranslucentSelfShadowUniformParameters;
 		SetupTranslucentSelfShadowUniformParameters(ShadowInfo, TranslucentSelfShadowUniformParameters);
@@ -1450,6 +1441,7 @@ public:
 	TOnePassPointShadowProjectionPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer):
 		FGlobalShader(Initializer)
 	{
+		HairStrandsParameters.Bind(Initializer.ParameterMap, FHairStrandsViewUniformParameters::StaticStructMetadata.GetShaderVariableName());
 		OnePassShadowParameters.Bind(Initializer.ParameterMap);
 		ShadowDepthTextureSampler.Bind(Initializer.ParameterMap,TEXT("ShadowDepthTextureSampler"));
 		LightPosition.Bind(Initializer.ParameterMap,TEXT("LightPositionAndInvRadius"));
@@ -1458,7 +1450,6 @@ public:
 		PointLightDepthBias.Bind(Initializer.ParameterMap,TEXT("PointLightDepthBias"));
 		PointLightProjParameters.Bind(Initializer.ParameterMap, TEXT("PointLightProjParameters"));
 		TransmissionProfilesTexture.Bind(Initializer.ParameterMap, TEXT("SSProfilesTexture"));
-		HairCategorizationTexture.Bind(Initializer.ParameterMap, TEXT("HairCategorizationTexture"));
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -1479,8 +1470,8 @@ public:
 		FRHICommandList& RHICmdList, 
 		int32 ViewIndex,
 		const FSceneView& View,
-		const FHairStrandsVisibilityData* HairVisibilityData,
-		const FProjectedShadowInfo* ShadowInfo)
+		const FProjectedShadowInfo* ShadowInfo,
+		FRHIUniformBuffer* HairStrandsUniformBuffer)
 	{
 		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
@@ -1500,9 +1491,9 @@ public:
 		SetShaderValue(RHICmdList, ShaderRHI, PointLightDepthBias, FVector(ShadowInfo->GetShaderDepthBias(), ShadowInfo->GetShaderSlopeDepthBias(), ShadowInfo->GetShaderMaxSlopeDepthBias()));
 		SetShaderValue(RHICmdList, ShaderRHI, PointLightProjParameters, FVector2D(projParam.X, projParam.Y));
 
-		if (bUseSubPixel && HairVisibilityData && HairVisibilityData->CategorizationTexture)
+		if (HairStrandsParameters.IsBound())
 		{
-			SetTextureParameter(RHICmdList, ShaderRHI, HairCategorizationTexture, HairVisibilityData->CategorizationTexture->GetPooledRenderTarget()->GetRenderTargetItem().ShaderResourceTexture);
+			SetUniformBufferParameter(RHICmdList, ShaderRHI, HairStrandsParameters, HairStrandsUniformBuffer);
 		}
 
 		{
@@ -1545,7 +1536,7 @@ private:
 	LAYOUT_FIELD(FShaderParameter, PointLightDepthBias);
 	LAYOUT_FIELD(FShaderParameter, PointLightProjParameters);
 	LAYOUT_FIELD(FShaderResourceParameter, TransmissionProfilesTexture);
-	LAYOUT_FIELD(FShaderResourceParameter, HairCategorizationTexture);
+	LAYOUT_FIELD(FShaderUniformBufferParameter, HairStrandsParameters);
 };
 
 // Reversed Z
@@ -1610,10 +1601,9 @@ public:
 		FRHICommandList& RHICmdList,
 		int32 ViewIndex,
 		const FSceneView& View,
-		const FHairStrandsVisibilityData* HairVisibilityData,
 		const FProjectedShadowInfo* ShadowInfo)
 	{
-		TShadowProjectionPS<Quality, bUseFadePlane>::SetParameters(RHICmdList, ViewIndex, View, HairVisibilityData, ShadowInfo);
+		TShadowProjectionPS<Quality, bUseFadePlane>::SetParameters(RHICmdList, ViewIndex, View, ShadowInfo);
 
 		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
@@ -1668,12 +1658,11 @@ public:
 		FRHICommandList& RHICmdList,
 		int32 ViewIndex,
 		const FSceneView& View,
-		const FHairStrandsVisibilityData* HairVisibilityData,
 		const FProjectedShadowInfo* ShadowInfo)
 	{
 		check(ShadowInfo->GetLightSceneInfo().Proxy->GetLightType() == LightType_Spot);
 
-		TShadowProjectionPS<Quality, bUseFadePlane>::SetParameters(RHICmdList, ViewIndex, View, HairVisibilityData, ShadowInfo);
+		TShadowProjectionPS<Quality, bUseFadePlane>::SetParameters(RHICmdList, ViewIndex, View, ShadowInfo);
 
 		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 

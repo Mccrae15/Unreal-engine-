@@ -41,7 +41,6 @@ struct FSceneWithoutWaterTextures;
 struct FHeightFogRenderingParameters;
 struct FRayTracingReflectionOptions;
 struct FHairStrandsTransmittanceMaskData;
-struct FHairStrandsRenderingData;
 
 struct FTranslucencyLightingVolumeTextures;
 
@@ -437,17 +436,15 @@ private:
 		FRDGBuilder& GraphBuilder,
 		FSceneTextures& SceneTextures,
 		FRDGTextureRef LightingChannelsTexture,
-		FHairStrandsRenderingData* HairDatas,
 		bool bIsVisualizePass);
 
 	/** Renders sky lighting and reflections that can be done in a deferred pass. */
 	void RenderDeferredReflectionsAndSkyLighting(
 		FRDGBuilder& GraphBuilder,
 		const FSceneTextures& SceneTextures,
-		FRDGTextureRef DynamicBentNormalAOTexture,
-		struct FHairStrandsRenderingData* HairDatas);
+		FRDGTextureRef DynamicBentNormalAOTexture);
 
-	void RenderDeferredReflectionsAndSkyLightingHair(FRDGBuilder& GraphBuilder, struct FHairStrandsRenderingData* HairDatas);
+	void RenderDeferredReflectionsAndSkyLightingHair(FRDGBuilder& GraphBuilder);
 
 	/** Computes DFAO, modulates it to scene color (which is assumed to contain diffuse indirect lighting), and stores the output bent normal for use occluding specular. */
 	void RenderDFAOAsIndirectShadowing(
@@ -569,8 +566,7 @@ private:
 		FMinimalSceneTextures& SceneTextures,
 		const FTranslucencyLightingVolumeTextures& TranslucencyLightingVolumeTextures,
 		FRDGTextureRef LightingChannelsTexture,
-		FSortedLightSetSceneInfo& SortedLightSet,
-		const FHairStrandsRenderingData* HairDatas);
+		FSortedLightSetSceneInfo& SortedLightSet);
 
 	/** Renders an array of lights for the stationary light overlap viewmode. */
 	void RenderLightArrayForOverlapViewmode(
@@ -658,7 +654,6 @@ private:
 		FRDGTextureRef ScreenShadowMaskTexture,
 		FRDGTextureRef ScreenShadowMaskSubPixelTexture,
 		const FLightSceneInfo* LightSceneInfo,
-		const FHairStrandsRenderingData* HairDatas,
 		bool bProjectingForForwardShading);
 
 	void RenderDeferredShadowProjections(
@@ -668,15 +663,13 @@ private:
 		const FLightSceneInfo* LightSceneInfo,
 		FRDGTextureRef ScreenShadowMaskTexture,
 		FRDGTextureRef ScreenShadowMaskSubPixelTexture,
-		const FHairStrandsRenderingData* HairDatas,
 		bool& bInjectedTranslucentVolume);
 
 	void RenderForwardShadowProjections(
 		FRDGBuilder& GraphBuilder,
 		const FMinimalSceneTextures& SceneTextures,
 		FRDGTextureRef& ForwardScreenSpaceShadowMask,
-		FRDGTextureRef& ForwardScreenSpaceShadowMaskSubPixel,
-		const FHairStrandsRenderingData* InHairDatas);
+		FRDGTextureRef& ForwardScreenSpaceShadowMaskSubPixel);
 
 	/** Used by RenderLights to render a light function to the attenuation buffer. */
 	bool RenderLightFunction(
@@ -710,11 +703,9 @@ private:
 	void RenderLight(
 		FRHICommandList& RHICmdList,
 		const FViewInfo& View,
-		int32 ViewIndex,
 		const FLightSceneInfo* LightSceneInfo,
 		FRHITexture* ScreenShadowMaskTexture,
 		FRHITexture* LightingChannelTexture,
-		const struct FHairStrandsVisibilityViews* InHairVisibilityViews,
 		bool bRenderOverlap,
 		bool bIssueDrawEvent);
 
@@ -724,26 +715,24 @@ private:
 		const FLightSceneInfo* LightSceneInfo,
 		FRDGTextureRef ScreenShadowMaskTexture,
 		FRDGTextureRef LightingChannelsTexture,
-		const FHairStrandsVisibilityViews* InHairVisibilityViews,
 		bool bRenderOverlap);
 
 	void RenderLightsForHair(
 		FRDGBuilder& GraphBuilder,
 		TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer,
 		FSortedLightSetSceneInfo& SortedLightSet,
-		const FHairStrandsRenderingData* HairDatas,
 		FRDGTextureRef InScreenShadowMaskSubPixelTexture,
 		FRDGTextureRef LightingChannelsTexture);
 
 	/** Specialized version of RenderLight for hair (run lighting evaluation on at sub-pixel rate, without depth bound) */
 	void RenderLightForHair(
 		FRDGBuilder& GraphBuilder,
+		FViewInfo& View,
 		TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer,
 		const FLightSceneInfo* LightSceneInfo,
 		FRDGTextureRef ScreenShadowMaskSubPixelTexture,
 		FRDGTextureRef LightingChannelsTexture,
-		const FHairStrandsTransmittanceMaskData& InTransmittanceMaskData,
-		const struct FHairStrandsVisibilityViews* InHairVisibilityViews);
+		const FHairStrandsTransmittanceMaskData& InTransmittanceMaskData);
 
 	/** Renders an array of simple lights using standard deferred shading. */
 	void RenderSimpleLightsStandardDeferred(
@@ -922,8 +911,7 @@ private:
 		FRDGBuilder& GraphBuilder,
 		FRDGTextureRef SceneColorTexture,
 		FRDGTextureRef& OutSkyLightTexture,
-		FRDGTextureRef& OutHitDistanceTexture,
-		const FHairStrandsRenderingData* HairDatas);
+		FRDGTextureRef& OutHitDistanceTexture);
 
 	void RenderRayTracingPrimaryRaysView(
 		FRDGBuilder& GraphBuilder,
