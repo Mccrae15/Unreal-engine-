@@ -562,7 +562,7 @@ public:
 	*/
 	/* ---------------------------------------------------------------------------------------- */
 	
-	void SetShowBoneColors(bool ShowBoneColorsIn);
+	void SetShowBoneColors(bool ShowBoneColorsIn) { bShowBoneColors = ShowBoneColorsIn; }
 	bool GetShowBoneColors() const { return bShowBoneColors; }
 	bool GetEnableBoneSelection() const { return bEnableBoneSelection; }
 	
