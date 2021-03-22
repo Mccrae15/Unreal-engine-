@@ -872,13 +872,15 @@ void FStructHierarchy::PopulateStructHierarchy()
 		DataNodes.Add(nullptr, StructRootNode);
 
 		TSet<const UScriptStruct*> Visited;
+		UPackage* TransientPackage = GetTransientPackage();
 
 		// Go through all of the structs and see if they should be added to the list.
 		for (TObjectIterator<UScriptStruct> StructIt; StructIt; ++StructIt)
 		{
 			const UScriptStruct* CurrentStruct = *StructIt;
-			if (Visited.Contains(CurrentStruct))
+			if (Visited.Contains(CurrentStruct) || CurrentStruct->GetOutermost() == TransientPackage)
 			{
+				// Skip transient structs as they are dead leftovers from user struct editing
 				continue;
 			}
 
@@ -927,7 +929,11 @@ void FStructHierarchy::PopulateStructHierarchy()
 
 		for (const FAssetData& UserDefinedStructData : UserDefinedStructsList)
 		{
-			StructRootNode->AddChild(MakeShared<FStructViewerNodeData>(UserDefinedStructData));
+			if (!UserDefinedStructData.IsAssetLoaded())
+			{
+				// If the asset is loaded it was added by the object iterator
+				StructRootNode->AddChild(MakeShared<FStructViewerNodeData>(UserDefinedStructData));
+			}
 		}
 	}
 
