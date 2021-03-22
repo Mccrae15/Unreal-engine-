@@ -34,7 +34,7 @@ void SNiagaraStackItemFooter::Construct(const FArguments& InArgs, UNiagaraStackI
 
 EVisibility SNiagaraStackItemFooter::GetExpandButtonVisibility() const
 {
-	return ItemFooter->GetHasAdvancedContent() ? EVisibility::Visible : EVisibility::Hidden;
+	return ItemFooter->GetHasAdvancedContent() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 const FSlateBrush* SNiagaraStackItemFooter::GetButtonBrush() const
