@@ -529,7 +529,7 @@ void FPBDConstraintGraph::ComputeIslands(const TParticleView<TPBDRigidParticles<
 			}
 			else
 			{
-				for ((TGeometryParticleHandle<FReal, 3>* Particle : IslandToParticles[Island])
+				for (TGeometryParticleHandle<FReal, 3>* Particle : IslandToParticles[Island])
 				{
 					if (CHAOS_ENSURE(Particle))
 					{
