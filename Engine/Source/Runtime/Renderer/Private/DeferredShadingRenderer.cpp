@@ -1803,7 +1803,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	#endif
 
 	
-	const bool bIsOcclusionTesting = DoOcclusionQueries(FeatureLevel) && (!ViewFamily.EngineShowFlags.Wireframe || bIsViewFrozen || bHasViewParent);
+	const bool bIsOcclusionTesting = DoOcclusionQueries() && (!ViewFamily.EngineShowFlags.Wireframe || bIsViewFrozen || bHasViewParent);
 	const bool bNeedsPrePass = ShouldRenderPrePass();
 
 	GEngine->GetPreRenderDelegateEx().Broadcast(GraphBuilder);
