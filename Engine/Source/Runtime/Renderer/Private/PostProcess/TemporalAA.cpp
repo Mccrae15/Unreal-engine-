@@ -104,9 +104,7 @@ inline bool DoesPlatformSupportTemporalHistoryUpscale(EShaderPlatform Platform)
 
 inline bool DoesPlatformSupportGen5TAA(EShaderPlatform Platform)
 {
-	return (
-		(IsPCPlatform(Platform) && IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5)) ||
-		FDataDrivenShaderPlatformInfo::GetSupportsGen5TemporalAA(Platform));
+	return FDataDrivenShaderPlatformInfo::GetSupportsGen5TemporalAA(Platform);
 }
 
 BEGIN_SHADER_PARAMETER_STRUCT(FTAACommonParameters, )
