@@ -1935,7 +1935,7 @@ void PostSavePackage(FSaveContext& SaveContext)
 	// update the internal package filename path if we're saving to a valid mounted path and we aren't currently cooking
 #if WITH_EDITOR
 	const FPackagePath& PackagePath = SaveContext.GetTargetPackagePath();
-	if (!SaveContext.IsCooking() && PackagePath.IsMountedPath())
+	if (!SaveContext.IsCooking() && PackagePath.IsMountedPath() && !(SaveContext.GetSaveArgs().SaveFlags & SAVE_FromAutosave))
 	{
 		Package->SetLoadedPath(PackagePath);
 	}
