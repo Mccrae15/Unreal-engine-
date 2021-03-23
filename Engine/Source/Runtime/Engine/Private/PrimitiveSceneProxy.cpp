@@ -170,7 +170,7 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	bSelectable(InComponent->bSelectable)
 ,	bHasPerInstanceHitProxies(InComponent->bHasPerInstanceHitProxies)
 ,	bUseEditorCompositing(InComponent->bUseEditorCompositing)
-,	bIsBeingMovedByEditor(InComponent->bIsBeingMovedByEditor)
+,	bIsBeingMovedByEditor(false)
 ,	bReceiveMobileCSMShadows(InComponent->bReceiveMobileCSMShadows)
 ,	bRenderCustomDepth(InComponent->bRenderCustomDepth)
 ,	CustomDepthStencilValue(InComponent->CustomDepthStencilValue)
@@ -731,6 +731,27 @@ void FPrimitiveSceneProxy::SetHiddenEdViews_RenderThread( uint64 InHiddenEditorV
 	HiddenEditorViews = InHiddenEditorViews;
 #endif
 }
+
+#if WITH_EDITOR
+void FPrimitiveSceneProxy::SetIsBeingMovedByEditor_GameThread(bool bIsBeingMoved)
+{
+	check(IsInGameThread());
+
+	FPrimitiveSceneProxy* PrimitiveSceneProxy = this;
+	ENQUEUE_RENDER_COMMAND(SetIsBeingMovedByEditor)(
+		[PrimitiveSceneProxy, bIsBeingMoved](FRHICommandListImmediate& RHICmdList)
+		{
+			PrimitiveSceneProxy->SetIsBeingMovedByEditor_RenderThread(bIsBeingMoved);
+		});
+}
+
+void FPrimitiveSceneProxy::SetIsBeingMovedByEditor_RenderThread(bool bIsBeingMoved)
+{
+	check(IsInRenderingThread());
+	bIsBeingMovedByEditor = bIsBeingMoved;
+}
+
+#endif
 
 void FPrimitiveSceneProxy::SetCollisionEnabled_GameThread(const bool bNewEnabled)
 {
