@@ -14,6 +14,7 @@
 #include "NiagaraEditorSettings.h"
 #include "EditorFontGlyphs.h"
 #include "EditorStyleSet.h"
+#include "Widgets/Layout/SSpacer.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraParameterMapPalleteItem"
 
