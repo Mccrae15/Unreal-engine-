@@ -2177,6 +2177,7 @@ namespace AssetRegistry
 
 			TArray<UObject::FAssetRegistryTag> SourceTags;
 			Object->GetAssetRegistryTags(SourceTags);
+			Object->GetExternalActorExtendedAssetRegistryTags(SourceTags);
 
 			TArray<UObject::FAssetRegistryTag> Tags;
 			for (UObject::FAssetRegistryTag& SourceTag : SourceTags)
