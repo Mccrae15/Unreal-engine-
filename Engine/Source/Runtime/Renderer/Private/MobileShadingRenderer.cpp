@@ -72,13 +72,6 @@ static TAutoConsoleVariable<int32> CVarMobileAdrenoOcclusionMode(
 	TEXT("1: Render occlusion queries after translucency and a flush, which can help Adreno devices in GL mode."),
 	ECVF_RenderThreadSafe);
 
-static TAutoConsoleVariable<int32> CVarMobileFlushSceneColorRendering(
-	TEXT("r.Mobile.FlushSceneColorRendering"),
-	1,
-	TEXT("0: Submmit command buffer after all rendering is finished.\n")
-	TEXT("1: Submmit command buffer (flush) before starting post-processing (default)"),
-	ECVF_RenderThreadSafe);
-
 static TAutoConsoleVariable<int32> CVarMobileCustomDepthForTranslucency(
 	TEXT("r.Mobile.CustomDepthForTranslucency"),
 	1,
@@ -201,7 +194,6 @@ FMobileSceneRenderer::FMobileSceneRenderer(const FSceneViewFamily* InViewFamily,
 	bRenderToSceneColor = false;
 	bRequiresMultiPass = false;
 	bKeepDepthContent = false;
-	bSubmitOffscreenRendering = false;
 	bModulatedShadowsInUse = false;
 	bShouldRenderCustomDepth = false;
 	bRequiresPixelProjectedPlanarRelfectionPass = false;
@@ -337,13 +329,11 @@ void FMobileSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, FSceneTexturesCo
 
 	check(Scene);
 
-#if GPUCULL_TODO
 	// Create GPU-side reprensenation of the view for instance culling.
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 	{
 		Views[ViewIndex].GPUSceneViewId = InstanceCullingManager.RegisterView(Views[ViewIndex]);
 	}
-#endif //GPUCULL_TODO
 
 	if (bUseVirtualTexturing)
 	{
@@ -529,9 +519,6 @@ void FMobileSceneRenderer::InitViews(FRDGBuilder& GraphBuilder, FSceneTexturesCo
 	UpdatePrimitiveIndirectLightingCacheBuffers();
 	
 	OnStartRender(RHICmdList);
-
-	// Whether to submit cmdbuffer with offscreen rendering before doing post-processing
-	bSubmitOffscreenRendering = (!bGammaSpace || bRenderToSceneColor) && CVarMobileFlushSceneColorRendering.GetValueOnAnyThread() != 0;
 }
 
 /** 
@@ -702,16 +689,6 @@ void FMobileSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 				RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 			}
 		);
-	}
-
-	// Flush / submit cmdbuffer
-	if (bSubmitOffscreenRendering)
-	{
-		AddPass(GraphBuilder, [this](FRHICommandListImmediate& InRHICmdList)
-		{
-			InRHICmdList.SubmitCommandsHint();
-			InRHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
-		});
 	}
 
 	if (bRequriesAmbientOcclusionPass)
@@ -919,7 +896,6 @@ void FMobileSceneRenderer::RenderForwardSinglePass(FRDGBuilder& GraphBuilder, FM
 			RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
 			// flush
 			RHICmdList.SubmitCommandsHint();
-			bSubmitOffscreenRendering = false; // submit once
 			// Issue occlusion queries
 			RenderOcclusion(RHICmdList, View);
 		}
