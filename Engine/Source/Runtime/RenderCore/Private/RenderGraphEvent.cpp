@@ -102,8 +102,8 @@ bool FRDGEventScopeStack::IsEnabled()
 #endif
 }
 
-FRDGEventScopeStack::FRDGEventScopeStack(FRHIComputeCommandList& InRHICmdList)
-	: ScopeStack(InRHICmdList, &OnPushEvent, &OnPopEvent)
+FRDGEventScopeStack::FRDGEventScopeStack(FRHIComputeCommandList& InRHICmdList, FRDGAllocator& Allocator)
+	: ScopeStack(InRHICmdList, Allocator, &OnPushEvent, &OnPopEvent)
 {}
 
 void FRDGEventScopeStack::BeginScope(FRDGEventName&& EventName)
@@ -207,8 +207,8 @@ bool FRDGGPUStatScopeStack::IsEnabled()
 #endif
 }
 
-FRDGGPUStatScopeStack::FRDGGPUStatScopeStack(FRHIComputeCommandList& InRHICmdList)
-	: ScopeStack(InRHICmdList, &OnPushGPUStat, &OnPopGPUStat)
+FRDGGPUStatScopeStack::FRDGGPUStatScopeStack(FRHIComputeCommandList& InRHICmdList, FRDGAllocator& Allocator)
+	: ScopeStack(InRHICmdList, Allocator, &OnPushGPUStat, &OnPopGPUStat)
 {}
 
 void FRDGGPUStatScopeStack::BeginScope(const FName& Name, const FName& StatName, int32* DrawCallCounter)
@@ -339,8 +339,8 @@ static void OnPopCSVStat(FRHIComputeCommandList&, const FRDGCSVStatScope* Scope)
 #endif
 }
 
-FRDGCSVStatScopeStack::FRDGCSVStatScopeStack(FRHIComputeCommandList& InRHICmdList, const char* InUnaccountedStatName)
-	: ScopeStack(InRHICmdList, &OnPushCSVStat, &OnPopCSVStat)
+FRDGCSVStatScopeStack::FRDGCSVStatScopeStack(FRHIComputeCommandList& InRHICmdList, FRDGAllocator& Allocator, const char* InUnaccountedStatName)
+	: ScopeStack(InRHICmdList, Allocator, &OnPushCSVStat, &OnPopCSVStat)
 	, UnaccountedStatName(InUnaccountedStatName)
 {
 	BeginScope(UnaccountedStatName);
