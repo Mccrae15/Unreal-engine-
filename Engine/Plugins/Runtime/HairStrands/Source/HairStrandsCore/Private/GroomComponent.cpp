@@ -2028,7 +2028,8 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 		// * Physics simulation
 		// * RBF deformation.
 		// Therefore, even if simulation is disabled, we need to run partially the update if the binding system is enabled (skin deformation + RBF correction)
-		if (GroupData.Guides.IsValid() && (bHasNeedSimulation || bHasNeedGlobalDeformation || bPreviewMode))
+		const bool bNeedGuides = GroupData.Guides.HasValidData() && (bHasNeedSimulation || bHasNeedGlobalDeformation || bPreviewMode);
+		if (bNeedGuides)
 		{
 			HairGroupInstance->Guides.Data = &GroupData.Guides.Data;
 
@@ -2043,6 +2044,14 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 
 				HairGroupInstance->Guides.DeformedRootResource = new FHairStrandsDeformedRootResource(HairGroupInstance->Guides.RestRootResource);
 				BeginInitResource(HairGroupInstance->Guides.DeformedRootResource);
+			}
+
+			// (Lazy) Allocation of the guide rest resources
+			if (!GroupData.Guides.RestResource)
+			{
+				// Lazy allocation of the guide resources
+				GroomAsset->AllocateGuidesResources(GroupIt);
+				check(GroupData.Guides.RestResource);
 			}
 			HairGroupInstance->Guides.RestResource = GroupData.Guides.RestResource;
 
@@ -2069,7 +2078,18 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 
 			HairGroupInstance->Strands.Data = &GroupData.Strands.Data;
 			HairGroupInstance->Strands.InterpolationData = &GroupData.Strands.InterpolationData;
-			HairGroupInstance->Strands.InterpolationResource = GroupData.Strands.InterpolationResource;
+
+			// (Lazy) Allocate interpolation resources, only if guides are required
+			if (bNeedGuides)
+			{
+				if (!GroupData.Strands.InterpolationResource)
+				{
+					// Lazy allocation of the guide resources
+					GroomAsset->AllocateInterpolationResources(GroupIt);
+					check(GroupData.Strands.InterpolationResource);
+				}
+				HairGroupInstance->Strands.InterpolationResource = GroupData.Strands.InterpolationResource;
+			}
 
 			// Material
 			HairGroupInstance->Strands.Material = nullptr;
