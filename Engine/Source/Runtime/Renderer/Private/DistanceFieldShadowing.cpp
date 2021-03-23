@@ -664,6 +664,7 @@ void RayTraceShadows(
 	TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer,
 	FRDGTextureRef RayTracedShadowsTexture,
 	const FViewInfo& View,
+	const FDistanceFieldSceneData& DistanceFieldSceneData,
 	const FProjectedShadowInfo* ProjectedShadowInfo,
 	EDistanceFieldPrimitiveType PrimitiveType,
 	bool bHasPrevOutput,
@@ -698,14 +699,6 @@ void RayTraceShadows(
 
 	check(DistanceFieldShadowingType != DFS_PointLightTiledCulling || PrimitiveType != DFPT_HeightField);
 
-	FDistanceFieldAtlasParameters DistanceFieldAtlasParameters;
-	DistanceFieldAtlasParameters.DistanceFieldTexture = GDistanceFieldVolumeTextureAtlas.VolumeTextureRHI;
-	DistanceFieldAtlasParameters.DistanceFieldSampler = TStaticSamplerState<SF_Bilinear,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI();
-	const int32 NumTexelsOneDimX = GDistanceFieldVolumeTextureAtlas.GetSizeX();
-	const int32 NumTexelsOneDimY = GDistanceFieldVolumeTextureAtlas.GetSizeY();
-	const int32 NumTexelsOneDimZ = GDistanceFieldVolumeTextureAtlas.GetSizeZ();
-	DistanceFieldAtlasParameters.DistanceFieldAtlasTexelSize = FVector(1.0f / NumTexelsOneDimX, 1.0f / NumTexelsOneDimY, 1.0f / NumTexelsOneDimZ);
-
 	FHeightFieldAtlasParameters HeightFieldAtlasParameters;
 	HeightFieldAtlasParameters.HeightFieldTexture = GHeightFieldTextureAtlas.GetAtlasTexture();
 	HeightFieldAtlasParameters.HFVisibilityTexture = GHFVisibilityTextureAtlas.GetAtlasTexture();
@@ -737,7 +730,7 @@ void RayTraceShadows(
 		PassParameters->ObjectBufferParameters = ObjectBufferParameters;
 		PassParameters->CulledObjectBufferParameters = CulledObjectBufferParameters;
 		PassParameters->LightTileIntersectionParameters = LightTileIntersectionParameters;
-		PassParameters->DistanceFieldAtlasParameters = DistanceFieldAtlasParameters;
+		PassParameters->DistanceFieldAtlasParameters = DistanceField::SetupAtlasParameters(DistanceFieldSceneData);
 		PassParameters->HeightFieldAtlasParameters = HeightFieldAtlasParameters;
 		PassParameters->WorldToShadow = FTranslationMatrix(ProjectedShadowInfo->PreShadowTranslation) * ProjectedShadowInfo->TranslatedWorldToClipInnerMatrix;
 		PassParameters->TwoSidedMeshDistanceBias = GTwoSidedMeshDistanceBias;
@@ -797,7 +790,7 @@ FRDGTextureRef FProjectedShadowInfo::BeginRenderRayTracedDistanceFieldProjection
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_BeginRenderRayTracedDistanceFieldShadows);
 		RDG_EVENT_SCOPE(GraphBuilder, "BeginRayTracedDistanceFieldShadow");
 
-		if (GDistanceFieldVolumeTextureAtlas.VolumeTextureRHI && Scene->DistanceFieldSceneData.NumObjectsInBuffer > 0)
+		if (Scene->DistanceFieldSceneData.NumObjectsInBuffer > 0)
 		{
 			check(!Scene->DistanceFieldSceneData.HasPendingOperations());
 
@@ -853,7 +846,7 @@ FRDGTextureRef FProjectedShadowInfo::BeginRenderRayTracedDistanceFieldProjection
 				RayTracedShadowsTexture = GraphBuilder.CreateTexture(Desc, TEXT("RayTracedShadows"));
 			}
 
-			RayTraceShadows(GraphBuilder, SceneTexturesUniformBuffer, RayTracedShadowsTexture, View, this, DFPT_SignedDistanceField, false, nullptr, ObjectBufferParameters, CulledObjectBufferParameters, LightTileIntersectionParameters);
+			RayTraceShadows(GraphBuilder, SceneTexturesUniformBuffer, RayTracedShadowsTexture, View, Scene->DistanceFieldSceneData, this, DFPT_SignedDistanceField, false, nullptr, ObjectBufferParameters, CulledObjectBufferParameters, LightTileIntersectionParameters);
 		}
 	}
 
@@ -914,7 +907,7 @@ FRDGTextureRef FProjectedShadowInfo::BeginRenderRayTracedDistanceFieldProjection
 			RayTracedShadowsTexture = GraphBuilder.CreateTexture(Desc, TEXT("RayTracedShadows"));
 		}
 
-		RayTraceShadows(GraphBuilder, SceneTexturesUniformBuffer, RayTracedShadowsTexture, View, this, DFPT_HeightField, bHasPrevOutput, PrevOutputTexture, ObjectBufferParameters, CulledObjectBufferParameters, LightTileIntersectionParameters);
+		RayTraceShadows(GraphBuilder, SceneTexturesUniformBuffer, RayTracedShadowsTexture, View, Scene->DistanceFieldSceneData, this, DFPT_HeightField, bHasPrevOutput, PrevOutputTexture, ObjectBufferParameters, CulledObjectBufferParameters, LightTileIntersectionParameters);
 	}
 
 	return RayTracedShadowsTexture;

@@ -801,7 +801,6 @@ private:
 	bool ShouldPrepareGlobalDistanceField() const;
 	bool ShouldPrepareHeightFieldScene() const;
 
-	void UpdateGlobalDistanceFieldObjectBuffers(FRDGBuilder& GraphBuilder);
 	void UpdateGlobalHeightFieldObjectBuffers(FRDGBuilder& GraphBuilder);
 	void AddOrRemoveSceneHeightFieldPrimitives(bool bSkipAdd = false);
 	void PrepareDistanceFieldScene(FRDGBuilder& GraphBuilder, bool bSplitDispatch);

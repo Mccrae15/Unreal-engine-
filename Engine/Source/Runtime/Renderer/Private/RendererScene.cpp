@@ -395,7 +395,6 @@ bool FPixelInspectorData::AddPixelInspectorRequest(FPixelInspectorRequest *Pixel
 FDistanceFieldSceneData::FDistanceFieldSceneData(EShaderPlatform ShaderPlatform) 
 	: NumObjectsInBuffer(0)
 	, NumHeightFieldObjectsInBuffer(0)
-	, AtlasGeneration(0)
 	, HeightFieldAtlasGeneration(0)
 	, HFVisibilityAtlasGenerattion(0)
 {
@@ -409,6 +408,8 @@ FDistanceFieldSceneData::FDistanceFieldSceneData(EShaderPlatform ShaderPlatform)
 	bTrackAllPrimitives = (DoesPlatformSupportDistanceFieldAO(ShaderPlatform) || DoesPlatformSupportDistanceFieldShadowing(ShaderPlatform)) && CVar->GetValueOnGameThread() != 0 && IsUsingDistanceFields(ShaderPlatform);
 
 	bCanUse16BitObjectIndices = RHISupportsBufferLoadTypeConversion(ShaderPlatform);
+
+	StreamingRequestReadbackBuffers.AddZeroed(MaxStreamingReadbackBuffers);
 }
 
 FDistanceFieldSceneData::~FDistanceFieldSceneData() 
@@ -529,6 +530,15 @@ void FDistanceFieldSceneData::Release()
 	if (ObjectBuffers != nullptr)
 	{
 		ObjectBuffers->Release();
+	}
+
+	for (int32 BufferIndex = 0; BufferIndex < StreamingRequestReadbackBuffers.Num(); ++BufferIndex)
+	{
+		if (StreamingRequestReadbackBuffers[BufferIndex])
+		{
+			delete StreamingRequestReadbackBuffers[BufferIndex];
+			StreamingRequestReadbackBuffers[BufferIndex] = nullptr;
+		}
 	}
 }
 
