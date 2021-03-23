@@ -99,10 +99,14 @@ void FGpuProfilerTrace::BeginEventByName(const FName& Name, uint32 FrameNumber, 
 		return;
 	}
 
-	if (GCurrentFrame.EventBufferSize >= MaxEventBufferSize - 18) // 10 + 8
+	// Prevent buffer overrun
+	if (GCurrentFrame.EventBufferSize + sizeof(uint64) + sizeof(uint32) >= MaxEventBufferSize)
 	{
+		// Deactivate for the current frame to avoid errors while decoding an incomplete trace
+		GCurrentFrame.bActive = false;
 		return;
 	}
+
 	if (GCurrentFrame.TimestampBase == 0)
 	{
 		GCurrentFrame.TimestampBase = TimestampMicroseconds;
@@ -129,6 +133,14 @@ void FGpuProfilerTrace::EndEvent(uint64 TimestampMicroseconds)
 	{
 		return;
 	}
+	
+	// Prevent buffer overrun
+	if (GCurrentFrame.EventBufferSize + sizeof(uint64) >= MaxEventBufferSize)
+	{
+		// Deactivate for the current frame to avoid errors while decoding an incomplete trace
+		GCurrentFrame.bActive = false;
+		return;
+	}
 
 	uint64 TimestampDelta = TimestampMicroseconds - GCurrentFrame.LastTimestamp;
 	GCurrentFrame.LastTimestamp = TimestampMicroseconds;
@@ -141,7 +153,7 @@ void FGpuProfilerTrace::EndFrame()
 {
 	using namespace GpuProfilerTrace;
 
-	if (GCurrentFrame.EventBufferSize)
+	if (GCurrentFrame.bActive && GCurrentFrame.EventBufferSize)
 	{
 		// This subtraction is intended to be performed on uint64 to leverage the wrap around behavior defined by the standard
 		uint64 Bias = GCurrentFrame.Calibration.CPUMicroseconds - GCurrentFrame.Calibration.GPUMicroseconds;
@@ -150,10 +162,9 @@ void FGpuProfilerTrace::EndFrame()
 			<< Frame.TimestampBase(GCurrentFrame.TimestampBase)
 			<< Frame.RenderingFrameNumber(GCurrentFrame.RenderingFrameNumber)
 			<< Frame.Data(GCurrentFrame.EventBuffer, GCurrentFrame.EventBufferSize);
-
-		GCurrentFrame.EventBufferSize = 0;
 	}
 
+	GCurrentFrame.EventBufferSize = 0;
 	GCurrentFrame.bActive = false;
 }
 
