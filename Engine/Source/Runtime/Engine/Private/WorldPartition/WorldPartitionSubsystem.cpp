@@ -108,6 +108,7 @@ void UWorldPartitionSubsystem::RegisterWorldPartition(UWorldPartition* WorldPart
 	{
 		check(WorldPartition->IsInitialized());
 		RegisteredWorldPartitions.Add(WorldPartition);
+		OnWorldPartitionRegistered.Broadcast(WorldPartition);
 	}
 }
 
@@ -116,6 +117,7 @@ void UWorldPartitionSubsystem::UnregisterWorldPartition(UWorldPartition* WorldPa
 	if (ensure(RegisteredWorldPartitions.Contains(WorldPartition)))
 	{
 		RegisteredWorldPartitions.Remove(WorldPartition);
+		OnWorldPartitionUnregistered.Broadcast(WorldPartition);
 	}
 }
 
