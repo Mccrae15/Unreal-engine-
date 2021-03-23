@@ -34,6 +34,10 @@ public:
 	TArray<Chaos::TSerializablePtr<FImplicitObject>> GeometryPtrs;
 };
 
+struct CHAOS_API FClusterDestoryParameters {
+	bool bReturnInternalOnly : true;
+};
+
 /* 
 * PDBRigidClustering
 */
@@ -45,6 +49,7 @@ public:
 	/** Parent to children */
 	typedef TPBDRigidParticleHandle<T, d>*				FRigidHandle;
 	typedef TArray<FRigidHandle>						FRigidHandleArray;
+	typedef TSet<TPBDRigidParticleHandle<T, d>*>        FRigidHandleSet;
 
 	typedef TPBDRigidClusteredParticleHandle<T, d>*		FClusterHandle;
 
@@ -127,6 +132,18 @@ public:
 	*/
 	TSet<TPBDRigidParticleHandle<T, d>*> ReleaseClusterParticles(
 		TArray<TPBDRigidParticleHandle<T, d>*> ChildrenParticles);
+
+	/*
+	*  DestroyClusterParticle
+	*    Disable the cluster particle and remove from all internal clustering
+	*    structures. This will not activate children.
+	* 
+	*    Returns the active parent cluster that might need to be rebuilt because
+	*    its geometry might be pointing to deleted particle handels. 
+	*/
+	TPBDRigidClusteredParticleHandle<T, d>* DestroyClusterParticle(
+		TPBDRigidClusteredParticleHandle<T, d>* ClusteredParticle,
+		const FClusterDestoryParameters& Parameters = FClusterDestoryParameters());
 
 	//
 	// Operational 

@@ -29,7 +29,9 @@ public:
 
 	TProxy* GetProxy(int32 SolverTimestamp) const
 	{
-		return SolverTimestamp >= *Timestamp ? Proxy : nullptr;
+		if( Timestamp )
+			return SolverTimestamp >= *Timestamp ? Proxy : nullptr;
+		return nullptr;
 	}
 
 protected:
