@@ -130,17 +130,17 @@ void FResources::InitResources()
 	);
 }
 
-void FResources::ReleaseResources()
+bool FResources::ReleaseResources()
 {
 	// TODO: Should remove bulk data from built data if platform cannot run Nanite in any capacity
 	if (!DoesPlatformSupportNanite(GMaxRHIShaderPlatform))
 	{
-		return;
+		return false;
 	}
 
 	if (PageStreamingStates.Num() == 0)
 	{
-		return;
+		return false;
 	}
 
 	ENQUEUE_RENDER_COMMAND(ReleaseNaniteResources)(
@@ -149,6 +149,7 @@ void FResources::ReleaseResources()
 			GStreamingManager.Remove(this);
 		}
 	);
+	return true;
 }
 
 static void DecompressPages(FResources& Resources, TArray<uint8>& OutRootClusterPage, FByteBulkData& OutStreamableClusterPages, TArray<FPageStreamingState>& OutPageStreamingStates)
