@@ -348,12 +348,12 @@ struct FRenderLightParams
 	// Precompute transmittance
 	FShaderResourceViewRHIRef DeepShadow_TransmittanceMaskBuffer = nullptr;
 	uint32 DeepShadow_TransmittanceMaskBufferMaxCount = 0;
-	IPooledRenderTarget* ScreenShadowMaskSubPixelTexture = nullptr;
+	FRHITexture* ScreenShadowMaskSubPixelTexture = nullptr;
 
 	// Cloud shadow data
 	FMatrix Cloud_WorldToLightClipShadowMatrix;
 	float Cloud_ShadowmapFarDepthKm = 0.0f;
-	IPooledRenderTarget* Cloud_ShadowmapTexture = nullptr;
+	FRHITexture* Cloud_ShadowmapTexture = nullptr;
 	float Cloud_ShadowmapStrength = 0.0f;
 };
 
@@ -612,7 +612,7 @@ private:
 			LTCMatTexture,
 			LTCMatSampler,
 			TStaticSamplerState<SF_Bilinear,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI(),
-			GSystemTextures.LTCMat->GetRenderTargetItem().ShaderResourceTexture
+			GSystemTextures.LTCMat->GetShaderResourceRHI()
 			);
 
 		SetTextureParameter(
@@ -621,7 +621,7 @@ private:
 			LTCAmpTexture,
 			LTCAmpSampler,
 			TStaticSamplerState<SF_Bilinear,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI(),
-			GSystemTextures.LTCAmp->GetRenderTargetItem().ShaderResourceTexture
+			GSystemTextures.LTCAmp->GetShaderResourceRHI()
 			);
 
 		{
@@ -691,7 +691,7 @@ private:
 					ScreenShadowMaskSubPixelTexture,
 					LightAttenuationTextureSampler,
 					TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(),
-					(RenderLightParams && RenderLightParams->ScreenShadowMaskSubPixelTexture) ? RenderLightParams->ScreenShadowMaskSubPixelTexture->GetRenderTargetItem().ShaderResourceTexture : GWhiteTexture->TextureRHI);
+					(RenderLightParams && RenderLightParams->ScreenShadowMaskSubPixelTexture) ? (FRHITexture2D*)RenderLightParams->ScreenShadowMaskSubPixelTexture : GWhiteTexture->TextureRHI);
 
 				uint32 InHairShadowMaskValid = RenderLightParams->ScreenShadowMaskSubPixelTexture ? 1 : 0;
 				SetShaderValue(
@@ -710,7 +710,7 @@ private:
 				DummyRectLightTextureForCapsuleCompilerWarning,
 				LTCMatSampler,
 				TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(),
-				GSystemTextures.DepthDummy->GetRenderTargetItem().ShaderResourceTexture
+				GSystemTextures.DepthDummy->GetShaderResourceRHI()
 			);
 		}
 
@@ -724,7 +724,7 @@ private:
 					CloudShadowmapTexture,
 					CloudShadowmapSampler,
 					TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(),
-					RenderLightParams->Cloud_ShadowmapTexture ? RenderLightParams->Cloud_ShadowmapTexture->GetRenderTargetItem().ShaderResourceTexture : GBlackVolumeTexture->TextureRHI);
+					RenderLightParams->Cloud_ShadowmapTexture ? (FRHITexture2D*)RenderLightParams->Cloud_ShadowmapTexture : GBlackVolumeTexture->TextureRHI);
 
 				SetShaderValue(
 					RHICmdList,
@@ -2191,14 +2191,14 @@ void FDeferredShadingSceneRenderer::RenderLight(
 			const bool bLight1CloudPerPixelTransmittance = CloudInfo && VolumetricCloudShadowMap1Valid && AtmosphereLight1Proxy == LightSceneInfo->Proxy && AtmosphereLight1Proxy && AtmosphereLight1Proxy->GetCloudShadowOnSurfaceStrength() > 0.0f;
 			if (bLight0CloudPerPixelTransmittance)
 			{
-				RenderLightParams.Cloud_ShadowmapTexture = TryGetPooledRenderTarget(View.VolumetricCloudShadowRenderTarget[0]);
+				RenderLightParams.Cloud_ShadowmapTexture = TryGetRHI(View.VolumetricCloudShadowRenderTarget[0]);
 				RenderLightParams.Cloud_ShadowmapFarDepthKm = CloudInfo->GetVolumetricCloudCommonShaderParameters().CloudShadowmapFarDepthKm[0];
 				RenderLightParams.Cloud_WorldToLightClipShadowMatrix = CloudInfo->GetVolumetricCloudCommonShaderParameters().CloudShadowmapWorldToLightClipMatrix[0];
 				RenderLightParams.Cloud_ShadowmapStrength = AtmosphereLight0Proxy->GetCloudShadowOnSurfaceStrength();
 			}
 			else if(bLight1CloudPerPixelTransmittance)
 			{
-				RenderLightParams.Cloud_ShadowmapTexture = TryGetPooledRenderTarget(View.VolumetricCloudShadowRenderTarget[1]);
+				RenderLightParams.Cloud_ShadowmapTexture = TryGetRHI(View.VolumetricCloudShadowRenderTarget[1]);
 				RenderLightParams.Cloud_ShadowmapFarDepthKm = CloudInfo->GetVolumetricCloudCommonShaderParameters().CloudShadowmapFarDepthKm[1];
 				RenderLightParams.Cloud_WorldToLightClipShadowMatrix = CloudInfo->GetVolumetricCloudCommonShaderParameters().CloudShadowmapWorldToLightClipMatrix[1];
 				RenderLightParams.Cloud_ShadowmapStrength = AtmosphereLight1Proxy->GetCloudShadowOnSurfaceStrength();
@@ -2451,7 +2451,7 @@ void FDeferredShadingSceneRenderer::RenderLightForHair(
 
 			FRenderLightParams RenderLightParams;
 			RenderLightParams.DeepShadow_TransmittanceMaskBufferMaxCount = MaxTransmittanceElementCount;
-			RenderLightParams.ScreenShadowMaskSubPixelTexture = bIsShadowMaskValid ? PassParameters->Light.ShadowMaskTexture->GetPooledRenderTarget() : nullptr;
+			RenderLightParams.ScreenShadowMaskSubPixelTexture = bIsShadowMaskValid ? PassParameters->Light.ShadowMaskTexture->GetRHI() : nullptr;
 			RenderLightParams.DeepShadow_TransmittanceMaskBuffer = PassParameters->HairTransmittanceMaskSRV->GetRHI();
 
 			FGraphicsPipelineStateInitializer GraphicsPSOInit;
