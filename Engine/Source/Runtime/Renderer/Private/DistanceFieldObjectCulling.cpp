@@ -594,7 +594,7 @@ void BuildTileObjectLists(FRDGBuilder& GraphBuilder, FScene* Scene, TArray<FView
 		GraphBuilder.AddPass(
 			{},
 			PassParameters,
-			ERDGPassFlags::Compute | ERDGPassFlags::UntrackedAccess | ERDGPassFlags::NeverCull,
+			ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
 			[Scene, &View, DistanceFieldNormal, Parameters](FRHICommandListImmediate& RHICmdList)
 		{
 			const FIntPoint TileListGroupSize = GetTileListGroupSizeForView(View);
