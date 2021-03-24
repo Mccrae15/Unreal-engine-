@@ -3817,7 +3817,7 @@ void UPrimitiveComponent::SetLODParentPrimitive(UPrimitiveComponent * InLODParen
 		return nullptr;
 	}();
 
-	if (!GIsEditor || ShouldGenerateAutoLOD(ParentLODActor ? ParentLODActor->LODLevel - 1 : INDEX_NONE))
+	if (!GIsEditor || !InLODParentPrimitive || ShouldGenerateAutoLOD(ParentLODActor ? ParentLODActor->LODLevel - 1 : INDEX_NONE))
 #endif
 	{
 		// @todo, what do we do with old parent. We can't just reset undo parent because the parent might be used by other primitive
