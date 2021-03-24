@@ -85,7 +85,7 @@ inline void GetPassAccess(ERDGPassFlags PassFlags, ERHIAccess& SRVAccess, ERHIAc
 
 	if (EnumHasAnyFlags(PassFlags, ERDGPassFlags::Raster))
 	{
-		SRVAccess |= ERHIAccess::SRVCompute | ERHIAccess::SRVGraphics;
+		SRVAccess |= ERHIAccess::SRVGraphics;
 		UAVAccess |= ERHIAccess::UAVGraphics;
 	}
 
@@ -546,6 +546,11 @@ FRDGBuilder::FRDGBuilder(FRHICommandListImmediate& InRHICmdList, FRDGEventName I
 {
 	ProloguePass = Passes.Allocate<FRDGSentinelPass>(Allocator, RDG_EVENT_NAME("Graph Prologue"));
 	SetupEmptyPass(ProloguePass);
+
+#if RDG_EVENTS != RDG_EVENTS_NONE
+	// This is polled once as a workaround for a race condition since the underlying global is not always changed on the render thread.
+	GRDGEmitEvents = GetEmitDrawEvents();
+#endif
 }
 
 void FRDGBuilder::PreallocateBuffer(FRDGBufferRef Buffer)
