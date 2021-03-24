@@ -33,6 +33,11 @@ FRDGParentResource::FRDGParentResource(const TCHAR* InName, const ERDGParentReso
 	, bUsedByAsyncComputePass(0)
 {}
 
+FRDGParentResource::~FRDGParentResource()
+{
+	check(GRDGImmediateMode || ReferenceCount == 0);
+}
+
 void FRDGParentResource::SetPassthroughRHI(FRHIResource* InResourceRHI)
 {
 	ResourceRHI = InResourceRHI;
@@ -273,9 +278,6 @@ void FRDGTexture::Finalize()
 		{
 			PooledTexture->Finalize();
 		}
-
-		// Resume automatic discard behavior for transient resources.
-		static_cast<FPooledRenderTarget*>(PooledRenderTarget)->bAutoDiscard = true;
 
 		// Restore the reference to the last owner in the aliasing chain.
 		Allocation = PooledRenderTarget;
