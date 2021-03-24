@@ -481,6 +481,27 @@ void UEditMeshPolygonsTool::RegisterActions(FInteractiveToolActionSet& ActionSet
 		LOCTEXT("ToggleLockRotationTooltip", "Toggle Frame Rotation Lock on and off"),
 		EModifierKey::None, EKeys::Q,
 		[this]() { CommonProps->bLockRotation = !CommonProps->bLockRotation; });
+	
+	// Backspace and delete both trigger deletion (as long as the delete button is also enabled)
+	auto OnDeletionKeyPress = [this]() 
+	{
+		if ((EditActions && EditActions->IsPropertySetEnabled())
+			|| (EditActions_Triangles && EditActions_Triangles->IsPropertySetEnabled()))
+		{
+			RequestAction(EEditMeshPolygonsToolActions::Delete);
+		}
+	};
+	ActionSet.RegisterAction(this, (int32)EStandardToolActions::BaseClientDefinedActionID + 3,
+		TEXT("DeleteSelectionBackSpaceKey"),
+		LOCTEXT("DeleteSelectionUIName", "Delete Selection"),
+		LOCTEXT("DeleteSelectionTooltip", "Delete Selection"),
+		EModifierKey::None, EKeys::BackSpace, OnDeletionKeyPress);
+
+	ActionSet.RegisterAction(this, (int32)EStandardToolActions::BaseClientDefinedActionID + 4,
+		TEXT("DeleteSelectionDeleteKey"),
+		LOCTEXT("DeleteSelectionUIName", "Delete Selection"),
+		LOCTEXT("DeleteSelectionTooltip", "Delete Selection"),
+		EModifierKey::None, EKeys::Delete, OnDeletionKeyPress);
 }
 
 
@@ -862,7 +883,7 @@ void UEditMeshPolygonsTool::OnTick(float DeltaTime)
 
 		if (PendingAction == EEditMeshPolygonsToolActions::Extrude || PendingAction == EEditMeshPolygonsToolActions::Offset)
 		{
-			GetToolManager()->EmitObjectChange(this, MakeUnique<FBeginInteractivePolyEditChange>(CurrentOperationTimestamp), LOCTEXT("PolyMeshEditBeginExtrude", "Extrude"));
+			GetToolManager()->EmitObjectChange(this, MakeUnique<FBeginInteractivePolyEditChange>(CurrentOperationTimestamp), LOCTEXT("PolyMeshEditBeginExtrude", "Begin Extrude"));
 			BeginExtrude( (PendingAction == EEditMeshPolygonsToolActions::Offset) );
 		}
 		else if (PendingAction == EEditMeshPolygonsToolActions::Inset)
@@ -877,12 +898,12 @@ void UEditMeshPolygonsTool::OnTick(float DeltaTime)
 		}
 		else if (PendingAction == EEditMeshPolygonsToolActions::CutFaces)
 		{
-			GetToolManager()->EmitObjectChange(this, MakeUnique<FBeginInteractivePolyEditChange>(CurrentOperationTimestamp), LOCTEXT("PolyMeshEditBeginCutFaces", "Cut Faces"));
+			GetToolManager()->EmitObjectChange(this, MakeUnique<FBeginInteractivePolyEditChange>(CurrentOperationTimestamp), LOCTEXT("PolyMeshEditBeginCutFaces", "Begin Cut Faces"));
 			BeginCutFaces();
 		}
 		else if (PendingAction == EEditMeshPolygonsToolActions::PlanarProjectionUV)
 		{
-			GetToolManager()->EmitObjectChange(this, MakeUnique<FBeginInteractivePolyEditChange>(CurrentOperationTimestamp), LOCTEXT("PolyMeshEditBeginUVPlanarProjection", "Set UVs"));
+			GetToolManager()->EmitObjectChange(this, MakeUnique<FBeginInteractivePolyEditChange>(CurrentOperationTimestamp), LOCTEXT("PolyMeshEditBeginUVPlanarProjection", "Begin Set UVs"));
 			BeginSetUVs();
 		}
 		else if (PendingAction == EEditMeshPolygonsToolActions::Merge)
