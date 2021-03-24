@@ -367,7 +367,6 @@ void FLumenCardMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch,
 		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
 
 		if (!bIsTranslucent
-			&& ShadingModels.IsLit()
 			&& (PrimitiveSceneProxy && PrimitiveSceneProxy->ShouldRenderInMainPass() && PrimitiveSceneProxy->AffectsDynamicIndirectLighting())
 			&& ShouldIncludeDomainInMeshPass(Material.GetMaterialDomain()))
 		{
