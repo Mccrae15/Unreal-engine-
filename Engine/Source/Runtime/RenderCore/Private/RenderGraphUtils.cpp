@@ -865,22 +865,6 @@ void ConvertToUntrackedBuffer(
 		[](FRHICommandList&) {});
 }
 
-FRDGTextureRef RegisterExternalOrPassthroughTexture(
-	FRDGBuilder* GraphBuilder,
-	const TRefCountPtr<IPooledRenderTarget>& PooledRenderTarget,
-	ERDGTextureFlags Flags)
-{
-	check(PooledRenderTarget);
-	if (GraphBuilder)
-	{
-		return GraphBuilder->RegisterExternalTexture(PooledRenderTarget, ERenderTargetTexture::ShaderResource, Flags);
-	}
-	else
-	{
-		return FRDGTexture::GetPassthrough(PooledRenderTarget);
-	}
-}
-
 FRDGWaitForTasksScope::~FRDGWaitForTasksScope()
 {
 	if (bCondition)
