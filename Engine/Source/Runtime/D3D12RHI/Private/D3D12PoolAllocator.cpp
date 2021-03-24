@@ -31,8 +31,8 @@ static bool ShouldTrackAllocation(EResourceAllocationStrategy InAllocationStrate
 //-----------------------------------------------------------------------------
 
 FD3D12MemoryPool::FD3D12MemoryPool(FD3D12Device* ParentDevice, FRHIGPUMask VisibleNodes, const FD3D12ResourceInitConfig& InInitConfig, const FString& InName,
-	EResourceAllocationStrategy InAllocationStrategy, int16 InPoolIndex, uint64 InPoolSize, uint32 InPoolAlignment)
-	: FRHIMemoryPool(InPoolIndex, InPoolSize, InPoolAlignment), FD3D12DeviceChild(ParentDevice), FD3D12MultiNodeGPUObject(ParentDevice->GetGPUMask(), VisibleNodes)
+	EResourceAllocationStrategy InAllocationStrategy, int16 InPoolIndex, uint64 InPoolSize, uint32 InPoolAlignment, EFreeListOrder InFreeListOrder)
+	: FRHIMemoryPool(InPoolIndex, InPoolSize, InPoolAlignment, InFreeListOrder), FD3D12DeviceChild(ParentDevice), FD3D12MultiNodeGPUObject(ParentDevice->GetGPUMask(), VisibleNodes)
 	, InitConfig(InInitConfig), Name(InName), AllocationStrategy(InAllocationStrategy), LastUsedFrameFence(0)
 {
 }
@@ -192,8 +192,8 @@ EResourceAllocationStrategy FD3D12PoolAllocator::GetResourceAllocationStrategy(D
 
 
 FD3D12PoolAllocator::FD3D12PoolAllocator(FD3D12Device* ParentDevice, FRHIGPUMask VisibleNodes, const FD3D12ResourceInitConfig& InInitConfig, const FString& InName,
-	EResourceAllocationStrategy InAllocationStrategy, uint64 InDefaultPoolSize, uint32 InPoolAlignment, uint32 InMaxAllocationSize, bool bInDefragEnabled) :
-	FRHIPoolAllocator(InDefaultPoolSize, InPoolAlignment, InMaxAllocationSize, bInDefragEnabled), 
+	EResourceAllocationStrategy InAllocationStrategy, uint64 InDefaultPoolSize, uint32 InPoolAlignment, uint32 InMaxAllocationSize, FRHIMemoryPool::EFreeListOrder InFreeListOrder, bool bInDefragEnabled) :
+	FRHIPoolAllocator(InDefaultPoolSize, InPoolAlignment, InMaxAllocationSize, InFreeListOrder, bInDefragEnabled), 
 	FD3D12DeviceChild(ParentDevice), 
 	FD3D12MultiNodeGPUObject(ParentDevice->GetGPUMask(), VisibleNodes), 
 	InitConfig(InInitConfig), 
@@ -243,14 +243,14 @@ void FD3D12PoolAllocator::AllocDefaultResource(D3D12_HEAP_TYPE InHeapType, const
 #endif // D3D12_RHI_RAYTRACING
 #endif  // DO_CHECK
 
-	AllocResource(InHeapType, InDesc, InDesc.Width, InAllocationAlignment, InResourceStateMode, InCreateState, nullptr, InName, ResourceLocation);
+	AllocateResource(InHeapType, InDesc, InDesc.Width, InAllocationAlignment, InResourceStateMode, InCreateState, nullptr, InName, ResourceLocation);
 }
 
 
-void FD3D12PoolAllocator::AllocResource(D3D12_HEAP_TYPE InHeapType, const D3D12_RESOURCE_DESC& InDesc, uint64 InSize, uint32 InAllocationAlignment, ED3D12ResourceStateMode InResourceStateMode,
+void FD3D12PoolAllocator::AllocateResource(D3D12_HEAP_TYPE InHeapType, const D3D12_RESOURCE_DESC& InDesc, uint64 InSize, uint32 InAllocationAlignment, ED3D12ResourceStateMode InResourceStateMode,
 	D3D12_RESOURCE_STATES InCreateState, const D3D12_CLEAR_VALUE* InClearValue, const TCHAR* InName, FD3D12ResourceLocation& ResourceLocation)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(FD3D12PoolAllocator::AllocResource);
+	TRACE_CPUPROFILER_EVENT_SCOPE(D3D12RHI::AllocatePoolResource);
 
 	// If the resource location owns a block, this will deallocate it.
 	ResourceLocation.Clear();
@@ -267,11 +267,18 @@ void FD3D12PoolAllocator::AllocResource(D3D12_HEAP_TYPE InHeapType, const D3D12_
 	{
 		const bool bPlacedResource = (AllocationStrategy == EResourceAllocationStrategy::kPlacedResource);
 
+		uint32 AllocationAlignment = InAllocationAlignment;
+
 		// Ensure we're allocating from the correct pool
 		if (bPlacedResource)
 		{
 			// Writeable resources get separate ID3D12Resource* with their own resource state by using placed resources. Just make sure it's UAV, other flags are free to differ.
-			check(InDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || (InDesc.Flags & InitConfig.ResourceFlags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0 || InHeapType == D3D12_HEAP_TYPE_READBACK);
+			check(InDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || (InDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0 || InHeapType == D3D12_HEAP_TYPE_READBACK);
+
+			// If it's a placed resource then base offset will always be 0 from the actual d3d resource so ignore the allocation alignment - no extra offset required
+			// for creating the views!
+			check(InAllocationAlignment <= PoolAlignment);
+			AllocationAlignment = PoolAlignment;
 		}
 		else
 		{
@@ -281,7 +288,7 @@ void FD3D12PoolAllocator::AllocResource(D3D12_HEAP_TYPE InHeapType, const D3D12_
 
 		// Try to allocate in one of the pools
 		FRHIPoolAllocationData& AllocationData = ResourceLocation.GetPoolAllocatorPrivateData().PoolData;
-		verify(TryAllocateInternal(InSize, InAllocationAlignment, AllocationData));
+		verify(TryAllocateInternal(InSize, AllocationAlignment, AllocationData));
 
 		// Setup the resource location
 		ResourceLocation.SetType(FD3D12ResourceLocation::ResourceLocationType::eSubAllocation);
@@ -306,12 +313,8 @@ void FD3D12PoolAllocator::AllocResource(D3D12_HEAP_TYPE InHeapType, const D3D12_
 		else
 		{
 			check(ResourceLocation.GetResource() == nullptr);
-
-			FD3D12HeapAndOffset HeapAndOffset = GetBackingHeapAndAllocationOffsetInBytes(ResourceLocation);
-
-			FD3D12Resource* NewResource = nullptr;
-			VERIFYD3D12RESULT(Adapter->CreatePlacedResource(InDesc, HeapAndOffset.Heap, HeapAndOffset.Offset, InCreateState, InResourceStateMode, D3D12_RESOURCE_STATE_TBD, InClearValue, &NewResource, InName));
-
+						
+			FD3D12Resource* NewResource = CreatePlacedResource(AllocationData, InDesc, InCreateState, InResourceStateMode, InClearValue, InName);
 			ResourceLocation.SetResource(NewResource);
 		}
 
@@ -337,12 +340,29 @@ void FD3D12PoolAllocator::AllocResource(D3D12_HEAP_TYPE InHeapType, const D3D12_
 }
 
 
-void FD3D12PoolAllocator::Deallocate(FD3D12ResourceLocation& ResourceLocation)
+FD3D12Resource* FD3D12PoolAllocator::CreatePlacedResource(
+	const FRHIPoolAllocationData& InAllocationData,
+	const D3D12_RESOURCE_DESC& InDesc, 
+	D3D12_RESOURCE_STATES InCreateState, 
+	ED3D12ResourceStateMode InResourceStateMode, 
+	const D3D12_CLEAR_VALUE* InClearValue, 
+	const TCHAR* InName)
+{
+	FD3D12Adapter* Adapter = GetParentDevice()->GetParentAdapter();
+	FD3D12HeapAndOffset HeapAndOffset = GetBackingHeapAndAllocationOffsetInBytes(InAllocationData);
+
+	FD3D12Resource* NewResource = nullptr;
+	VERIFYD3D12RESULT(Adapter->CreatePlacedResource(InDesc, HeapAndOffset.Heap, HeapAndOffset.Offset, InCreateState, InResourceStateMode, D3D12_RESOURCE_STATE_TBD, InClearValue, &NewResource, InName));
+	return NewResource;
+}
+
+
+void FD3D12PoolAllocator::DeallocateResource(FD3D12ResourceLocation& ResourceLocation)
 {
 	check(IsOwner(ResourceLocation));
 
 	// Mark allocation data as free
-	FRHIPoolAllocationData& AllocationData = ResourceLocation.GetPoolAllocatorPrivateData().PoolData;
+	FRHIPoolAllocationData& AllocationData = ResourceLocation.GetPoolAllocatorPrivateData().PoolData;	
 	check(AllocationData.IsAllocated());
 
 #if TRACK_RESOURCE_ALLOCATIONS
@@ -431,7 +451,7 @@ FRHIMemoryPool* FD3D12PoolAllocator::CreateNewPool(int16 InPoolIndex, uint32 InM
 	}
 
 	FD3D12MemoryPool* NewPool = new FD3D12MemoryPool(GetParentDevice(),	GetVisibilityMask(), InitConfig,
-		Name, AllocationStrategy, InPoolIndex, PoolSize, PoolAlignment);
+		Name, AllocationStrategy, InPoolIndex, PoolSize, PoolAlignment, FreeListOrder);
 	NewPool->Init();
 	return NewPool;
 }
@@ -445,7 +465,7 @@ bool FD3D12PoolAllocator::HandleDefragRequest(FRHIPoolAllocationData* InSourceBl
 	FD3D12Resource* CurrentResource = Owner->GetResource();
 
 	// Release the current allocation (will only be freed on the next frame fence)
-	Deallocate(*Owner);
+	DeallocateResource(*Owner);
 
 	// Move temp allocation data to allocation data of the owner (part of different allocator now)		
 	bool bLocked = true;
@@ -620,10 +640,15 @@ FD3D12HeapAndOffset FD3D12PoolAllocator::GetBackingHeapAndAllocationOffsetInByte
 {
 	check(IsOwner(InResourceLocation));
 
+	return GetBackingHeapAndAllocationOffsetInBytes(InResourceLocation.GetPoolAllocatorPrivateData().PoolData);
+}
+
+
+FD3D12HeapAndOffset FD3D12PoolAllocator::GetBackingHeapAndAllocationOffsetInBytes(const FRHIPoolAllocationData& InAllocationData) const
+{
 	FD3D12HeapAndOffset HeapAndOffset;
-	FRHIPoolAllocationData& AllocationData = InResourceLocation.GetPoolAllocatorPrivateData().PoolData;
-	HeapAndOffset.Heap = ((FD3D12MemoryPool*)Pools[AllocationData.GetPoolIndex()])->GetBackingHeap();
-	HeapAndOffset.Offset = uint64(AlignDown(AllocationData.GetOffset(), PoolAlignment));
+	HeapAndOffset.Heap = ((FD3D12MemoryPool*)Pools[InAllocationData.GetPoolIndex()])->GetBackingHeap();
+	HeapAndOffset.Offset = uint64(AlignDown(InAllocationData.GetOffset(), PoolAlignment));
 	return HeapAndOffset;
 }
 
