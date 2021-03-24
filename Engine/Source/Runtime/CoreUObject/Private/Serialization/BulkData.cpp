@@ -1527,6 +1527,7 @@ void FUntypedBulkData::DetachFromArchive( FArchive* Ar, bool bEnsureBulkDataIsLo
 {
 	check( Ar );
 	check( Ar == AttachedAr || AttachedAr->IsProxyOf(Ar) );
+	check( LockStatus == LOCKSTATUS_Unlocked );
 
 	// Make sure bulk data is loaded.
 	if( bEnsureBulkDataIsLoaded )
