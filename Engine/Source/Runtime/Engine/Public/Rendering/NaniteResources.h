@@ -6,7 +6,7 @@
 #include "HAL/LowLevelMemTracker.h"
 #include "GrowOnlySpanAllocator.h"
 #include "UnifiedBuffer.h"
-#include "RenderGraphResources.h"
+#include "RenderGraphDefinitions.h"
 #include "SceneManagement.h"
 #include "Materials/MaterialInterface.h"
 #include "Serialization/BulkData.h"
