@@ -42,7 +42,7 @@ void UMaterialPresetsSettings::PostEditChangeProperty(FPropertyChangedEvent& Pro
 
 	MatOverridePathSettings->SaveConfig();
 
-	UE_LOG(LogTemp, Error, TEXT("Surface override saved : %s"), *MatOverridePathSettings->MasterMaterialSurface);
+	
 
 }
 

@@ -139,6 +139,7 @@ uint32  FTCPServer::Run()
 					AsyncTask(ENamedThreads::GameThread, [this, RecievedJson]() {
 						FAssetsImportController::Get()->DataReceived(RecievedJson);
 					});
+					
 					RecievedJson.Empty();
 				}
 			}
@@ -146,7 +147,7 @@ uint32  FTCPServer::Run()
 		}
 		
 		
-		FPlatformProcess::Sleep(0.3f); 
+		//FPlatformProcess::Sleep(0.1f); 
 	}
 
 	return 0;

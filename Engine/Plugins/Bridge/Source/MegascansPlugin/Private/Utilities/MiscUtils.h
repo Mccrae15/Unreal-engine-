@@ -25,6 +25,7 @@ void CopyUassetFilesPlants(TArray<FString> FilesToCopy, FString DestinationDirec
 
 
 
+
 namespace AssetUtils {	//template<typename T>
 
 	void FocusOnSelected(const FString& Path);
@@ -37,6 +38,8 @@ namespace AssetUtils {	//template<typename T>
 
 	//To manage import settings like Auto-Populate Foliage types etc.
 	void ManageImportSettings(FUAssetMeta AssetMetaData);
+	void SyncFolder(const FString& TargetFolder);
+	void RegisterAsset(const FString& PackagePath);
 }
 
 namespace JsonUtils

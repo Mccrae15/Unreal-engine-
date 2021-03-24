@@ -60,7 +60,23 @@ void FImportUAssetNormal::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson)
 		FMaterialUtils::ApplyMaterialInstance(AssetMetaData, OverridenInstance);
 	}
 
+	AssetUtils::SyncFolder(AssetMetaData.assetRootPath);
+
+	FString AssetPath = TEXT("");
+	if (AssetMetaData.assetType == TEXT("3dplant") || AssetMetaData.assetType == TEXT("3d"))
+	{
+		AssetPath = AssetMetaData.meshList[0].path;
+	}
+	else {
+		AssetPath = AssetMetaData.materialInstances[0].instancePath;
+	}
+	if (AssetPath != TEXT(""))
+	{
+		AssetUtils::RegisterAsset(AssetPath);
+	}
+
 	AssetUtils::ManageImportSettings(AssetMetaData);
 	AssetUtils::FocusOnSelected(DestinationPath);
-
+	
+	
 }

@@ -378,6 +378,25 @@ void CopyUassetFiles(TArray<FString> FilesToCopy, FString DestinationDirectory)
 
 }
 
+void AssetUtils::SyncFolder(const FString& TargetFolder)
+{
+	IAssetRegistry& AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	TArray<FString> SyncPaths;
+	SyncPaths.Add(TargetFolder);
+	AssetRegistry.ScanPathsSynchronous(SyncPaths, true);
+
+	//Testing syncing 
+	
+
+}
+
+void AssetUtils::RegisterAsset(const FString& PackagePath)
+{
+	IAssetRegistry& AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	FAssetData CharacterAssetData = AssetRegistry.GetAssetByObjectPath(FName(*PackagePath));
+	UObject* CharacterObject = CharacterAssetData.GetAsset();
+}
+
 void CopyUassetFilesPlants(TArray<FString> FilesToCopy, FString DestinationDirectory, const int8& AssetTier)
 {
 
