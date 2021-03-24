@@ -2875,7 +2875,8 @@ struct RHI_API FRHITextureCreateInfo
 		uint16 InArraySize = 1,
 		uint8 InNumMips = 1,
 		uint8 InNumSamples = 1)
-		: Dimension(InDimension)
+		: ClearValue(InClearValue)
+		, Dimension(InDimension)
 		, Flags(InFlags)
 		, Format(InFormat)
 		, Extent(InExtent)
@@ -2883,7 +2884,6 @@ struct RHI_API FRHITextureCreateInfo
 		, ArraySize(InArraySize)
 		, NumMips(InNumMips)
 		, NumSamples(InNumSamples)
-		, ClearValue(InClearValue)
 	{}
 
 	bool operator == (const FRHITextureCreateInfo& Other) const
@@ -2939,8 +2939,21 @@ struct RHI_API FRHITextureCreateInfo
 		return FIntVector(Extent.X, Extent.Y, Depth);
 	}
 
+	void Reset()
+	{
+		// Usually we don't want to propagate MSAA samples.
+		NumSamples = 1;
+
+		// Remove UAV flag for textures that don't need it (some formats are incompatible).
+		Flags |= TexCreate_RenderTargetable;
+		Flags &= ~(TexCreate_UAV | TexCreate_ResolveTargetable | TexCreate_DepthStencilResolveTarget);
+	}
+
 	/** Returns whether this descriptor conforms to requirements. */
 	bool IsValid() const;
+
+	/** Clear value to use when fast-clearing the texture. */
+	FClearValueBinding ClearValue;
 
 	/** Texture dimension to use when creating the RHI texture. */
 	ETextureDimension Dimension = ETextureDimension::Texture2D;
@@ -2965,9 +2978,6 @@ struct RHI_API FRHITextureCreateInfo
 
 	/** Number of samples in the texture. >1 for MSAA. */
 	uint8 NumSamples = 1;
-
-	/** Clear value to use when fast-clearing the texture. */
-	FClearValueBinding ClearValue;
 };
 
 
