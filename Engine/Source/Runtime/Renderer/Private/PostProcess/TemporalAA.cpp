@@ -1643,7 +1643,7 @@ static void AddGen5MainTemporalAAPasses(
 				RDG_EVENT_NAME("TAA CompareHistory %dx%d", LowFrequencyRect.Width(), LowFrequencyRect.Height()),
 				ComputeShader,
 				PassParameters,
-				FComputeShaderUtils::GetGroupCount(LowFrequencyRect.Size(), 8));
+				FComputeShaderUtils::GetGroupCount(LowFrequencyRect.Size(), 16));
 		}
 	}
 
