@@ -2611,6 +2611,17 @@ TSharedPtr<SWindow> FSlateApplication::GetActiveTopLevelWindow() const
 	return ActiveTopLevelWindow.Pin();
 }
 
+TSharedPtr<SWindow> FSlateApplication::GetActiveTopLevelRegularWindow() const
+{
+	TSharedPtr<SWindow> ActiveWindow = ActiveTopLevelWindow.Pin();
+	while (ActiveWindow && !ActiveWindow->IsRegularWindow())
+	{
+		ActiveWindow = ActiveWindow->GetParentWindow();
+	}
+
+	return ActiveWindow;
+}
+
 TSharedPtr<SWindow> FSlateApplication::GetActiveModalWindow() const
 {
 	return (ActiveModalWindows.Num() > 0) ? ActiveModalWindows.Last() : nullptr;

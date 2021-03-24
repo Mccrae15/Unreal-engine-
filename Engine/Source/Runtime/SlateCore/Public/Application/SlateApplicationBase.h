@@ -168,6 +168,13 @@ public:
 	virtual TSharedPtr<SWindow> GetActiveTopLevelWindow() const = 0;
 
 	/**
+	 * Gets the active regular top-level window.
+	 * A regular window is a non-menu, non-tooltip, non-cursor decorator window
+	 * @return The top level window, or nullptr if no Slate windows are currently active.
+	 */
+	virtual TSharedPtr<SWindow> GetActiveTopLevelRegularWindow() const = 0;
+
+	/**
 	 * Get a list of all top-level windows in the application, excluding virtual windows.
 	 *
 	 * @return An array of all current top-level SWindows.
