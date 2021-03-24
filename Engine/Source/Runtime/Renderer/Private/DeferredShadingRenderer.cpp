@@ -2569,6 +2569,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 	if (!IsHairStrandsComposeAfterTranslucency())
 	{
+		RDG_GPU_STAT_SCOPE(GraphBuilder, HairRendering);
 		RenderHairComposition(GraphBuilder, Views, SceneTextures.Color.Target, SceneTextures.Depth.Target);
 	}
 
@@ -2597,6 +2598,14 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 		AddServiceLocalQueuePass(GraphBuilder);
 		TranslucencyViewsToRender = ETranslucencyView::None;
 
+		// Compose hair before velocity/distortion pass since these pass write depth value, 
+		// and this would make the hair composition fails in this cases.
+		if (IsHairStrandsComposeAfterTranslucency())
+		{
+			RDG_GPU_STAT_SCOPE(GraphBuilder, HairRendering);
+			RenderHairComposition(GraphBuilder, Views, SceneTextures.Color.Target, SceneTextures.Depth.Target);
+		}
+
 		if (bShouldRenderDistortion)
 		{
 			GraphBuilder.SetCommandListStat(GET_STATID(STAT_CLM_Distortion));
@@ -2621,6 +2630,11 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 
 		GraphBuilder.SetCommandListStat(GET_STATID(STAT_CLM_AfterTranslucency));
 	}
+	else if (IsHairStrandsComposeAfterTranslucency())
+	{
+		RDG_GPU_STAT_SCOPE(GraphBuilder, HairRendering);
+		RenderHairComposition(GraphBuilder, Views, SceneTextures.Color.Target, SceneTextures.Depth.Target);
+	}
 
 #if !UE_BUILD_SHIPPING
 	if (CVarForceBlackVelocityBuffer.GetValueOnRenderThread())
@@ -2633,12 +2647,6 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 #endif
 
 	{
-		RDG_GPU_STAT_SCOPE(GraphBuilder, HairRendering);
-		if (IsHairStrandsComposeAfterTranslucency())
-		{
-			RenderHairComposition(GraphBuilder, Views, SceneTextures.Color.Target, SceneTextures.Depth.Target);
-		}
-
 		if (HairStrandsBookmarkParameters.bHasElements)
 		{
 			RenderHairStrandsDebugInfo(GraphBuilder, Views, HairStrandsBookmarkParameters.HairClusterData, SceneTextures.Color.Target);
