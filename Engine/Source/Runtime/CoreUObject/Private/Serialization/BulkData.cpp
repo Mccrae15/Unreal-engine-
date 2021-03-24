@@ -587,8 +587,6 @@ void* FUntypedBulkData::Lock( uint32 LockFlags )
 	// Read-write operations are allowed on returned memory.
 	if( LockFlags & LOCK_READ_WRITE )
 	{
-		LockStatus = LOCKSTATUS_ReadWriteLock;
-
 #if WITH_EDITOR
 		// We need to detach from the archive to not be able to clobber changes by serializing
 		// over them.
@@ -599,6 +597,8 @@ void* FUntypedBulkData::Lock( uint32 LockFlags )
 			check( AttachedAr == NULL );
 		}
 #endif // WITH_EDITOR
+		// This has to be set after the DetachBulkData because we can't detach a locked bulkdata
+		LockStatus = LOCKSTATUS_ReadWriteLock;
 	}
 	// Only read operations are allowed on returned memory.
 	else if( LockFlags & LOCK_READ_ONLY )
