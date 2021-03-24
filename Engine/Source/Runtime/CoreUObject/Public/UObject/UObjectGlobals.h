@@ -2541,7 +2541,7 @@ struct FCppClassTypeInfoStatic;
 class FFieldClass;
 
 /// @cond DOXYGEN_IGNORE
-namespace UE4CodeGen_Private
+namespace UECodeGen_Private
 {
 	enum class EPropertyGenFlags : uint32
 	{
