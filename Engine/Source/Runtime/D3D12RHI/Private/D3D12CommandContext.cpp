@@ -720,6 +720,7 @@ void FD3D12CommandContextBase::UpdateMemoryStats()
 #endif
 
 		Device->GetDefaultBufferAllocator().UpdateMemoryStats();
+		ParentAdapter->GetUploadHeapAllocator(GPUIndex).UpdateMemoryStats();
 	}
 #endif
 }

@@ -505,8 +505,8 @@ void FRHIMemoryPool::Validate()
 //	Pool Allocator
 //-----------------------------------------------------------------------------
 
-FRHIPoolAllocator::FRHIPoolAllocator(uint64 InPoolSize, uint32 InPoolAlignment, uint32 InMaxAllocationSize, bool InDefragEnabled) :
-	PoolSize(InPoolSize),
+FRHIPoolAllocator::FRHIPoolAllocator(uint64 InDefaultPoolSize, uint32 InPoolAlignment, uint32 InMaxAllocationSize, bool InDefragEnabled) :
+	DefaultPoolSize(InDefaultPoolSize),
 	PoolAlignment(InPoolAlignment),
 	MaxAllocationSize(InMaxAllocationSize),
 	bDefragEnabled(InDefragEnabled),
@@ -537,16 +537,21 @@ void FRHIPoolAllocator::Destroy()
 	}
 
 	Pools.Empty();
+	PoolAllocationOrder.Empty();
 }
 
 
 bool FRHIPoolAllocator::TryAllocateInternal(uint32 InSizeInBytes, uint32 InAllocationAlignment, FRHIPoolAllocationData& AllocationData)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FRHIPoolAllocator::TryAllocateInternal);
+
 	FScopeLock Lock(&CS);
 
-	for (int32 PoolIndex = 0; PoolIndex < Pools.Num(); PoolIndex++)
+	check(PoolAllocationOrder.Num() == Pools.Num())
+	for (int32 PoolIndex : PoolAllocationOrder)
 	{
-		if (Pools[PoolIndex] && Pools[PoolIndex]->TryAllocate(InSizeInBytes, InAllocationAlignment, AllocationData))
+		FRHIMemoryPool* Pool = Pools[PoolIndex];
+		if (Pool != nullptr && !Pool->IsFull() && Pool->TryAllocate(InSizeInBytes, InAllocationAlignment, AllocationData))
 		{
 			return true;
 		}
@@ -565,12 +570,13 @@ bool FRHIPoolAllocator::TryAllocateInternal(uint32 InSizeInBytes, uint32 InAlloc
 
 	if (NewPoolIndex >= 0)
 	{
-		Pools[NewPoolIndex] = CreateNewPool(NewPoolIndex);
+		Pools[NewPoolIndex] = CreateNewPool(NewPoolIndex, InSizeInBytes);
 	}
 	else
 	{
-		NewPoolIndex = Pools.Num();
-		Pools.Add(CreateNewPool(NewPoolIndex));
+		NewPoolIndex = Pools.Num();		
+		Pools.Add(CreateNewPool(NewPoolIndex, InSizeInBytes));
+		PoolAllocationOrder.Add(NewPoolIndex);
 	}
 
 	return Pools[NewPoolIndex]->TryAllocate(InSizeInBytes, InAllocationAlignment, AllocationData);
