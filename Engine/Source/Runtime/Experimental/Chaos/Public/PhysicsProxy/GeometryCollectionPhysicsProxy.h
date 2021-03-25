@@ -17,6 +17,7 @@
 #include "PBDRigidsSolver.h"
 #include "Chaos/EvolutionTraits.h"
 #include "Chaos/Defines.h"
+#include "Chaos/GeometryParticlesfwd.h"
 
 namespace Chaos
 {
@@ -255,7 +256,8 @@ protected:
 		const uint32 CollectionClusterIndex, 
 		TArray<Chaos::TPBDRigidParticleHandle<float, 3>*>& ChildHandles,
 		const TArray<int32>& ChildTransformGroupIndices,
-		const Chaos::FClusterCreationParameters<float> & Parameters);
+		const Chaos::FClusterCreationParameters<float> & Parameters,
+		const Chaos::FUniqueIdx* ExistingIndex);
 
 	/** 
 	 * Traverses the parents of \p TransformIndex in \p GeometryCollection, counting
@@ -364,7 +366,8 @@ private:
 		const uint32 CollectionClusterIndex,\
 		TArray<Chaos::TPBDRigidParticleHandle<float,3>*>& ChildHandles,\
 		const TArray<int32>& ChildTransformGroupIndices,\
-		const Chaos::FClusterCreationParameters<float> & Parameters);\
+		const Chaos::FClusterCreationParameters<float> & Parameters,\
+		const Chaos::FUniqueIdx* ExistingIndex);\
 	extern template void FGeometryCollectionPhysicsProxy::Initialize(Chaos::TPBDRigidsEvolutionBase<Chaos::Traits>* Evolution);\
 
 #include "Chaos/EvolutionTraits.inl"

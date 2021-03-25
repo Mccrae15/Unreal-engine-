@@ -855,18 +855,19 @@ void FGeometryCollectionPhysicsProxy::InitializeBodiesPT(Chaos::TPBDRigidsSolver
 					Chaos::FClusterCreationParameters<float> CreationParameters;
 					CreationParameters.ClusterParticleHandle = ClusterHandles.Num() ? ClusterHandles[ClusterHandlesIndex++] : nullptr;
 
-					Chaos::TPBDRigidClusteredParticleHandle<float, 3>* Handle = BuildClusters(RigidsSolver, TransformGroupIndex, RigidChildren, RigidChildrenTransformGroupIndex, CreationParameters);
+					// Hook the handle up with the GT particle
+					Chaos::FGeometryParticle* GTParticle = GTParticles[TransformGroupIndex].Get();
+
+					Chaos::FUniqueIdx ExistingIndex = GTParticle->UniqueIdx();
+					Chaos::TPBDRigidClusteredParticleHandle<float, 3>* Handle = BuildClusters(RigidsSolver, TransformGroupIndex, RigidChildren, RigidChildrenTransformGroupIndex, CreationParameters, &ExistingIndex);
+					Handle->GTGeometryParticle() = GTParticle;
 
 					int32 RigidChildrenIdx = 0;
 					for(const int32 ChildTransformIndex : RigidChildrenTransformGroupIndex)
 					{
 						SolverClusterID[ChildTransformIndex] = RigidChildren[RigidChildrenIdx++]->CastToClustered()->ClusterIds().Id;;
 					}
-					SolverClusterID[TransformGroupIndex] = Handle->ClusterIds().Id;
-
-					// Hook the handle up with the GT particle
-					Chaos::FGeometryParticle* GTParticle = GTParticles[TransformGroupIndex].Get();
-					Handle->GTGeometryParticle() = GTParticle;
+					SolverClusterID[TransformGroupIndex] = Handle->ClusterIds().Id;					
 					
 					// Cluster transform has been recalculated based on children - copy to the GT particle (not threadsafe - just testing)
 					GTParticle->SetX(Handle->X());
@@ -978,7 +979,8 @@ FGeometryCollectionPhysicsProxy::BuildClusters(
 	const uint32 CollectionClusterIndex, // TransformGroupIndex
 	TArray<Chaos::TPBDRigidParticleHandle<float,3>*>& ChildHandles,
 	const TArray<int32>& ChildTransformGroupIndices,
-	const Chaos::FClusterCreationParameters<float> & ClusterParameters)
+	const Chaos::FClusterCreationParameters<float> & ClusterParameters,
+	const Chaos::FUniqueIdx* ExistingIndex)
 {
 	SCOPE_CYCLE_COUNTER(STAT_BuildClusters);
 
@@ -1024,7 +1026,9 @@ FGeometryCollectionPhysicsProxy::BuildClusters(
 			MoveTemp(ChildHandlesCopy),
 			ClusterCreationParameters,
 			Implicits[CollectionClusterIndex], // union from children if null
-			&ParticleTM);
+			&ParticleTM,
+			ExistingIndex
+			);
 
 	if (ReportNoLevelsetCluster && 
 		Parent->DynamicGeometry())
@@ -2721,7 +2725,8 @@ void FGeometryCollectionPhysicsProxy::FieldForcesUpdateCallback(Chaos::TPBDRigid
 		const uint32 CollectionClusterIndex,\
 		TArray<Chaos::TPBDRigidParticleHandle<float,3>*>& ChildHandles,\
 		const TArray<int32>& ChildTransformGroupIndices,\
-		const Chaos::FClusterCreationParameters<float> & Parameters);\
+		const Chaos::FClusterCreationParameters<float> & Parameters,\
+		const Chaos::FUniqueIdx* ExistingIndex);\
 	template void FGeometryCollectionPhysicsProxy::Initialize(Chaos::TPBDRigidsEvolutionBase<Chaos::Traits>* Evolution);\
 
 #include "Chaos/EvolutionTraits.inl"

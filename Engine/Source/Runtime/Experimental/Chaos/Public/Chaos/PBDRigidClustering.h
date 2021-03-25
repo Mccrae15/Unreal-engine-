@@ -8,6 +8,7 @@
 #include "Chaos/ExternalCollisionData.h"
 #include "Chaos/TriangleMesh.h"
 #include "Chaos/ClusterCreationParameters.h"
+#include "Chaos/GeometryParticlesfwd.h"
 #include "Framework/BufferedData.h"
 
 #define TODO_CONVERT_GEOMETRY_COLLECTION_PARTICLE_INDICES_TO_PARTICLE_POINTERS 0
@@ -80,7 +81,8 @@ public:
 		TArray<Chaos::TPBDRigidParticleHandle<T,d>*>&& Children, 
 		const FClusterCreationParameters<T>& Parameters = FClusterCreationParameters<T>(),
 		TSharedPtr<Chaos::FImplicitObject, ESPMode::ThreadSafe> ProxyGeometry = nullptr,
-		const TRigidTransform<T, d>* ForceMassOrientation = nullptr);
+		const TRigidTransform<T, d>* ForceMassOrientation = nullptr,
+		const FUniqueIdx* ExistingIndex = nullptr);
 
 	/**
 	 *  CreateClusterParticleFromClusterChildren
