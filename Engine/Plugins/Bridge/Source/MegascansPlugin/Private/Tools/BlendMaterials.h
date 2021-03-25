@@ -25,7 +25,7 @@ private:
 	//TArray<FString> BlendSets = { "Base", "R", "G", "B", "A" };
 	TArray<FString> BlendSets = { "Base", "Middle", "Top" };
 	//TArray<FString> SupportedMapTypes = { "albedo", "normal", "roughness", "specular", "gloss", "displacement", "opacity", "translucency" };
-	TArray<FString> SupportedMapTypes = { "albedo", "normal", "roughness", "displacement", "ao" };
+	TArray<FString> SupportedMapTypes = { "albedo", "normal", "ARD" };
 
 	bool ValidateSelectedAssets(TArray<FString> SelectedMaterials, FString& Failure);
 	FString MasterMaterialPath = TEXT("/Game/MSPresets/M_MS_SurfaceBlend_Material/M_MS_SurfaceBlend_Material.M_MS_SurfaceBlend_Material");

@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "MSSettings.h"
+#include "Utilities/MiscUtils.h"
 
 
 
@@ -27,6 +28,7 @@ UMaterialAssetSettings::UMaterialAssetSettings(const FObjectInitializer& ObjectI
 UMaterialPresetsSettings::UMaterialPresetsSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+
 	
 }
 
