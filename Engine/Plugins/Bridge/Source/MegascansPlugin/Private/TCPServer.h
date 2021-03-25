@@ -42,6 +42,9 @@ public:
 	int32 ConnectionTimeout;
 	TArray<class FSocket*> Clients;
 
+	void HandleIncomingSocket(FSocket* IncomingConnection);
+	TQueue<FString> ImportQueue;
+
 private:	
 	TQueue<class FSocket*, EQueueMode::Mpsc> PendingClients;
 	bool Stopping;

@@ -9,30 +9,30 @@
 
 
 
-FTCPServer::FTCPServer() 
+FTCPServer::FTCPServer()
 {
 	FThreadSafeCounter  WorkerCounter;
 	FString ThreadName(FString::Printf(TEXT("MegascansPlugin%i"), WorkerCounter.Increment()));
 	ClientThread = FRunnableThread::Create(this, *ThreadName, 8 * 1024, TPri_Normal);
-	
+
 }
 
 FTCPServer::~FTCPServer()
 {
-	
+
 	Stop();
 
-	
+
 	if (Listener != NULL)
 	{
 		Listener->Stop();
 		delete Listener;
 		Listener = NULL;
 	}
-	
+
 	if (!PendingClients.IsEmpty())
 	{
-		FSocket *Client = NULL;
+		FSocket* Client = NULL;
 
 		while (PendingClients.Dequeue(Client))
 		{
@@ -42,13 +42,13 @@ FTCPServer::~FTCPServer()
 		}
 	}
 
-	for (TArray<class FSocket*>::TIterator ClientIt(Clients); ClientIt; ++ClientIt)
+	/*for (TArray<class FSocket*>::TIterator ClientIt(Clients); ClientIt; ++ClientIt)
 	{
 		(*ClientIt)->Close();
 		delete (*ClientIt);
 		(*ClientIt) = NULL;
-	}
-	
+	}*/
+
 	if (ClientThread != NULL)
 	{
 		ClientThread->Kill(true);
@@ -58,7 +58,7 @@ FTCPServer::~FTCPServer()
 
 
 bool FTCPServer::Init()
-{	
+{
 
 	if (Listener == NULL)
 	{
@@ -69,7 +69,7 @@ bool FTCPServer::Init()
 		Listener->OnConnectionAccepted().BindRaw(this, &FTCPServer::HandleListenerConnectionAccepted);
 		Stopping = false;
 	}
-	
+
 	return (Listener != NULL);
 }
 
@@ -78,85 +78,75 @@ uint32  FTCPServer::Run()
 {
 	while (!Stopping)
 	{
+		FPlatformProcess::Sleep(0.3f);
 
 		if (!PendingClients.IsEmpty())
 		{
-			
-			for (TArray<class FSocket*>::TIterator ClientIt(Clients); ClientIt; ++ClientIt)
-			{
-				(*ClientIt)->Close();
-				delete (*ClientIt);
-				(*ClientIt) = NULL;
-			}
+			FPlatformProcess::Sleep(0.2f);
 
-			FSocket *Client = NULL;
-			while (PendingClients.Dequeue(Client))
-			{
-				
-				Clients.Empty();
-				Clients.Add(Client);
-				ConnectionTimer.AddZeroed(1);
-			}
-		}
-
-		
-
-		if (Clients.Num() > 0)
-		{
-			
 			FString RecievedJson = TEXT("");
 			uint32 DataSize = 0;
 
-			for (TArray<class FSocket*>::TIterator ClientIt(Clients); ClientIt; ++ClientIt)
+
+
+			FSocket* Client;
+			PendingClients.Dequeue(Client);
+			DataSize = 0;
+			FString Request;
+			TArray<uint8> data;
+			bool haveMessage = false;
+			while (Client->HasPendingData(DataSize))
 			{
-				
-				FSocket *Client = *ClientIt;				
-				DataSize = 0;
-				FString Request;
-				TArray<uint8> data;
-				bool haveMessage = false;
-				while (Client->HasPendingData(DataSize))
-				{					
-					haveMessage = RecvMessage(Client, DataSize, Request);										
-					if (haveMessage)
-					{					
+				haveMessage = RecvMessage(Client, DataSize, Request);
+				if (haveMessage)
+				{
 
-						int32 timer = 0;						
-						RecievedJson += Request;						
-						Request.Empty();
-						haveMessage = false;
-					}
-
-				}		
+					int32 timer = 0;
+					RecievedJson += Request;
+					Request.Empty();
+					haveMessage = false;
+				}
 
 			}
+
+			
+			Client->Close();
+			delete Client;
 
 			if (RecievedJson != TEXT(""))
 			{
-				if (!IsGarbageCollecting() && !GIsSavingPackage)
-				{
-
-					AsyncTask(ENamedThreads::GameThread, [this, RecievedJson]() {
-						FAssetsImportController::Get()->DataReceived(RecievedJson);
-					});
-					
-					RecievedJson.Empty();
-				}
+				ImportQueue.Enqueue(RecievedJson);
+				RecievedJson.Empty();
+				
 			}
-			
+
 		}
+
+		if (!ImportQueue.IsEmpty())
+		{
+			if (!IsGarbageCollecting() && !GIsSavingPackage)
+			{
+				FString ImportData;
+				ImportQueue.Dequeue(ImportData);
+				AsyncTask(ENamedThreads::GameThread, [this, ImportData]() {
+					FAssetsImportController::Get()->DataReceived(ImportData);
+				});
+
+
+			}
+		}
+
+
 		
-		
-		//FPlatformProcess::Sleep(0.1f); 
 	}
 
 	return 0;
 }
 
 
-bool FTCPServer::RecvMessage(FSocket *Socket, uint32 DataSize, FString& Message)
+bool FTCPServer::RecvMessage(FSocket* Socket, uint32 DataSize, FString& Message)
 {
-	check(Socket);	
+	check(Socket);
 	FArrayReaderPtr Datagram = MakeShareable(new FArrayReader(true));
 	int32 stuff = 16;
 	Datagram->Init(FMath::Min(DataSize, 65507u), 81920);
@@ -164,7 +154,7 @@ bool FTCPServer::RecvMessage(FSocket *Socket, uint32 DataSize, FString& Message)
 
 	if (Socket->Recv(Datagram->GetData(), Datagram->Num(), BytesRead))
 	{
-		
+
 		char* Data = (char*)Datagram->GetData();
 		Data[BytesRead] = '\0';
 		FString message = UTF8_TO_TCHAR(Data);
@@ -176,9 +166,10 @@ bool FTCPServer::RecvMessage(FSocket *Socket, uint32 DataSize, FString& Message)
 	return false;
 }
 
-bool FTCPServer::HandleListenerConnectionAccepted(class FSocket *ClientSocket, const FIPv4Endpoint& ClientEndpoint)
+bool FTCPServer::HandleListenerConnectionAccepted(class FSocket* ClientSocket, const FIPv4Endpoint& ClientEndpoint)
 
 {
+	
 	PendingClients.Enqueue(ClientSocket);
 	return true;
 }

@@ -85,6 +85,10 @@ void FImportProgressiveSurfaces::ImportAsset(TSharedPtr<FJsonObject> AssetImport
 		ImportData->ProgressiveStage = 4;
 	}
 	
+	if (ImportData->ProgressiveStage != 1 && !PreviewDetails.Contains(ImportData->AssetId))
+	{
+		return;
+	}
 
 	if (!PreviewDetails.Contains(ImportData->AssetId) )
 	{
@@ -238,6 +242,8 @@ void FImportProgressiveSurfaces::SpawnMaterialPreviewActor(FString AssetID, floa
 	}
 	//SMActor->Rename(TEXT("MyStaticMeshInTheWorld"));
 	//SMActor->SetActorLabel("StaticMeshActor");
+
+	GEditor->SelectActor(SMActor, true, false);
 
 	GEditor->EditorUpdateComponents();
 	CurrentWorld->UpdateWorldComponents(true, false);

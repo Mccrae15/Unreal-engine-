@@ -76,6 +76,8 @@ void FImportProgressive3D::SpawnAtCenter(FAssetData AssetData, TSharedPtr<FUAsse
 	CurrentWorld->UpdateWorldComponents(true, false);
 	SMActor->RerunConstructionScripts();
 
+	GEditor->SelectActor(SMActor, true, false);
+
 	if (bIsNormal) return;
 
 	if (!ProgressiveData.Contains(ImportData->AssetId) )
@@ -128,6 +130,11 @@ void FImportProgressive3D::ImportAsset(TSharedPtr<FJsonObject> AssetImportJson, 
 		Streamable.RequestAsyncLoad(ItemToStream, FStreamableDelegate::CreateRaw(this, &FImportProgressive3D::HandleNormalAssetLoad, AssetMeshData, AssetMetaData, LocationOffset));
 
 
+		return;
+	}
+
+	if (ImportData->ProgressiveStage != 1 && !PreviewDetails.Contains(ImportData->AssetId))
+	{
 		return;
 	}
 	
