@@ -466,6 +466,7 @@ public:
 #if WITH_EDITOR
 	,	bHasSelectedInstances(false)
 #endif
+	,	StaticMeshBounds(StaticMesh->GetBounds())
 	{
 #if WITH_EDITOR
 		for (int32 InstanceIndex = 0; InstanceIndex < InComponent->SelectedInstances.Num() && !bHasSelectedInstances; ++InstanceIndex)
@@ -489,6 +490,7 @@ public:
 	}
 
 	// FPrimitiveSceneProxy interface.
+	virtual void CreateRenderThreadResources() override;
 
 	virtual void DestroyRenderThreadResources() override;
 
@@ -613,6 +615,8 @@ protected:
 	/** Common path for the Get*MeshElement functions */
 	void SetupInstancedMeshBatch(int32 LODIndex, int32 BatchIndex, FMeshBatch& OutMeshBatch) const;
 
+	/** Untransformed bounds of the static mesh */
+	FBoxSphereBounds StaticMeshBounds;
 private:
 
 	void SetupProxy(UInstancedStaticMeshComponent* InComponent);
