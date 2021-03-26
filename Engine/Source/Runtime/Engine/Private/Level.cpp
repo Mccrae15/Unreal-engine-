@@ -2354,6 +2354,11 @@ TArray<FString> ULevel::GetOnDiskExternalActorPackages() const
 	return ActorPackageNames;
 }
 
+const TCHAR* ULevel::GetExternalActorsFolderName()
+{
+	return TEXT("__ExternalActors__");
+}
+
 TArray<UPackage*> ULevel::GetLoadedExternalActorPackages() const
 {
 	TSet<UPackage*> ActorPackages;
@@ -2388,7 +2393,7 @@ FString ULevel::GetExternalActorsPath(const FString& InLevelPackageName, const F
 		FString MountPoint, PackagePath, ShortName;
 		if (FPackageName::SplitLongPackageName(InLevelPackageName, MountPoint, PackagePath, ShortName))
 		{
-			OutExternalActorsPath = FString::Printf(TEXT("%s__ExternalActors__/%s%s"), *MountPoint, *PackagePath, InPackageShortName.IsEmpty() ? *ShortName : *InPackageShortName);
+			OutExternalActorsPath = FString::Printf(TEXT("%s%s/%s%s"), *MountPoint, GetExternalActorsFolderName(), *PackagePath, InPackageShortName.IsEmpty() ? *ShortName : *InPackageShortName);
 			return true;
 		}
 		return false;
