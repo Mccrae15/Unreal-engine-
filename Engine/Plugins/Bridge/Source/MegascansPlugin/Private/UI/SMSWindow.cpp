@@ -206,7 +206,7 @@ void MegascansSettingsWindow::OpenSettingsWindow()
 			MaterialOverrideSettings->MasterMaterial3d = CastChecked<UMaterial>(UEditorAssetLibrary::LoadAsset(MatAssetPathsSettings->MasterMaterial3d));
 		}
 	}
-	else {
+	/*else {
 		CopyMSPresets();
 		FString MasterMaterialPath = TEXT("/Game/MSPresets/M_MS_Default_Material/M_MS_Default_Material.M_MS_Default_Material");
 		if (UEditorAssetLibrary::DoesAssetExist(MasterMaterialPath))
@@ -214,7 +214,7 @@ void MegascansSettingsWindow::OpenSettingsWindow()
 			MaterialOverrideSettings->MasterMaterial3d = CastChecked<UMaterial>(UEditorAssetLibrary::LoadAsset(MasterMaterialPath));
 		}
 
-	}
+	}*/
 	if (MatAssetPathsSettings->MasterMaterialPlant != "None" && MatAssetPathsSettings->MasterMaterialPlant != "")
 	{
 		if (UEditorAssetLibrary::DoesAssetExist(MatAssetPathsSettings->MasterMaterialPlant)) {
@@ -222,21 +222,21 @@ void MegascansSettingsWindow::OpenSettingsWindow()
 		}
 
 	}
-	else
+	/*else
 	{
 		CopyMSPresets();
 		FString MasterMaterialPath = TEXT("/Game/MSPresets/M_MS_Foliage_Material/M_MS_Foliage_Material.M_MS_Foliage_Material");
 		if (UEditorAssetLibrary::DoesAssetExist(MasterMaterialPath)) {
 			MaterialOverrideSettings->MasterMaterialPlant = CastChecked<UMaterial>(UEditorAssetLibrary::LoadAsset(MasterMaterialPath));
 		}
-	}
+	}*/
 	if (MatAssetPathsSettings->MasterMaterialSurface != "None" && MatAssetPathsSettings->MasterMaterialSurface != "")
 	{
 		if (UEditorAssetLibrary::DoesAssetExist(MatAssetPathsSettings->MasterMaterialSurface)) {
 			MaterialOverrideSettings->MasterMaterialSurface = CastChecked<UMaterial>(UEditorAssetLibrary::LoadAsset(MatAssetPathsSettings->MasterMaterialSurface));
 		}
 	}
-	else
+	/*else
 	{
 		CopyMSPresets();
 		FString MasterMaterialPath = TEXT("/Game/MSPresets/M_MS_Surface_Material/M_MS_Surface_Material.M_MS_Surface_Material");
@@ -244,7 +244,7 @@ void MegascansSettingsWindow::OpenSettingsWindow()
 			MaterialOverrideSettings->MasterMaterialSurface = CastChecked<UMaterial>(UEditorAssetLibrary::LoadAsset(MasterMaterialPath));
 		}
 
-	}
+	}*/
 	ExistingWindow->SetContent(
 		SNew(SMegascansSettings)
 		.InMegascansSettings(MegascansSettings)
