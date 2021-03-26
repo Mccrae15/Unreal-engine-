@@ -18,6 +18,7 @@
 #include "PostProcess/PostProcessVisualizeLevelInstance.h"
 #include "PostProcess/PostProcessGBufferHints.h"
 #include "PostProcess/PostProcessVisualizeBuffer.h"
+#include "PostProcess/PostProcessVisualizeNanite.h"
 #include "PostProcess/PostProcessEyeAdaptation.h"
 #include "PostProcess/PostProcessTonemap.h"
 #include "PostProcess/PostProcessLensFlares.h"
@@ -41,7 +42,6 @@
 #include "HighResScreenshot.h"
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
-#include "BufferVisualizationData.h"
 #include "DeferredShadingRenderer.h"
 #include "MobileSeparateTranslucencyPass.h"
 #include "MobileDistortionPass.h"
@@ -1014,14 +1014,21 @@ void AddPostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, c
 		AddTestImagePass(GraphBuilder, View, SceneColor);
 	}
 
+	if (EngineShowFlags.VisualizeNanite && NaniteRasterResults != nullptr)
+	{
+		AddVisualizeNanitePass(GraphBuilder, View, SceneColor, *NaniteRasterResults);
+	}
+
 	if (ShaderDrawDebug::IsShaderDrawDebugEnabled(View))
 	{
 		ShaderDrawDebug::DrawView(GraphBuilder, View, SceneColor.Texture, SceneDepth.Texture);
 	}
+
 	if (ShaderPrint::IsEnabled() && ShaderPrint::IsSupported(View))
 	{
 		ShaderPrint::DrawView(GraphBuilder, View, SceneColor.Texture);
 	}
+
 	if ( View.Family && View.Family->Scene )
 	{
 		if (FFXSystemInterface* FXSystem = View.Family->Scene->GetFXSystem())

@@ -51,6 +51,7 @@
 #include "HairStrands/HairStrandsData.h"
 #include "PhysicsField/PhysicsFieldComponent.h"
 #include "GPUSortManager.h"
+#include "NaniteVisualizationData.h"
 #include "Rendering/NaniteResources.h"
 #include "Rendering/NaniteStreamingManager.h"
 #include "SceneTextureReductions.h"
@@ -1473,10 +1474,24 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	Scene->UpdateAllPrimitiveSceneInfos(GraphBuilder, true);
 
 	FGPUSceneScopeBeginEndHelper GPUSceneScopeBeginEndHelper(Scene->GPUScene, GPUSceneDynamicContext, Scene);
+
+	bool bVisualizeNanite = false;
 	if (bNaniteEnabled)
 	{
 		Nanite::GGlobalResources.Update(GraphBuilder); // Needed to managed scratch buffers for Nanite.
 		Nanite::GStreamingManager.BeginAsyncUpdate(GraphBuilder);
+
+		FNaniteVisualizationData& NaniteVisualization = GetNaniteVisualizationData();
+		if (Views.Num() > 0)
+		{
+			const FName& NaniteViewMode = Views[0].CurrentNaniteVisualizationMode;
+			if (NaniteVisualization.Update(NaniteViewMode))
+			{
+				// When activating the view modes from the command line, automatically enable the VisualizeNanite show flag for convenience.
+				ViewFamily.EngineShowFlags.SetVisualizeNanite(true);
+			}
+			bVisualizeNanite = NaniteVisualization.IsActive();
+		}
 	}
 
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(RenderOther);
@@ -1931,7 +1946,8 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 					bUpdateStreaming,
 					bSupportsMultiplePasses,
 					bForceHWRaster,
-					bPrimaryContext);
+					bPrimaryContext
+				);
 
 				static FString EmptyFilterName = TEXT(""); // Empty filter represents primary view.
 				const bool bExtractStats = Nanite::IsStatFilterActive(EmptyFilterName);
@@ -2203,20 +2219,24 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 					View,
 					RasterResults
 				);
-
-				Nanite::DrawVisualization(
-					GraphBuilder,
-					SceneTextures.Depth.Target,
-					*Scene,
-					View,
-					RasterResults
-				);
 			}
 		}
 
 		if (!bAllowReadOnlyDepthBasePass)
 		{
 			AddResolveSceneDepthPass(GraphBuilder, Views, SceneTextures.Depth);
+		}
+
+		if (bVisualizeNanite)
+		{
+			Nanite::AddVisualizationPasses(
+				GraphBuilder,
+				Scene,
+				SceneTextures,
+				ViewFamily.EngineShowFlags,
+				Views,
+				NaniteRasterResults
+			);
 		}
 	}
 

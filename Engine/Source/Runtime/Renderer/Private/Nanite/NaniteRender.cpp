@@ -37,6 +37,7 @@
 #define RENDER_FLAG_FORCE_HW_RASTER					0x2
 #define RENDER_FLAG_PRIMITIVE_SHADER				0x4
 #define RENDER_FLAG_OUTPUT_STREAMING_REQUESTS		0x8
+#define RENDER_FLAG_REVERSE_CULLING					0x10
 
 // Only available with the DEBUG_FLAGS permutation active.
 #define DEBUG_FLAG_WRITE_STATS						0x1
@@ -138,17 +139,21 @@ FAutoConsoleVariableRef CVarNaniteDebugOverdrawScale(
 	TEXT("")
 );
 
-int32 GNaniteDebugSceneComposite = 1; // If != 0, only visualize Nanite information that passes full scene depth test
+// Specifies if visualization only shows Nanite information that passes full scene depth test
+// -1: Use default composition specified the each mode
+//  0: Force composition with scene depth off
+//  1: Force composition with scene depth on
+int32 GNaniteVisualizeComposite = -1;
 FAutoConsoleVariableRef CVarNaniteDebugSceneComposite(
-	TEXT("r.Nanite.DebugSceneComposite"),
-	GNaniteDebugSceneComposite,
+	TEXT("r.Nanite.Visualize.Composite"),
+	GNaniteVisualizeComposite,
 	TEXT("")
 );
 
-int32 GNaniteDebugSobelFilter = 0;
-static FAutoConsoleVariableRef CVarNaniteDebugSobelFilter(
-	TEXT("r.Nanite.DebugSobelFilter"),
-	GNaniteDebugSobelFilter,
+int32 GNaniteVisualizeEdgeDetect = 1;
+static FAutoConsoleVariableRef CVarNaniteVisualizeEdgeDetect(
+	TEXT("r.Nanite.Visualize.EdgeDetect"),
+	GNaniteVisualizeEdgeDetect,
 	TEXT("")
 );
 
@@ -332,97 +337,14 @@ static bool UsePrimitiveShader()
 	return GNanitePrimShaderRasterization != 0 && GRHISupportsPrimitiveShaders;
 }
 
-// Debug Visualization Modes (must match NaniteDataDecode.ush)
-// https://docs.google.com/document/d/1PeRxK_w49jgACYTiQUlCJYSzbT_BKZbhly_7i80j-BU/edit?usp=sharing
-#define VISUALIZE_TRIANGLES							1
-#define VISUALIZE_CLUSTERS							2
-#define VISUALIZE_GROUPS							3
-#define VISUALIZE_PAGES								4
-#define VISUALIZE_PRIMITIVES						5
-#define VISUALIZE_HW_VS_SW							6
-#define VISUALIZE_OVERDRAW							7
-#define VISUALIZE_HIERARCHY_OFFSET					8
-#define VISUALIZE_SCN_HTILE_MINZ					9
-#define VISUALIZE_SCN_HTILE_MAXZ					10
-#define VISUALIZE_SCN_HTILE_DELTAZ					11
-#define VISUALIZE_SCN_HTILE_ZMASK					12
-#define VISUALIZE_MAT_HTILE_MINZ					13
-#define VISUALIZE_MAT_HTILE_MAXZ					14
-#define VISUALIZE_MAT_HTILE_DELTAZ					15
-#define VISUALIZE_MAT_HTILE_ZMASK					16
-#define VISUALIZE_MATERIAL_FAST_VS_SLOW				17
-#define VISUALIZE_MATERIAL_INDEX					18
-#define VISUALIZE_MATERIAL_ID						19
-#define VISUALIZE_HIT_PROXY_ID						20
-#define VISUALIZE_NANITE_MASK						21
-#define VISUALIZE_LIGHTMAP_UVS						22
-#define VISUALIZE_LIGHTMAP_UV_INDEX					23
-#define VISUALIZE_LIGHTMAP_DATA_INDEX				24
-#define VISUALIZE_INSTANCES							25
-
-int32 GNaniteDebugVisualize = 0;
-FAutoConsoleVariableRef CVarNaniteDebugVisualize(
-	TEXT("r.Nanite.DebugVisualize"),
-	GNaniteDebugVisualize,
-	TEXT("0 Disabled (Default)\n")
-	TEXT("1 for Triangle ID\n")
-	TEXT("2 for Cluster ID\n")
-	TEXT("3 for Group ID\n")
-	TEXT("4 for Page ID\n")
-	TEXT("5 for Primitive ID\n")
-	TEXT("6 for HW vs SW Raster\n")
-	TEXT("7 for Overdraw\n")
-	TEXT("8 for Hierarchy Offset\n")
-	TEXT("9 for Scene Min Z\n")
-	TEXT("10 for Scene Max Z\n")
-	TEXT("11 for Scene Delta Z\n")
-	TEXT("12 for Scene Z Mask\n")
-	TEXT("13 for Material Min Z\n")
-	TEXT("14 for Material Max Z\n")
-	TEXT("15 for Material Delta Z\n")
-	TEXT("16 for Material Z Mask\n")
-	TEXT("17 for Material Fast vs Slow Path\n")
-	TEXT("18 for Material Index\n")
-	TEXT("19 for Material ID\n")
-	TEXT("20 for Hit Proxy ID\n")
-	TEXT("21 for Nanite Mask\n")
-	TEXT("22 for Lightmap UVs\n")
-	TEXT("23 for Lightmap UV Index\n")
-	TEXT("24 for Lightmap Data Index\n")
-	TEXT("25 for Instance ID\n")
-);
-
-static bool IsVisualizingHTile()
+static FIntVector4 GetVisualizeConfig(int32 ModeID, bool bCompositeScene, bool bEdgeDetect)
 {
-	if (GRHISupportsExplicitHTile)
+	if (ModeID != INDEX_NONE)
 	{
-	switch (GNaniteDebugVisualize)
-	{
-	case VISUALIZE_SCN_HTILE_MINZ:
-	case VISUALIZE_SCN_HTILE_MAXZ:
-	case VISUALIZE_SCN_HTILE_DELTAZ:
-	case VISUALIZE_SCN_HTILE_ZMASK:
-	case VISUALIZE_MAT_HTILE_MINZ:
-	case VISUALIZE_MAT_HTILE_MAXZ:
-	case VISUALIZE_MAT_HTILE_DELTAZ:
-	case VISUALIZE_MAT_HTILE_ZMASK:
-		return true;
-	default:
-		return false;
+		return FIntVector4(ModeID, GNaniteDebugOverdrawScale, bCompositeScene ? 1 : 0, bEdgeDetect ? 1 : 0);
 	}
-}
-	return false;
-}
-
-static bool ShouldExportDebugBuffers()
-{
-	// HTILE has a separate pass for visualization
-	return (GNaniteDebugVisualize > 0) && !IsVisualizingHTile();
-}
-
-static FIntVector4 GetVisualizeConfig()
-{
-	return FIntVector4(GNaniteDebugVisualize, GNaniteDebugOverdrawScale, GNaniteDebugSceneComposite, GNaniteDebugSobelFilter);
+	
+	return FIntVector4(INDEX_NONE, 0, 0, 0);
 }
 
 // Must match FStats in NaniteDataDecode.ush
@@ -810,11 +732,10 @@ BEGIN_SHADER_PARAMETER_STRUCT( FRasterizePassParameters, )
 	SHADER_PARAMETER_STRUCT_INCLUDE( FGPUSceneParameters, GPUSceneParameters )
 	SHADER_PARAMETER_STRUCT_INCLUDE( FRasterParameters, RasterParameters )
 
-	SHADER_PARAMETER( FIntVector4,	VisualizeConfig )
 	SHADER_PARAMETER( FIntVector4,	SOAStrides )
 	SHADER_PARAMETER( uint32,		MaxVisibleClusters )
 	SHADER_PARAMETER( uint32,		RenderFlags )
-	SHADER_PARAMETER( uint32,       RasterStateReverseCull )
+	SHADER_PARAMETER( uint32,		VisualizeModeBitMask )
 	
 	SHADER_PARAMETER_SRV( ByteAddressBuffer,				ClusterPageData )
 	SHADER_PARAMETER_SRV( ByteAddressBuffer,				ClusterPageHeaders )
@@ -1467,10 +1388,10 @@ public:
 };
 IMPLEMENT_GLOBAL_SHADER(FEmitEditorSelectionDepthPS, "/Engine/Private/Nanite/ExportGBuffer.usf", "EmitEditorSelectionDepthPS", SF_Pixel);
 
-class FDebugVisualizeCS : public FNaniteShader
+class FNaniteVisualizeCS : public FNaniteShader
 {
-	DECLARE_GLOBAL_SHADER(FDebugVisualizeCS);
-	SHADER_USE_PARAMETER_STRUCT(FDebugVisualizeCS, FNaniteShader);
+	DECLARE_GLOBAL_SHADER(FNaniteVisualizeCS);
+	SHADER_USE_PARAMETER_STRUCT(FNaniteVisualizeCS, FNaniteShader);
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -1502,7 +1423,7 @@ class FDebugVisualizeCS : public FNaniteShader
 		SHADER_PARAMETER_SRV(ByteAddressBuffer, MaterialHitProxyTable)
 	END_SHADER_PARAMETER_STRUCT()
 };
-IMPLEMENT_GLOBAL_SHADER(FDebugVisualizeCS, "/Engine/Private/Nanite/DebugVisualize.usf", "DebugVisualize", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FNaniteVisualizeCS, "/Engine/Private/Nanite/DebugVisualize.usf", "VisualizeCS", SF_Compute);
 
 class FDepthExportCS : public FNaniteShader
 {
@@ -2396,7 +2317,7 @@ void AddPass_InstanceHierarchyAndClusterCull(
 	FRDGBuilder& GraphBuilder,
 	const FScene& Scene,
 	const FCullingParameters& CullingParameters,
-	const TArray<FPackedView, SceneRenderingAllocator> &Views,
+	const TArray<FPackedView, SceneRenderingAllocator>& Views,
 	const uint32 NumPrimaryViews,
 	const FCullingContext& CullingContext,
 	const FRasterContext& RasterContext,
@@ -2666,11 +2587,14 @@ void AddPass_Rasterize(
 
 	CommonPassParameters->GPUSceneParameters = GPUSceneParameters;
 	CommonPassParameters->RasterParameters = RasterContext.Parameters;
-	CommonPassParameters->VisualizeConfig = GetVisualizeConfig();
+	CommonPassParameters->VisualizeModeBitMask = RasterContext.VisualizeModeBitMask;
 	CommonPassParameters->SOAStrides = SOAStrides;
 	CommonPassParameters->MaxVisibleClusters = Nanite::FGlobalResources::GetMaxVisibleClusters();
 	CommonPassParameters->RenderFlags = RenderFlags;
-	CommonPassParameters->RasterStateReverseCull = RasterState.CullMode == CM_CCW ? 1 : 0;
+	if (RasterState.CullMode == CM_CCW)
+	{
+		CommonPassParameters->RenderFlags |= RENDER_FLAG_REVERSE_CULLING;
+	}
 	CommonPassParameters->VisibleClustersSWHW = GraphBuilder.CreateSRV(VisibleClustersSWHW);
 	
 	if (VirtualShadowMapArray)
@@ -2767,17 +2691,17 @@ void AddPass_Rasterize(
 		PermutationVectorVS.Set<FHWRasterizeVS::FPrimShaderCullDim>(bUsePrimitiveShaderCulling);
 		PermutationVectorVS.Set<FHWRasterizeVS::FAutoShaderCullDim>(bUseAutoCullingShader);
 		PermutationVectorVS.Set<FHWRasterizeVS::FHasPrevDrawData>(bHavePrevDrawData);
-		PermutationVectorVS.Set<FHWRasterizeVS::FDebugVisualizeDim>( ShouldExportDebugBuffers() && Technique != ERasterTechnique::DepthOnly );
+		PermutationVectorVS.Set<FHWRasterizeVS::FDebugVisualizeDim>(RasterContext.VisualizeActive && Technique != ERasterTechnique::DepthOnly);
 		PermutationVectorVS.Set<FHWRasterizeVS::FNearClipDim>(bNearClip);
 		PermutationVectorVS.Set<FHWRasterizeVS::FVirtualTextureTargetDim>(VirtualShadowMapArray != nullptr);
 		PermutationVectorVS.Set<FHWRasterizeVS::FClusterPerPageDim>( GNaniteClusterPerPage && VirtualShadowMapArray != nullptr );
 
 		FHWRasterizePS::FPermutationDomain PermutationVectorPS;
 		PermutationVectorPS.Set<FHWRasterizePS::FRasterTechniqueDim>(int32(Technique));
-		PermutationVectorPS.Set<FHWRasterizePS::FMultiViewDim>( bMultiView );
-		PermutationVectorPS.Set<FHWRasterizePS::FPrimShaderDim>( bUsePrimitiveShader );
+		PermutationVectorPS.Set<FHWRasterizePS::FMultiViewDim>(bMultiView);
+		PermutationVectorPS.Set<FHWRasterizePS::FPrimShaderDim>(bUsePrimitiveShader);
 		PermutationVectorPS.Set<FHWRasterizePS::FPrimShaderCullDim>(bUsePrimitiveShaderCulling);
-		PermutationVectorPS.Set<FHWRasterizePS::FDebugVisualizeDim>( ShouldExportDebugBuffers() && Technique != ERasterTechnique::DepthOnly );
+		PermutationVectorPS.Set<FHWRasterizePS::FDebugVisualizeDim>(RasterContext.VisualizeActive && Technique != ERasterTechnique::DepthOnly);
 		PermutationVectorPS.Set<FHWRasterizePS::FNearClipDim>(bNearClip);
 		PermutationVectorPS.Set<FHWRasterizePS::FVirtualTextureTargetDim>(VirtualShadowMapArray != nullptr);
 		PermutationVectorPS.Set<FHWRasterizePS::FClusterPerPageDim>( GNaniteClusterPerPage && VirtualShadowMapArray != nullptr );
@@ -2794,7 +2718,7 @@ void AddPass_Rasterize(
 			RHICmdList.SetViewport(ViewRect.Min.X, ViewRect.Min.Y, 0.0f, FMath::Min(ViewRect.Max.X, 32767), FMath::Min(ViewRect.Max.Y, 32767), 1.0f);
 
 			FGraphicsPipelineStateInitializer GraphicsPSOInit;
-			RHICmdList.ApplyCachedRenderTargets( GraphicsPSOInit );
+			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 			GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
 			// NOTE: We do *not* use RasterState.CullMode here because HWRasterizeVS already
@@ -2825,7 +2749,7 @@ void AddPass_Rasterize(
 		PermutationVectorCS.Set<FMicropolyRasterizeCS::FMultiViewDim>(bMultiView);
 		PermutationVectorCS.Set<FMicropolyRasterizeCS::FHasPrevDrawData>(bHavePrevDrawData);
 		PermutationVectorCS.Set<FMicropolyRasterizeCS::FRasterTechniqueDim>(int32(Technique));
-		PermutationVectorCS.Set<FMicropolyRasterizeCS::FDebugVisualizeDim>(ShouldExportDebugBuffers() && Technique != ERasterTechnique::DepthOnly);
+		PermutationVectorCS.Set<FMicropolyRasterizeCS::FDebugVisualizeDim>(RasterContext.VisualizeActive && Technique != ERasterTechnique::DepthOnly);
 		PermutationVectorCS.Set<FMicropolyRasterizeCS::FNearClipDim>(bNearClip);
 		PermutationVectorCS.Set<FMicropolyRasterizeCS::FVirtualTextureTargetDim>(VirtualShadowMapArray != nullptr);
 		PermutationVectorCS.Set<FMicropolyRasterizeCS::FClusterPerPageDim>(GNaniteClusterPerPage&& VirtualShadowMapArray != nullptr);
@@ -2850,7 +2774,8 @@ FRasterContext InitRasterContext(
 	bool bClearTarget,
 	FRDGBufferSRVRef RectMinMaxBufferSRV,
 	uint32 NumRects,
-	FRDGTextureRef ExternalDepthBuffer )
+	FRDGTextureRef ExternalDepthBuffer
+)
 {
 	// If an external depth buffer is provided, it must match the context size
 	check( ExternalDepthBuffer == nullptr || ExternalDepthBuffer->Desc.Extent == TextureSize );
@@ -2859,7 +2784,22 @@ FRasterContext InitRasterContext(
 	LLM_SCOPE_BYTAG(Nanite);
 	RDG_EVENT_SCOPE(GraphBuilder, "Nanite::InitContext");
 
-	FRasterContext RasterContext;
+	const FNaniteVisualizationData& VisualizationData = GetNaniteVisualizationData();
+
+	FRasterContext RasterContext{};
+
+	RasterContext.VisualizeActive = VisualizationData.IsActive();
+	if (RasterContext.VisualizeActive)
+	{
+		if (VisualizationData.GetActiveModeID() == 0) // Overview
+		{
+			RasterContext.VisualizeModeBitMask = VisualizationData.GetOverviewModeBitMask();
+		}
+		else
+		{
+			RasterContext.VisualizeModeBitMask |= VisualizationData.GetActiveModeID();
+		}
+	}
 
 	RasterContext.TextureSize = TextureSize;
 
@@ -2922,10 +2862,10 @@ FRasterContext InitRasterContext(
 	
 	const uint32 ClearValue[4] = { 0, 0, 0, 0 };
 
-	if(RasterMode == EOutputBufferMode::DepthOnly)
+	if (RasterMode == EOutputBufferMode::DepthOnly)
 	{
 		RasterContext.Parameters.OutDepthBuffer = GraphBuilder.CreateUAV( RasterContext.DepthBuffer );
-		if( bClearTarget )
+		if (bClearTarget)
 		{
 			AddClearUAVPass( GraphBuilder, RasterContext.Parameters.OutDepthBuffer, ClearValue, RectMinMaxBufferSRV, NumRects );
 		}
@@ -2933,12 +2873,12 @@ FRasterContext InitRasterContext(
 	else
 	{
 		RasterContext.Parameters.OutVisBuffer64 = GraphBuilder.CreateUAV( RasterContext.VisBuffer64 );
-		if( bClearTarget )
+		if (bClearTarget)
 		{
 			AddClearUAVPass( GraphBuilder, RasterContext.Parameters.OutVisBuffer64, ClearValue, RectMinMaxBufferSRV, NumRects );
 		}
 		
-		if( ShouldExportDebugBuffers() )
+		if (RasterContext.VisualizeActive)
 		{
 			RasterContext.Parameters.OutDbgBuffer64 = GraphBuilder.CreateUAV( RasterContext.DbgBuffer64 );
 			RasterContext.Parameters.OutDbgBuffer32 = GraphBuilder.CreateUAV( RasterContext.DbgBuffer32 );
@@ -2946,10 +2886,10 @@ FRasterContext InitRasterContext(
 			AddClearUAVPass( GraphBuilder, RasterContext.Parameters.OutDbgBuffer32, ClearValue, RectMinMaxBufferSRV, NumRects );
 		}
 
-		if( RasterContext.RasterTechnique == ERasterTechnique::LockBufferFallback )
+		if (RasterContext.RasterTechnique == ERasterTechnique::LockBufferFallback)
 		{
-			RasterContext.Parameters.LockBuffer = GraphBuilder.CreateUAV( RasterContext.LockBuffer );
-			AddClearUAVPass( GraphBuilder, RasterContext.Parameters.LockBuffer, ClearValue, RectMinMaxBufferSRV, NumRects );
+			RasterContext.Parameters.LockBuffer = GraphBuilder.CreateUAV(RasterContext.LockBuffer);
+			AddClearUAVPass(GraphBuilder, RasterContext.Parameters.LockBuffer, ClearValue, RectMinMaxBufferSRV, NumRects);
 		}
 	}
 
@@ -2994,7 +2934,7 @@ static void AllocateCandidateBuffers(FRDGBuilder& GraphBuilder, FRDGBufferRef* M
 		}
 	}
 
-	if(PostCandidateNodesAndClustersBufferRef)
+	if (PostCandidateNodesAndClustersBufferRef)
 	{
 		TRefCountPtr<FRDGPooledBuffer>& CandidateNodesAndClustersBuffer = Nanite::GGlobalResources.GetPostPassBuffers().CandidateNodesAndClustersBuffer;
 		if (CandidateNodesAndClustersBuffer.IsValid())
@@ -3011,7 +2951,6 @@ static void AllocateCandidateBuffers(FRDGBuilder& GraphBuilder, FRDGBufferRef* M
 		}
 	}
 }
-
 
 void CullRasterize(
 	FRDGBuilder& GraphBuilder,
@@ -3140,9 +3079,9 @@ void CullRasterize(
 		PassParameters->OutMainAndPostPassPersistentStates	= GraphBuilder.CreateUAV( CullingContext.MainAndPostPassPersistentStates );
 		PassParameters->InOutMainPassRasterizeArgsSWHW		= GraphBuilder.CreateUAV( CullingContext.MainRasterizeArgsSWHW );
 
-		uint32 ClampedDrawPassIndex = FMath::Min( CullingContext.DrawPassIndex, 2u );
+		uint32 ClampedDrawPassIndex = FMath::Min(CullingContext.DrawPassIndex, 2u);
 
-		if( CullingContext.bTwoPassOcclusion )
+		if (CullingContext.bTwoPassOcclusion)
 		{
 			PassParameters->OutOccludedInstancesArgs = GraphBuilder.CreateUAV( CullingContext.OccludedInstancesArgs );
 			PassParameters->InOutPostPassRasterizeArgsSWHW = GraphBuilder.CreateUAV( CullingContext.PostRasterizeArgsSWHW );
@@ -3216,7 +3155,7 @@ void CullRasterize(
 	);
 	
 	// Occlusion post pass. Retest instances and clusters that were not visible last frame. If they are visible now, render them.
-	if( CullingContext.bTwoPassOcclusion )
+	if (CullingContext.bTwoPassOcclusion)
 	{
 		// Build a closest HZB with previous frame occluders to test remainder occluders against.
 		{
@@ -3313,7 +3252,18 @@ void CullRasterize(
 	bool bExtractStats
 )
 {
-	CullRasterize( GraphBuilder, Scene, Views, Views.Num(), CullingContext, RasterContext, RasterState, OptionalInstanceDraws, nullptr, bExtractStats );
+	CullRasterize(
+		GraphBuilder,
+		Scene,
+		Views,
+		Views.Num(),
+		CullingContext,
+		RasterContext,
+		RasterState,
+		OptionalInstanceDraws,
+		nullptr,
+		bExtractStats
+	);
 }
 
 void ExtractStats(
@@ -3475,25 +3425,26 @@ void ExtractResults(
 	FRDGBuilder& GraphBuilder,
 	const FCullingContext& CullingContext,
 	const FRasterContext& RasterContext,
-	FRasterResults& RasterResults )
+	FRasterResults& RasterResults
+)
 {
 	LLM_SCOPE_BYTAG(Nanite);
 
-	RasterResults.SOAStrides 	= CullingContext.SOAStrides;
+	RasterResults.SOAStrides 			= CullingContext.SOAStrides;
 	RasterResults.MaxVisibleClusters	= Nanite::FGlobalResources::GetMaxVisibleClusters();
-	RasterResults.MaxNodes		= Nanite::FGlobalResources::GetMaxNodes();
-	RasterResults.RenderFlags	= CullingContext.RenderFlags;
+	RasterResults.MaxNodes				= Nanite::FGlobalResources::GetMaxNodes();
+	RasterResults.RenderFlags			= CullingContext.RenderFlags;
 
-	RasterResults.ViewsBuffer = CullingContext.ViewsBuffer;
-	RasterResults.VisibleClustersSWHW = CullingContext.VisibleClustersSWHW;
-	RasterResults.VisBuffer64 = RasterContext.VisBuffer64;
+	RasterResults.ViewsBuffer			= CullingContext.ViewsBuffer;
+	RasterResults.VisibleClustersSWHW	= CullingContext.VisibleClustersSWHW;
+	RasterResults.VisBuffer64			= RasterContext.VisBuffer64;
 	
-	if (ShouldExportDebugBuffers())
+	if (RasterContext.VisualizeActive)
 	{
 		RasterResults.DbgBuffer64 = RasterContext.DbgBuffer64;
 		RasterResults.DbgBuffer32 = RasterContext.DbgBuffer32;
 	}
-	}
+}
 
 void DrawHitProxies(
 	FRDGBuilder& GraphBuilder,
@@ -4285,6 +4236,7 @@ void DrawBasePass(
 	}
 }
 
+#if 0 // TODO: NANITE_VIEW_MODES: Reimplement HTILE
 void DrawVisualization(
 	FRDGBuilder& GraphBuilder,
 	FRDGTextureRef SceneDepth,
@@ -4308,8 +4260,6 @@ void DrawVisualization(
 	{
 		// TODO: Don't currently support offset views.
 		checkf(View.ViewRect.Min.X == 0 && View.ViewRect.Min.Y == 0, TEXT("Viewport offset support is not implemented."));
-
-		RDG_GPU_STAT_SCOPE(GraphBuilder, NaniteDebug);
 
 		const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
 
@@ -4357,7 +4307,7 @@ void DrawVisualization(
 		auto ComputeShader = View.ShaderMap->GetShader<FDebugVisualizeCS>();
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
-			RDG_EVENT_NAME("DebugVisualize"),
+			RDG_EVENT_NAME("Visualization"),
 			ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
 			ComputeShader,
 			PassParameters,
@@ -4388,36 +4338,173 @@ void DrawVisualization(
 			HTileSRV = GraphBuilder.CreateSRV(FRDGTextureSRVDesc::CreateForMetaData(SceneDepth, ERDGTextureMetaDataAccess::HTile));
 		}
 
-			FRDGTextureRef DebugOutput = GraphBuilder.CreateTexture(
-				FRDGTextureDesc::Create2D(
-				SceneDepth->Desc.Extent,
-					PF_A32B32G32R32F,
-					FClearValueBinding::None,
-					TexCreate_ShaderResource | TexCreate_UAV),
-				TEXT("Nanite.Debug"));
+		FRDGTextureRef DebugOutput = GraphBuilder.CreateTexture(
+			FRDGTextureDesc::Create2D(
+			SceneDepth->Desc.Extent,
+			PF_A32B32G32R32F,
+			FClearValueBinding::None,
+			TexCreate_ShaderResource | TexCreate_UAV),
+			TEXT("Nanite.Debug"));
 
-			FHTileVisualizeCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FHTileVisualizeCS::FParameters>();
+		FHTileVisualizeCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FHTileVisualizeCS::FParameters>();
 
-			const uint32 PixelsWide = uint32(ViewSize.X);
-			const uint32 PixelsTall = uint32(ViewSize.Y);
-			const uint32 PlatformConfig = RHIGetHTilePlatformConfig(PixelsWide, PixelsTall);
+		const uint32 PixelsWide = uint32(ViewSize.X);
+		const uint32 PixelsTall = uint32(ViewSize.Y);
+		const uint32 PlatformConfig = RHIGetHTilePlatformConfig(PixelsWide, PixelsTall);
 
 		PassParameters->HTileBuffer = HTileSRV;
-			PassParameters->HTileDisplay = GraphBuilder.CreateUAV(DebugOutput);
-			PassParameters->HTileConfig  = FIntVector4(PlatformConfig, PixelsWide, GNaniteDebugVisualize, 0);
+		PassParameters->HTileDisplay = GraphBuilder.CreateUAV(DebugOutput);
+		PassParameters->HTileConfig  = FIntVector4(PlatformConfig, PixelsWide, GNaniteDebugVisualize, 0);
 
-			auto ComputeShader = View.ShaderMap->GetShader<FHTileVisualizeCS>();
+		auto ComputeShader = View.ShaderMap->GetShader<FHTileVisualizeCS>();
 
-			FComputeShaderUtils::AddPass(
-				GraphBuilder,
-				RDG_EVENT_NAME("HTileVisualize"),
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("HTileVisualize"),
 			ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
-				ComputeShader,
-				PassParameters,
-				FComputeShaderUtils::GetGroupCount(ViewSize, 8)
-			);
+			ComputeShader,
+			PassParameters,
+			FComputeShaderUtils::GetGroupCount(ViewSize, 8)
+		);
+	}
+}
+#endif
+
+void AddVisualizationPasses(
+	FRDGBuilder& GraphBuilder,
+	const FScene* Scene,
+	const FSceneTextures& SceneTextures,
+	const FEngineShowFlags& EngineShowFlags,
+	TArrayView<const FViewInfo> Views,
+	TArrayView<Nanite::FRasterResults> Results
+)
+{
+	checkSlow(DoesPlatformSupportNanite(GMaxRHIShaderPlatform));
+
+	const FNaniteVisualizationData& VisualizationData = GetNaniteVisualizationData();
+
+	// We only support debug visualization on the first view (at the moment)
+	if (Scene && Views.Num() > 0 && VisualizationData.IsActive())
+	{
+		// These should always match 1:1
+		if (ensure(Views.Num() == Results.Num()))
+		{
+			Nanite::FRasterResults& Data = Results[0];
+			const FViewInfo& View = Views[0];
+
+			// TODO: Don't currently support offset views.
+			checkf(View.ViewRect.Min.X == 0 && View.ViewRect.Min.Y == 0, TEXT("Viewport offset support is not implemented."));
+
+			const int32 ViewWidth  = View.ViewRect.Max.X - View.ViewRect.Min.X;
+			const int32 ViewHeight = View.ViewRect.Max.Y - View.ViewRect.Min.Y;
+			const FIntPoint ViewSize = FIntPoint(ViewWidth, ViewHeight);
+
+			LLM_SCOPE_BYTAG(Nanite);
+			RDG_EVENT_SCOPE(GraphBuilder, "Nanite::Visualization");
+			RDG_GPU_STAT_SCOPE(GraphBuilder, NaniteDebug);
+
+			Data.Visualizations.Reset();
+
+			if (VisualizationData.GetActiveModeID() > 0)
+			{
+				// Single visualization
+				FVisualizeResult Visualization = {};
+				Visualization.ModeName			= VisualizationData.GetActiveModeName();
+				Visualization.ModeID			= VisualizationData.GetActiveModeID();
+				Visualization.bCompositeScene	= VisualizationData.GetActiveModeDefaultComposited();
+				Visualization.bSkippedTile		= false;
+				Data.Visualizations.Emplace(Visualization);
+			}
+			else if (VisualizationData.GetActiveModeID() == 0)
+			{
+				// Overview mode
+				const auto& OverviewModeNames = VisualizationData.GetOverviewModeNames();
+				for (const FName& ModeName : OverviewModeNames)
+				{
+					FVisualizeResult Visualization = {};
+					Visualization.ModeName			= ModeName;
+					Visualization.ModeID			= VisualizationData.GetModeID(Visualization.ModeName);
+					Visualization.bCompositeScene	= VisualizationData.GetModeDefaultComposited(Visualization.ModeName);
+					Visualization.bSkippedTile		= Visualization.ModeName == NAME_None;
+					Data.Visualizations.Emplace(Visualization);
+				}
+			}
+
+			for (FVisualizeResult& Visualization : Data.Visualizations)
+			{
+				if (Visualization.bSkippedTile)
+				{
+					continue;
+				}
+
+				// Apply force off/on scene composition
+				if (GNaniteVisualizeComposite == 0)
+				{
+					// Force off
+					Visualization.bCompositeScene = false;
+				}
+				else if (GNaniteVisualizeComposite == 1)
+				{
+					// Force on
+					Visualization.bCompositeScene = true;
+				}
+
+				const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
+
+				FRDGTextureRef VisBuffer64 = Data.VisBuffer64 ? Data.VisBuffer64 : SystemTextures.Black;
+				FRDGTextureRef DbgBuffer64 = Data.DbgBuffer64 ? Data.DbgBuffer64 : SystemTextures.Black;
+				FRDGTextureRef DbgBuffer32 = Data.DbgBuffer32 ? Data.DbgBuffer32 : SystemTextures.Black;
+				FRDGTextureRef NaniteMask  = Data.NaniteMask  ? Data.NaniteMask  : SystemTextures.Black;
+				FRDGTextureRef VelocityBuffer = Data.VelocityBuffer ? Data.VelocityBuffer : SystemTextures.Black;
+
+				FRDGBufferRef VisibleClustersSWHW = Data.VisibleClustersSWHW;
+
+				FRDGTextureDesc VisualizationOutputDesc = FRDGTextureDesc::Create2D(
+					View.ViewRect.Max,
+					PF_A32B32G32R32F,
+					FClearValueBinding::None,
+					TexCreate_ShaderResource | TexCreate_UAV);
+
+				Visualization.ModeOutput = GraphBuilder.CreateTexture(VisualizationOutputDesc, TEXT("Nanite.Visualization"));
+
+				FNaniteVisualizeCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FNaniteVisualizeCS::FParameters>();
+
+				PassParameters->View = View.ViewUniformBuffer;
+				PassParameters->ClusterPageData = Nanite::GStreamingManager.GetClusterPageDataSRV();
+				PassParameters->ClusterPageHeaders = Nanite::GStreamingManager.GetClusterPageHeadersSRV();
+				PassParameters->VisualizeConfig = GetVisualizeConfig(Visualization.ModeID, Visualization.bCompositeScene, GNaniteVisualizeEdgeDetect != 0);
+				PassParameters->SOAStrides = Data.SOAStrides;
+				PassParameters->MaxVisibleClusters = Data.MaxVisibleClusters;
+				PassParameters->RenderFlags = Data.RenderFlags;
+				PassParameters->VisibleClustersSWHW = GraphBuilder.CreateSRV(VisibleClustersSWHW);
+				PassParameters->VisBuffer64 = VisBuffer64;
+				PassParameters->DbgBuffer64 = DbgBuffer64;
+				PassParameters->DbgBuffer32 = DbgBuffer32;
+				PassParameters->NaniteMask = NaniteMask;
+				PassParameters->SceneDepth = SceneTextures.Depth.Target;
+				PassParameters->MaterialDepthTable = Scene->MaterialTables[ENaniteMeshPass::BasePass].GetDepthTableSRV();
+			#if WITH_EDITOR
+				PassParameters->MaterialHitProxyTable = Scene->MaterialTables[ENaniteMeshPass::BasePass].GetHitProxyTableSRV();
+			#else
+				// TODO: Permutation with hit proxy support to keep this clean?
+				// For now, bind a valid SRV
+				PassParameters->MaterialHitProxyTable = Scene->MaterialTables[ENaniteMeshPass::BasePass].GetDepthTableSRV();
+			#endif
+				PassParameters->DebugOutput = GraphBuilder.CreateUAV(Visualization.ModeOutput);
+
+				auto ComputeShader = View.ShaderMap->GetShader<FNaniteVisualizeCS>();
+				FComputeShaderUtils::AddPass(
+					GraphBuilder,
+					RDG_EVENT_NAME("Nanite::Visualize"),
+					ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
+					ComputeShader,
+					PassParameters,
+					FComputeShaderUtils::GetGroupCount(ViewSize, 8)
+				);
+			}
 		}
 	}
+}
 
 BEGIN_SHADER_PARAMETER_STRUCT(FNaniteMarkStencilRectsParameters, )
 	SHADER_PARAMETER_STRUCT_INCLUDE(FPixelShaderUtils::FRasterizeToRectsVS::FParameters, VS)
@@ -4449,7 +4536,7 @@ void DrawLumenMeshCapturePass(
 	FRDGTextureRef NormalAtlasTexture,
 	FRDGTextureRef EmissiveAtlasTexture,
 	FRDGTextureRef DepthAtlasTexture
-	)
+)
 {
 	checkSlow(DoesPlatformSupportNanite(GMaxRHIShaderPlatform));
 	checkSlow(DoesPlatformSupportLumenGI(GMaxRHIShaderPlatform));
@@ -4460,7 +4547,6 @@ void DrawLumenMeshCapturePass(
 	// Material range placeholder (not used by Lumen, but must still be bound)
 	FRDGTextureDesc MaterialRangeDesc = FRDGTextureDesc::Create2D(FIntPoint(1, 1), PF_R32G32_UINT, FClearValueBinding::Black, TexCreate_UAV | TexCreate_ShaderResource);
 	FRDGTextureRef  MaterialRange = GraphBuilder.CreateTexture(MaterialRangeDesc, TEXT("Nanite.MaterialRange"));
-	//FRDGTextureSRVRef  MaterialRangeSRV = GraphBuilder.CreateSRV(FRDGTextureSRVDesc::Create(MaterialRange));
 
 	const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
 
@@ -4499,7 +4585,7 @@ void DrawLumenMeshCapturePass(
 			TStaticRasterizerState<>::GetRHI(),
 			TStaticDepthStencilState<false, CF_DepthNearOrEqual, true, CF_Always, SO_Keep, SO_Keep, SO_Replace>::GetRHI(),
 			STENCIL_SANDBOX_MASK
-			);
+		);
 	}
 
 	// Emit material IDs as depth values
@@ -4627,8 +4713,9 @@ void DrawLumenMeshCapturePass(
 				UniformParams.DbgBuffer32 = PassParameters->DbgBuffer32->GetRHI();
 
 				const_cast<FScene&>(Scene).UniformBuffers.NaniteUniformBuffer.UpdateUniformBufferImmediate(UniformParams);
+				
 				// Need to force ViewUB rebind every loop iteration inside a single RDG pass
-				StateCache.SetPipelineState(-1);
+				StateCache.SetPipelineState(INDEX_NONE);
 
 				FGraphicsMinimalPipelineStateSet GraphicsMinimalPipelineStateSet;
 
@@ -4839,7 +4926,7 @@ void DrawEditorSelection(
 		TStaticRasterizerState<>::GetRHI(),
 		TStaticDepthStencilState<true, CF_DepthNearOrEqual, true, CF_Always, SO_Keep, SO_Keep, SO_Replace>::GetRHI(),
 		3
-		);
+	);
 }
 
 void GetEditorVisualizeLevelInstancePassParameters(

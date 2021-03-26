@@ -3,6 +3,8 @@
 #include "../Common.ush"
 #include "../SceneData.ush"
 #include "../DeferredShadingCommon.ush"
+#include "../ColorMap.ush"
+
 #include "NaniteDataDecode.ush"
 #include "NaniteAttributeDecode.ush"
 
@@ -41,6 +43,7 @@ float3 IntToColor(uint Index)
 	return Color * (1.0f / 255.0f);
 }
 
+// TODO: Try N.V to improve shading look
 float3 ApplySobelFilter(uint2 PixelPosXY, uint DepthInt, float3 Color)
 {
 	// Sobel edge detect depth
@@ -120,7 +123,7 @@ bool ShouldApplySobelFilter()
 }
 
 [numthreads(8, 8, 1)]
-void DebugVisualize(uint3 PixelPos : SV_DispatchThreadID)
+void VisualizeCS(uint3 PixelPos : SV_DispatchThreadID)
 {
 	const UlongType VisPixel = VisBuffer64[PixelPos.xy];
 
@@ -180,6 +183,8 @@ void DebugVisualize(uint3 PixelPos : SV_DispatchThreadID)
 		const int HierarchyOffset = InstanceData.NaniteHierarchyOffset;
 		const uint VisualizeMode = GetVisualizeMode();
 
+		// Note: The mode is no longer a bitmask at this point, just a single visualization mode.
+
 		if (VisualizeMode == VISUALIZE_TRIANGLES)
 		{
 			Result = IntToColor(TriIndex);
@@ -204,7 +209,7 @@ void DebugVisualize(uint3 PixelPos : SV_DispatchThreadID)
 		{
 			Result = IntToColor(VisibleCluster.InstanceId) * 0.8;
 		}
-		else if (VisualizeMode == VISUALIZE_HW_VS_SW)
+		else if (VisualizeMode == VISUALIZE_RASTER_MODE)
 		{
 			Result = ( IntToColor(DebugValueMax) * 0.75 + 0.25 ) * ( IntToColor(TriIndex).x * 0.5 + 0.5 );
 		}
@@ -213,13 +218,13 @@ void DebugVisualize(uint3 PixelPos : SV_DispatchThreadID)
 			const float OverdrawScale = GetOverdrawScale();
 			const float OverdrawCount = DebugValueAdd; // Num of evaluations per pixel
 			const float OverdrawColor = 1 - exp2( -OverdrawCount * OverdrawScale );
-			Result = float3( sin( OverdrawColor * 6.28/4 ), Pow3( OverdrawColor ), lerp( sin( OverdrawColor * 6.28 ), OverdrawColor, 0.6 ) );
+			Result = ColorMapInferno(OverdrawColor);
 		}
 		else if (VisualizeMode == VISUALIZE_HIERARCHY_OFFSET)
 		{
 			Result = IntToColor(HierarchyOffset);
 		}
-		else if (VisualizeMode == VISUALIZE_MATERIAL_FAST_VS_SLOW)
+		else if (VisualizeMode == VISUALIZE_MATERIAL_MODE)
 		{
 			Result = IsMaterialFastPath(Cluster) ? float3(0, 1, 0) : float3(1, 0, 0);
 		}
@@ -227,11 +232,11 @@ void DebugVisualize(uint3 PixelPos : SV_DispatchThreadID)
 		{
 			Result = IntToColor(GetRelativeMaterialIndex(Cluster, TriIndex));
 		}
-		else if (VisualizeMode == VISUALIZE_MATERIAL_ID)
+		else if (VisualizeMode == VISUALIZE_MATERIAL_DEPTH)
 		{
 			Result = IntToColor(GetMaterialDepthId(Cluster, InstanceData.PrimitiveId, TriIndex, MaterialDepthTable));
 		}
-		else if (VisualizeMode == VISUALIZE_HIT_PROXY_ID)
+		else if (VisualizeMode == VISUALIZE_HIT_PROXY_DEPTH)
 		{
 			Result = IntToColor(GetMaterialHitProxyId(Cluster, InstanceData.PrimitiveId, TriIndex, MaterialHitProxyTable));
 		}
