@@ -50,6 +50,12 @@ namespace UnrealEditor
 		public string TreatLogErrorsAsTestErrors = "true";
 
 		/// <summary>
+		/// Disable distribution of shader builds (but use worker processes still)
+		/// </summary>
+		[AutoParam]
+		public bool NoShaderDistrib = false;
+
+		/// <summary>
 		/// Applies these options to the provided app config
 		/// </summary>
 		/// <param name="AppConfig"></param>
@@ -78,6 +84,11 @@ namespace UnrealEditor
 			if (TreatLogErrorsAsTestErrors.ToLower() == "false" || TreatLogErrorsAsTestErrors == "0")
 			{
 				AppConfig.CommandLineParams.Add("ini:Engine:[/Script/AutomationController.AutomationControllerSettings]:bTreatLogErrorsAsTestErrors=false");
+			}
+
+			if (NoShaderDistrib)
+			{
+				AppConfig.CommandLineParams.Add("-noxgeshadercompile");
 			}
 		}
 	}
