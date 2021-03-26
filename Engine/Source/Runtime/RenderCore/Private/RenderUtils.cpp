@@ -1098,7 +1098,7 @@ RENDERCORE_API bool MobileRequiresSceneDepthAux(const FStaticShaderPlatform Plat
 
 RENDERCORE_API bool SupportsTextureCubeArray(ERHIFeatureLevel::Type FeatureLevel)
 {
-	return FeatureLevel == ERHIFeatureLevel::SM5 
+	return FeatureLevel >= ERHIFeatureLevel::SM5 
 		// mobile deferred requries ES3.2 feature set
 		|| IsMobileDeferredShadingEnabled(GMaxRHIShaderPlatform);
 }
