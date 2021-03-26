@@ -23,8 +23,8 @@ namespace Chaos
 			, Normal(TVector<T, d>((T)0.0))
 			, Velocity1(TVector<T, d>((T)0.0))
 			, Velocity2(TVector<T, d>((T)0.0))
-		    , DeltaVelocity1(TVector<T, d>((T)0.0))
-		    , DeltaVelocity2(TVector<T, d>((T)0.0))
+			, DeltaVelocity1(TVector<T, d>((T)0.0))
+			, DeltaVelocity2(TVector<T, d>((T)0.0))
 			, AngularVelocity1(TVector<T, d>((T)0.0))
 			, AngularVelocity2(TVector<T, d>((T)0.0))
 			, Mass1((T)0.0)
@@ -32,14 +32,12 @@ namespace Chaos
 			, PenetrationDepth((T)0.0)
 			, Particle(nullptr)
 			, Levelset(nullptr)
-			, ParticleProxy(nullptr)
-		    , LevelsetProxy(nullptr)
 		{}
 
 		TCollisionData(TVector<T, d> InLocation, TVector<T, d> InAccumulatedImpulse, TVector<T, d> InNormal, TVector<T, d> InVelocity1, TVector<T, d> InVelocity2, TVector<T, d> InDeltaVelocity1, TVector<T, d> InDeltaVelocity2
-		, TVector<T, d> InAngularVelocity1, TVector<T, d> InAngularVelocity2, T InMass1, T InMass2, T InPenetrationDepth, TGeometryParticle<T, d>* InParticle
-		, TGeometryParticle<T, d>* InLevelset, IPhysicsProxyBase* InParticleProxy, IPhysicsProxyBase* InLevelsetProxy)
-		    : Location(InLocation)
+			, TVector<T, d> InAngularVelocity1, TVector<T, d> InAngularVelocity2, T InMass1, T InMass2, T InPenetrationDepth, TGeometryParticle<T, d>* InParticle
+			, TGeometryParticle<T, d>* InLevelset)
+			: Location(InLocation)
 			, AccumulatedImpulse(InAccumulatedImpulse)
 			, Normal(InNormal)
 			, Velocity1(InVelocity1)
@@ -53,11 +51,7 @@ namespace Chaos
 			, PenetrationDepth(InPenetrationDepth)
 			, Particle(InParticle)
 			, Levelset(InLevelset)
-			, ParticleProxy(InParticleProxy)
-		    , LevelsetProxy(InLevelsetProxy)
 		{}
-
-		bool IsValid() { return (ParticleProxy && LevelsetProxy); }
 
 		TVector<T, d> Location;
 		TVector<T, d> AccumulatedImpulse;
@@ -67,10 +61,8 @@ namespace Chaos
 		TVector<T, d> AngularVelocity1, AngularVelocity2;
 		T Mass1, Mass2;
 		T PenetrationDepth;
-		TGeometryParticle<T, d>* Particle;
-		TGeometryParticle<T, d>* Levelset;
-		IPhysicsProxyBase* ParticleProxy;
-		IPhysicsProxyBase* LevelsetProxy;
+		TGeometryParticleHandle<T, d>* Particle;
+		TGeometryParticleHandle<T, d>* Levelset;
 	};
 
 	/*
@@ -91,8 +83,6 @@ namespace Chaos
 			, Mass2((T)0.0)
 			, Particle(nullptr)
 			, Levelset(nullptr)
-		    , ParticleProxy(nullptr)
-		    , LevelsetProxy(nullptr)
 			, BoundingboxVolume((T)-1.0)
 			, BoundingboxExtentMin((T)-1.0)
 			, BoundingboxExtentMax((T)-1.0)
@@ -101,8 +91,7 @@ namespace Chaos
 
 		TCollisionDataExt(
 		    TVector<T, d> InLocation, TVector<T, d> InAccumulatedImpulse, TVector<T, d> InNormal, TVector<T, d> InVelocity1, TVector<T, d> InVelocity2
-			, TVector<T, d> InAngularVelocity1, TVector<T, d> InAngularVelocity2, T InMass1, T InMass2, TGeometryParticle<T, d>* InParticle
-			, TGeometryParticle<T, d>* InLevelset, IPhysicsProxyBase* InParticleProxy, IPhysicsProxyBase* InLevelsetProxy
+			, TVector<T, d> InAngularVelocity1, TVector<T, d> InAngularVelocity2, T InMass1, T InMass2, TGeometryParticle<T, d>* InParticle, TGeometryParticle<T, d>* InLevelset
 			, float InBoundingboxVolume, float InBoundingboxExtentMin, float InBoundingboxExtentMax, int32 InSurfaceType)
 			: Location(InLocation)
 			, AccumulatedImpulse(InAccumulatedImpulse)
@@ -115,8 +104,6 @@ namespace Chaos
 			, Mass2(InMass2)
 			, Particle(InParticle)
 			, Levelset(InLevelset)
-		    , ParticleProxy(InParticleProxy)
-		    , LevelsetProxy(InLevelsetProxy)
 			, BoundingboxVolume(InBoundingboxVolume)
 			, BoundingboxExtentMin(InBoundingboxExtentMin)
 			, BoundingboxExtentMax(InBoundingboxExtentMax)
@@ -135,8 +122,6 @@ namespace Chaos
 			, Mass2(InCollisionData.Mass2)
 			, Particle(InCollisionData.Particle)
 			, Levelset(InCollisionData.Levelset)
-		    , ParticleProxy(InCollisionData.ParticleProxy)
-		    , LevelsetProxy(InCollisionData.LevelsetProxy)
 			, BoundingboxVolume((T)-1.0)
 			, BoundingboxExtentMin((T)-1.0)
 			, BoundingboxExtentMax((T)-1.0)
@@ -150,10 +135,8 @@ namespace Chaos
 		TVector<T, d> Velocity1, Velocity2;
 		TVector<T, d> AngularVelocity1, AngularVelocity2;
 		T Mass1, Mass2;
-		TGeometryParticle<T, d>* Particle;
-		TGeometryParticle<T, d>* Levelset;
-		IPhysicsProxyBase* ParticleProxy;
-		IPhysicsProxyBase* LevelsetProxy;
+		TGeometryParticleHandle<T, d>* Particle;
+		TGeometryParticleHandle<T, d>* Levelset;
 		float BoundingboxVolume;
 		float BoundingboxExtentMin, BoundingboxExtentMax;
 		int32 SurfaceType;
@@ -167,7 +150,6 @@ namespace Chaos
 	{
 		TBreakingData()
 			: Particle(nullptr)
-		    , ParticleProxy(nullptr)
 			, Location(TVector<T, d>((T)0.0))
 			, Velocity(TVector<T, d>((T)0.0))
 			, AngularVelocity(TVector<T, d>((T)0.0))
@@ -176,7 +158,6 @@ namespace Chaos
 		{}
 
 		TGeometryParticleHandle<T, d>* Particle;
-		IPhysicsProxyBase* ParticleProxy;
 		TVector<T, d> Location;
 		TVector<T, d> Velocity;
 		TVector<T, d> AngularVelocity;
@@ -196,7 +177,6 @@ namespace Chaos
 			, AngularVelocity(TVector<T, d>((T)0.0))
 			, Mass((T)0.0)
 		    , Particle(nullptr)
-		    , ParticleProxy(nullptr)
 			, BoundingboxVolume((T)-1.0)
 			, BoundingboxExtentMin((T)-1.0)
 			, BoundingboxExtentMax((T)-1.0)
@@ -208,7 +188,6 @@ namespace Chaos
 			, TVector<T, d> InAngularVelocity
 			, T InMass
 			, TGeometryParticleHandle<T, d>* InParticle
-			, IPhysicsProxyBase* InParticleProxy
 			, float InBoundingboxVolume
 			, float InBoundingboxExtentMin
 			, float InBoundingboxExtentMax
@@ -218,7 +197,6 @@ namespace Chaos
 			, AngularVelocity(InAngularVelocity)
 			, Mass(InMass)
 		    , Particle(InParticle)
-		    , ParticleProxy(InParticleProxy)
 			, BoundingboxVolume(InBoundingboxVolume)
 			, BoundingboxExtentMin(InBoundingboxExtentMin)
 			, BoundingboxExtentMax(InBoundingboxExtentMax)
@@ -231,7 +209,6 @@ namespace Chaos
 			, AngularVelocity(InBreakingData.AngularVelocity)
 			, Mass(InBreakingData.Mass)
 		    , Particle(InBreakingData.Particle)
-		    , ParticleProxy(InBreakingData.ParticleProxy)
 			, BoundingboxVolume((T)-1.0)
 			, BoundingboxExtentMin((T)-1.0)
 			, BoundingboxExtentMax((T)-1.0)
@@ -244,7 +221,6 @@ namespace Chaos
 		TVector<T, d> AngularVelocity;
 		T Mass;
 		TGeometryParticleHandle<T, d>* Particle;
-		IPhysicsProxyBase* ParticleProxy;
 		float BoundingboxVolume;
 		float BoundingboxExtentMin, BoundingboxExtentMax;
 		int32 SurfaceType;
@@ -273,18 +249,16 @@ namespace Chaos
 			, AngularVelocity(TVector<T, d>((T)0.0))
 			, Mass((T)0.0)
 			, Particle(nullptr)
-		    , ParticleProxy(nullptr)
 			, BoundingBox(TAABB<T, d>(TVector<T, d>((T)0.0), TVector<T, d>((T)0.0)))
 		{}
 
 		TTrailingData(TVector<T, d> InLocation, TVector<T, d> InVelocity, TVector<T, d> InAngularVelocity, T InMass
-			, TGeometryParticleHandle<T, d>* InParticle, IPhysicsProxyBase* InParticleProxy, Chaos::TAABB<T, d>& InBoundingBox)
+			, TGeometryParticleHandle<T, d>* InParticle, Chaos::TAABB<T, d>& InBoundingBox)
 			: Location(InLocation)
 			, Velocity(InVelocity)
 			, AngularVelocity(InAngularVelocity)
 			, Mass(InMass)
 			, Particle(InParticle)
-		    , ParticleProxy(InParticleProxy)
 			, BoundingBox(InBoundingBox)
 		{}
 
@@ -293,7 +267,6 @@ namespace Chaos
 		TVector<T, d> AngularVelocity;
 		T Mass;
 		TGeometryParticleHandle<T, d>* Particle;
-		IPhysicsProxyBase* ParticleProxy;
 		Chaos::TAABB<T, d> BoundingBox;
 
 		friend inline uint32 GetTypeHash(const TTrailingData& Other)
@@ -330,7 +303,6 @@ namespace Chaos
 			, TVector<T, d> InAngularVelocity
 			, T InMass
 			, TGeometryParticleHandle<T, d>* InParticle
-			, IPhysicsProxyBase* InParticleProxy
 			, float InBoundingboxVolume
 			, float InBoundingboxExtentMin
 			, float InBoundingboxExtentMax
@@ -340,7 +312,6 @@ namespace Chaos
 			, AngularVelocity(InAngularVelocity)
 			, Mass(InMass)
 			, Particle(InParticle)
-		    , ParticleProxy(InParticleProxy)
 			, BoundingboxVolume(InBoundingboxVolume)
 			, BoundingboxExtentMin(InBoundingboxExtentMin)
 			, BoundingboxExtentMax(InBoundingboxExtentMax)
@@ -353,7 +324,6 @@ namespace Chaos
 			, AngularVelocity(InTrailingData.AngularVelocity)
 			, Mass(InTrailingData.Mass)
 			, Particle(InTrailingData.Particle)
-		    , ParticleProxy(InTrailingData.ParticleProxy)
 			, BoundingboxVolume((T)-1.0)
 			, BoundingboxExtentMin((T)-1.0)
 			, BoundingboxExtentMax((T)-1.0)
@@ -365,7 +335,6 @@ namespace Chaos
 		TVector<T, d> AngularVelocity;
 		T Mass;
 		TGeometryParticleHandle<T, d>* Particle;
-		IPhysicsProxyBase* ParticleProxy;
 		//	int32 ParticleIndexMesh; // If ParticleIndex points to a cluster then this index will point to an actual mesh in the cluster
 								 // It is important to be able to get extra data from the component
 		float BoundingboxVolume;

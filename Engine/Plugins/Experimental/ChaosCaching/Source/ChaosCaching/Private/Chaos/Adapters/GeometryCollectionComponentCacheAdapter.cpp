@@ -277,7 +277,6 @@ namespace Chaos
 
 							TBreakingData<float, 3> CachedBreak;
 							CachedBreak.Particle = Particle;
-							CachedBreak.ParticleProxy = Proxy;
 							CachedBreak.Location = Event->Location;
 							CachedBreak.Velocity = Event->Velocity;
 							CachedBreak.AngularVelocity = Event->AngularVelocity;

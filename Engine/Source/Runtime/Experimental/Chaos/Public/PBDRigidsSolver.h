@@ -238,27 +238,7 @@ namespace Chaos
 
 		FParticlesType& GetParticles() { return Particles; }
 		const FParticlesType& GetParticles() const { return Particles; }
-
-		void AddParticleToProxy(const Chaos::TGeometryParticleHandle<float, 3>* Particle, IPhysicsProxyBase* Proxy)
-		{
-			if (!MParticleToProxy.Find(Particle))
-			{
-				MParticleToProxy.Add(Particle, TSet<IPhysicsProxyBase*>());
-			}
-			MParticleToProxy[Particle].Add(Proxy); 
-		}
 		
-		void RemoveParticleToProxy(const Chaos::TGeometryParticleHandle<float, 3>* Particle)
-		{
-			MParticleToProxy.Remove(Particle);
-		}
-		
-		const TSet<IPhysicsProxyBase*> * GetProxies(const Chaos::TGeometryParticleHandle<float, 3>* Handle) const
-		{
-			const TSet<IPhysicsProxyBase*>* PhysicsProxyPtr = MParticleToProxy.Find(Handle);
-			return PhysicsProxyPtr ? PhysicsProxyPtr : nullptr;
-		}
-
 		/**/
 		TEventManager<Traits>* GetEventManager() { return MEventManager.Get(); }
 
@@ -359,7 +339,6 @@ namespace Chaos
 		TUniquePtr<TEventManager<Traits>> MEventManager;
 		TUniquePtr<FSolverEventFilters> MSolverEventFilters;
 		TUniquePtr<FDirtyParticlesBuffer> MDirtyParticlesBuffer;
-		TMap<const Chaos::TGeometryParticleHandle<float, 3>*, TSet<IPhysicsProxyBase*> > MParticleToProxy;
 		TUniquePtr<FRewindData> MRewindData;
 
 		//

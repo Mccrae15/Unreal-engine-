@@ -460,7 +460,7 @@ TPBDRigidsEvolutionGBF<Traits>::TPBDRigidsEvolutionGBF(TPBDRigidsSOAs<FReal,3>& 
 
 	AddConstraintRule(&CollisionRule);
 
-	SetInternalParticleInitilizationFunction([](const TGeometryParticleHandle<float, 3>*, const TGeometryParticleHandle<float, 3>*) {});
+	SetInternalParticleInitilizationFunction([](const TGeometryParticleHandle<float, 3>*, TGeometryParticleHandle<float, 3>*) {});
 	NarrowPhase.GetContext().bFilteringEnabled = true;
 	NarrowPhase.GetContext().bDeferUpdate = true;
 	NarrowPhase.GetContext().bAllowManifolds = false;

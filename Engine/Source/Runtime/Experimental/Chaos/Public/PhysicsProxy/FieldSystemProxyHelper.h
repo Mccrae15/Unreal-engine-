@@ -226,15 +226,8 @@ namespace Chaos
 
 			for (Chaos::TPBDRigidParticleHandle<Chaos::FReal, 3>* Handle : Activated)
 			{
-				if (!RigidSolver->GetProxies(Handle))
-				{
-					const TSet<IPhysicsProxyBase*>* ParentProxies = RigidSolver->GetProxies(Iter.Key);
-					if (ensure(ParentProxies))
-					{
-						for (IPhysicsProxyBase* ParentProxy : *ParentProxies)
-							RigidSolver->AddParticleToProxy(Handle, ParentProxy);
-					}
-				}
+				IPhysicsProxyBase* ParentProxy = Iter.Key->PhysicsProxy();
+				Handle->SetPhysicsProxy(ParentProxy);
 			}
 		}
 	}

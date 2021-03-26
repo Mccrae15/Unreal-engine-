@@ -33,7 +33,7 @@ namespace Chaos
 
 	using FPBDRigidsEvolutionInternalHandleCallback = TFunction<void(
 		const TGeometryParticleHandle<float, 3> * OldParticle,
-		const TGeometryParticleHandle<float, 3> * NewParticle)>;
+		TGeometryParticleHandle<float, 3>* NewParticle)>;
 
 	template <typename Traits>
 	class TPBDRigidsEvolutionGBF : public TPBDRigidsEvolutionBase<Traits>
@@ -136,7 +136,7 @@ namespace Chaos
 			InternalParticleInitilization = Cb;
 		}
 
-		FORCEINLINE void DoInternalParticleInitilization(const TGeometryParticleHandle<float, 3>* OldParticle, const TGeometryParticleHandle<float, 3>* NewParticle) 
+		FORCEINLINE void DoInternalParticleInitilization(const TGeometryParticleHandle<float, 3>* OldParticle, TGeometryParticleHandle<float, 3>* NewParticle)
 		{ 
 			if(InternalParticleInitilization)
 			{
