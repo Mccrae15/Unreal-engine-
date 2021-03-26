@@ -1077,7 +1077,7 @@ FScene::FScene(UWorld* InWorld, bool bInRequiresHitProxies, bool bInIsEditorScen
 	if (IsGPUSkinCacheAvailable(GetFeatureLevelShaderPlatform(InFeatureLevel)))
 	{
 		const bool bRequiresMemoryLimit = !bInIsEditorScene;
-		GPUSkinCache = new FGPUSkinCache(bRequiresMemoryLimit);
+		GPUSkinCache = new FGPUSkinCache(InFeatureLevel, bRequiresMemoryLimit);
 	}
 
 	if (SupportsComputeFramework(InFeatureLevel, GetFeatureLevelShaderPlatform(InFeatureLevel)))

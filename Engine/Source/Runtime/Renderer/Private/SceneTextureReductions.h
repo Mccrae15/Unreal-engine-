@@ -11,6 +11,8 @@ void BuildHZB(
 	FRDGTextureRef SceneDepth,
 	FRDGTextureRef VisBufferTexture,
 	const FIntRect ViewRect,
+	ERHIFeatureLevel::Type FeatureLevel,
+	EShaderPlatform ShaderPlatform,
 	const TCHAR* ClosestHZBName,
 	FRDGTextureRef* OutClosestHZBTexture,
 	const TCHAR* FurthestHZBName,
@@ -23,6 +25,8 @@ void BuildHZBFurthest(
 	FRDGTextureRef SceneDepth,
 	FRDGTextureRef VisBufferTexture,
 	const FIntRect ViewRect,
+	ERHIFeatureLevel::Type FeatureLevel,
+	EShaderPlatform ShaderPlatform,
 	const TCHAR* FurthestHZBName,
 	FRDGTextureRef* OutFurthestHZBTexture,
 	EPixelFormat Format = PF_R16F);

@@ -314,6 +314,9 @@ void FInstanceCullingContext::BuildRenderingCommands(FRDGBuilder& GraphBuilder, 
 
 	RDG_EVENT_SCOPE(GraphBuilder, "BuildRenderingCommands");
 
+	const ERHIFeatureLevel::Type FeatureLevel = GPUScene.GetFeatureLevel();
+	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(FeatureLevel);
+
 	// Note: use start at zero offset if there is no instance culling manager, this means each build rendering commands pass will overwrite the same ID range. Which is only ok assuming correct barriers (should be erring on this side by default).
 	TArray<uint32> NullArray;
 	NullArray.AddZeroed(1);
@@ -364,7 +367,7 @@ void FInstanceCullingContext::BuildRenderingCommands(FRDGBuilder& GraphBuilder, 
 		FComputeInstanceIdOutputSizeCs::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FComputeInstanceIdOutputSizeCs::FCullInstancesDim>(bCullInstances);
 		PermutationVector.Set<FComputeInstanceIdOutputSizeCs::FStereoModeDim>(InstanceCullingMode == EInstanceCullingMode::Stereo);
-		auto ComputeShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FComputeInstanceIdOutputSizeCs>(PermutationVector);
+		auto ComputeShader = ShaderMap->GetShader<FComputeInstanceIdOutputSizeCs>(PermutationVector);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
@@ -384,7 +387,7 @@ void FInstanceCullingContext::BuildRenderingCommands(FRDGBuilder& GraphBuilder, 
 		PassParameters->NumViewIds = ViewIds.Num();
 		PassParameters->NumCommands = CullingCommands.Num();
 
-		auto ComputeShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FCalcOutputOffsetsCs>();
+		auto ComputeShader = ShaderMap->GetShader<FCalcOutputOffsetsCs>();
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
@@ -441,7 +444,7 @@ void FInstanceCullingContext::BuildRenderingCommands(FRDGBuilder& GraphBuilder, 
 		PermutationVector.Set<FOutputInstanceIdsAtOffsetCs::FOutputCommandIdDim>(0);
 		PermutationVector.Set<FOutputInstanceIdsAtOffsetCs::FCullInstancesDim>(bCullInstances);
 		PermutationVector.Set<FOutputInstanceIdsAtOffsetCs::FStereoModeDim>(InstanceCullingMode == EInstanceCullingMode::Stereo);
-		auto ComputeShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FOutputInstanceIdsAtOffsetCs>(PermutationVector);
+		auto ComputeShader = ShaderMap->GetShader<FOutputInstanceIdsAtOffsetCs>(PermutationVector);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
@@ -505,7 +508,7 @@ void FInstanceCullingContext::BuildRenderingCommands(FRDGBuilder& GraphBuilder, 
 	PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FCullInstancesDim>(bCullInstances);
 	PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FStereoModeDim>(InstanceCullingMode == EInstanceCullingMode::Stereo);
 
-	auto ComputeShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs>(PermutationVector);
+	auto ComputeShader = ShaderMap->GetShader<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs>(PermutationVector);
 
 	FComputeShaderUtils::AddPass(
 		GraphBuilder,
@@ -540,6 +543,9 @@ void FInstanceCullingContext::BuildRenderingCommands(FRDGBuilder& GraphBuilder, 
 	}
 
 	RDG_EVENT_SCOPE(GraphBuilder, "BuildRenderingCommands");
+
+	const ERHIFeatureLevel::Type FeatureLevel = GPUScene.GetFeatureLevel();
+	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(FeatureLevel);
 
 	const FInstanceCullingIntermediate& Intermediate = InstanceCullingManager->CullingIntermediate;
 
@@ -611,7 +617,7 @@ void FInstanceCullingContext::BuildRenderingCommands(FRDGBuilder& GraphBuilder, 
 	FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FPermutationDomain PermutationVector;
 	// NOTE: this also switches between legacy buffer and RDG for Id output
 	PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FOutputCommandIdDim>(1);
-	auto ComputeShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs>(PermutationVector);
+	auto ComputeShader = ShaderMap->GetShader<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs>(PermutationVector);
 
 	FComputeShaderUtils::AddPass(
 		GraphBuilder,

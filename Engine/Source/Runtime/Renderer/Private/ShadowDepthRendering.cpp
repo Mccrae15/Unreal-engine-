@@ -1290,6 +1290,7 @@ static void UpdateCurrentFrameHZB(FLightSceneInfo& LightSceneInfo, const FPersis
 
 static void RenderShadowDepthAtlasNanite(
 	FRDGBuilder& GraphBuilder,
+	ERHIFeatureLevel::Type FeatureLevel,
 	FScene& Scene,
 	const FSortedShadowMapAtlas& ShadowMapAtlas,
 	const int32 AtlasIndex)
@@ -1366,7 +1367,7 @@ static void RenderShadowDepthAtlasNanite(
 		const bool bUpdateStreaming = CVarNaniteShadowsUpdateStreaming.GetValueOnRenderThread() != 0;
 		TRefCountPtr<IPooledRenderTarget> PrevAtlasHZB = bUseHZB ? PrevAtlasHZBs[AtlasIndex] : nullptr;
 		Nanite::FCullingContext CullingContext = Nanite::InitCullingContext(GraphBuilder, Scene, PrevAtlasHZB, FullAtlasViewRect, true, bUpdateStreaming, bSupportsMultiplePasses, false, bPrimaryContext);
-		Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(GraphBuilder, AtlasSize, Nanite::EOutputBufferMode::DepthOnly);
+		Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(GraphBuilder, FeatureLevel, AtlasSize, Nanite::EOutputBufferMode::DepthOnly);
 
 		bool bExtractStats = false;		
 		if (GNaniteDebugFlags != 0 && GNaniteShowStats != 0)
@@ -1417,6 +1418,8 @@ static void RenderShadowDepthAtlasNanite(
 				GraphBuilder.RegisterExternalTexture(GSystemTextures.BlackDummy),
 				RasterContext.DepthBuffer,
 				FullAtlasViewRect,
+				FeatureLevel,
+				Scene.GetShaderPlatform(),
 				TEXT("Shadow.AtlasHZB"),
 				/* OutFurthestHZBTexture = */ &FurthestHZBTexture,
 				PF_R32_FLOAT);
@@ -1556,7 +1559,7 @@ void FSceneRenderer::RenderShadowDepthMapAtlases(FRDGBuilder& GraphBuilder)
 
 		if (bNaniteEnabled)
 		{
-			RenderShadowDepthAtlasNanite(GraphBuilder, *Scene, ShadowMapAtlas, AtlasIndex);
+			RenderShadowDepthAtlasNanite(GraphBuilder, FeatureLevel, *Scene, ShadowMapAtlas, AtlasIndex);
 		}
 
 		// Make readable because AtlasDepthTexture is not tracked via RDG yet
@@ -1604,6 +1607,7 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 
 			Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(
 				GraphBuilder,
+				FeatureLevel,
 				VirtualShadowSize,
 				Nanite::EOutputBufferMode::DepthOnly,
 				bAllocatePageRectAtlas,	// Clear entire texture
@@ -1814,6 +1818,8 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 					SceneDepth,
 					RasterContext.DepthBuffer,
 					VirtualShadowViewRect,
+					FeatureLevel,
+					ShaderPlatform,
 					TEXT("Shadow.Virtual.HZB"),
 					/* OutFurthestHZBTexture = */ &VirtualShadowMapArray.HZBPhysical,
 					PF_R32_FLOAT);
@@ -1910,7 +1916,7 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 					
 					TRefCountPtr<IPooledRenderTarget> PrevHZB = (PrevShadowState && bUseHZB) ? PrevShadowState->HZB : nullptr;
 					Nanite::FCullingContext CullingContext = Nanite::InitCullingContext(GraphBuilder, *Scene, PrevHZB, ShadowViewRect, true, bUpdateStreaming, false, false, bPrimaryContext);
-					Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(GraphBuilder, TargetSize, Nanite::EOutputBufferMode::DepthOnly);
+					Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(GraphBuilder, FeatureLevel, TargetSize, Nanite::EOutputBufferMode::DepthOnly);
 
 					// Setup packed view
 					TArray<Nanite::FPackedView, SceneRenderingAllocator> PackedViews;
@@ -1965,6 +1971,8 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 							GraphBuilder.RegisterExternalTexture(GSystemTextures.BlackDummy),
 							RasterContext.DepthBuffer,
 							ShadowViewRect,
+							FeatureLevel,
+							ShaderPlatform,
 							TEXT("Shadow.CubemapHZB"),
 							/* OutFurthestHZBTexture = */ &FurthestHZBTexture);
 

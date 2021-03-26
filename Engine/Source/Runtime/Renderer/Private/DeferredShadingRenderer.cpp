@@ -354,6 +354,8 @@ bool FDeferredShadingSceneRenderer::RenderHzb(FRDGBuilder& GraphBuilder, FRDGTex
 				SceneDepthTexture,
 				/* VisBufferTexture = */ nullptr,
 				View.ViewRect,
+				View.GetFeatureLevel(),
+				View.GetShaderPlatform(),
 				TEXT("HZBClosest"),
 				/* OutClosestHZBTexture = */ ViewPipelineState.bClosestHZB ? &ClosestHZBTexture : nullptr,
 				TEXT("HZBFurthest"),
@@ -1925,7 +1927,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 		{
 			Nanite::FRasterState RasterState;
 
-			Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(GraphBuilder, RasterTextureSize);
+			Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(GraphBuilder, FeatureLevel, RasterTextureSize);
 
 			const bool bTwoPassOcclusion = true;
 			const bool bUpdateStreaming = true;
@@ -1998,6 +2000,8 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 						SceneDepth,
 						RasterContext.VisBuffer64,
 						PrimaryViewRect,
+						FeatureLevel,
+						ShaderPlatform,
 						TEXT("Nanite.HZB"),
 						/* OutFurthestHZBTexture = */ &GraphHZB );
 					

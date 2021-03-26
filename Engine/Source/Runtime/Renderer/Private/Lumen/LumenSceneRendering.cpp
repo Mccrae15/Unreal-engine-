@@ -2072,6 +2072,7 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder)
 
 				Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(
 					GraphBuilder,
+					FeatureLevel,
 					DepthStencilAtlasSize,
 					Nanite::EOutputBufferMode::VisBuffer,
 					true,

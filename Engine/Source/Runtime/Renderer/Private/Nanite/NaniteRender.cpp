@@ -2144,13 +2144,13 @@ void ListStatFilters(FSceneRenderer* SceneRenderer)
 	bNaniteListStatFilters = false;
 }
 
-static void AddPassInitCandidateNodesAndClustersUAV( FRDGBuilder& GraphBuilder, FRDGBufferUAVRef UAVRef, bool bIsPostPass )
+static void AddPassInitCandidateNodesAndClustersUAV( FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, FRDGBufferUAVRef UAVRef, bool bIsPostPass )
 {
 	LLM_SCOPE_BYTAG(Nanite);
 
 	{
-	const uint32 ThreadsPerGroup = 64;
-	checkf(Nanite::FGlobalResources::GetMaxNodes() % ThreadsPerGroup == 0, TEXT("Max nodes must be divisible by ThreadsPerGroup"));
+		const uint32 ThreadsPerGroup = 64;
+		checkf(Nanite::FGlobalResources::GetMaxNodes() % ThreadsPerGroup == 0, TEXT("Max nodes must be divisible by ThreadsPerGroup"));
 
 		FInitCandidateNodes_CS::FParameters* PassParameters = GraphBuilder.AllocParameters< FInitCandidateNodes_CS::FParameters >();
 		PassParameters->OutCandidateNodesAndClusters		= UAVRef;
@@ -2159,15 +2159,15 @@ static void AddPassInitCandidateNodesAndClustersUAV( FRDGBuilder& GraphBuilder, 
 
 		const uint32 NumGroups = FMath::DivideAndRoundUp(Nanite::FGlobalResources::GetMaxNodes(), ThreadsPerGroup);
 
-		auto ComputeShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader< FInitCandidateNodes_CS >();
-	FComputeShaderUtils::AddPass(
-		GraphBuilder,
-		RDG_EVENT_NAME( "Nanite::InitNodes" ),
-		ComputeShader,
-		PassParameters,
+		auto ComputeShader = ShaderMap->GetShader< FInitCandidateNodes_CS >();
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME( "Nanite::InitNodes" ),
+			ComputeShader,
+			PassParameters,
 			FIntVector(NumGroups, 1, 1)
-	);
-}
+		);
+	}
 
 	{
 		const uint32 ThreadsPerYGroup = 64 * 256;
@@ -2177,7 +2177,7 @@ static void AddPassInitCandidateNodesAndClustersUAV( FRDGBuilder& GraphBuilder, 
 
 		const uint32 NumYGroups = FMath::DivideAndRoundUp(Nanite::FGlobalResources::GetMaxCandidateClusters(), ThreadsPerYGroup);
 
-		auto ComputeShader = GetGlobalShaderMap(GMaxRHIFeatureLevel)->GetShader< FInitCandidateClusters_CS >();
+		auto ComputeShader = ShaderMap->GetShader< FInitCandidateClusters_CS >();
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("Nanite::InitCandidates"),
@@ -2208,6 +2208,8 @@ FCullingContext InitCullingContext(
 	INC_DWORD_STAT(STAT_NaniteCullingContexts);
 
 	FCullingContext CullingContext = {};
+
+	CullingContext.ShaderMap = GetGlobalShaderMap(Scene.GetFeatureLevel());
 
 	CullingContext.PrevHZB					= PrevHZB;
 	CullingContext.HZBBuildViewRect			= HZBBuildViewRect;
@@ -2336,8 +2338,6 @@ void AddPass_InstanceHierarchyAndClusterCull(
 
 	// Currently only occlusion free multi-view routing.
 	ensure(!VirtualShadowMapArray || CullingPass == CULLING_PASS_NO_OCCLUSION);
-	// TODO: if we need this emulation feature by going through the view we can probably pass in the shader map as part of the context and get it out of the view at context-creation time
-	auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 
 	const bool bMultiView = Views.Num() > 1 || VirtualShadowMapArray != nullptr;
 
@@ -2372,7 +2372,7 @@ void AddPass_InstanceHierarchyAndClusterCull(
 		PermutationVector.Set<FInstanceCullVSM_CS::FNearClipDim>(RasterState.bNearClip);
 		PermutationVector.Set<FInstanceCullVSM_CS::FDebugFlagsDim>(GNaniteDebugFlags != 0);
 
-		auto ComputeShader = ShaderMap->GetShader<FInstanceCullVSM_CS>(PermutationVector);
+		auto ComputeShader = CullingContext.ShaderMap->GetShader<FInstanceCullVSM_CS>(PermutationVector);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
@@ -2438,7 +2438,7 @@ void AddPass_InstanceHierarchyAndClusterCull(
 		PermutationVector.Set<FInstanceCull_CS::FDebugFlagsDim>(GNaniteDebugFlags != 0);
 		PermutationVector.Set<FInstanceCull_CS::FRasterTechniqueDim>(int32(RasterContext.RasterTechnique));
 
-		auto ComputeShader = ShaderMap->GetShader<FInstanceCull_CS>(PermutationVector);
+		auto ComputeShader = CullingContext.ShaderMap->GetShader<FInstanceCull_CS>(PermutationVector);
 		if( InstanceCullingPass == CULLING_PASS_OCCLUSION_POST )
 		{
 			PassParameters->IndirectArgs = CullingContext.OccludedInstancesArgs;
@@ -2533,7 +2533,7 @@ void AddPass_InstanceHierarchyAndClusterCull(
 		PermutationVector.Set<FPersistentClusterCull_CS::FClusterPerPageDim>(GNaniteClusterPerPage && VirtualShadowMapArray != nullptr);
 		PermutationVector.Set<FPersistentClusterCull_CS::FDebugFlagsDim>(GNaniteDebugFlags != 0);
 
-		auto ComputeShader = ShaderMap->GetShader<FPersistentClusterCull_CS>(PermutationVector);
+		auto ComputeShader = CullingContext.ShaderMap->GetShader<FPersistentClusterCull_CS>(PermutationVector);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
@@ -2570,9 +2570,6 @@ void AddPass_Rasterize(
 	LLM_SCOPE_BYTAG(Nanite);
 
 	check(RasterState.CullMode == CM_CW || RasterState.CullMode == CM_CCW);		// CM_None not implemented
-
-	// TODO: if we need this emulation feature by going through the view we can probably pass in the shader map as part of the context and get it out of the view at context-creation time
-	auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 
 	auto* RasterPassParameters = GraphBuilder.AllocParameters<FHWRasterizePS::FParameters>();
 	auto* CommonPassParameters = &RasterPassParameters->Common;
@@ -2706,8 +2703,8 @@ void AddPass_Rasterize(
 		PermutationVectorPS.Set<FHWRasterizePS::FVirtualTextureTargetDim>(VirtualShadowMapArray != nullptr);
 		PermutationVectorPS.Set<FHWRasterizePS::FClusterPerPageDim>( GNaniteClusterPerPage && VirtualShadowMapArray != nullptr );
 
-		auto VertexShader = ShaderMap->GetShader<FHWRasterizeVS>(PermutationVectorVS);
-		auto PixelShader  = ShaderMap->GetShader<FHWRasterizePS>(PermutationVectorPS);
+		auto VertexShader = RasterContext.ShaderMap->GetShader<FHWRasterizeVS>(PermutationVectorVS);
+		auto PixelShader  = RasterContext.ShaderMap->GetShader<FHWRasterizePS>(PermutationVectorPS);
 
 		GraphBuilder.AddPass(
 			bMainPass ? RDG_EVENT_NAME("Main Pass: Rasterize") : RDG_EVENT_NAME("Post Pass: Rasterize"),
@@ -2754,7 +2751,7 @@ void AddPass_Rasterize(
 		PermutationVectorCS.Set<FMicropolyRasterizeCS::FVirtualTextureTargetDim>(VirtualShadowMapArray != nullptr);
 		PermutationVectorCS.Set<FMicropolyRasterizeCS::FClusterPerPageDim>(GNaniteClusterPerPage&& VirtualShadowMapArray != nullptr);
 
-		auto ComputeShader = ShaderMap->GetShader<FMicropolyRasterizeCS>(PermutationVectorCS);
+		auto ComputeShader = RasterContext.ShaderMap->GetShader<FMicropolyRasterizeCS>(PermutationVectorCS);
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
@@ -2769,6 +2766,7 @@ void AddPass_Rasterize(
 
 FRasterContext InitRasterContext(
 	FRDGBuilder& GraphBuilder,
+	ERHIFeatureLevel::Type FeatureLevel,
 	FIntPoint TextureSize,
 	EOutputBufferMode RasterMode,
 	bool bClearTarget,
@@ -2801,6 +2799,7 @@ FRasterContext InitRasterContext(
 		}
 	}
 
+	RasterContext.ShaderMap = GetGlobalShaderMap(FeatureLevel);
 	RasterContext.TextureSize = TextureSize;
 
 	// Set rasterizer scheduling based on config and platform capabilities.
@@ -2908,7 +2907,7 @@ void FPackedView::UpdateLODScales()
 }
 
 
-static void AllocateCandidateBuffers(FRDGBuilder& GraphBuilder, FRDGBufferRef* MainCandidateNodesAndClustersBufferRef, FRDGBufferRef* PostCandidateNodesAndClustersBufferRef)
+static void AllocateCandidateBuffers(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, FRDGBufferRef* MainCandidateNodesAndClustersBufferRef, FRDGBufferRef* PostCandidateNodesAndClustersBufferRef)
 {
 	const uint32 MaxNodes = Nanite::FGlobalResources::GetMaxNodes();
 	const uint32 MaxCandidateClusters = Nanite::FGlobalResources::GetMaxCandidateClusters();
@@ -2929,7 +2928,7 @@ static void AllocateCandidateBuffers(FRDGBuilder& GraphBuilder, FRDGBufferRef* M
 			FRDGBufferDesc Desc = FRDGBufferDesc::CreateStructuredDesc(4, MaxCullingBatches + MaxCandidateClusters * 2 + MaxNodes * 2);
 			Desc.Usage = EBufferUsageFlags(Desc.Usage | BUF_ByteAddressBuffer);
 			*MainCandidateNodesAndClustersBufferRef = GraphBuilder.CreateBuffer(Desc, TEXT("Nanite.MainPass.CandidateNodesAndClustersBuffer"));
-			AddPassInitCandidateNodesAndClustersUAV(GraphBuilder, GraphBuilder.CreateUAV(*MainCandidateNodesAndClustersBufferRef), false);
+			AddPassInitCandidateNodesAndClustersUAV(GraphBuilder, ShaderMap, GraphBuilder.CreateUAV(*MainCandidateNodesAndClustersBufferRef), false);
 			ConvertToExternalBuffer(GraphBuilder, *MainCandidateNodesAndClustersBufferRef, CandidateNodesAndClustersBuffer);
 		}
 	}
@@ -2946,7 +2945,7 @@ static void AllocateCandidateBuffers(FRDGBuilder& GraphBuilder, FRDGBufferRef* M
 			FRDGBufferDesc Desc = FRDGBufferDesc::CreateStructuredDesc(4, MaxCullingBatches + MaxCandidateClusters * 2 + MaxNodes * 3);
 			Desc.Usage = EBufferUsageFlags(Desc.Usage | BUF_ByteAddressBuffer);
 			*PostCandidateNodesAndClustersBufferRef = GraphBuilder.CreateBuffer(Desc, TEXT("Nanite.PostPass.CandidateNodesAndClustersBuffer"));
-			AddPassInitCandidateNodesAndClustersUAV(GraphBuilder, GraphBuilder.CreateUAV(*PostCandidateNodesAndClustersBufferRef), true);
+			AddPassInitCandidateNodesAndClustersUAV(GraphBuilder, ShaderMap, GraphBuilder.CreateUAV(*PostCandidateNodesAndClustersBufferRef), true);
 			ConvertToExternalBuffer(GraphBuilder, *PostCandidateNodesAndClustersBufferRef, CandidateNodesAndClustersBuffer);
 		}
 	}
@@ -2973,9 +2972,6 @@ void CullRasterize(
 	{
 		check(!Nanite::GStreamingManager.IsAsyncUpdateInProgress());
 	});
-
-	// TODO: if we need this emulation feature by going through the view we can probably pass in the shader map as part of the context and get it out of the view at context-creation time
-	auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 
 	// Calling CullRasterize more than once on a CullingContext is illegal unless bSupportsMultiplePasses is enabled.
 	check(CullingContext.DrawPassIndex == 0 || CullingContext.bSupportsMultiplePasses);
@@ -3102,7 +3098,7 @@ void CullRasterize(
 		PermutationVector.Set<FInitArgs_CS::FOcclusionCullingDim>( CullingContext.bTwoPassOcclusion );
 		PermutationVector.Set<FInitArgs_CS::FDrawPassIndexDim>( ClampedDrawPassIndex );
 		
-		auto ComputeShader = ShaderMap->GetShader< FInitArgs_CS >( PermutationVector );
+		auto ComputeShader = CullingContext.ShaderMap->GetShader< FInitArgs_CS >( PermutationVector );
 
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
@@ -3116,7 +3112,7 @@ void CullRasterize(
 	// Allocate candidate buffers. Lifetime only duration of CullRasterize.
 	FRDGBufferRef MainCandidateNodesAndClustersBuffer = nullptr;
 	FRDGBufferRef PostCandidateNodesAndClustersBuffer = nullptr;
-	AllocateCandidateBuffers(GraphBuilder, &MainCandidateNodesAndClustersBuffer, CullingContext.bTwoPassOcclusion ? &PostCandidateNodesAndClustersBuffer : nullptr);
+	AllocateCandidateBuffers(GraphBuilder, CullingContext.ShaderMap, &MainCandidateNodesAndClustersBuffer, CullingContext.bTwoPassOcclusion ? &PostCandidateNodesAndClustersBuffer : nullptr);
 
 	// No Occlusion Pass / Occlusion Main Pass
 	AddPass_InstanceHierarchyAndClusterCull(
@@ -3186,6 +3182,8 @@ void CullRasterize(
 				SceneDepth,
 				RasterizedDepth,
 				CullingContext.HZBBuildViewRect,
+				Scene.GetFeatureLevel(),
+				Scene.GetShaderPlatform(),
 				TEXT("Nanite.PreviousOccluderHZB"),
 				/* OutFurthestHZBTexture = */ &OutFurthestHZBTexture);
 
@@ -3276,8 +3274,6 @@ void ExtractStats(
 
 	if (GNaniteDebugFlags != 0 && GNaniteShowStats != 0 && CullingContext.StatsBuffer != nullptr)
 	{
-		auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-
 		FRDGBufferRef ClusterStatsArgs = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc(4), TEXT("Nanite.ClusterStatsArgs"));
 
 		{
@@ -3299,7 +3295,7 @@ void ExtractStats(
 			
 			FCalculateStatsCS::FPermutationDomain PermutationVector;
 			PermutationVector.Set<FCalculateStatsCS::FTwoPassCullingDim>( CullingContext.bTwoPassOcclusion );
-			auto ComputeShader = ShaderMap->GetShader<FCalculateStatsCS>( PermutationVector );
+			auto ComputeShader = CullingContext.ShaderMap->GetShader<FCalculateStatsCS>( PermutationVector );
 
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
@@ -3333,7 +3329,7 @@ void ExtractStats(
 			FCalculateClusterStatsCS::FPermutationDomain PermutationVector;
 			PermutationVector.Set<FCalculateClusterStatsCS::FTwoPassCullingDim>( CullingContext.bTwoPassOcclusion );
 			PermutationVector.Set<FCalculateClusterStatsCS::FVirtualTextureTargetDim>(bVirtualTextureTarget);
-			auto ComputeShader = ShaderMap->GetShader<FCalculateClusterStatsCS>( PermutationVector );
+			auto ComputeShader = CullingContext.ShaderMap->GetShader<FCalculateClusterStatsCS>( PermutationVector );
 
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
@@ -3485,7 +3481,7 @@ void DrawHitProxies(
 
 		FPixelShaderUtils::AddFullscreenPass(
 			GraphBuilder,
-			GetGlobalShaderMap(View.FeatureLevel),
+			View.ShaderMap,
 			RDG_EVENT_NAME("Emit HitProxy Id"),
 			PixelShader,
 			PassParameters,
@@ -3511,8 +3507,6 @@ void EmitShadowMap(
 {
 	LLM_SCOPE_BYTAG(Nanite);
 
-	auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-
 	auto* PassParameters = GraphBuilder.AllocParameters< FEmitShadowMapPS::FParameters >();
 
 	PassParameters->SourceOffset = SourceRect.Min - DestOrigin;
@@ -3525,7 +3519,7 @@ void EmitShadowMap(
 	FEmitShadowMapPS::FPermutationDomain PermutationVector;
 	PermutationVector.Set< FEmitShadowMapPS::FDepthOutputTypeDim >( bOrtho ? 1 : 2 );
 
-	auto PixelShader = ShaderMap->GetShader< FEmitShadowMapPS >( PermutationVector );
+	auto PixelShader = RasterContext.ShaderMap->GetShader< FEmitShadowMapPS >( PermutationVector );
 
 	FIntRect DestRect;
 	DestRect.Min = DestOrigin;
@@ -3533,7 +3527,7 @@ void EmitShadowMap(
 	
 	FPixelShaderUtils::AddFullscreenPass(
 		GraphBuilder,
-		ShaderMap,
+		RasterContext.ShaderMap,
 		RDG_EVENT_NAME("EmitShadowMap"),
 		PixelShader,
 		PassParameters,
@@ -3555,18 +3549,16 @@ void EmitCubemapShadow(
 {
 	LLM_SCOPE_BYTAG(Nanite);
 
-	auto ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-
 	FEmitCubemapShadowVS::FPermutationDomain VertexPermutationVector;
 	VertexPermutationVector.Set<FEmitCubemapShadowVS::FUseGeometryShader>(bUseGeometryShader);
-	TShaderMapRef<FEmitCubemapShadowVS> VertexShader(ShaderMap, VertexPermutationVector);
+	TShaderMapRef<FEmitCubemapShadowVS> VertexShader(RasterContext.ShaderMap, VertexPermutationVector);
 	TShaderRef<FEmitCubemapShadowGS> GeometryShader;
-	TShaderMapRef<FEmitCubemapShadowPS> PixelShader(ShaderMap);
+	TShaderMapRef<FEmitCubemapShadowPS> PixelShader(RasterContext.ShaderMap);
 
 	// VS output of RT array index on D3D11 requires a caps bit. Use GS fallback if set.
 	if (bUseGeometryShader)
 	{
-		GeometryShader = TShaderMapRef<FEmitCubemapShadowGS>(ShaderMap);
+		GeometryShader = TShaderMapRef<FEmitCubemapShadowGS>(RasterContext.ShaderMap);
 	}
 
 	FEmitCubemapShadowParameters* PassParameters = GraphBuilder.AllocParameters<FEmitCubemapShadowParameters>();
@@ -3760,7 +3752,7 @@ void EmitDepthTargets(
 
 			FPixelShaderUtils::AddFullscreenPass(
 				GraphBuilder,
-				GetGlobalShaderMap(View.FeatureLevel),
+				View.ShaderMap,
 				RDG_EVENT_NAME("Emit Scene Depth/Stencil/Velocity"),
 				PixelShader,
 				PassParameters,
@@ -3801,7 +3793,7 @@ void EmitDepthTargets(
 
 				FPixelShaderUtils::AddFullscreenPass(
 					GraphBuilder,
-					GetGlobalShaderMap(View.FeatureLevel),
+					View.ShaderMap,
 					RDG_EVENT_NAME("Emit Scene Depth"),
 					PixelShader,
 					PassParameters,
@@ -3833,7 +3825,7 @@ void EmitDepthTargets(
 
 				FPixelShaderUtils::AddFullscreenPass(
 					GraphBuilder,
-					GetGlobalShaderMap(View.FeatureLevel),
+					View.ShaderMap,
 					RDG_EVENT_NAME("Emit Scene Stencil/Velocity"),
 					PixelShader,
 					PassParameters,
@@ -3871,7 +3863,7 @@ void EmitDepthTargets(
 
 			FPixelShaderUtils::AddFullscreenPass(
 				GraphBuilder,
-				GetGlobalShaderMap(View.FeatureLevel),
+				View.ShaderMap,
 				RDG_EVENT_NAME("Emit Material Depth"),
 				PixelShader,
 				PassParameters,
@@ -4918,7 +4910,7 @@ void DrawEditorSelection(
 
 	FPixelShaderUtils::DrawFullscreenPixelShader(
 		RHICmdList,
-		GetGlobalShaderMap(View.FeatureLevel),
+		View.ShaderMap,
 		PixelShader,
 		PassParameters,
 		ViewportRect,
@@ -4992,7 +4984,7 @@ void DrawEditorVisualizeLevelInstance(
 
 	FPixelShaderUtils::DrawFullscreenPixelShader(
 		RHICmdList,
-		GetGlobalShaderMap(View.FeatureLevel),
+		View.ShaderMap,
 		PixelShader,
 		PassParameters,
 		ViewportRect,
