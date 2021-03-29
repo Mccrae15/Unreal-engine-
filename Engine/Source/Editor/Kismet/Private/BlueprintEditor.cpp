@@ -2756,6 +2756,11 @@ void FBlueprintEditor::CreateDefaultCommands()
 		FCanExecuteAction::CreateSP(this, &FBlueprintEditor::HasAnyWatches)
 		);
 
+	ToolkitCommands->MapAction( FBlueprintEditorCommands::Get().OpenBlueprintDebugger,
+	    FExecuteAction::CreateSP(this, &FBlueprintEditor::OpenBlueprintDebugger),
+	    FCanExecuteAction::CreateSP(this, &FBlueprintEditor::CanOpenBlueprintDebugger)
+    );
+
 	// New document actions
 	ToolkitCommands->MapAction( FBlueprintEditorCommands::Get().AddNewVariable,
 		FExecuteAction::CreateSP(this, &FBlueprintEditor::OnAddNewVariable),
@@ -3702,6 +3707,17 @@ void FBlueprintEditor::EnableAllBreakpoints()
 void FBlueprintEditor::ClearAllWatches()
 {
 	FDebuggingActionCallbacks::ClearWatches(GetBlueprintObj());
+}
+
+void FBlueprintEditor::OpenBlueprintDebugger()
+{
+	FGlobalTabmanager::Get()->TryInvokeTab(FBlueprintEditorTabs::BlueprintDebuggerID);
+}
+
+bool FBlueprintEditor::CanOpenBlueprintDebugger() const
+{
+	// The BP debugger can always be spawned because it will get updated on PIE
+	return true;
 }
 
 bool FBlueprintEditor::HasAnyBreakpoints() const
