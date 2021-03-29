@@ -21,7 +21,6 @@
 #include "AnimPreviewInstance.h"
 #include "ScopedTransaction.h"
 
-#include "Animation/AnimData/AnimDataController.h"
 
 #define LOCTEXT_NAMESPACE "FAnimModel_AnimSequence"
 
@@ -355,8 +354,8 @@ bool FAnimModel_AnimSequenceBase::CanEditSelectedCurves() const
 
 void FAnimModel_AnimSequenceBase::RemoveSelectedCurves()
 {
-	UAnimDataController* Controller = AnimSequenceBase->GetController();
-	Controller->OpenBracket(LOCTEXT("CurvePanel_RemoveCurves", "Remove Curves"));
+	IAnimationDataController& Controller = AnimSequenceBase->GetController();
+	Controller.OpenBracket(LOCTEXT("CurvePanel_RemoveCurves", "Remove Curves"));
 
 	bool bDeletedCurve = false;
 
@@ -381,7 +380,7 @@ void FAnimModel_AnimSequenceBase::RemoveSelectedCurves()
 					IAnimationEditor::FCurveEditInfo EditInfo(Name, Type, CurveEditIndex);
 					OnStopEditingCurves.ExecuteIfBound(TArray<IAnimationEditor::FCurveEditInfo>({ EditInfo }));
 
-					Controller->RemoveCurve(FloatCurveId);
+					Controller.RemoveCurve(FloatCurveId);
 					bDeletedCurve = true;
 				}
 			}
@@ -414,14 +413,14 @@ void FAnimModel_AnimSequenceBase::RemoveSelectedCurves()
 
 					OnStopEditingCurves.ExecuteIfBound(CurveEditInfo);
 
-					Controller->RemoveCurve(TransformCurveId);
+					Controller.RemoveCurve(TransformCurveId);
 					bDeletedCurve = true;
 				}
 			}	
 		}
 	}
 
-	Controller->CloseBracket();
+	Controller.CloseBracket();
 
 	if(bDeletedCurve)
 	{

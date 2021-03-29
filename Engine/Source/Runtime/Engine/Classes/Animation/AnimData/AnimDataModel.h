@@ -22,7 +22,7 @@ struct ENGINE_API FBoneAnimationTrack
 
 	/** Index corresponding to the bone this track corresponds to within the target USkeleton */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Model")
-	int32 BoneTreeIndex;
+	int32 BoneTreeIndex = INDEX_NONE;
 
 	/** Name of the bone this track corresponds to */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Model")
@@ -276,7 +276,23 @@ private:
 			ModifiedEventDynamic.Broadcast(NotifyType, this, Payload);
 		}
 
-		GenerateTransientData();
+		// Only regenerate transient data when not in a bracket, or at the end of one
+		{
+			if (NotifyType == EAnimDataModelNotifyType::BracketOpened)
+			{
+				++BracketCounter;
+			}
+			if (NotifyType == EAnimDataModelNotifyType::BracketClosed)
+			{
+				--BracketCounter;
+			}
+
+			check(BracketCounter >= 0);
+			if (BracketCounter == 0)
+			{
+				GenerateTransientData();
+			}
+		}
 	}
 
 	/**
@@ -307,6 +323,7 @@ private:
 				--BracketCounter;
 			}
 
+			check(BracketCounter >= 0);
 			if (BracketCounter == 0)
 			{
 				GenerateTransientData();

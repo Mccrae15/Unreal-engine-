@@ -23,7 +23,6 @@
 
 #if WITH_EDITOR
 #include "AnimData/AnimDataModel.h"
-#include "AnimData/AnimDataController.h"
 #endif // WITH_EDITOR
 
 #include "AnimSequence.generated.h"

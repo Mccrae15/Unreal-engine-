@@ -52,7 +52,6 @@ THIRD_PARTY_INCLUDES_END
 #include "GeometryCacheCodecV1.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
-#include "Animation/AnimData/AnimDataController.h"
 
 #define LOCTEXT_NAMESPACE "AbcImporter"
 
@@ -632,12 +631,12 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 		uint32 WedgeOffset = 0;
 		uint32 VertexOffset = 0;
 
-		UAnimDataController* Controller = Sequence->GetController();
+		IAnimationDataController& Controller = Sequence->GetController();
 
-		Controller->OpenBracket(LOCTEXT("ImportAsSkeletalMesh", "Importing Alembic Animation"));
+		Controller.OpenBracket(LOCTEXT("ImportAsSkeletalMesh", "Importing Alembic Animation"));
 
-		Controller->SetPlayLength(AbcFile->GetImportLength());
-		Controller->SetFrameRate( FFrameRate(AbcFile->GetFramerate(), 1));
+		Controller.SetPlayLength(AbcFile->GetImportLength());
+		Controller.SetFrameRate( FFrameRate(AbcFile->GetFramerate(), 1));
 
 		Sequence->ImportFileFramerate = AbcFile->GetFramerate();
 		Sequence->ImportResampleFramerate = 1.0f / (float)AbcFile->GetFramerate();
@@ -738,8 +737,8 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 				const FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
 				const TArray<FMeshBoneInfo>& BonesInfo = RefSkeleton.GetRawRefBoneInfo();
 				
-				Controller->AddBoneTrack(BonesInfo[0].Name);
-				Controller->SetBoneTrackKeys(BonesInfo[0].Name, RootBoneTrack.PosKeys, RootBoneTrack.RotKeys, RootBoneTrack.ScaleKeys);
+				Controller.AddBoneTrack(BonesInfo[0].Name);
+				Controller.SetBoneTrackKeys(BonesInfo[0].Name, RootBoneTrack.PosKeys, RootBoneTrack.RotKeys, RootBoneTrack.ScaleKeys);
 			}
 
 			// Set recompute tangent flag on skeletal mesh sections
@@ -753,10 +752,10 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 
 		SkeletalMesh->MarkPackageDirty();
 
-		Controller->UpdateCurveNamesFromSkeleton(Skeleton, ERawCurveTrackTypes::RCT_Float);
-		Controller->NotifyPopulated();
+		Controller.UpdateCurveNamesFromSkeleton(Skeleton, ERawCurveTrackTypes::RCT_Float);
+		Controller.NotifyPopulated();
 
-		Controller->CloseBracket();
+		Controller.CloseBracket();
 
 		Sequence->PostEditChange();
 		Sequence->SetPreviewMesh(SkeletalMesh);
@@ -783,13 +782,13 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 	return GeneratedObjects;
 }
 
-void FAbcImporter::SetupMorphTargetCurves(USkeleton* Skeleton, FName ConstCurveName, UAnimSequence* Sequence, const TArray<float> &CurveValues, const TArray<float>& TimeValues, UAnimDataController* Controller)
+void FAbcImporter::SetupMorphTargetCurves(USkeleton* Skeleton, FName ConstCurveName, UAnimSequence* Sequence, const TArray<float> &CurveValues, const TArray<float>& TimeValues, IAnimationDataController& Controller)
 {
 	FSmartName NewName;
 	Skeleton->AddSmartNameAndModify(USkeleton::AnimCurveMappingName, ConstCurveName, NewName);
 
 	FAnimationCurveIdentifier CurveId(NewName, ERawCurveTrackTypes::RCT_Float);
-	Controller->AddCurve(CurveId);
+	Controller.AddCurve(CurveId);
 
 	const FFloatCurve* NewCurve = Sequence->GetDataModel()->FindFloatCurve(CurveId);
 	ensure(NewCurve);
@@ -811,7 +810,7 @@ void FAbcImporter::SetupMorphTargetCurves(USkeleton* Skeleton, FName ConstCurveN
 		RichCurve.SetKeyTangentWeightMode(NewKeyHandle, NewTangentWeightMode);
 	}
 
-	Controller->SetCurveKeys(CurveId, RichCurve.GetConstRefOfKeys());
+	Controller.SetCurveKeys(CurveId, RichCurve.GetConstRefOfKeys());
 }
 
 const bool FAbcImporter::CompressAnimationDataUsingPCA(const FAbcCompressionSettings& InCompressionSettings, const bool bRunComparison /*= false*/)

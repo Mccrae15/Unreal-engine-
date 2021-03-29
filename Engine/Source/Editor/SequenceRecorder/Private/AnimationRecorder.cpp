@@ -19,7 +19,6 @@
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Subsystems/AssetEditorSubsystem.h"
-#include "Animation/AnimData/AnimDataController.h"
 
 #define LOCTEXT_NAMESPACE "FAnimationRecorder"
 
@@ -232,13 +231,13 @@ void FAnimationRecorder::StartRecord(USkeletalMeshComponent* Component, UAnimSeq
 
 	LastFrame = 0;
 
-	UAnimDataController* Controller = AnimationObject->GetController();
-	Controller->SetModel(AnimationObject->GetDataModel());
+	IAnimationDataController& Controller = AnimationObject->GetController();
+	Controller.SetModel(AnimationObject->GetDataModel());
 
-	Controller->OpenBracket(LOCTEXT("StartRecord_Bracket", "Starting Animation Recording"));
+	Controller.OpenBracket(LOCTEXT("StartRecord_Bracket", "Starting Animation Recording"));
 
 	AnimationObject->DeleteNotifyTrackData();
-	Controller->ResetModel();
+	Controller.ResetModel();
 
 	RecordedCurves.Reset();
 	RecordedTimes.Empty();
@@ -254,7 +253,7 @@ void FAnimationRecorder::StartRecord(USkeletalMeshComponent* Component, UAnimSeq
 		{
 			// add tracks for the bone existing
 			const FName BoneTreeName = AnimSkeleton->GetReferenceSkeleton().GetBoneName(BoneTreeIndex);
-			Controller->AddBoneTrack(BoneTreeName);			
+			Controller.AddBoneTrack(BoneTreeName);			
 			RawTracks.AddDefaulted();
 		}
 	}
@@ -305,15 +304,15 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 
 	if (AnimationObject)
 	{
-		UAnimDataController* Controller = AnimationObject->GetController();
+		IAnimationDataController& Controller = AnimationObject->GetController();
 		int32 NumKeys = LastFrame  + 1;
 
 		// can't use TimePassed. That is just total time that has been passed, not necessarily match with frame count
-		Controller->SetPlayLength( (NumKeys>1) ? (NumKeys-1) * IntervalTime : MINIMUM_ANIMATION_LENGTH );
+		Controller.SetPlayLength( (NumKeys>1) ? (NumKeys-1) * IntervalTime : MINIMUM_ANIMATION_LENGTH );
 
 		const float FloatDenominator = 1000.0f;
 		const float Numerator = FloatDenominator / IntervalTime;
-		Controller->SetFrameRate(FFrameRate(Numerator, FloatDenominator));
+		Controller.SetFrameRate(FFrameRate(Numerator, FloatDenominator));
 
 		ProcessNotifies();
 
@@ -356,7 +355,7 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 								{
 									// give default curve flag for recording 
 									const FAnimationCurveIdentifier CurveId(CurveName, ERawCurveTrackTypes::RCT_Float);
-									Controller->AddCurve(CurveId, AACF_DefaultCurve);
+									Controller.AddCurve(CurveId, AACF_DefaultCurve);
 									FloatCurveData = AnimationObject->GetDataModel()->FindFloatCurve(CurveId);
 
 								}
@@ -385,7 +384,7 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 						}
 
 						const FAnimationCurveIdentifier CurveId(FloatCurveData->Name, ERawCurveTrackTypes::RCT_Float);
-						Controller->SetCurveKeys(CurveId, Keys);
+						Controller.SetCurveKeys(CurveId, Keys);
 					}
 				}
 			}	
@@ -401,11 +400,11 @@ UAnimSequence* FAnimationRecorder::StopRecord(bool bShowMessage)
 			const FBoneAnimationTrack& AnimationTrack = BoneAnimationTracks[TrackIndex];
 			FRawAnimSequenceTrack& RawTrack = RawTracks[TrackIndex];
 
-			Controller->SetBoneTrackKeys(AnimationTrack.Name, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
+			Controller.SetBoneTrackKeys(AnimationTrack.Name, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
 		}
 
-		Controller->NotifyPopulated();
-		Controller->CloseBracket();
+		Controller.NotifyPopulated();
+		Controller.CloseBracket();
 
 		AnimationObject->MarkPackageDirty();
 		
@@ -670,7 +669,7 @@ bool FAnimationRecorder::Record(USkeletalMeshComponent* Component, FTransform co
 {
 	if (ensure(AnimationObject))
 	{
-		UAnimDataController* Controller = AnimationObject->GetController();
+		IAnimationDataController& Controller = AnimationObject->GetController();
 		USkeletalMesh* SkeletalMesh = Component->MasterPoseComponent != nullptr ? ToRawPtr(Component->MasterPoseComponent->SkeletalMesh) : ToRawPtr(Component->SkeletalMesh);
 
 		const TArray<FBoneAnimationTrack>& BoneAnimationTracks = AnimationObject->GetDataModel()->GetBoneAnimationTracks();
