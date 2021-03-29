@@ -24,6 +24,11 @@ FFractureToolContext::FFractureToolContext(UGeometryCollectionComponent* InGeome
 
 void FFractureToolContext::Sanitize()
 {
+	// Ensure that selected idices are valid
+	SelectedBones.RemoveAll([this](int32 Index) {
+		return Index == INDEX_NONE;
+		});
+	
 	// Ensure that children of a selected node are not also selected.
 	SelectedBones.RemoveAll([this](int32 Index) {
 		return HasSelectedAncestor(Index);
@@ -173,6 +178,11 @@ void FFractureToolContext::ConvertSelectionToClusterNodes()
 
 bool FFractureToolContext::HasSelectedAncestor(int32 Index) const
 {
+	if (Index == INDEX_NONE)
+	{
+		return false;
+	}
+
 	const TManagedArray<int32>& Parents = GeometryCollection->GetAttribute<int32>("Parent", FGeometryCollection::TransformGroup);
 
 	int32 CurrIndex = Index;
