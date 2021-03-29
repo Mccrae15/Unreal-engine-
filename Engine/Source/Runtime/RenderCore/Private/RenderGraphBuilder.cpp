@@ -1383,7 +1383,7 @@ void FRDGBuilder::Execute()
 
 			if (TransientResourceAllocator)
 			{
-				TransientResourceAllocator->Freeze();
+				TransientResourceAllocator->Freeze(RHICmdList);
 			}
 		}
 
