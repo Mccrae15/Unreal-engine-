@@ -648,7 +648,6 @@ struct FNiagaraDataInterfaceParametersCS_CollisionQuery : public FNiagaraDataInt
 public:
 	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
 	{
-		PassUniformBuffer.Bind(ParameterMap, FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName());
 		GlobalDistanceFieldParameters.Bind(ParameterMap);
 	}
 
@@ -657,11 +656,6 @@ public:
 		check(IsInRenderingThread());
 
 		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
-		
-		//-Note: Scene textures will not exist in the Mobile rendering path
-		TUniformBufferRef<FSceneTextureUniformParameters> SceneTextureUniformParams = GNiagaraViewDataManager.GetSceneTextureUniformParameters();
-		check(!PassUniformBuffer.IsBound() || SceneTextureUniformParams);
-		SetUniformBufferParameter(RHICmdList, ComputeShaderRHI, PassUniformBuffer/*Shader->GetUniformBufferParameter(SceneTexturesUniformBufferStruct)*/, SceneTextureUniformParams);
 
 		if (GlobalDistanceFieldParameters.IsBound() && Context.Batcher)
 		{
@@ -670,9 +664,6 @@ public:
 	}
 
 private:
-	/** The SceneDepthTexture parameter for depth buffer collision. */
-	LAYOUT_FIELD(FShaderUniformBufferParameter, PassUniformBuffer);
-
 	LAYOUT_FIELD(FGlobalDistanceFieldParameters, GlobalDistanceFieldParameters);
 };
 

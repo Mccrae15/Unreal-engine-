@@ -194,6 +194,8 @@ extern RENDERER_API FIntPoint GetSceneTextureExtent();
 /** Returns the feature level being used by the renderer. */
 extern RENDERER_API ERHIFeatureLevel::Type GetSceneTextureFeatureLevel();
 
+/** Registers system textures into RDG. */
+extern RENDERER_API void CreateSystemTextures(FRDGBuilder& GraphBuilder);
 
 ///////////////////////////////////////////////////////////////////////////
 // Deprecated APIs

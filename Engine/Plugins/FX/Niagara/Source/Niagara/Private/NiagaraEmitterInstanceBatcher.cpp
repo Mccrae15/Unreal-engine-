@@ -472,6 +472,7 @@ void NiagaraEmitterInstanceBatcher::ProcessPendingTicksFlush(FRHICommandListImme
 			// Execute all ticks that we can support without invalid simulations
 			FMemMark MemMark(FMemStack::Get());
 			FRDGBuilder GraphBuilder(RHICmdList);
+			CreateSystemTextures(GraphBuilder);
 			PreInitViews(GraphBuilder, true);
 			PostInitViews(GraphBuilder, View.ViewUniformBuffer, true);
 			PostRenderOpaque(GraphBuilder, View.ViewUniformBuffer, true);
@@ -1264,13 +1265,6 @@ void NiagaraEmitterInstanceBatcher::ExecuteAll(FRHICommandList& RHICmdList, FRHI
 
 	SCOPED_DRAW_EVENTF(RHICmdList, NiagaraEmitterInstanceBatcher_ExecuteAll, TEXT("NiagaraEmitterInstanceBatcher_ExecuteAll - TickStage(%d)"), TickStage);
 
-	FUniformBufferStaticBindings StaticUniformBuffers;
-	if (FRHIUniformBuffer* SceneTexturesUniformBuffer = GNiagaraViewDataManager.GetSceneTextureUniformParameters())
-	{
-		StaticUniformBuffers.AddUniformBuffer(SceneTexturesUniformBuffer);
-	}
-	SCOPED_UNIFORM_BUFFER_STATIC_BINDINGS(RHICmdList, StaticUniformBuffers);
-
 	FMemMark Mark(FMemStack::Get());
 	TArray<FOverlappableTicks, TMemStackAllocator<> > SimPasses;
 	{
@@ -1454,15 +1448,19 @@ void NiagaraEmitterInstanceBatcher::PreInitViews(FRDGBuilder& GraphBuilder, bool
 
 		if (GNiagaraAllowTickBeforeRender)
 		{
-			AddPass(
-				GraphBuilder,
+			FNiagaraSceneTextureParameters* PassParameters = GraphBuilder.AllocParameters<FNiagaraSceneTextureParameters>();
+			GNiagaraViewDataManager.GetSceneTextureParameters(GraphBuilder, *PassParameters);
+
+			GraphBuilder.AddPass(
 				RDG_EVENT_NAME("Niagara::PreInitViews"),
+				PassParameters,
+				ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
 				[this](FRHICommandListImmediate& RHICmdList)
-				{
-					BuildTickStagePasses(RHICmdList, ETickStage::PreInitViews);
-					ExecuteAll(RHICmdList, nullptr, ETickStage::PreInitViews);
-				}
-			);
+			{
+				FNiagaraSceneTextureScope Scope;
+				BuildTickStagePasses(RHICmdList, ETickStage::PreInitViews);
+				ExecuteAll(RHICmdList, nullptr, ETickStage::PreInitViews);
+			});
 		}
 	}
 	else
@@ -1478,15 +1476,19 @@ void NiagaraEmitterInstanceBatcher::PostInitViews(FRDGBuilder& GraphBuilder, FRH
 
 	if (bAllowGPUParticleUpdate && FNiagaraUtilities::AllowGPUParticles(GetShaderPlatform()))
 	{
-		AddPass(
-			GraphBuilder,
+		FNiagaraSceneTextureParameters* PassParameters = GraphBuilder.AllocParameters<FNiagaraSceneTextureParameters>();
+		GNiagaraViewDataManager.GetSceneTextureParameters(GraphBuilder, *PassParameters);
+
+		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("Niagara::PostInitViews"),
+			PassParameters,
+			ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
 			[this, ViewUniformBuffer](FRHICommandListImmediate& RHICmdList)
-			{
-				BuildTickStagePasses(RHICmdList, ETickStage::PostInitViews);
-				ExecuteAll(RHICmdList, ViewUniformBuffer, ETickStage::PostInitViews);
-			}
-		);
+		{
+			FNiagaraSceneTextureScope Scope;
+			BuildTickStagePasses(RHICmdList, ETickStage::PostInitViews);
+			ExecuteAll(RHICmdList, ViewUniformBuffer, ETickStage::PostInitViews);
+		});
 	}
 }
 
@@ -1494,32 +1496,39 @@ void NiagaraEmitterInstanceBatcher::PostRenderOpaque(FRDGBuilder& GraphBuilder, 
 {
 	LLM_SCOPE(ELLMTag::Niagara);
 
-	AddPass(
-		GraphBuilder,
+	FNiagaraSceneTextureParameters* PassParameters = GraphBuilder.AllocParameters<FNiagaraSceneTextureParameters>();
+	GNiagaraViewDataManager.GetSceneTextureParameters(GraphBuilder, *PassParameters);
+
+	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("Niagara::PostRenderOpaque"),
+		PassParameters,
+		ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
 		[this, ViewUniformBuffer, bAllowGPUParticleUpdate](FRHICommandListImmediate& RHICmdList)
+	{
+		FNiagaraSceneTextureScope Scope;
+
+		if (bAllowGPUParticleUpdate && FNiagaraUtilities::AllowGPUParticles(GetShaderPlatform()))
 		{
-			if (bAllowGPUParticleUpdate && FNiagaraUtilities::AllowGPUParticles(GetShaderPlatform()))
-			{
-				BuildTickStagePasses(RHICmdList, ETickStage::PostOpaqueRender);
+			BuildTickStagePasses(RHICmdList, ETickStage::PostOpaqueRender);
 
-				// Setup new readback since if there is no pending request, there is no risk of having invalid data read (offset being allocated after the readback was sent).
-				ExecuteAll(RHICmdList, ViewUniformBuffer, ETickStage::PostOpaqueRender);
+			// Setup new readback since if there is no pending request, there is no risk of having invalid data read (offset being allocated after the readback was sent).
+			ExecuteAll(RHICmdList, ViewUniformBuffer, ETickStage::PostOpaqueRender);
 
-				UpdateFreeIDBuffers(RHICmdList, DeferredIDBufferUpdates);
-				DeferredIDBufferUpdates.SetNum(0, false);
+			UpdateFreeIDBuffers(RHICmdList, DeferredIDBufferUpdates);
+			DeferredIDBufferUpdates.SetNum(0, false);
 
-				FinishDispatches();
+			FinishDispatches();
 
-				ProcessDebugReadbacks(RHICmdList, false);
-			}
-
-			if (!GPUInstanceCounterManager.HasPendingGPUReadback())
-			{
-				GPUInstanceCounterManager.EnqueueGPUReadback(RHICmdList);
-			}
+			ProcessDebugReadbacks(RHICmdList, false);
 		}
-	);
+
+		if (!GPUInstanceCounterManager.HasPendingGPUReadback())
+		{
+			GPUInstanceCounterManager.EnqueueGPUReadback(RHICmdList);
+		}
+	});
+
+	GNiagaraViewDataManager.EndScene();
 }
 
 void NiagaraEmitterInstanceBatcher::ProcessDebugReadbacks(FRHICommandListImmediate& RHICmdList, bool bWaitCompletion)
