@@ -569,6 +569,8 @@ public:
 	const TParticleView<TPBDRigidParticles<T, d>>& GetActiveParticlesView() const { UpdateIfNeeded(); return ActiveParticlesView; }
 	TParticleView<TPBDRigidParticles<T, d>>& GetActiveParticlesView() { UpdateIfNeeded(); return ActiveParticlesView; }
 
+	const TArray<TPBDRigidParticleHandle<T, d>*>& GetActiveParticlesArray() const { return ActiveParticlesArray; }
+
 	const TParticleView<TPBDRigidParticles<T,d>>& GetDirtyParticlesView() const { UpdateIfNeeded(); return DirtyParticlesView; }
 	TParticleView<TPBDRigidParticles<T,d>>& GetDirtyParticlesView() { UpdateIfNeeded(); return DirtyParticlesView; }
 
