@@ -74,7 +74,7 @@ void AWorldPartitionHLOD::PostRegisterAllComponents()
 
 EActorGridPlacement AWorldPartitionHLOD::GetDefaultGridPlacement() const
 {
-	return EActorGridPlacement::Location;
+	return EActorGridPlacement::Bounds;
 }
 
 TUniquePtr<FWorldPartitionActorDesc> AWorldPartitionHLOD::CreateClassActorDesc() const
