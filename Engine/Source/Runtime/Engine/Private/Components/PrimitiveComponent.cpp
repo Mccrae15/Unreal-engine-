@@ -1202,7 +1202,7 @@ void UPrimitiveComponent::PostLoad()
 {
 	Super::PostLoad();
 	
-	int32 const UE4Version = GetLinkerUE4Version();
+	int32 const UE4Version = GetLinkerUEVersion();
 
 	// as temporary fix for the bug TTP 299926
 	// permanent fix is coming

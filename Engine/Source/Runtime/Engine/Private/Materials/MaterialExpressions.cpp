@@ -9140,7 +9140,7 @@ void UMaterialExpressionDynamicParameter::PostLoad()
 {
 	Super::PostLoad();
 
-	if (GetLinkerUE4Version() < VER_UE4_DYNAMIC_PARAMETER_DEFAULT_VALUE)
+	if (GetLinkerUEVersion() < VER_UE4_DYNAMIC_PARAMETER_DEFAULT_VALUE)
 	{
 		DefaultValue = FLinearColor::Black;//Old data should default to 0.0f;
 	}
@@ -9655,7 +9655,7 @@ void UMaterialExpressionSceneDepth::PostLoad()
 {
 	Super::PostLoad();
 
-	if(GetLinkerUE4Version() < VER_UE4_REFACTOR_MATERIAL_EXPRESSION_SCENECOLOR_AND_SCENEDEPTH_INPUTS)
+	if(GetLinkerUEVersion() < VER_UE4_REFACTOR_MATERIAL_EXPRESSION_SCENECOLOR_AND_SCENEDEPTH_INPUTS)
 	{
 		// Connect deprecated UV input to new expression input
 		InputMode = EMaterialSceneAttributeInputMode::Coordinates;
@@ -9813,7 +9813,7 @@ void UMaterialExpressionSceneColor::PostLoad()
 {
 	Super::PostLoad();
 
-	if(GetLinkerUE4Version() < VER_UE4_REFACTOR_MATERIAL_EXPRESSION_SCENECOLOR_AND_SCENEDEPTH_INPUTS)
+	if(GetLinkerUEVersion() < VER_UE4_REFACTOR_MATERIAL_EXPRESSION_SCENECOLOR_AND_SCENEDEPTH_INPUTS)
 	{
 		// Connect deprecated UV input to new expression input
 		InputMode = EMaterialSceneAttributeInputMode::OffsetFraction;

@@ -5089,7 +5089,7 @@ void UStaticMesh::BeginPostLoadInternal(FStaticMeshPostLoadContext& Context)
 	if (!Context.bIsCookedForEditor)
 	{
 		// Needs to happen before 'CacheDerivedData'
-		if (GetLinkerUE4Version() < VER_UE4_BUILD_SCALE_VECTOR)
+		if (GetLinkerUEVersion() < VER_UE4_BUILD_SCALE_VECTOR)
 		{
 			int32 NumLODs = GetNumSourceModels();
 			for (int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex)
@@ -5099,7 +5099,7 @@ void UStaticMesh::BeginPostLoadInternal(FStaticMeshPostLoadContext& Context)
 			}
 		}
 
-		if (GetLinkerUE4Version() < VER_UE4_LIGHTMAP_MESH_BUILD_SETTINGS)
+		if (GetLinkerUEVersion() < VER_UE4_LIGHTMAP_MESH_BUILD_SETTINGS)
 		{
 			for (int32 i = 0; i < GetNumSourceModels(); i++)
 			{
@@ -5107,7 +5107,7 @@ void UStaticMesh::BeginPostLoadInternal(FStaticMeshPostLoadContext& Context)
 			}
 		}
 
-		if (GetLinkerUE4Version() < VER_UE4_MIKKTSPACE_IS_DEFAULT)
+		if (GetLinkerUEVersion() < VER_UE4_MIKKTSPACE_IS_DEFAULT)
 		{
 			for (int32 i = 0; i < GetNumSourceModels(); ++i)
 			{
@@ -5115,7 +5115,7 @@ void UStaticMesh::BeginPostLoadInternal(FStaticMeshPostLoadContext& Context)
 			}
 		}
 
-		if (GetLinkerUE4Version() < VER_UE4_BUILD_MESH_ADJ_BUFFER_FLAG_EXPOSED)
+		if (GetLinkerUEVersion() < VER_UE4_BUILD_MESH_ADJ_BUFFER_FLAG_EXPOSED)
 		{
 			FRawMesh TempRawMesh;
 			uint32 TotalIndexCount = 0;
@@ -5146,7 +5146,7 @@ void UStaticMesh::BeginPostLoadInternal(FStaticMeshPostLoadContext& Context)
 		MeshUtilities.FixupMaterialSlotNames(this);
 
 		const int32 CustomVersion = GetLinkerCustomVersion(FReleaseObjectVersion::GUID);
-		if (GetLinkerUE4Version() < VER_UE4_STATIC_MESH_EXTENDED_BOUNDS || CustomVersion < FReleaseObjectVersion::StaticMeshExtendedBoundsFix)
+		if (GetLinkerUEVersion() < VER_UE4_STATIC_MESH_EXTENDED_BOUNDS || CustomVersion < FReleaseObjectVersion::StaticMeshExtendedBoundsFix)
 		{
 			// A stall is almost guaranteed during async build because mesh bounds are used extensively from many different places.
 			Context.bShouldComputeExtendedBounds = true;

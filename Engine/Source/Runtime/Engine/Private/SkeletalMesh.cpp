@@ -2660,7 +2660,7 @@ void USkeletalMesh::PostLoad()
 			GetLODSettings()->SetLODSettingsToMesh(this);
 		}
 
-		if (GetLinkerUE4Version() < VER_UE4_SORT_ACTIVE_BONE_INDICES)
+		if (GetLinkerUEVersion() < VER_UE4_SORT_ACTIVE_BONE_INDICES)
 		{
 			for (int32 LodIndex = 0; LodIndex < LODInfo.Num(); LodIndex++)
 			{
