@@ -1716,6 +1716,8 @@ void ComputeHairStrandsInterpolation(
 						Instance->Guides.RestRootResource,
 						Instance->Guides.DeformedRootResource);
 				}
+
+				ConvertToUntrackedBuffer(GraphBuilder, Register(GraphBuilder, LOD.DeformedResource->GetBuffer(FHairCardsDeformedResource::Current), ERDGImportedBufferFlags::None).Buffer, ERHIAccess::SRVMask);
 			}
 
 			#if RHI_RAYTRACING
@@ -1775,6 +1777,8 @@ void ComputeHairStrandsInterpolation(
 					MeshesInstance.DeformedResource,
 					Instance->Guides.RestRootResource,
 					Instance->Guides.DeformedRootResource);
+
+				ConvertToUntrackedBuffer(GraphBuilder, Register(GraphBuilder, MeshesInstance.DeformedResource->GetBuffer(FHairMeshesDeformedResource::Current), ERDGImportedBufferFlags::None).Buffer, ERHIAccess::SRVMask);
 			}
 
 			#if RHI_RAYTRACING
