@@ -223,7 +223,7 @@ void FNiagaraViewDataMgr::EndPass()
 	bInsidePass = false;
 }
 
-void FNiagaraViewDataMgr::EndScene()
+void FNiagaraViewDataMgr::ClearSceneTextureParameters()
 {
 	Parameters = {};
 }

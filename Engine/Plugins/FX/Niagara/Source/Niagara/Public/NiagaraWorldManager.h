@@ -55,7 +55,7 @@ public:
 
 	void BeginPass();
 	void EndPass();
-	void EndScene();
+	void ClearSceneTextureParameters();
 
 	void GetSceneTextureParameters(FRDGBuilder& GraphBuilder, FNiagaraSceneTextureParameters& InParameters) const;
 

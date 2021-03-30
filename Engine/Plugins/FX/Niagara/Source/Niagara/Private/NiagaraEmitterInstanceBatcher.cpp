@@ -1386,6 +1386,7 @@ void NiagaraEmitterInstanceBatcher::ExecuteAll(FRHICommandList& RHICmdList, FRHI
 
 void NiagaraEmitterInstanceBatcher::PreInitViews(FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate)
 {
+	GNiagaraViewDataManager.ClearSceneTextureParameters();
 	FramesBeforeTickFlush = 0;
 
 	GpuReadbackManagerPtr->Tick();
@@ -1528,7 +1529,7 @@ void NiagaraEmitterInstanceBatcher::PostRenderOpaque(FRDGBuilder& GraphBuilder, 
 		}
 	});
 
-	GNiagaraViewDataManager.EndScene();
+	GNiagaraViewDataManager.ClearSceneTextureParameters();
 }
 
 void NiagaraEmitterInstanceBatcher::ProcessDebugReadbacks(FRHICommandListImmediate& RHICmdList, bool bWaitCompletion)
