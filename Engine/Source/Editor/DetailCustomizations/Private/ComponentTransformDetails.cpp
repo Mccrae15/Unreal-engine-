@@ -1243,7 +1243,8 @@ void FComponentTransformDetails::OnSetTransform(ETransformField::Type TransformF
 
 				if (!bCommitted)
 				{
-					SnapshotTransactionBuffer(OldSceneComponent);
+					const FProperty* ConstValueProperty = ValueProperty;
+					SnapshotTransactionBuffer(OldSceneComponent, MakeArrayView(&ConstValueProperty, 1));
 				}
 
 				SceneComponent = FindObject<USceneComponent>(EditedActor, *SceneComponentPath);
@@ -1253,9 +1254,10 @@ void FComponentTransformDetails::OnSetTransform(ETransformField::Type TransformF
 					EditedActor->PostEditChangeChainProperty(PropertyChangedChainEvent);
 					SceneComponent = FindObject<USceneComponent>(EditedActor, *SceneComponentPath);
 
-					if (!bCommitted)
+					if (!bCommitted && OldSceneComponent != SceneComponent)
 					{
-						SnapshotTransactionBuffer(EditedActor);
+						const FProperty* ConstValueProperty = ValueProperty;
+						SnapshotTransactionBuffer(SceneComponent, MakeArrayView(&ConstValueProperty, 1));
 					}
 				}
 				
