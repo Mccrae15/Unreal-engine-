@@ -206,13 +206,13 @@ bool UPolygonSelectionMechanic::TopologyHitTest(const FRay& WorldRay, FHitResult
 
 	if (OutSelection.SelectedCornerIDs.Num() > 0)
 	{
-		OutHit.FaceIndex = OutSelection.SelectedCornerIDs[0];
+		OutHit.FaceIndex = OutSelection.GetASelectedCornerID();
 		OutHit.Distance = LocalRay.Project(LocalPosition);
 		OutHit.ImpactPoint = (FVector)TargetTransform.TransformPosition(LocalRay.PointAt(OutHit.Distance));
 	}
 	else if (OutSelection.SelectedEdgeIDs.Num() > 0)
 	{
-		OutHit.FaceIndex = OutSelection.SelectedEdgeIDs[0];
+		OutHit.FaceIndex = OutSelection.GetASelectedEdgeID();
 		OutHit.Distance = LocalRay.Project(LocalPosition);
 		OutHit.ImpactPoint = (FVector)TargetTransform.TransformPosition(LocalRay.PointAt(OutHit.Distance));
 		OutHit.Item = EdgeSegmentId;

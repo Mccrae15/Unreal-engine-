@@ -500,7 +500,7 @@ void UGroomCardsEditorTool::OnClicked(const FInputDeviceRay& ClickPos)
 		const FGroupTopologySelection& CurSelection = CardMeshSelectionMechanic->GetActiveSelection();
 		if (CurSelection.SelectedGroupIDs.Num() == 1)
 		{
-			int32 SelectedCardGroupID = CurSelection.SelectedGroupIDs[0];
+			int32 SelectedCardGroupID = CurSelection.GetASelectedGroupID();
 			GetToolManager()->EmitObjectChange(this, MakeUnique<FBeginGroomCardsEditChange>(SelectedCardGroupID),
 				LOCTEXT("BeginCardEditChange", "BeginCardEdit"));
 

@@ -597,7 +597,7 @@ bool FGroupTopologySelector::ExpandSelectionByEdgeLoops(FGroupTopologySelection&
 	{
 		for (int32 EdgeID : EdgeSet)
 		{
-			Selection.SelectedEdgeIDs.AddUnique(EdgeID);
+			Selection.SelectedEdgeIDs.Add(EdgeID);
 		}
 		return true;
 	}
