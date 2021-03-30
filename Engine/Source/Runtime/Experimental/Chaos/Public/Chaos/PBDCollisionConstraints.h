@@ -60,7 +60,6 @@ public:
 		const TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>>& PerParticlePhysicsMaterials, 
 		const int32 ApplyPairIterations = 1, 
 		const int32 ApplyPushOutPairIterations = 1, 
-		const FReal CullDistance = (FReal)0, 
 		const FReal RestitutionThreshold = 2000.0f);
 
 	virtual ~FPBDCollisionConstraints() {}
@@ -256,16 +255,6 @@ public:
 #endif
 	}
 
-	void SetCullDistance(FReal InCullDistance)
-	{
-		MCullDistance = InCullDistance;
-	}
-
-	FReal GetCullDistance() const
-	{
-		return MCullDistance;
-	}
-
 	void SetCanDisableContacts(bool bInCanDisableContacts)
 	{
 		bCanDisableContacts = bInCanDisableContacts;
@@ -372,7 +361,6 @@ private:
 	const TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>>& MPerParticlePhysicsMaterials;
 	int32 MApplyPairIterations;
 	int32 MApplyPushOutPairIterations;
-	FReal MCullDistance;
 	FReal RestitutionThreshold;
 	bool bUseCCD;
 	bool bEnableCollisions;
