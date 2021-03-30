@@ -12027,6 +12027,14 @@ UMaterialFunctionInterface::UMaterialFunctionInterface(const FObjectInitializer&
 {
 }
 
+void UMaterialFunctionInterface::PostInitProperties()
+{
+	Super::PostInitProperties();
+
+	// Initialize StateId to something unique, in case this is a new function
+	StateId = FGuid::NewGuid();
+}
+
 void UMaterialFunctionInterface::PostLoad()
 {
 	Super::PostLoad();
