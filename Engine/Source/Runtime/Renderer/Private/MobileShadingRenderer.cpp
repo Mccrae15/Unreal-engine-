@@ -702,14 +702,6 @@ void FMobileSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 		{
 			GPUSortManager->OnPostRenderOpaque(GraphBuilder);
 		}
-		AddPass(
-			GraphBuilder,
-			RDG_EVENT_NAME("DispatchRHICmdList"),
-			[](FRHICommandListImmediate& RHICmdList)
-			{
-				RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
-			}
-		);
 	}
 
 	if (bRequriesAmbientOcclusionPass)
