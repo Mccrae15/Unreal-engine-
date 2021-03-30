@@ -2026,14 +2026,14 @@ void UObject::ReloadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilenam
 {
 	if (!GIsEditor)
 	{
-		LoadConfig(ConfigClass, InFilename, PropagationFlags | UE4::LCPF_ReloadingConfigData | UE4::LCPF_ReadParentSections, PropertyToLoad);
+		LoadConfig(ConfigClass, InFilename, PropagationFlags | UE::LCPF_ReloadingConfigData | UE::LCPF_ReadParentSections, PropertyToLoad);
 	}
 #if WITH_EDITOR
 	else
 	{
 		// When in the editor, raise change events so that the UI will update correctly when object configs are reloaded.
 		PreEditChange(NULL);
-		LoadConfig(ConfigClass, InFilename, PropagationFlags | UE4::LCPF_ReloadingConfigData | UE4::LCPF_ReadParentSections, PropertyToLoad);
+		LoadConfig(ConfigClass, InFilename, PropagationFlags | UE::LCPF_ReloadingConfigData | UE::LCPF_ReadParentSections, PropertyToLoad);
 		PostEditChange();
 	}
 #endif // WITH_EDITOR
@@ -2122,18 +2122,18 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 	{
 		if ( ParentClass->HasAnyClassFlags(CLASS_Config) )
 		{
-			if ( (PropagationFlags&UE4::LCPF_ReadParentSections) != 0 )
+			if ( (PropagationFlags&UE::LCPF_ReadParentSections) != 0 )
 			{
 				// call LoadConfig on the parent class
 				LoadConfig( ParentClass, NULL, PropagationFlags, PropertyToLoad );
 
 				// if we are also notifying child classes or instances, stop here as this object's properties will be imported as a result of notifying the others
-				if ( (PropagationFlags & (UE4::LCPF_PropagateToChildDefaultObjects|UE4::LCPF_PropagateToInstances)) != 0 )
+				if ( (PropagationFlags & (UE::LCPF_PropagateToChildDefaultObjects|UE::LCPF_PropagateToInstances)) != 0 )
 				{
 					return;
 				}
 			}
-			else if ( (PropagationFlags&UE4::LCPF_PropagateToChildDefaultObjects) != 0 )
+			else if ( (PropagationFlags&UE::LCPF_PropagateToChildDefaultObjects) != 0 )
 			{
 				// not propagating the call upwards, but we are propagating the call to all child classes
 				for (TObjectIterator<UClass> It; It; ++It)
@@ -2141,14 +2141,14 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 					if (It->IsChildOf(ConfigClass))
 					{
 						// mask out the PropgateToParent and PropagateToChildren values
-						It->GetDefaultObject()->LoadConfig(*It, NULL, (PropagationFlags&(UE4::LCPF_PersistentFlags|UE4::LCPF_PropagateToInstances)), PropertyToLoad);
+						It->GetDefaultObject()->LoadConfig(*It, NULL, (PropagationFlags&(UE::LCPF_PersistentFlags|UE::LCPF_PropagateToInstances)), PropertyToLoad);
 					}
 				}
 
 				// LoadConfig() was called on this object during iteration, so stop here 
 				return;
 			}
-			else if ( (PropagationFlags&UE4::LCPF_PropagateToInstances) != 0 )
+			else if ( (PropagationFlags&UE::LCPF_PropagateToInstances) != 0 )
 			{
 				// call LoadConfig() on all instances of this class (except the CDO)
 				// Do not propagate this call to parents, and do not propagate to children or instances (would be redundant) 
@@ -2159,7 +2159,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 						if ( !GIsEditor )
 						{
 							// make sure to pass in the class so that OriginalClass isn't reset
-							It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE4::LCPF_PersistentFlags), PropertyToLoad);
+							It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE::LCPF_PersistentFlags), PropertyToLoad);
 						}
 #if WITH_EDITOR
 						else
@@ -2167,7 +2167,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 							It->PreEditChange(NULL);
 
 							// make sure to pass in the class so that OriginalClass isn't reset
-							It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE4::LCPF_PersistentFlags), PropertyToLoad);
+							It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE::LCPF_PersistentFlags), PropertyToLoad);
 
 							It->PostEditChange();
 						}
@@ -2176,7 +2176,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 				}
 			}
 		}
-		else if ( (PropagationFlags&UE4::LCPF_PropagateToChildDefaultObjects) != 0 )
+		else if ( (PropagationFlags&UE::LCPF_PropagateToChildDefaultObjects) != 0 )
 		{
 			// we're at the base-most config class
 			for ( TObjectIterator<UClass> It; It; ++It )
@@ -2186,7 +2186,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 					if ( !GIsEditor )
 					{
 						// make sure to pass in the class so that OriginalClass isn't reset
-						It->GetDefaultObject()->LoadConfig( *It, NULL, (PropagationFlags&(UE4::LCPF_PersistentFlags|UE4::LCPF_PropagateToInstances)), PropertyToLoad );
+						It->GetDefaultObject()->LoadConfig( *It, NULL, (PropagationFlags&(UE::LCPF_PersistentFlags|UE::LCPF_PropagateToInstances)), PropertyToLoad );
 					}
 #if WITH_EDITOR
 					else
@@ -2194,7 +2194,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 						It->PreEditChange(NULL);
 
 						// make sure to pass in the class so that OriginalClass isn't reset
-						It->GetDefaultObject()->LoadConfig( *It, NULL, (PropagationFlags&(UE4::LCPF_PersistentFlags|UE4::LCPF_PropagateToInstances)), PropertyToLoad );
+						It->GetDefaultObject()->LoadConfig( *It, NULL, (PropagationFlags&(UE::LCPF_PersistentFlags|UE::LCPF_PropagateToInstances)), PropertyToLoad );
 
 						It->PostEditChange();
 					}
@@ -2204,7 +2204,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 
 			return;
 		}
-		else if ( (PropagationFlags&UE4::LCPF_PropagateToInstances) != 0 )
+		else if ( (PropagationFlags&UE::LCPF_PropagateToInstances) != 0 )
 		{
 			for ( TObjectIterator<UObject> It; It; ++It )
 			{
@@ -2213,7 +2213,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 					if ( !GIsEditor )
 					{
 						// make sure to pass in the class so that OriginalClass isn't reset
-						It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE4::LCPF_PersistentFlags), PropertyToLoad);
+						It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE::LCPF_PersistentFlags), PropertyToLoad);
 					}
 #if WITH_EDITOR
 					else
@@ -2221,7 +2221,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 						It->PreEditChange(NULL);
 
 						// make sure to pass in the class so that OriginalClass isn't reset
-						It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE4::LCPF_PersistentFlags), PropertyToLoad);
+						It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE::LCPF_PersistentFlags), PropertyToLoad);
 						It->PostEditChange();
 					}
 #endif // WITH_EDITOR
@@ -2456,7 +2456,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 	}
 
 	// if we are reloading config data after the initial class load, fire the callback now
-	if ( (PropagationFlags&UE4::LCPF_ReloadingConfigData) != 0 )
+	if ( (PropagationFlags&UE::LCPF_ReloadingConfigData) != 0 )
 	{
 		PostReloadConfig(PropertyToLoad);
 	}
@@ -2469,7 +2469,7 @@ void UObject::SaveConfig( uint64 Flags, const TCHAR* InFilename, FConfigCacheIni
 		return;
 	}
 
-	uint32 PropagationFlags = UE4::LCPF_None;
+	uint32 PropagationFlags = UE::LCPF_None;
 
 	const FString Filename
 	// if a filename was specified, always load from that file
@@ -2521,12 +2521,12 @@ void UObject::SaveConfig( uint64 Flags, const TCHAR* InFilename, FConfigCacheIni
 			if (Property->PropertyFlags & CPF_GlobalConfig)
 			{
 				// call LoadConfig() on child classes if any of the properties were global config
-				PropagationFlags |= UE4::LCPF_PropagateToChildDefaultObjects;
+				PropagationFlags |= UE::LCPF_PropagateToChildDefaultObjects;
 				BaseClass = Property->GetOwnerClass();
 				if ( BaseClass != GetClass() )
 				{
 					// call LoadConfig() on parent classes only if the global config property was declared in a parent class
-					PropagationFlags |= UE4::LCPF_ReadParentSections;
+					PropagationFlags |= UE::LCPF_ReadParentSections;
 				}
 			}
 
