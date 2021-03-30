@@ -105,7 +105,9 @@ bool UEdMode::CapturedMouseMove(FEditorViewportClient* InViewportClient, FViewpo
 
 bool UEdMode::InputKey(FEditorViewportClient* ViewportClient, FViewport* Viewport, FKey Key, EInputEvent Event)
 {
-	if (!Viewport)
+	// Future input routing won't give us inputs captured by the viewport client to begin with,
+	// but for now we bail early if viewportclient is capturing.
+	if (!Viewport || (ViewportClient && ViewportClient->IsTracking()))
 	{
 		return false;
 	}
