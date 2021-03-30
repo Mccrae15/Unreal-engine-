@@ -30,6 +30,8 @@
 #include "LevelInstance/LevelInstanceActor.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 
+#include "LevelInstance/Packed/PackedLevelInstanceActor.h"
+
 DEFINE_LOG_CATEGORY_STATIC(LogHLODBuilder, Log, All);
 
 /**
@@ -105,6 +107,28 @@ public:
 		return !bIsDirty;
 	}
 
+	// @todo_wp: Currently forcing packed level instances components to have static mobility
+	static bool IsHLODRelevant(UActorComponent* Component)
+	{
+		USceneComponent* PackedLevelInstanceSceneComponent = Component->GetOwner()->IsA<APackedLevelInstance>() ? Cast<USceneComponent>(Component) : nullptr;
+		EComponentMobility::Type SceneComponentMobility = EComponentMobility::Static;
+
+		if (PackedLevelInstanceSceneComponent)
+		{
+			SceneComponentMobility = PackedLevelInstanceSceneComponent->Mobility;
+			PackedLevelInstanceSceneComponent->Mobility = EComponentMobility::Static;
+		}
+
+		bool bIsHLODRelevant = Component->IsHLODRelevant();
+
+		if (PackedLevelInstanceSceneComponent)
+		{
+			PackedLevelInstanceSceneComponent->Mobility = SceneComponentMobility;
+		}
+
+		return bIsHLODRelevant;
+	}
+
 	static TArray<UPrimitiveComponent*> GatherPrimitiveComponents(const TArray<const AActor*>& InActors)
 	{
 		TArray<UPrimitiveComponent*> PrimitiveComponents;
@@ -115,7 +139,7 @@ public:
 			UE_LOG(LogHLODBuilder, Verbose, TEXT("%s* Adding components from actor %s"), Padding, *Actor->GetName());
 			for (UActorComponent* SubComponent : Actor->GetComponents())
 			{
-				if (SubComponent && SubComponent->IsHLODRelevant())
+				if (SubComponent && IsHLODRelevant(SubComponent))
 				{
 					if (UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(SubComponent))
 					{
@@ -421,7 +445,7 @@ TArray<AWorldPartitionHLOD*> FHLODBuilderUtilities::CreateHLODActors(FHLODCreati
 	for (const FActorInstance& ActorInstance : InActors)
 	{
 		FWorldPartitionActorDesc& ActorDesc = InCreationParams.WorldPartition->GetActorDescChecked(ActorInstance.Actor);
-		if (ActorDesc.GetActorIsHLODRelevant())
+		if (ActorDesc.GetActorIsHLODRelevant() || ActorDesc.GetActorClass()->IsChildOf<APackedLevelInstance>())
 		{
 			UHLODLayer* HLODLayer = UHLODLayer::GetHLODLayer(ActorDesc, InCreationParams.WorldPartition);
 			if (HLODLayer)
