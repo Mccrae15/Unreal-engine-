@@ -1006,7 +1006,6 @@ private:
 	FRDGBufferRef Owner = nullptr;
 	FRDGSubresourceState State;
 
-	mutable uint32 RefCount = 0;
 	uint32 LastUsedFrame = 0;
 
 	friend FRenderGraphResourcePool;
