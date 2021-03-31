@@ -28,10 +28,6 @@
 #include "GroomManager.h"
 #include "GroomInstance.h"
 
-static float GHairClipLength = -1;
-static FAutoConsoleVariableRef CVarHairClipLength(TEXT("r.HairStrands.DebugClipLength"), GHairClipLength, TEXT("Clip hair strands which have a lenth larger than this value. (default is -1, no effect)"));
-float GetHairClipLength() { return GHairClipLength > 0 ? GHairClipLength : 100000;  }
-
 static int32 GHairEnableAdaptiveSubsteps = 0;  
 static FAutoConsoleVariableRef CVarHairEnableAdaptiveSubsteps(TEXT("r.HairStrands.EnableAdaptiveSubsteps"), GHairEnableAdaptiveSubsteps, TEXT("Enable adaptive solver substeps"));
 bool IsHairAdaptiveSubstepsEnabled() { return (GHairEnableAdaptiveSubsteps == 1); }
@@ -111,7 +107,6 @@ static FHairGroupDesc GetGroomGroupsDesc(const UGroomAsset* Asset, UGroomCompone
 	if (!O.HairWidth_Override)					{ O.HairWidth					= Asset->HairGroupsRendering[GroupIndex].GeometrySettings.HairWidth;					}
 	if (!O.HairRootScale_Override)				{ O.HairRootScale				= Asset->HairGroupsRendering[GroupIndex].GeometrySettings.HairRootScale;				}
 	if (!O.HairTipScale_Override)				{ O.HairTipScale				= Asset->HairGroupsRendering[GroupIndex].GeometrySettings.HairTipScale;					}
-	if (!O.HairClipScale_Override)				{ O.HairClipScale				= Asset->HairGroupsRendering[GroupIndex].GeometrySettings.HairClipScale;				}
 	if (!O.bSupportVoxelization_Override)		{ O.bSupportVoxelization		= Asset->HairGroupsRendering[GroupIndex].ShadowSettings.bVoxelize;						}
 	if (!O.HairShadowDensity_Override)			{ O.HairShadowDensity			= Asset->HairGroupsRendering[GroupIndex].ShadowSettings.HairShadowDensity;				}
 	if (!O.HairRaytracingRadiusScale_Override)	{ O.HairRaytracingRadiusScale	= Asset->HairGroupsRendering[GroupIndex].ShadowSettings.HairRaytracingRadiusScale;		}
@@ -134,27 +129,23 @@ public:
 	const float DebugMode;
 	const float HairMinRadius;
 	const float HairMaxRadius;
-	const float HairClipLength;
 	const FVector HairGroupColor;
 
 	FName DebugModeParamName;
 	FName MinHairRadiusParamName;
 	FName MaxHairRadiusParamName;
-	FName HairClipLengthParamName;
 	FName HairGroupHairColorParamName;
 
 	/** Initialization constructor. */
-	FHairDebugModeMaterialRenderProxy(const FMaterialRenderProxy* InParent, float InMode, float InMinRadius, float InMaxRadius, float InHairClipLength, FVector InGroupColor) :
+	FHairDebugModeMaterialRenderProxy(const FMaterialRenderProxy* InParent, float InMode, float InMinRadius, float InMaxRadius, FVector InGroupColor) :
 		Parent(InParent),
 		DebugMode(InMode),
 		HairMinRadius(InMinRadius),
 		HairMaxRadius(InMaxRadius),
-		HairClipLength(InHairClipLength),
 		HairGroupColor(InGroupColor),
 		DebugModeParamName(NAME_FloatProperty),
 		MinHairRadiusParamName(NAME_ByteProperty),
 		MaxHairRadiusParamName(NAME_IntProperty),
-		HairClipLengthParamName(NAME_BoolProperty),
 		HairGroupHairColorParamName(NAME_VectorProperty)
 	{}
 
@@ -193,11 +184,6 @@ public:
 		else if (ParameterInfo.Name == MaxHairRadiusParamName)
 		{
 			*OutValue = HairMaxRadius;
-			return true;
-		}
-		else if (ParameterInfo.Name == HairClipLengthParamName)
-		{
-			*OutValue = HairClipLength;
 			return true;
 		}
 		return Parent->GetScalarValue(ParameterInfo, OutValue, Context);
@@ -799,8 +785,7 @@ public:
 						}
 
 						const FVector HairGroupColor = FVector(GetHairGroupDebugColor(GroupIt));
-						const float HairClipLength = GetHairClipLength();
-						auto DebugMaterial = new FHairDebugModeMaterialRenderProxy(Strands_DebugMaterial ? Strands_DebugMaterial->GetRenderProxy() : nullptr, DebugModeScalar, 0, HairMaxRadius, HairClipLength, HairGroupColor);
+						auto DebugMaterial = new FHairDebugModeMaterialRenderProxy(Strands_DebugMaterial ? Strands_DebugMaterial->GetRenderProxy() : nullptr, DebugModeScalar, 0, HairMaxRadius, HairGroupColor);
 						Collector.RegisterOneFrameMaterialProxy(DebugMaterial);
 						Strands_MaterialProxy = DebugMaterial;
 					}
@@ -1269,17 +1254,6 @@ void UGroomComponent::SetStableRasterization(bool bEnable)
 	{
 		HairDesc.bUseStableRasterization = bEnable;
 		HairDesc.bUseStableRasterization_Override = true;
-	}
-	UpdateHairGroupsDescAndInvalidateRenderState();
-}
-
-void UGroomComponent::SetHairLengthScale(float Scale) 
-{ 
-	Scale = FMath::Clamp(Scale, 0.f, 1.f);
-	for (FHairGroupDesc& HairDesc : GroomGroupsDesc)
-	{
-		HairDesc.HairClipScale = Scale;
-		HairDesc.HairClipScale_Override = true;
 	}
 	UpdateHairGroupsDescAndInvalidateRenderState();
 }
@@ -2788,7 +2762,6 @@ void UGroomComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairWidth) || 
 		PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairRootScale) ||
 		PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairTipScale) ||
-		PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairClipScale) ||
 		PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairShadowDensity) ||
 		PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, HairRaytracingRadiusScale) ||
 		PropertyName == GET_MEMBER_NAME_CHECKED(FHairGroupDesc, LODBias) ||
