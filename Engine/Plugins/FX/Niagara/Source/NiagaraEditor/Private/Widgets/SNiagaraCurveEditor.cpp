@@ -25,7 +25,6 @@ void SNiagaraCurveEditor::Construct(const FArguments& InArgs, TSharedRef<FNiagar
 		.OutputSnap(this, &SNiagaraCurveEditor::GetOutputSnap);
 	CurveEditor->SetCurveOwner(&SystemViewModel->GetCurveOwner());
 
-	TSharedPtr<SOverlay> OverlayWidget;
 	this->ChildSlot
 	[
 		SNew(SVerticalBox)
@@ -48,16 +47,15 @@ SNiagaraCurveEditor::~SNiagaraCurveEditor()
 
 TSharedRef<SWidget> SNiagaraCurveEditor::ConstructToolBar(TSharedPtr<FUICommandList> CurveEditorCommandList)
 {
-	FToolBarBuilder ToolBarBuilder(CurveEditorCommandList, FMultiBoxCustomization::None, TSharedPtr<FExtender>(), true);
-
+	FSlimHorizontalToolBarBuilder ToolBarBuilder(CurveEditorCommandList, FMultiBoxCustomization::None, TSharedPtr<FExtender>(), true);
 	// TODO: Move this to a shared location since it's 99% the same as the sequencer curve toolbar.
 	ToolBarBuilder.AddComboButton(
 		FUIAction(),
 		FOnGetContent::CreateSP(this, &SNiagaraCurveEditor::MakeCurveEditorViewOptionsMenu, CurveEditorCommandList),
 		LOCTEXT("CurveEditorViewOptions", "View Options"),
 		LOCTEXT("CurveEditorViewOptionsToolTip", "View Options"),
-		TAttribute<FSlateIcon>(),
-		true);
+		FSlateIcon(FAppStyle::Get().GetStyleSetName(), "GenericCurveEditor.VisibilityOptions")
+	);
 
 	TArray<SNumericDropDown<float>::FNamedValue> SnapValues;
 	SnapValues.Add(SNumericDropDown<float>::FNamedValue(0.001f, LOCTEXT("Snap_OneThousandth", "0.001"), LOCTEXT("SnapDescription_OneThousandth", "Set snap to 1/1000th")));
@@ -70,14 +68,14 @@ TSharedRef<SWidget> SNiagaraCurveEditor::ConstructToolBar(TSharedPtr<FUICommandL
 	TSharedRef<SWidget> InputSnapWidget =
 		SNew(SNumericDropDown<float>)
 		.DropDownValues(SnapValues)
-		.LabelText(LOCTEXT("InputSnapLabel", "Input Snap"))
+		.ToolTipText(LOCTEXT("InputSnapLabel", "Input Snap"))
 		.Value(this, &SNiagaraCurveEditor::GetInputSnap)
 		.OnValueChanged(this, &SNiagaraCurveEditor::SetInputSnap);
 
 	TSharedRef<SWidget> OutputSnapWidget =
 		SNew(SNumericDropDown<float>)
 		.DropDownValues(SnapValues)
-		.LabelText(LOCTEXT("OutputSnapLabel", "Output Snap"))
+		.ToolTipText(LOCTEXT("OutputSnapLabel", "Output Snap"))
 		.Value(this, &SNiagaraCurveEditor::GetOutputSnap)
 		.OnValueChanged(this, &SNiagaraCurveEditor::SetOutputSnap);
 
@@ -92,9 +90,26 @@ TSharedRef<SWidget> SNiagaraCurveEditor::ConstructToolBar(TSharedPtr<FUICommandL
 
 	ToolBarBuilder.BeginSection("Curve");
 	{
-		ToolBarBuilder.AddToolBarButton(FCurveEditorCommands::Get().ZoomToFitHorizontal);
-		ToolBarBuilder.AddToolBarButton(FCurveEditorCommands::Get().ZoomToFitVertical);
-		ToolBarBuilder.AddToolBarButton(FCurveEditorCommands::Get().ZoomToFit);
+		ToolBarBuilder.AddToolBarButton(
+			FCurveEditorCommands::Get().ZoomToFitHorizontal,
+			NAME_None,
+			LOCTEXT("NiagaraCurveEditorZoomToFitHorizontal", "Zoom To Fit (Horizontal)"),
+			LOCTEXT("NiagaraCurveEditorZoomToFitHorizontalToolTip", "Zoom To Fit (Horizontal)"),
+			FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Curve.ZoomToFitHorizontal")
+			);
+		ToolBarBuilder.AddToolBarButton(
+			FCurveEditorCommands::Get().ZoomToFitVertical,
+			NAME_None,
+			LOCTEXT("NiagaraCurveEditorZoomToFitVertical", "Zoom To Fit (Vertical)"),
+			LOCTEXT("NiagaraCurveEditorZoomToFitVerticalToolTip", "Zoom To Fit (Vertical)"),
+			FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Curve.ZoomToFitVertical")
+		);
+		ToolBarBuilder.AddToolBarButton(FCurveEditorCommands::Get().ZoomToFit,
+			NAME_None,
+			LOCTEXT("NiagaraCurveEditorZoomToFit", "Zoom To Fit"),
+			LOCTEXT("NiagaraCurveEditorZoomToFit", "Zoom To Fit"),
+			FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Curve.ZoomToFit")
+		);
 	}
 	ToolBarBuilder.EndSection();
 
@@ -120,8 +135,8 @@ TSharedRef<SWidget> SNiagaraCurveEditor::ConstructToolBar(TSharedPtr<FUICommandL
 		FOnGetContent::CreateSP(this, &SNiagaraCurveEditor::MakeCurveEditorCurveOptionsMenu, CurveEditorCommandList),
 		LOCTEXT("CurveEditorCurveOptions", "Curves Options"),
 		LOCTEXT("CurveEditorCurveOptionsToolTip", "Curve Options"),
-		TAttribute<FSlateIcon>(),
-		true);
+		FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Icons.Settings")
+	);
 
 	return ToolBarBuilder.MakeWidget();
 }
