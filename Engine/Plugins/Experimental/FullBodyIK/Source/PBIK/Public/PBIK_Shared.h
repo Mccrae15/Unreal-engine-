@@ -21,7 +21,12 @@ struct FPBIKBoneSetting
 {
 	GENERATED_BODY()
 
-	FPBIKBoneSetting() : Bone(NAME_None) {}
+	FPBIKBoneSetting()
+		: Bone(NAME_None)
+		, X(EPBIKLimitType::Free)
+		, Y(EPBIKLimitType::Free)
+		, Z(EPBIKLimitType::Free)
+		, PreferredAngles(0.0f) {}
 
 	UPROPERTY(meta = (Constant, CustomWidget = "BoneName"))
 	FName Bone;
