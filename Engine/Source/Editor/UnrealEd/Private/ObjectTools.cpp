@@ -4852,12 +4852,6 @@ namespace ThumbnailTools
 			return false;
 		}
 
-		// Hacky way to reset thumbnails for UE5
-		if(FileSummary.SavedByEngineVersion.GetMajor() < 5)
-		{
-			return false;
-		}
-
 		// Seek the the part of the file where the thumbnail table lives
 		FileReader->Seek( FileSummary.ThumbnailTableOffset );
 
