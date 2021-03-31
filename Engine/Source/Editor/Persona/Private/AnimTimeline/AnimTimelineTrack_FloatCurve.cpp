@@ -20,6 +20,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "AnimModel_AnimSequenceBase.h"
 #include "SAnimOutlinerItem.h"
+#include "Animation/AnimData/AnimDataModel.h"
 
 #define LOCTEXT_NAMESPACE "FAnimTimelineTrack_FloatCurve"
 

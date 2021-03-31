@@ -5,6 +5,7 @@
 #include "CoreTypes.h"
 #include "UObject/Interface.h"
 #include "CurveIdentifier.h"
+#include "Misc/FrameRate.h"
 #include "IAnimationDataController.generated.h"
 
 class UAssetUserData;
