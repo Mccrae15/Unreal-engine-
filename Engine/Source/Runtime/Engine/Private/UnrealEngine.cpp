@@ -12296,12 +12296,13 @@ bool UEngine::MakeSureMapNameIsValid(FString& InOutMapName)
 	}
 	else
 	{
-		// Look up on disk. Slow!
-		FString LongPackageName;
-		bIsValid = FPackageName::SearchForPackageOnDisk(TestMapName, &LongPackageName);
-		if (bIsValid)
+		// Look up in the AssetRegistry.
+		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+		FName ExistingPackageName = AssetRegistry.GetFirstPackageByName(TestMapName);
+		if (!ExistingPackageName.IsNone())
 		{
-			InOutMapName = LongPackageName;
+			ExistingPackageName.ToString(InOutMapName);
+			bIsValid = true;
 		}
 	}
 	return bIsValid;
