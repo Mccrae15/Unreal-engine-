@@ -3956,6 +3956,7 @@ bool FEngineLoop::LoadStartupCoreModules()
 	FModuleManager::Get().LoadModule(TEXT("ClothingSystemRuntimeNv"));
 #if WITH_EDITOR
 	FModuleManager::Get().LoadModule(TEXT("ClothingSystemEditor"));
+	FModuleManager::Get().LoadModule(TEXT("AnimationDataController"));
 #endif
 
 	FModuleManager::Get().LoadModule(TEXT("PacketHandler"));
