@@ -1289,31 +1289,40 @@ IMPLEMENT_GLOBAL_SHADER(FCloudShadowTemporalProcessCS, "/Engine/Private/Volumetr
 
 
 
+void CleanUpCloudDataFunction(TArray<FViewInfo>& Views)
+{
+	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+	{
+		FViewInfo& ViewInfo = Views[ViewIndex];
+		ViewInfo.VolumetricCloudSkyAO = nullptr;
+		for (int LightIndex = 0; LightIndex < NUM_ATMOSPHERE_LIGHTS; ++LightIndex)
+		{
+			ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex] = nullptr;
+			ViewInfo.VolumetricCloudShadowExtractedRenderTarget[LightIndex] = nullptr;
+			if (ViewInfo.ViewState != nullptr)
+			{
+				ViewInfo.ViewState->VolumetricCloudShadowRenderTarget[LightIndex].Reset();
+			}
+		}
+	}
+};
+
 void FSceneRenderer::InitVolumetricCloudsForViews(FRDGBuilder& GraphBuilder, bool bShouldRenderVolumetricCloud, FInstanceCullingManager& InstanceCullingManager)
 {
-	auto CleanUpCloudData = [&Views = Views](FRDGBuilder& GraphBuilder)
+
+	auto CleanUpCloudDataPass = [&Views = Views](FRDGBuilder& GraphBuilder)
 	{
 		AddPass(GraphBuilder, [&Views](FRHICommandList&)
 		{
-			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
-			{
-				FViewInfo& ViewInfo = Views[ViewIndex];
-				if (ViewInfo.ViewState != nullptr)
-				{
-					for (int LightIndex = 0; LightIndex < NUM_ATMOSPHERE_LIGHTS; ++LightIndex)
-					{
-						ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex] = nullptr;
-						ViewInfo.ViewState->VolumetricCloudShadowRenderTarget[LightIndex].Reset();
-					}
-				}
-			}
+			CleanUpCloudDataFunction(Views);
 		});
 	};
 
+	// First make sure we always clear the texture on views to make sure no dangling texture pointers are ever used
+	CleanUpCloudDataFunction(Views);
+
 	if (!bShouldRenderVolumetricCloud)
 	{
-		// Clean everything up
-		CleanUpCloudData(GraphBuilder);
 		return;
 	}
 
@@ -1617,7 +1626,7 @@ void FSceneRenderer::InitVolumetricCloudsForViews(FRDGBuilder& GraphBuilder, boo
 
 						// We need to make a copy of the parameters on CPU to morph them because the creation is deferred.
 						FRenderVolumetricCloudGlobalParameters& VolumetricCloudParamsAO = *GraphBuilder.AllocParameters<FRenderVolumetricCloudGlobalParameters>();
-						VolumetricCloudParamsAO = VolumetricCloudParams;	// Use the same parameter as for the SkyAO
+						VolumetricCloudParamsAO = VolumetricCloudParams;	// Use the same parameter as for the directional light shadow
 						VolumetricCloudParamsAO.TraceShadowmap = 0;			// Notify that this pass is for SkyAO (avoid to use another shader permutation)
 						TRDGUniformBufferRef<FRenderVolumetricCloudGlobalParameters> TraceVolumetricCloudSkyAOParamsUB = GraphBuilder.CreateUniformBuffer(&VolumetricCloudParamsAO);
 						TraceCloudTexture(CloudSkyAOTexture, true, TraceVolumetricCloudSkyAOParamsUB);
@@ -1722,10 +1731,12 @@ void FSceneRenderer::InitVolumetricCloudsForViews(FRDGBuilder& GraphBuilder, boo
 										FilterTracedCloudTexture(&SpatiallyFilteredShadowTexture, VolumetricCloudParams.VolumetricCloud.CloudShadowmapSizeInvSize[LightIndex], CloudShadowTextureTexelWorldSizeInvSize, false);
 									}
 									ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex] = SpatiallyFilteredShadowTexture;
+									ConvertToUntrackedExternalTexture(GraphBuilder, ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex], ViewInfo.VolumetricCloudShadowExtractedRenderTarget[LightIndex], ERHIAccess::SRVMask);
 								}
 								else
 								{
 									ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex] = GraphBuilder.RegisterExternalTexture(CloudShadowTemporalRT.CurrentRenderTarget());
+									ConvertToUntrackedExternalTexture(GraphBuilder, ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex], ViewInfo.VolumetricCloudShadowExtractedRenderTarget[LightIndex], ERHIAccess::SRVMask);
 								}
 
 							}
@@ -1741,18 +1752,20 @@ void FSceneRenderer::InitVolumetricCloudsForViews(FRDGBuilder& GraphBuilder, boo
 										FilterTracedCloudTexture(&SpatiallyFilteredShadowTexture, VolumetricCloudParams.VolumetricCloud.CloudShadowmapSizeInvSize[LightIndex], CloudShadowTextureTexelWorldSizeInvSize, false);
 									}
 									ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex] = SpatiallyFilteredShadowTexture;
+									ConvertToUntrackedExternalTexture(GraphBuilder, ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex], ViewInfo.VolumetricCloudShadowExtractedRenderTarget[LightIndex], ERHIAccess::SRVMask);
 								}
 								else
 								{
 									ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex] = NewCloudShadowTexture;
+									ConvertToUntrackedExternalTexture(GraphBuilder, ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex], ViewInfo.VolumetricCloudShadowExtractedRenderTarget[LightIndex], ERHIAccess::SRVMask);
 								}
 							}
 						}
 						else
 						{
+							ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex] = nullptr;
 							if (ViewInfo.ViewState)
 							{
-								ViewInfo.VolumetricCloudShadowRenderTarget[LightIndex] = nullptr;
 								ViewInfo.ViewState->VolumetricCloudShadowRenderTarget[LightIndex].Reset();
 							}
 						}
@@ -1772,17 +1785,17 @@ void FSceneRenderer::InitVolumetricCloudsForViews(FRDGBuilder& GraphBuilder, boo
 			}
 			else
 			{
-				CleanUpCloudData(GraphBuilder);
+				CleanUpCloudDataPass(GraphBuilder);
 			}
 		}
 		else
 		{
-			CleanUpCloudData(GraphBuilder);
+			CleanUpCloudDataPass(GraphBuilder);
 		}
 	}
 	else
 	{
-		CleanUpCloudData(GraphBuilder);
+		CleanUpCloudDataPass(GraphBuilder);
 	}
 }
 
