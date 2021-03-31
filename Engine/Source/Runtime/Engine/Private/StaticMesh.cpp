@@ -5178,6 +5178,15 @@ void UStaticMesh::BeginPostLoadInternal(FStaticMeshPostLoadContext& Context)
 	{
 		CreateBodySetup();
 	}
+
+	// Make sure the object is created on the game-thread before going async
+	if (bHasNavigationData && GetBodySetup() != nullptr)
+	{
+		if (GetNavCollision() == nullptr)
+		{
+			SetNavCollision(UNavCollisionBase::ConstructNew(*this));
+		}
+	}
 }
 
 void UStaticMesh::ExecutePostLoadInternal(FStaticMeshPostLoadContext& Context)
@@ -5441,6 +5450,14 @@ void UStaticMesh::ExecutePostLoadInternal(FStaticMeshPostLoadContext& Context)
 
 	// Release cached mesh descriptions until they are loaded on demand
 	ClearMeshDescriptions();
+
+	if (GetNavCollision())
+	{
+		// Physics meshes need to be ready to gather the collision in Setup().
+		GetBodySetup()->CreatePhysicsMeshes();
+		GetNavCollision()->Setup(GetBodySetup());
+	}
+
 	ReleaseAsyncProperty(EStaticMeshAsyncProperties::SourceModels);
 	ReleaseAsyncProperty(EStaticMeshAsyncProperties::HiResSourceModel);
 #endif // #if WITH_EDITOR
@@ -5470,8 +5487,6 @@ void UStaticMesh::FinishPostLoadInternal(FStaticMeshPostLoadContext& Context)
 #endif
 		ReleaseAsyncProperty(EStaticMeshAsyncProperties::RenderData);
 	}
-
-	CreateNavCollision();
 
 	ReleaseAsyncProperty();
 }
