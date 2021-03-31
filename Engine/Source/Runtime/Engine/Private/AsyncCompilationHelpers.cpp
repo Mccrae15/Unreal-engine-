@@ -13,6 +13,7 @@
 #include "Settings/EditorExperimentalSettings.h"
 #include "Misc/QueuedThreadPoolWrapper.h"
 #include "HAL/IConsoleManager.h"
+#include "AssetCompilingManager.h"
 #include "HAL/PlatformStackWalk.h"
 #include "Hash/CityHash.h"
 #include "Misc/ScopeRWLock.h"
@@ -79,87 +80,78 @@ namespace AsyncCompilationHelpers
 	)
 	{
 		SCOPE_STALL_REPORTER(AsyncCompilationHelpers::FinishCompilation, 10.0);
+		if (Num <= 0)
+		{
+			return;
+		}
 
 		check(IsInGameThread());
 
 		FObjectCacheContextScope ObjectCacheScope;
-		if (Num)
+
+		uint64 StartTime = FPlatformTime::Cycles64();
+		TOptional<FScopedSlowTask> SlowTask;
+
+		// Do not create a progress during PostLoad as TickSlate could endup calling too many things
+		if (!FUObjectThreadContext::Get().IsRoutingPostLoad)
 		{
-			TOptional<FScopedSlowTask> SlowTask;
+			FFormatNamedArguments Args;
+			Args.Add(TEXT("AssetType"), AssetType.ToLower());
 
-			// Do not create a progress during PostLoad as TickSlate could endup calling too many things
-			if (!FUObjectThreadContext::Get().IsRoutingPostLoad)
+			SlowTask.Emplace((float)Num, FText::Format(LOCTEXT("WaitingOnFinishCompilation", "Waiting on {AssetType} preparation"), Args), true);
+			SlowTask->MakeDialogDelayed(1.0f, false /*bShowCancelButton*/, true /*bAllowInPIE*/);
+		}
+
+		// Reschedule everything to be executed at highest priority
+		// Important to keep using the asset compiling manager's thread pool to benefit from it's memory management and avoid OOM.
+		FQueuedThreadPool* AssetThreadPool = FAssetCompilingManager::Get().GetThreadPool();
+		for (int32 Index = 0; Index < Num; ++Index)
+		{
+			Getter(Index).Reschedule(AssetThreadPool, EQueuedWorkPriority::Highest);
+		}
+
+		auto FormatProgress =
+			[&AssetType](int32 Done, int32 Total, FName ObjectName)
+		{
+			FFormatNamedArguments Args;
+			Args.Add(TEXT("AssetType"), AssetType.ToLower());
+			Args.Add(TEXT("Done"), Done);
+			Args.Add(TEXT("Total"), Total);
+			Args.Add(TEXT("ObjectName"), FText::FromName(ObjectName));
+			return FText::Format(LOCTEXT("WaitingOnFinishCompilationWithCount", "Waiting for {AssetType} to be ready {Done}/{Total} ({ObjectName}) ..."), Args);
+		};
+
+		int32 NumDone = 0;
+		for (int32 Index = 0; Index < Num; ++Index)
+		{
+			ICompilable& Job = Getter(Index);
+
+			FText Progress = FormatProgress(NumDone++, Num, Job.GetName());
+
+			// Be nice with the game thread and tick the progress at 60 fps even when no progress is being made...
+			bool bLogSlowProgress = true;
+			while (!Job.WaitCompletionWithTimeout(0.016))
 			{
-				FFormatNamedArguments Args;
-				Args.Add(TEXT("AssetType"), AssetType.ToLower());
-
-				SlowTask.Emplace((float)Num, FText::Format(LOCTEXT("WaitingOnFinishCompilation", "Waiting on {AssetType} preparation"), Args), true);
-				SlowTask->MakeDialogDelayed(1.0f, false /*bShowCancelButton*/, true /*bAllowInPIE*/);
-			}
-
-			struct FFinishTask : public IQueuedWork
-			{
-				ICompilable* Job = nullptr;
-				FEvent* Event;
-				FFinishTask() { Event = FPlatformProcess::GetSynchEventFromPool(true); }
-				~FFinishTask() { FPlatformProcess::ReturnSynchEventToPool(Event); }
-				void DoThreadedWork() override
-				{
-					FOptionalTaskTagScope Scope(ETaskTag::EParallelGameThread);
-					Job->EnsureCompletion();
-					Event->Trigger();
-				}
-
-				void Abandon() override { }
-			};
-
-			// Perform forced compilation on as many thread as possible in high priority since the game-thread is waiting
-			TArray<FFinishTask> PendingTasks;
-			PendingTasks.SetNum(Num);
-
-			for (int32 Index = 0; Index < Num; ++Index)
-			{
-				PendingTasks[Index].Job = &Getter(Index);
-				GThreadPool->AddQueuedWork(&PendingTasks[Index], EQueuedWorkPriority::High);
-			}
-
-			auto FormatProgress =
-				[&AssetType](int32 Done, int32 Total, FName ObjectName)
-			{
-				FFormatNamedArguments Args;
-				Args.Add(TEXT("AssetType"), AssetType.ToLower());
-				Args.Add(TEXT("Done"), Done);
-				Args.Add(TEXT("Total"), Total);
-				Args.Add(TEXT("ObjectName"), FText::FromName(ObjectName));
-				return FText::Format(LOCTEXT("WaitingOnFinishCompilationWithCount", "Waiting for {AssetType} to be ready {Done}/{Total} ({ObjectName}) ..."), Args);
-			};
-
-			int32 NumDone = 0;
-			for (FFinishTask& PendingTask : PendingTasks)
-			{
-				ICompilable* Job = PendingTask.Job;
-
-				FText Progress = FormatProgress(NumDone++, Num, Job->GetName());
-
-				// Be nice with the game thread and tick the progress at 60 fps even when no progress is being made...
-				while (!PendingTask.Event->Wait(16))
-				{
-					if (SlowTask.IsSet())
-					{
-						SlowTask->EnterProgressFrame(0.0f, Progress);
-					}
-				}
-
 				if (SlowTask.IsSet())
 				{
-					SlowTask->EnterProgressFrame(1.0f, Progress);
+					SlowTask->EnterProgressFrame(0.0f, Progress);
 				}
-
-				UE_LOG_REF(LogCategory, Display, TEXT("%s"), *Progress.ToString());
-
-				PostCompileSingle(Job);
+				if (bLogSlowProgress)
+				{
+					UE_LOG_REF(LogCategory, Display, TEXT("%s"), *Progress.ToString());
+					bLogSlowProgress = false;
+				}
 			}
+
+			if (SlowTask.IsSet())
+			{
+				SlowTask->EnterProgressFrame(1.0f, Progress);
+			}
+
+			PostCompileSingle(&Job);
 		}
+
+		SaveStallStack(FPlatformTime::Cycles64() - StartTime);
 	}
 
 	void EnsureInitializedCVars(
@@ -339,6 +331,8 @@ namespace AsyncCompilationHelpers
 
 	void DumpStallStacks()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(AsyncCompilationHelpers::DumpStallStacks);
+
 		FRWScopeLock Scope(BackTracesLock, SLT_Write);
 		TArray<FStackData*> Stacks;
 		for (TPair<uint64, FStackData>& Pair : BackTraces)
@@ -366,7 +360,12 @@ namespace AsyncCompilationHelpers
 
 			TotalCount += StackData->Count;
 			TotalCycles += StackData->Cycles;
-			UE_LOG(LogAsyncCompilation, Display, TEXT("Async Compilation Stall Stack: (count: %llu, time: %s)\n%s"), StackData->Count, *FPlatformTime::PrettyTime(FPlatformTime::ToSeconds64(StackData->Cycles)), ANSI_TO_TCHAR(HumanReadableString));
+			UE_LOG(LogAsyncCompilation, Display, TEXT("Async Compilation Stall Stack: (Count: %llu, Time: %s)\n%s"), StackData->Count, *FPlatformTime::PrettyTime(FPlatformTime::ToSeconds64(StackData->Cycles)), ANSI_TO_TCHAR(HumanReadableString));
+		}
+
+		if (TotalCount)
+		{
+			UE_LOG(LogAsyncCompilation, Display, TEXT("Async Compilation Stall Stack: (Total Count: %llu, Total Time: %s)"), TotalCount, *FPlatformTime::PrettyTime(FPlatformTime::ToSeconds64(TotalCycles)));
 		}
 	}
 }
