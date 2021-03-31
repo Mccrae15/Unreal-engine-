@@ -106,13 +106,22 @@ bool FOculusHMDModule::PreInit()
 			}
 
 			// Initialize OVRPlugin
+			ovrpRenderAPIType preinitApiType = ovrpRenderAPI_None;
 #if PLATFORM_ANDROID
 			void* activity = (void*) FAndroidApplication::GetGameActivityThis();
+
+			FConfigFile AndroidEngineSettings;
+			FConfigCacheIni::LoadLocalIniFile(AndroidEngineSettings, TEXT("Engine"), true, TEXT("Android"));
+
+			bool bPackagedForVulkan = false;
+			AndroidEngineSettings.GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bSupportsVulkan"), bPackagedForVulkan);
+			UE_LOG(LogHMD, Log, TEXT("Oculus game packaged for Vulkan : %d"), bPackagedForVulkan);
+			preinitApiType = bPackagedForVulkan ? ovrpRenderAPI_Vulkan : ovrpRenderAPI_OpenGL;
 #else
 			void* activity = nullptr;
 #endif
 
-			if (OVRP_FAILURE(PluginWrapper.PreInitialize3(activity)))
+			if (OVRP_FAILURE(PluginWrapper.PreInitialize4(activity, preinitApiType)))
 			{
 				UE_LOG(LogHMD, Log, TEXT("Failed initializing OVRPlugin %s"), TEXT(OVRP_VERSION_STR));
 				return false;

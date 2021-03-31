@@ -46,6 +46,9 @@
 #include "IXRTrackingSystem.h"
 #include "Editor.h"
 
+#include "CoreGlobals.h"
+#include "Misc/ConfigCacheIni.h"
+
 //@TODO: Remove this dependency
 #include "EngineGlobals.h"
 #include "LevelEditor.h"
@@ -1178,9 +1181,9 @@ void PopulateLaunchMenu(UToolMenu* Menu)
 	}
 
 	TWeakObjectPtr<UCookerSettings> CookerSettings = GetMutableDefault<UCookerSettings>();
+	FToolMenuSection& CookerSettingsSection = Menu->AddSection("CookerSettings");
 
 	{
-		FToolMenuSection& Section = Menu->AddSection("CookerSettings");
 
 		FUIAction UIAction;
 		UIAction.ExecuteAction = FExecuteAction::CreateLambda([CookerSettings]
@@ -1225,7 +1228,7 @@ void PopulateLaunchMenu(UToolMenu* Menu)
 			return CookerSettings->bCookOnTheFlyForLaunchOn ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 		});
 
-		Section.AddMenuEntry(
+		CookerSettingsSection.AddMenuEntry(
 			"CookOnTheFlyOnLaunch",
 			LOCTEXT("CookOnTheFlyOnLaunch", "Enable cooking on the fly"),
 			LOCTEXT("CookOnTheFlyOnLaunchDescription", "Cook on the fly instead of cooking upfront when launching"),
@@ -1233,6 +1236,93 @@ void PopulateLaunchMenu(UToolMenu* Menu)
 			UIAction,
 			EUserInterfaceActionType::ToggleButton
 		);
+	}
+
+	{
+		FUIAction UIAction;
+		UIAction.ExecuteAction = FExecuteAction::CreateLambda([CookerSettings]
+			{
+				CookerSettings->bCookOnTheFlyAdbForLaunchOn = !CookerSettings->bCookOnTheFlyAdbForLaunchOn;
+				CookerSettings->Modify(true);
+
+				// Update source control
+
+				FString ConfigPath = FPaths::ConvertRelativePathToFull(CookerSettings->GetDefaultConfigFilename());
+
+				if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*ConfigPath))
+				{
+					if (ISourceControlModule::Get().IsEnabled())
+					{
+						FText ErrorMessage;
+
+						if (!SourceControlHelpers::CheckoutOrMarkForAdd(ConfigPath, FText::FromString(ConfigPath), NULL, ErrorMessage))
+						{
+							FNotificationInfo Info(ErrorMessage);
+							Info.ExpireDuration = 3.0f;
+							FSlateNotificationManager::Get().AddNotification(Info);
+						}
+					}
+					else
+					{
+						if (!FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*ConfigPath, false))
+						{
+							FNotificationInfo Info(FText::Format(LOCTEXT("FailedToMakeWritable", "Could not make {0} writable."), FText::FromString(ConfigPath)));
+							Info.ExpireDuration = 3.0f;
+							FSlateNotificationManager::Get().AddNotification(Info);
+						}
+					}
+				}
+
+				// Save settings
+				CookerSettings->UpdateSinglePropertyInConfigFile(CookerSettings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UCookerSettings, bCookOnTheFlyAdbForLaunchOn)), CookerSettings->GetDefaultConfigFilename());
+			});
+
+		UIAction.GetActionCheckState = FGetActionCheckState::CreateLambda([CookerSettings]
+			{
+				return CookerSettings->bCookOnTheFlyAdbForLaunchOn ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			});
+
+		CookerSettingsSection.AddMenuEntry(
+			"CookOnTheFlyAdbOnLaunch",
+			LOCTEXT("CookOnTheFlyAdbOnLaunch", "Proxy cook on the fly over adb (Android)"),
+			LOCTEXT("CookOnTheFlyAdbOnLaunchDescription", "Proxy cook on the fly network traffic over adb (Android)"),
+			FSlateIcon(),
+			UIAction,
+			EUserInterfaceActionType::ToggleButton
+		);
+	}
+
+	{
+		TArray<FString> packageForOculusMobile;
+		GConfig->GetArray(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("PackageForOculusMobile"), packageForOculusMobile, GEngineIni);
+
+		if (packageForOculusMobile.Num() > 0)
+		{
+			FToolMenuSection& Section = Menu->AddSection("OculusSettings");
+
+			UEditorExperimentalSettings* EditorExperimentalSettings = GetMutableDefault<UEditorExperimentalSettings>();
+
+			FUIAction UIAction;
+			UIAction.ExecuteAction = FExecuteAction::CreateLambda([EditorExperimentalSettings]
+			{
+				EditorExperimentalSettings->bLaunchOnOculusDeploySo = !EditorExperimentalSettings->bLaunchOnOculusDeploySo;
+				EditorExperimentalSettings->Modify(true);
+			});
+
+			UIAction.GetActionCheckState = FGetActionCheckState::CreateLambda([EditorExperimentalSettings]
+			{
+				return EditorExperimentalSettings->bLaunchOnOculusDeploySo ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+			});
+
+			Section.AddMenuEntry(
+				"OculusDeploySoOnLaunch",
+				LOCTEXT("OculusDeploySoOnLaunch", "Deploy compiled .so directly to device (Oculus)"),
+				LOCTEXT("OculusDeploySoOnLaunchDescription", "On supported Oculus mobile platforms, copy compiled .so directly to device. Allows updating compiled code without rebuilding and installing an APK."),
+				FSlateIcon(),
+				UIAction,
+				EUserInterfaceActionType::ToggleButton
+			);
+		}
 	}
 
 	if (PlatformsWithNoDevices.Num() > 0)

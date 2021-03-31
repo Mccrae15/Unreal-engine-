@@ -804,6 +804,11 @@ public:
 	mutable int32 NumMeshCommandReferencesForDebugging = 0;
 #endif
 
+#if WITH_LATE_LATCHING_CODE
+	virtual int32 GetPatchingFrameNumber() const { return -1; }
+	virtual void FlagPatchingFrameNumber(int32 FrameNumber) { }
+#endif
+
 private:
 	/** Layout of the uniform buffer. */
 	const FRHIUniformBufferLayout* Layout;

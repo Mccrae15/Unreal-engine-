@@ -76,6 +76,10 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Cooker, meta = (DisplayName = "Cooking on the fly when launching from the editor (launch on)"))
 	bool bCookOnTheFlyForLaunchOn;
 
+	/** Reverse proxy cook on the fly traffic with adb for Android */
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Cooker, meta = (DisplayName = "Forward cook on the fly traffic over adb (Android launch on)"))
+	bool bCookOnTheFlyAdbForLaunchOn;
+
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Cooker, meta = (
 		ConsoleVariable = "cook.displaymode", DisplayName = "Cooker Progress Display Mode",
 		ToolTip = "Controls log output of the cooker"))

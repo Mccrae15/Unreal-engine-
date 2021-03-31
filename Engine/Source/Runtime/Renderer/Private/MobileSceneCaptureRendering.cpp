@@ -331,12 +331,20 @@ void UpdateSceneCaptureContentMobile_RenderThread(
 	const FGenerateMipsParams& GenerateMipsParams,
 	bool bDisableFlipCopyGLES)
 {
+	// If we're not using MobileHDR, any source other than FinalColorLDR is invalid
+	if (!IsMobileHDR())
+	{
+		ensure(SceneRenderer->ViewFamily.SceneCaptureSource == SCS_FinalColorLDR);
+	}
+
 	FMemMark MemStackMark(FMemStack::Get());
 
 	// update any resources that needed a deferred update
 	FDeferredUpdateResource::UpdateResources(RHICmdList);
-	bool bUseSceneTextures = SceneRenderer->ViewFamily.SceneCaptureSource != SCS_FinalColorLDR &&
-								SceneRenderer->ViewFamily.SceneCaptureSource != SCS_FinalColorHDR;
+	// Always uses scene textures in non-mobileHDR, since it doesn't have a postprocess/tonemap pass to copy out
+	bool bUseSceneTextures = !IsMobileHDR() ||
+							 (SceneRenderer->ViewFamily.SceneCaptureSource != SCS_FinalColorLDR &&
+							 SceneRenderer->ViewFamily.SceneCaptureSource != SCS_FinalColorHDR);
 
 	{
 #if WANTS_DRAW_MESH_EVENTS

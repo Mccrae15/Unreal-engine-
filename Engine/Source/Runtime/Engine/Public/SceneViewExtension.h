@@ -184,6 +184,24 @@ public:
      * Returning false disables the extension for the current frame in the given context. This will be queried each frame to determine if the extension wants to run.
      */
 	virtual bool IsActiveThisFrameInContext(FSceneViewExtensionContext& Context) const { return IsActiveThisFrame(Context.Viewport); }
+
+
+#if WITH_LATE_LATCHING_CODE
+	/**
+	 * Called right before late latching on all view extensions
+	 */
+	virtual void PreLateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) {};
+
+	/**
+	 * Called to apply late latching per viewFamily
+	 */
+	virtual void LateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) {};
+
+	/**
+	 * Called to apply late latching per view
+	 */
+	virtual void LateLatchingView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily, FSceneView& View) {};
+#endif
 };
 
 

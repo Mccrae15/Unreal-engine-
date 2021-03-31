@@ -192,7 +192,6 @@ void FD3D11DynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FRH
 
 	FRHICommandList_RecursiveHazardous RHICmdList(this);
 	
-
 	FD3D11Texture2D* SourceTexture2D = static_cast<FD3D11Texture2D*>(SourceTextureRHI->GetTexture2D());
 	FD3D11Texture2D* DestTexture2D = static_cast<FD3D11Texture2D*>(DestTextureRHI->GetTexture2D());
 
@@ -201,7 +200,10 @@ void FD3D11DynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FRH
 
 	FD3D11Texture3D* SourceTexture3D = static_cast<FD3D11Texture3D*>(SourceTextureRHI->GetTexture3D());
 	FD3D11Texture3D* DestTexture3D = static_cast<FD3D11Texture3D*>(DestTextureRHI->GetTexture3D());
-		
+
+	FD3D11Texture2DArray* SourceTexture2DArray = static_cast<FD3D11Texture2DArray*>(SourceTextureRHI->GetTexture2DArray());
+	FD3D11Texture2DArray* DestTexture2DArray = static_cast<FD3D11Texture2DArray*>(DestTextureRHI->GetTexture2DArray());
+
 	if(SourceTexture2D && DestTexture2D)
 	{
 		check(!SourceTextureCube && !DestTextureCube);
@@ -271,6 +273,34 @@ void FD3D11DynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FRH
 					{
 						Direct3DDeviceIMContext->CopyResource(DestTexture2D->GetResource(), SourceTexture2D->GetResource());
 					}
+				}
+			}
+		}
+	}
+	else if (SourceTexture2DArray && DestTexture2DArray)
+	{
+		check(!SourceTexture2D && !DestTexture2D);
+
+		if (SourceTexture2DArray != DestTexture2DArray)
+		{
+			DXGI_FORMAT SrcFmt = (DXGI_FORMAT)GPixelFormats[SourceTexture2DArray->GetFormat()].PlatformFormat;
+			DXGI_FORMAT DstFmt = (DXGI_FORMAT)GPixelFormats[DestTexture2DArray->GetFormat()].PlatformFormat;
+
+			DXGI_FORMAT Fmt = ConvertTypelessToUnorm((DXGI_FORMAT)GPixelFormats[DestTexture2DArray->GetFormat()].PlatformFormat);
+
+			// Determine whether a MSAA resolve is needed, or just a copy.
+			if (SourceTextureRHI->IsMultisampled() && !DestTextureRHI->IsMultisampled() && SourceTexture2DArray->GetSizeZ() == DestTexture2DArray->GetSizeZ())
+			{
+				// resolve all slices of the texture array
+				for (int32 ArrayIndex = 0; ArrayIndex < (int32)DestTexture2DArray->GetSizeZ(); ArrayIndex++)
+				{
+					Direct3DDeviceIMContext->ResolveSubresource(
+						DestTexture2DArray->GetResource(),
+						ArrayIndex,
+						SourceTexture2DArray->GetResource(),
+						ArrayIndex,
+						Fmt
+					);
 				}
 			}
 		}

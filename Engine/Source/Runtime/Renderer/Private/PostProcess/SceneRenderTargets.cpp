@@ -668,6 +668,11 @@ void FSceneRenderTargets::Allocate(FRHICommandListImmediate& RHICmdList, const F
 
 	bool bDownsampledOcclusionQueries = GDownsampledOcclusionQueries != 0;
 
+	{
+		static const auto MobileMultiViewCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
+		bRequireMultiView = (GSupportsMobileMultiView || GRHISupportsArrayIndexFromAnyShader) && (MobileMultiViewCVar && MobileMultiViewCVar->GetValueOnAnyThread() != 0) && SceneRenderer->Views[0].bIsMobileMultiViewEnabled;
+	}
+
 	int32 MaxShadowResolution = GetCachedScalabilityCVars().MaxShadowResolution;
 
 	int32 RSMResolution = FMath::Clamp(CVarRSMResolution.GetValueOnRenderThread(), 1, 2048);
@@ -1478,6 +1483,12 @@ void FSceneRenderTargets::AllocateCommonDepthTargets(FRHICommandList& RHICmdList
 	const bool bStereo = GEngine->StereoRenderingDevice.IsValid() && GEngine->StereoRenderingDevice->IsStereoEnabled();
 	IStereoRenderTargetManager* const StereoRenderTargetManager = bStereo ? GEngine->StereoRenderingDevice->GetRenderTargetManager() : nullptr;
 
+	enum EPixelFormat DepthFormat = PF_DepthStencil;
+	if (bRequireMultiView && CurrentShadingPath == EShadingPath::Mobile)
+	{
+		DepthFormat = PF_D24;
+	}
+
 	if (SceneDepthZ && (!(SceneDepthZ->GetRenderTargetItem().TargetableTexture->GetClearBinding() == DefaultDepthClear) || (StereoRenderTargetManager && StereoRenderTargetManager->NeedReAllocateDepthTexture(SceneDepthZ))))
 	{
 		uint32 StencilCurrent, StencilNew;
@@ -1490,12 +1501,6 @@ void FSceneRenderTargets::AllocateCommonDepthTargets(FRHICommandList& RHICmdList
 
 	if (!SceneDepthZ || GFastVRamConfig.bDirty)
 	{
-		enum EPixelFormat DepthFormat = PF_DepthStencil;
-		if (bRequireMultiView && CurrentShadingPath == EShadingPath::Mobile)
-		{
-			DepthFormat = PF_D24;
-		}
-
 		FTexture2DRHIRef DepthTex, SRTex;
 		bHMDAllocatedDepthTarget = StereoRenderTargetManager && StereoRenderTargetManager->AllocateDepthTexture(0, BufferSize.X, BufferSize.Y, DepthFormat, 1, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead, DepthTex, SRTex, GetNumSceneColorMSAASamples(CurrentFeatureLevel));
 
@@ -1557,7 +1562,7 @@ void FSceneRenderTargets::AllocateCommonDepthTargets(FRHICommandList& RHICmdList
 		SceneStencilSRV.SafeRelease();
 	}
 
-	if (SceneDepthZ && !SceneStencilSRV)
+	if (SceneDepthZ && !SceneStencilSRV && DepthFormat == PF_DepthStencil)
 	{
 		SceneStencilSRV = RHICreateShaderResourceView((FTexture2DRHIRef&)SceneDepthZ->GetRenderTargetItem().TargetableTexture, 0, 1, PF_X24_G8);
 	}
@@ -1577,9 +1582,12 @@ void FSceneRenderTargets::AllocateFoveationTexture(FRHICommandList& RHICmdList)
 		FoveationTexture.SafeRelease();
 	}
 	bAllocatedFoveationTexture = StereoRenderTargetManager && StereoRenderTargetManager->AllocateFoveationTexture(0, BufferSize.X, BufferSize.Y, PF_R8G8, 0, TexCreate_None, TexCreate_None, Texture, TextureSize);
-	if (bAllocatedFoveationTexture)
+	if (!FoveationTexture && bAllocatedFoveationTexture)
 	{
 		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(TextureSize, PF_R8G8, FClearValueBinding::White, TexCreate_None, TexCreate_None, false));
+		Desc.ArraySize = bRequireMultiView ? 2 : 1;
+		Desc.bIsArray = bRequireMultiView;
+
 		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, FoveationTexture, TEXT("FixedFoveation"));
 		const uint32 OldElementSize = FoveationTexture->ComputeMemorySize();
 		FoveationTexture->GetRenderTargetItem().ShaderResourceTexture = FoveationTexture->GetRenderTargetItem().TargetableTexture = Texture;
@@ -2358,7 +2366,7 @@ void SetupSceneTextureUniformParameters(
 			SceneTextureParameters.SceneColorTexture = GetRDG(SceneContext.GetSceneColor());
 		}
 
-		if (EnumHasAnyFlags(SetupMode, ESceneTextureSetupMode::SceneDepth))
+		if (EnumHasAnyFlags(SetupMode, ESceneTextureSetupMode::SceneDepth) && SceneContext.SceneDepthZ)
 		{
 			SceneTextureParameters.SceneDepthTexture = GetRDG(SceneContext.SceneDepthZ);
 		}
