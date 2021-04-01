@@ -147,11 +147,7 @@ void AWorldPartitionHLOD::SetHLODBounds(const FBox& InBounds)
 
 void AWorldPartitionHLOD::GetActorBounds(bool bOnlyCollidingComponents, FVector& Origin, FVector& BoxExtent, bool bIncludeFromChildActors) const
 {
-	Super::GetActorBounds(bOnlyCollidingComponents, Origin, BoxExtent, bIncludeFromChildActors);
-
-	FBox Bounds = FBox(Origin - BoxExtent, Origin + BoxExtent);
-	Bounds += HLODBounds;
-	Bounds.GetCenterAndExtents(Origin, BoxExtent);
+	HLODBounds.GetCenterAndExtents(Origin, BoxExtent);
 }
 
 void AWorldPartitionHLOD::GetActorLocationBounds(bool bOnlyCollidingComponents, FVector& Origin, FVector& BoxExtent, bool bIncludeFromChildActors) const
