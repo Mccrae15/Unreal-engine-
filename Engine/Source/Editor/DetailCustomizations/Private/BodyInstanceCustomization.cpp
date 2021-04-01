@@ -1531,16 +1531,11 @@ void FBodyInstanceCustomizationHelper::AddMassInKg(IDetailCategoryBuilder& Physi
 		]
 		.ValueContent()
 		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot()
-			.Padding(0.f, 0.f, 10.f, 0.f)
-			[
-				SNew(SNumericEntryBox<float>)
-				.IsEnabled(this, &FBodyInstanceCustomizationHelper::IsBodyMassEnabled)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.Value(this, &FBodyInstanceCustomizationHelper::OnGetBodyMass)
-				.OnValueCommitted(this, &FBodyInstanceCustomizationHelper::OnSetBodyMass)
-			]
+			SNew(SNumericEntryBox<float>)
+			.IsEnabled(this, &FBodyInstanceCustomizationHelper::IsBodyMassEnabled)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Value(this, &FBodyInstanceCustomizationHelper::OnGetBodyMass)
+			.OnValueCommitted(this, &FBodyInstanceCustomizationHelper::OnSetBodyMass)
 		];
 	}
 	else
@@ -1562,7 +1557,6 @@ void FBodyInstanceCustomizationHelper::AddMaxAngularVelocity(IDetailCategoryBuil
 	[
 		SNew(SVerticalBox)
 		+ SVerticalBox::Slot()
-		.Padding(0.f, 0.f, 10.f, 0.f)
 		[
 			SNew(SNumericEntryBox<float>)
 			.IsEnabled(false)
@@ -1572,7 +1566,6 @@ void FBodyInstanceCustomizationHelper::AddMaxAngularVelocity(IDetailCategoryBuil
 		]
 
 		+ SVerticalBox::Slot()
-		.Padding(0.f, 0.f, 10.f, 0.f)
 		[
 			SNew(SVerticalBox)
 			.Visibility(this, &FBodyInstanceCustomizationHelper::IsMaxAngularVelocityVisible, true)
