@@ -412,9 +412,6 @@ void FSequencer::InitSequencer(const FSequencerInitParams& InitParams, const TSh
 	
 	RootSequence = InitParams.RootSequence;
 
-	UpdateTimeBases();
-	PlayPosition.Reset(FFrameTime(0));
-
 	{
 		CompiledDataManager = FindObject<UMovieSceneCompiledDataManager>(GetTransientPackage(), TEXT("SequencerCompiledDataManager"));
 		if (!CompiledDataManager)
@@ -431,6 +428,9 @@ void FSequencer::InitSequencer(const FSequencerInitParams& InitParams, const TSh
 	RootTemplateInstance.GetEntitySystemLinker()->AddExtension(InitialValueCache.Get());
 
 	ResetTimeController();
+
+	UpdateTimeBases();
+	PlayPosition.Reset(GetPlaybackRange().GetLowerBoundValue());
 
 	// Make internal widgets
 	SequencerWidget = SNew( SSequencer, SharedThis( this ) )
@@ -507,14 +507,9 @@ void FSequencer::InitSequencer(const FSequencerInitParams& InitParams, const TSh
 
 	// Update initial movie scene data
 	NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::ActiveMovieSceneChanged );
-	UpdateTimeBoundsToFocusedMovieScene();
 
-	FQualifiedFrameTime CurrentTime = GetLocalTime();
-	if (!TargetViewRange.Contains(CurrentTime.AsSeconds()))
-	{
-		SetLocalTimeDirectly(LastViewRange.GetLowerBoundValue() * CurrentTime.Rate);
-		OnGlobalTimeChangedDelegate.Broadcast();
-	}
+	// Update the view range to the new current time
+	UpdateTimeBoundsToFocusedMovieScene();
 
 	// NOTE: Could fill in asset editor commands here!
 
