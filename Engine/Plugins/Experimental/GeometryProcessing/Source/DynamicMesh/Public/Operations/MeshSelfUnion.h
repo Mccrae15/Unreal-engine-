@@ -14,6 +14,7 @@
 
 #include "Util/ProgressCancel.h"
 
+#include "Operations/MeshBoolean.h" // for shared utility functions
 
 
 
@@ -55,6 +56,26 @@ public:
 
 	/** Set this to be able to cancel running operation */
 	FProgressCancel* Progress = nullptr;
+
+	/** Control whether we attempt to auto-simplify the small planar triangles that the boolean operation tends to generate */
+	bool bSimplifyAlongNewEdges = false;
+	//
+	// Simplification-specific settings (only relevant if bSimplifyAlongNewEdges==true):
+	//
+	/** Degrees of deviation from coplanar that we will still simplify */
+	double SimplificationAngleTolerance = .1;
+	/**
+	 * If triangle quality (aspect ratio) is worse than this threshold, only simplify in ways that improve quality.  If <= 0, triangle quality is ignored.
+	 *  Note: For aspect ratio we use definition: 4*TriArea / (sqrt(3)*MaxEdgeLen^2), ref: https://people.eecs.berkeley.edu/~jrs/papers/elemj.pdf p.53
+	 *  Equilateral triangles have value 1; Smaller values -> lower quality
+	 */
+	double TryToImproveTriQualityThreshold = .25;
+	/** Prevent simplification from distorting vertex UVs */
+	bool bPreserveVertexUVs = true;
+	/** Prevent simplification from distorting overlay UVs */
+	bool bPreserveOverlayUVs = true;
+	/** When preserving UVs, sets maximum allowed change in UV coordinates from collapsing an edge, measured at the removed vertex */
+	float UVDistortTolerance = FMathf::ZeroTolerance;
 
 
 	//
@@ -113,5 +134,7 @@ private:
 	int FindNearestEdge(const TArray<int>& EIDs, const TArray<int>& BoundaryNbrEdges, FVector3d Pos);
 
 	bool MergeEdges(const TArray<int>& CutBoundaryEdges, const TMap<int, int>& AllVIDMatches);
+
+	void SimplifyAlongNewEdges(TArray<int>& CutBoundaryEdges, TMap<int, int>& FoundMatches);
 
 };
