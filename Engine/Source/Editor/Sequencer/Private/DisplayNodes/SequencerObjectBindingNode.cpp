@@ -735,7 +735,7 @@ FText FSequencerObjectBindingNode::GetDisplayName() const
 	return FText();
 }
 
-FLinearColor FSequencerObjectBindingNode::GetDisplayNameColor() const
+FSlateColor FSequencerObjectBindingNode::GetDisplayNameColor() const
 {
 	FSequencer& Sequencer = ParentTree.GetSequencer();
 
