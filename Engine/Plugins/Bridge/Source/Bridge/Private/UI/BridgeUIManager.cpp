@@ -205,8 +205,7 @@ void FBridgeUIManagerImpl::CreateWIndow()
 		.SupportsMinimize(false)
 		.ClientSize(FVector2D(1, 1))
 		.SupportsTransparency(EWindowTransparency::PerWindow)
-		.FocusWhenFirstShown(false)
-		.ActivateWhenFirstShown(false);
+		.FocusWhenFirstShown(false);
 
 	FSlateApplication::Get().AddWindow(FBridgeUIManager::Instance->OverlayWindow.ToSharedRef());
 	FBridgeUIManager::Instance->OverlayWindow->HideWindow();

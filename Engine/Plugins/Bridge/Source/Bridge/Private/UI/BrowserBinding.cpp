@@ -194,9 +194,10 @@ void UBrowserBinding::DragStarted(TArray<FString> ImageUrls)
 		PopupWebBrowser->LoadString(FString::Printf(TEXT("<!DOCTYPE html><html lang=\"en\"> <head> <meta charset=\"UTF-8\"/> <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/> <style>*{padding: 0px;}body{padding: 0px; margin: 0px;}#container{display: flex; position: relative; width: 120px; height: 120px; background: #202020; justify-content: center; align-items: center;}#full-image{max-width: 110px; max-height: 110px; display: block; font-size: 0;}#number-circle{position: absolute; border-radius: 50%; width: 18px; height: 18px; padding: 4px; background: #fff; color: #666; text-align: center; font: 16px Arial, sans-serif; box-shadow: 1px 1px 1px #888888; opacity: 0.5;}</style> </head> <body> <div id=\"container\"> <img id=\"full-image\" src=\"%s\"/></div></body></html>"), *ImageUrl), TEXT(""));
 	}
 
-	FBridgeUIManager::Instance->DragDropWindow->ActivateWhenFirstShown();
+	//FBridgeUIManager::Instance->DragDropWindow->ActivateWhenFirstShown();
 	FSlateApplication::Get().AddWindow(FBridgeUIManager::Instance->DragDropWindow.ToSharedRef());
-	FSlateApplication::Get().ProcessMouseButtonUpEvent(FPointerEvent::FPointerEvent());
+	//FSlateApplication::Get().ProcessMouseButtonUpEvent(FPointerEvent::FPointerEvent());
+	FSlateApplication::Get().ProcessMouseButtonUpEvent(FPointerEvent());
 
 	FBridgeUIManager::Instance->DragDropWindow->GetNativeWindow()->SetWindowFocus();
 
