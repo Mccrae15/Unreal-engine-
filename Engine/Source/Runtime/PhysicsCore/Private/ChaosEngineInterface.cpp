@@ -1635,13 +1635,18 @@ void FChaosEngineInterface::SetKinematicTarget_AssumesLocked(const FPhysicsActor
 	Chaos::TKinematicGeometryParticle<float, 3>* KinematicGeometryParticle = InActorReference->CastToKinematicParticle();
 	if (KinematicGeometryParticle)
 	{
-		Chaos::TKinematicTarget<float, 3> newKinematicTarget;
-		Chaos::TRigidTransform<Chaos::FReal, 3> PreviousTM(InActorReference->X(), InActorReference->R());
-		newKinematicTarget.SetTargetMode(InNewTarget, PreviousTM);
-		KinematicGeometryParticle->SetKinematicTarget(newKinematicTarget);
+		Chaos::TKinematicTarget<float, 3> NewKinematicTarget;
 
-		InActorReference->SetX(InNewTarget.GetLocation());
-		InActorReference->SetR(InNewTarget.GetRotation());
+		// SetKinematicTarget_AssumesLocked could be called multiple times in one time step
+		// Don't update Previous here. Previous is updated in FSingleParticlePhysicsProxy::PushToPhysicsState. Previous is not used in game thread and set to identity.
+		// @todo(chaos): create a new KinematicTarget class for game thread that does not have Preivous 
+		Chaos::TRigidTransform<float, 3> IdentityTransform;
+		NewKinematicTarget.SetTargetMode(InNewTarget, IdentityTransform);
+		KinematicGeometryParticle->SetKinematicTarget(NewKinematicTarget);
+
+		// Don't pass X/R to physics thread through SetX/SetR . KinematicTarget already does that.
+		InActorReference->SetX(InNewTarget.GetLocation(), false);
+		InActorReference->SetR(InNewTarget.GetRotation(), false);
 		InActorReference->UpdateShapeBounds();
 
 		FChaosScene* Scene = GetCurrentScene(InActorReference);
