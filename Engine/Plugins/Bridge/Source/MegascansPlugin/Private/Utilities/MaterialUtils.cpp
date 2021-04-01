@@ -15,7 +15,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Selection.h"
-#include "GameFramework/Actor.h"
+
 #include "Engine/Level.h"
 #include "Components/StaticMeshComponent.h"
 #include "Editor/EditorEngine.h"
@@ -139,30 +139,46 @@ bool FMaterialUtils::ShouldOverrideMaterial(const FString& AssetType)
 }
 
 
-void FMaterialUtils::ApplyMaterialToSelection(const FString& InstancePath)
+TArray<AStaticMeshActor*> FMaterialUtils::ApplyMaterialToSelection(const FString& InstancePath)
 {
 	IAssetRegistry& AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 	FAssetData InstanceData = AssetRegistry.GetAssetByObjectPath(FName(*InstancePath));
-	UMaterialInstanceConstant* MaterialInstance = Cast<UMaterialInstanceConstant>(InstanceData.GetAsset());	
-
+	UMaterialInstanceConstant* MaterialInstance = Cast<UMaterialInstanceConstant>(UEditorAssetLibrary::LoadAsset(InstancePath));
+	
 
 	USelection* SelectedActors = GEditor->GetSelectedActors();
 	TArray<AActor*> Actors;
+	TArray<AStaticMeshActor*> SelectedStaticMeshes;
+
 	TArray<ULevel*> UniqueLevels;
 	for (FSelectionIterator Iter(*SelectedActors); Iter; ++Iter)
 	{
 		AActor* Actor = Cast<AActor>(*Iter);
 		TArray<UStaticMeshComponent*> Components;
 		Actor->GetComponents<UStaticMeshComponent>(Components);
+
+		if (Components.Num() > 0)
+		{
+			AStaticMeshActor* SelectedStaticMesh = Cast<AStaticMeshActor>(Actor);
+			if (SelectedStaticMesh)
+			{
+				SelectedStaticMeshes.Add(SelectedStaticMesh);
+			}
+		}
+
 		for (int32 i = 0; i < Components.Num(); i++)
 		{
 			UStaticMeshComponent* MeshComponent = Components[i];
 			int32 mCnt = MeshComponent->GetNumMaterials();
 			for (int j = 0; j < mCnt; j++)
+			{
+				
 				MeshComponent->SetMaterial(j, MaterialInstance);
-
+			}
 		}
 	}
+
+	return SelectedStaticMeshes;
 }
 
 

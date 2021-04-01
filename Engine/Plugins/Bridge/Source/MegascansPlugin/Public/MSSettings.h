@@ -19,14 +19,14 @@ class UMegascansSettings
 	//GENERATED_BODY()
 
 public:
-	/** Create foliage assets and populate Foliage Editor for 3D Plant and Scatter types. */
+	/** Populate Foliage Editor with Foliage Types for 3D Plants. */
 	UPROPERTY(Config, DisplayName = "Auto-Populate Foliage Painter", EditAnywhere, Category = "MegascansSettings")
 		bool bCreateFoliage;	
 	
 
 	/** Ask for confirmation when importing more than 10 assets. */
-	UPROPERTY(Config, DisplayName = "Prompt Before Batch Import", EditAnywhere, Category = "MegascansSettings")
-		bool bBatchImportPrompt;
+	/*UPROPERTY(Config, DisplayName = "Prompt Before Batch Import", EditAnywhere, Category = "MegascansSettings")
+		bool bBatchImportPrompt;*/
 	
 
 	/** Apply imported Surface on selected Actors in Editor. */

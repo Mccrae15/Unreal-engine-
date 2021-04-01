@@ -46,7 +46,7 @@ void FAssetsImportController::DataReceived(const FString DataFromBridge)
 
 	TArray<TSharedPtr<FJsonValue> > AssetsImportDataArray = ImportDataObject->GetArrayField(TEXT("QuixelAssets"));
 
-	const UMegascansSettings* MegascansSettings = GetDefault<UMegascansSettings>();
+	/*const UMegascansSettings* MegascansSettings = GetDefault<UMegascansSettings>();
 	if (AssetsImportDataArray.Num() > 10)
 	{
 		
@@ -55,7 +55,7 @@ void FAssetsImportController::DataReceived(const FString DataFromBridge)
 			EAppReturnType::Type ContinueImport = FMessageDialog::Open(EAppMsgType::OkCancel, FText(FText::FromString("You are about to import more than 10 assets. Press Ok to continue.")));
 			if (ContinueImport == EAppReturnType::Cancel) return;
 		}
-	}
+	}*/
 
 	
 	for (TSharedPtr<FJsonValue> AssetJson : AssetsImportDataArray)
@@ -67,6 +67,8 @@ void FAssetsImportController::DataReceived(const FString DataFromBridge)
 		
 		if (ImportType == EAssetImportType::MEGASCANS_UASSET)
 		{
+			//if (!SupportedAssetTypes.Contains(AssetType)) continue;
+
 			FString ExportMode = AssetJson->AsObject()->GetStringField(TEXT("exportMode"));
 			if (ExportMode == TEXT("normal"))
 			{

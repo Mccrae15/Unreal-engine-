@@ -9,7 +9,7 @@
 
 struct FProgressiveSurfaces
 {	
-	AStaticMeshActor* ActorInLevel;
+	TArray<AStaticMeshActor*> ActorsInLevel;
 	UMaterialInstanceConstant* PreviewInstance;
 	FString PreviewFolderPath;
 	FString PreviewMeshPath;

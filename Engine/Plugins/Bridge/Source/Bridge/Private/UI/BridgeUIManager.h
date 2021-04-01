@@ -20,12 +20,14 @@ public:
 	void Shutdown();
 	void HandleBrowserUrlChanged(const FText& Url);
 	TSharedPtr<SWebBrowser> WebBrowserWidget;
-	TArray<TSharedPtr<SWindow>> DragDropWindows;
+	TSharedPtr<SWindow> BridgeWindow;
+	TSharedPtr<SWindow> DragDropWindow;
+	TSharedPtr<SWindow> OverlayWindow;
 
 private:
 	void SetupMenuItem();
 	void CreateWIndow();
-	TSharedRef<SDockTab> CreateBridgeTab(const FSpawnTabArgs& Args);
+	//TSharedRef<SDockTab> CreateBridgeTab(const FSpawnTabArgs& Args);
 	void FillToolbar(FToolBarBuilder& ToolbarBuilder);
 	void AddPluginMenu(FMenuBuilder& MenuBuilder);
 

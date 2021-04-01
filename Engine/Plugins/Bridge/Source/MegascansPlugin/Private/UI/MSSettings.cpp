@@ -5,7 +5,7 @@
 
 
 UMegascansSettings::UMegascansSettings(const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer) , bCreateFoliage(true), bBatchImportPrompt(false), bApplyToSelection(false)
+	: Super(ObjectInitializer) , bCreateFoliage(true), bApplyToSelection(false)
 
 {
 	

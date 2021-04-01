@@ -99,11 +99,11 @@ void FBridgeUIManagerImpl::SetupMenuItem()
 		FMenuExtensionDelegate::CreateRaw(this, &FBridgeUIManagerImpl::AddPluginMenu));
 	LevelEditorModule.GetMenuExtensibilityManager()->AddExtender(NewMenuExtender);
 
-	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(BridgeTabName,
-	FOnSpawnTab::CreateRaw(this, &FBridgeUIManagerImpl::CreateBridgeTab))
-		.SetDisplayName(BridgeTabDisplay)
-		.SetAutoGenerateMenuEntry(false)
-		.SetTooltipText(BridgeToolTip);
+	//FGlobalTabmanager::Get()->RegisterNomadTabSpawner(BridgeTabName,
+	//FOnSpawnTab::CreateRaw(this, &FBridgeUIManagerImpl::CreateBridgeTab))
+	//	.SetDisplayName(BridgeTabDisplay)
+	//	.SetAutoGenerateMenuEntry(false)
+	//	.SetTooltipText(BridgeToolTip);
 }
 
 void FBridgeUIManagerImpl::AddPluginMenu(FMenuBuilder& MenuBuilder)
@@ -144,17 +144,12 @@ void FBridgeUIManagerImpl::HandleBrowserUrlChanged(const FText& Url)
 
 void FBridgeUIManagerImpl::CreateWIndow()
 {
-	FGlobalTabmanager::Get()->TryInvokeTab(BridgeTabName);
-}
+	if (BridgeWindow != NULL)
+	{
+		BridgeWindow->BringToFront();
+		return;
+	}
 
-void FBridgeUIManager::Shutdown()
-{
-	FBridgeStyle::Shutdown();
-	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(BridgeTabName);
-}
-
-TSharedRef<SDockTab> FBridgeUIManagerImpl::CreateBridgeTab(const FSpawnTabArgs& Args)
-{
 	// Temp workaround which enables authentication (by impersonating Launcher's user agent)
 	FWebBrowserInitSettings browserInitSettings = FWebBrowserInitSettings();
 	// browserInitSettings.ProductVersion = TEXT("EpicGamesLauncher/255.255.255-7654321+++Debug+Launcher UnrealEngine/4.23.0-0+UE4 Chrome/59.0.3071.15");
@@ -167,34 +162,87 @@ TSharedRef<SDockTab> FBridgeUIManagerImpl::CreateBridgeTab(const FSpawnTabArgs& 
 	// Start node process
 	FNodeProcessManager::Get()->StartNodeProcess();
 
-	TSharedPtr<SDockTab> LocalBrowserDock;
-    {
-		SAssignNew(LocalBrowserDock, SDockTab)
-		.OnTabClosed_Lambda([](TSharedRef<class SDockTab> InParentTab)
+	FCreateBrowserWindowSettings WindowSettings;
+	WindowSettings.InitialURL = FPaths::Combine(TEXT("file:///"), IndexUrl);
+	//WindowSettings.InitialURL = TEXT("http://localhost:3000/megascans/home");
+	//WindowSettings.InitialURL = TEXT("https://mdn.github.io/dom-examples/drag-and-drop/copy-move-DataTransfer.html");
+
+	BridgeWindow = SNew(SWindow)
+		.Title(FText::FromString(TEXT("Bridge")))
+		.ClientSize(FVector2D(800, 800));
+
+	FSlateApplication::Get().AddWindow(BridgeWindow.ToSharedRef());
+
+	WindowSettings.OSWindowHandle = BridgeWindow.Get()->GetNativeWindow().Get()->GetOSWindowHandle();
+
+	TSharedPtr<IWebBrowserWindow> Browser = IWebBrowserModule::Get().GetSingleton()->CreateBrowserWindow(WindowSettings);
+
+	BridgeWindow.Get()->SetContent(
+		SAssignNew(WebBrowserWidget, SWebBrowser, Browser)
+		.ShowControls(false)
+	);
+
+	BridgeWindow.Get()->SetOnWindowClosed(
+		FOnWindowClosed::CreateLambda([](const TSharedRef<SWindow>& Window)
 		{
 			FBridgeUIManager::Instance->WebBrowserWidget.Reset();
 			FBridgeUIManager::BrowserBinding->OnExitDelegate.ExecuteIfBound(TEXT("test"));
+			FBridgeUIManager::Instance->BridgeWindow = NULL;
 		})
-		.TabRole(ETabRole::NomadTab)
-		[
-			SNew(SBorder)
-			.Padding(2)
-			[
-				SAssignNew(WebBrowserWidget, SWebBrowser)
-				.InitialURL(FPaths::Combine(TEXT("file:///"), IndexUrl))
-				//.InitialURL(TEXT("http://localhost:3000/megascans/home"))
-				//.InitialURL(TEXT("chrome://version/"))
-				//.InitialURL(TEXT("https://www.whatismybrowser.com/detect/?utm_source=whatismybrowsercom&utm_medium=internal&utm_campaign=breadcrumbs"))
-				.ShowControls(false)
-			]
-		];
-	}
+	);
+
 	UNodePort* NodePortInfo = NewObject<UNodePort>();
 	FBridgeUIManager::BrowserBinding = NewObject<UBrowserBinding>();
 	WebBrowserWidget->BindUObject(TEXT("NodePortInfo"), NodePortInfo, true);
 	WebBrowserWidget->BindUObject(TEXT("BrowserBinding"), FBridgeUIManager::BrowserBinding, true);
 
-	return LocalBrowserDock.ToSharedRef();
+	// Create and add a transparent overlay window to enable drag n drop over CEF
+	FBridgeUIManager::Instance->OverlayWindow = SNew(SWindow)
+		.InitialOpacity(0.01f)
+		.CreateTitleBar(false)
+		.FocusWhenFirstShown(false)
+		.SupportsMaximize(false)
+		.SupportsMinimize(false)
+		.ClientSize(FVector2D(1, 1))
+		.SupportsTransparency(EWindowTransparency::PerWindow)
+		.FocusWhenFirstShown(false)
+		.ActivateWhenFirstShown(false);
+
+	FSlateApplication::Get().AddWindow(FBridgeUIManager::Instance->OverlayWindow.ToSharedRef());
+	FBridgeUIManager::Instance->OverlayWindow->HideWindow();
 }
+
+void FBridgeUIManager::Shutdown()
+{
+	FBridgeStyle::Shutdown();
+	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(BridgeTabName);
+}
+
+//TSharedRef<SDockTab> FBridgeUIManagerImpl::CreateBridgeTab(const FSpawnTabArgs& Args)
+//{
+//	TSharedPtr<SDockTab> LocalBrowserDock;
+//    {
+//		SAssignNew(LocalBrowserDock, SDockTab)
+//		.OnTabClosed_Lambda([](TSharedRef<class SDockTab> InParentTab)
+//		{
+//			FBridgeUIManager::Instance->WebBrowserWidget.Reset();
+//			FBridgeUIManager::BrowserBinding->OnExitDelegate.ExecuteIfBound(TEXT("test"));
+//		})
+//		.TabRole(ETabRole::NomadTab)
+//		[
+//			SNew(SBorder)
+//			.Padding(2)
+//			[
+//				SAssignNew(WebBrowserWidget, SWebBrowser)
+//				//.InitialURL(FPaths::Combine(TEXT("file:///"), IndexUrl))
+//				//.InitialURL(TEXT("http://localhost:3000/megascans/home"))
+//				//.InitialURL(TEXT("chrome://version/"))
+//				//.InitialURL(TEXT("https://www.whatismybrowser.com/detect/?utm_source=whatismybrowsercom&utm_medium=internal&utm_campaign=breadcrumbs"))
+//				.ShowControls(false)
+//			]
+//		];
+//	}
+//	return LocalBrowserDock.ToSharedRef();
+//}
 
 #undef LOCTEXT_NAMESPACE

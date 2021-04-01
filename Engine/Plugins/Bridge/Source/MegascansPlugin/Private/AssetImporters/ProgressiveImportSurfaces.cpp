@@ -2,6 +2,7 @@
 #include "AssetImporters/ProgressiveImportSurfaces.h"
 #include "Utilities/MiscUtils.h"
 #include "Utilities/MaterialUtils.h"
+#include "MSSettings.h"
 
 #include "Misc/FileHelper.h"
 #include "Misc/ScopedSlowTask.h"
@@ -207,6 +208,27 @@ void FImportProgressiveSurfaces::HandlePreviewInstanceLoad(FAssetData PreviewIns
 
 void FImportProgressiveSurfaces::SpawnMaterialPreviewActor(FString AssetID, float LocationOffset, bool bIsNormal, FAssetData MInstanceData)
 {
+	const UMegascansSettings* MegascansSettings = GetDefault<UMegascansSettings>();
+
+	if (MegascansSettings->bApplyToSelection)
+	{
+		if (bIsNormal)
+		{
+
+
+			FMaterialUtils::ApplyMaterialToSelection(MInstanceData.GetPackage()->GetPathName());
+			//PreviewDetails[AssetID]->ActorsInLevel = FMaterialUtils::ApplyMaterialToSelection(MInstanceData.GetPackage()->GetPathName());
+		}
+		else
+		{
+			PreviewDetails[AssetID]->ActorsInLevel = FMaterialUtils::ApplyMaterialToSelection(PreviewDetails[AssetID]->PreviewInstance->GetPathName());
+		}
+
+		return;
+
+	}
+
+
 	IAssetRegistry& AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 	FString SphereMeshPath = TEXT("/Engine/BasicShapes/Sphere.Sphere");
 
@@ -252,15 +274,12 @@ void FImportProgressiveSurfaces::SpawnMaterialPreviewActor(FString AssetID, floa
 
 	if (PreviewDetails.Contains(AssetID))
 	{
-		PreviewDetails[AssetID]->ActorInLevel = SMActor;
+		PreviewDetails[AssetID]->ActorsInLevel.Add(SMActor);
 	}
 }
 
 void FImportProgressiveSurfaces::HandleHighInstanceLoad(FAssetData HighInstanceData, FString AssetID, FUAssetMeta AssetMetaData)
 {
-	if (!PreviewDetails.Contains(AssetID)) return;
-	if (PreviewDetails[AssetID]->ActorInLevel == nullptr) return;
-	if (!IsValid(PreviewDetails[AssetID]->ActorInLevel)) return;
 
 	if (FMaterialUtils::ShouldOverrideMaterial(AssetMetaData.assetType))
 	{
@@ -270,17 +289,47 @@ void FImportProgressiveSurfaces::HandleHighInstanceLoad(FAssetData HighInstanceD
 
 	}
 
-	AssetUtils::ManageImportSettings(AssetMetaData);
 
-	//UMaterialInstanceConstant* HighInstance = Cast<UMaterialInstanceConstant>(HighInstanceData.GetAsset());
-	PreviewDetails[AssetID]->ActorInLevel->GetStaticMeshComponent()->SetMaterial(0, CastChecked<UMaterialInterface>(HighInstanceData.GetAsset()));
+	if (!PreviewDetails.Contains(AssetID)) return;
+	if (PreviewDetails[AssetID]->ActorsInLevel.Num() == 0)
+	{
+		PreviewDetails.Remove(AssetID);
+		return;
+	}
+
+	
+
+	for (AStaticMeshActor* UsedActor : PreviewDetails[AssetID]->ActorsInLevel)
+	{
+		if (!IsValid(UsedActor)) continue;
+		if (!UsedActor) continue;
+		if (UsedActor == nullptr) continue;			
+
+		AssetUtils::ManageImportSettings(AssetMetaData);		
+
+		//UMaterialInstanceConstant* HighInstance = Cast<UMaterialInstanceConstant>(HighInstanceData.GetAsset());		
+		UsedActor->GetStaticMeshComponent()->SetMaterial(0, CastChecked<UMaterialInterface>(HighInstanceData.GetAsset()));
+	}
 	PreviewDetails.Remove(AssetID);
 }
 
 
 //Handle normal surfaces/decals/imperfections import through drag.
 void FImportProgressiveSurfaces::HandleNormalMaterialLoad(FAssetData AssetInstanceData, FUAssetMeta AssetMetaData, float LocationOffset)
-{
+{	
+	if (FMaterialUtils::ShouldOverrideMaterial(AssetMetaData.assetType))
+	{
+		AssetUtils::DeleteAsset(AssetMetaData.materialInstances[0].instancePath);
+		UMaterialInstanceConstant* OverridenInstance = FMaterialUtils::CreateMaterialOverride(AssetMetaData);
+
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+		FAssetData OverridenInstanceData = AssetRegistry.GetAssetByObjectPath(FName(*OverridenInstance->GetPathName()));
+		SpawnMaterialPreviewActor(AssetMetaData.assetID, LocationOffset, true, OverridenInstanceData);
+		return;
+		
+
+	}
 	SpawnMaterialPreviewActor(AssetMetaData.assetID, LocationOffset, true, AssetInstanceData);
 
 }
