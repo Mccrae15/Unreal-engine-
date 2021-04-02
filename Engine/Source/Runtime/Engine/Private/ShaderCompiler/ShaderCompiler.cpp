@@ -4216,9 +4216,7 @@ static void PullRootShaderParametersLayout(FShaderCompilerInput& CompileInput, E
 		{
 			// RHI don't need to care about render target bindings slot anyway.
 		}
-		else if (
-			BaseType == UBMT_RDG_BUFFER_ACCESS ||
-			BaseType == UBMT_RDG_TEXTURE_ACCESS)
+		else if (IsRDGResourceAccessType(BaseType))
 		{
 			// Shaders don't care about RDG access parameters.
 		}
