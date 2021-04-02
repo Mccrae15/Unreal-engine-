@@ -101,7 +101,9 @@ IMPLEMENT_GLOBAL_SHADER(FCullInstancesCs, "/Engine/Private/InstanceCulling/CullI
 void FInstanceCullingManager::CullInstances(FRDGBuilder& GraphBuilder, FGPUScene& GPUScene)
 {
 #if GPUCULL_TODO
-	RDG_EVENT_SCOPE(GraphBuilder, "CullInstances");
+	int32 NumViews = CullingViews.Num();
+	int32 NumInstances = GPUScene.InstanceDataAllocator.GetMaxSize();
+	RDG_EVENT_SCOPE(GraphBuilder, "CullInstances [%d Views X %d Instances]", NumViews, NumInstances);
 
 	check(!CullingIntermediate.InstanceIdOutOffsetBuffer);
 	check(!CullingIntermediate.VisibleInstanceFlags);
@@ -111,8 +113,6 @@ void FInstanceCullingManager::CullInstances(FRDGBuilder& GraphBuilder, FGPUScene
 
 	CullingIntermediate.InstanceIdOutOffsetBuffer = CreateStructuredBuffer(GraphBuilder, TEXT("InstanceCulling.OutputOffsetBufferOut"), NullArray);
 
-	int32 NumViews = CullingViews.Num();
-	int32 NumInstances = GPUScene.InstanceDataAllocator.GetMaxSize();
 	int32 NumInstanceFlagWords = FMath::DivideAndRoundUp(NumInstances, int32(sizeof(uint32) * 8));
 
 	CullingIntermediate.NumInstances = NumInstances;
