@@ -24,7 +24,7 @@ FTextureWithRDG::~FTextureWithRDG() = default;
 FRDGTexture* FTextureWithRDG::GetRDG(FRDGBuilder& GraphBuilder) const
 {
 	checkf(RenderTarget, TEXT("InitRDG was not called before use."));
-	return GraphBuilder.RegisterExternalTexture(RenderTarget);
+	return GraphBuilder.RegisterExternalTexture(RenderTarget, ERenderTargetTexture::ShaderResource, ERDGTextureFlags::ReadOnly);
 }
 
 void FTextureWithRDG::ReleaseRHI()
@@ -453,7 +453,7 @@ RENDERCORE_API int32 GMipColorTextureMipLevels = FMipColorTexture::NumMips;
 RENDERCORE_API const uint32 GDiffuseConvolveMipLevel = 4;
 
 /** A solid color cube texture. */
-class FSolidColorTextureCube : public FTexture
+class FSolidColorTextureCube : public FTextureWithRDG
 {
 public:
 	FSolidColorTextureCube(const FColor& InColor)
@@ -472,7 +472,9 @@ public:
 	virtual void InitRHI() override
 	{
 		// Create the texture RHI.
-		FRHIResourceCreateInfo CreateInfo(TEXT("SolidColorCube"));
+		const TCHAR* Name = TEXT("SolidColorCube");
+
+		FRHIResourceCreateInfo CreateInfo(Name);
 		FTextureCubeRHIRef TextureCube = RHICreateTextureCube(1, PixelFormat, 1, TexCreate_ShaderResource, CreateInfo);
 		TextureRHI = TextureCube;
 
@@ -495,6 +497,8 @@ public:
 		// Create the sampler state RHI resource.
 		FSamplerStateInitializerRHI SamplerStateInitializer(SF_Point, AM_Wrap, AM_Wrap, AM_Wrap);
 		SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
+
+		FTextureWithRDG::InitRDG(Name);
 	}
 
 	/** Returns the width of the texture in pixels. */
@@ -521,7 +525,7 @@ class FWhiteTextureCube : public FSolidColorTextureCube
 public:
 	FWhiteTextureCube() : FSolidColorTextureCube(FColor::White) {}
 };
-FTexture* GWhiteTextureCube = new TGlobalResource<FWhiteTextureCube>;
+FTextureWithRDG* GWhiteTextureCube = new TGlobalResource<FWhiteTextureCube>;
 
 /** A black cube texture. */
 class FBlackTextureCube : public FSolidColorTextureCube
@@ -529,7 +533,7 @@ class FBlackTextureCube : public FSolidColorTextureCube
 public:
 	FBlackTextureCube() : FSolidColorTextureCube(FColor::Black) {}
 };
-FTexture* GBlackTextureCube = new TGlobalResource<FBlackTextureCube>;
+FTextureWithRDG* GBlackTextureCube = new TGlobalResource<FBlackTextureCube>;
 
 /** A black cube texture. */
 class FBlackTextureDepthCube : public FSolidColorTextureCube
@@ -537,9 +541,9 @@ class FBlackTextureDepthCube : public FSolidColorTextureCube
 public:
 	FBlackTextureDepthCube() : FSolidColorTextureCube(PF_ShadowDepth) {}
 };
-FTexture* GBlackTextureDepthCube = new TGlobalResource<FBlackTextureDepthCube>;
+FTextureWithRDG* GBlackTextureDepthCube = new TGlobalResource<FBlackTextureDepthCube>;
 
-class FBlackCubeArrayTexture : public FTexture
+class FBlackCubeArrayTexture : public FTextureWithRDG
 {
 public:
 	// FResource interface.
@@ -547,8 +551,10 @@ public:
 	{
 		if (SupportsTextureCubeArray(GetFeatureLevel() ))
 		{
+			const TCHAR* Name = TEXT("BlackCubeArray");
+
 			// Create the texture RHI.
-			FRHIResourceCreateInfo CreateInfo(TEXT("BlackCubeArray"));
+			FRHIResourceCreateInfo CreateInfo(Name);
 			FTextureCubeRHIRef TextureCubeArray = RHICreateTextureCubeArray(1,1,PF_B8G8R8A8,1,TexCreate_ShaderResource,CreateInfo);
 			TextureRHI = TextureCubeArray;
 
@@ -564,6 +570,8 @@ public:
 			// Create the sampler state RHI resource.
 			FSamplerStateInitializerRHI SamplerStateInitializer(SF_Point,AM_Wrap,AM_Wrap,AM_Wrap);
 			SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
+
+			FTextureWithRDG::InitRDG(Name);
 		}
 	}
 
@@ -579,7 +587,7 @@ public:
 		return 1;
 	}
 };
-FTexture* GBlackCubeArrayTexture = new TGlobalResource<FBlackCubeArrayTexture>;
+FTextureWithRDG* GBlackCubeArrayTexture = new TGlobalResource<FBlackCubeArrayTexture>;
 
 /**
  * A UINT 1x1 texture.
