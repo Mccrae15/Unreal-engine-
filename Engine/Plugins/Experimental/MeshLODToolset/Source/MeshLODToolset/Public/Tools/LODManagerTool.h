@@ -8,6 +8,7 @@
 #include "Engine/StaticMesh.h"
 #include "PreviewMesh.h"
 #include "Drawing/PreviewGeometryActor.h"
+#include "MeshTangents.h"
 #include "LODManagerTool.generated.h"
 
 // predeclarations
@@ -231,6 +232,7 @@ protected:
 	struct FLODMeshInfo
 	{
 		FDynamicMesh3 Mesh;
+		FMeshTangentsf Tangents;		// todo: store tangents on the Mesh. Requires support from SimpleDynamicMeshComponent.
 
 		bool bInfoCached = false;
 		TArray<int> BoundaryEdges;
