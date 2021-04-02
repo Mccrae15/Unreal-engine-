@@ -74,6 +74,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = Snapping)
 	bool bSnapToWorldGrid = false;
 
+	/** Snap rotation of the cut plane to the world grid */
+	UPROPERTY(EditAnywhere, Category = Snapping)
+	bool bSnapRotationToWorldGrid = false;
+
 	/** If true, both halves of the cut are computed */
 	UPROPERTY(EditAnywhere, Category = Options)
 	bool bKeepBothHalves;
@@ -172,6 +176,10 @@ protected:
 	/** Cut with the current plane without exiting the tool */
 	UFUNCTION(CallInEditor, Category = Actions, meta = (DisplayName = "Cut"))
 	void Cut();
+
+	/** Flip the cutting plane */
+	UFUNCTION(CallInEditor, Category = Actions, meta = (DisplayName = "Flip Plane"))
+	void FlipPlane();
 
 protected:
 
