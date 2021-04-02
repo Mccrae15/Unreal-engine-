@@ -92,6 +92,12 @@ static void AddEffectors(FRigHierarchyContainer* Hierarchy, const FRigElementKey
 			continue;
 		}
 
+		// can only add IK to bones
+		if (Item.Type != ERigElementType::Bone)
+		{
+			continue;
+		}
+
 		const FFBIKEndEffector& CurrentEffector = Effectors[Index];
 
 		TArray<FRigElementKey> ChainIndices;
