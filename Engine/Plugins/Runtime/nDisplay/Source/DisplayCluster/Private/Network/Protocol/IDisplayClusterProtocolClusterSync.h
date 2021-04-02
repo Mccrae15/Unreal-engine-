@@ -40,6 +40,6 @@ public:
 	// Sync events
 	virtual void GetEventsData(TArray<TSharedPtr<FDisplayClusterClusterEventJson>>& JsonEvents, TArray<TSharedPtr<FDisplayClusterClusterEventBinary>>& BinaryEvents) = 0;
 
-	// Sync native UE4 input
+	// Sync native UE input
 	virtual void GetNativeInputData(TMap<FString, FString>& NativeInputData) = 0;
 };
