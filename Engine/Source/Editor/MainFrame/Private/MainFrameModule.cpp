@@ -173,7 +173,7 @@ void FMainFrameModule::CreateDefaultMainFrame( const bool bStartImmersive, const
 			//     9.3. Etc
 			// 10. Push the new "DefaultLayout.ini" together with your new code.
 			// 11. Also update these instructions if you change the version number (e.g., from "UnrealEd_Layout_v1.4" to "UnrealEd_Layout_v1.5").
-			const FName LayoutName = TEXT("UnrealEd_Layout_v1.4");
+			const FName LayoutName = TEXT("UnrealEd_Layout_v1.5");
 			const TSharedRef<FTabManager::FLayout> DefaultLayout =
 				// We persist the positioning of the level editor and the content browser.
 				// The asset editors currently do not get saved.
@@ -188,17 +188,6 @@ void FMainFrameModule::CreateDefaultMainFrame( const bool bStartImmersive, const
 						->SetSizeCoefficient(2.0f)
 						->AddTab("LevelEditor", ETabState::OpenedTab)
 						->AddTab("DockedToolkit", ETabState::ClosedTab)
-					)
-				)
-				->AddArea
-				(
-					// content browser window
-					FTabManager::NewArea(WindowSize)
-					->Split
-					(
-						FTabManager::NewStack()
-						->SetSizeCoefficient(1.0f)
-						->AddTab("ContentBrowser1Tab", ETabState::ClosedTab)
 					)
 				)
 				->AddArea
