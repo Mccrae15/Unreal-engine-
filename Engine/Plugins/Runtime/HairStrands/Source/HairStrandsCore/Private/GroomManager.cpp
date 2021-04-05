@@ -69,7 +69,6 @@ static void RunInternalHairStrandsInterpolation(
 	FRDGBuilder& GraphBuilder,
 	const FSceneView* View,
 	const FHairStrandsInstances& Instances,
-	EWorldType::Type WorldType, 
 	const FGPUSkinCache* SkinCache,
 	const FShaderDrawDebugData* ShaderDrawData,
 	FGlobalShaderMap* ShaderMap, 
@@ -93,8 +92,7 @@ static void RunInternalHairStrandsInterpolation(
 		#endif
 
 		int32 MeshLODIndex = -1;
-		check(Instance->WorldType == WorldType);
-		if (Instance->WorldType != WorldType || Instance->GeometryType == EHairGeometryType::NoneGeometry)
+		if (Instance->GeometryType == EHairGeometryType::NoneGeometry)
 			continue;
 	
 		check(Instance->HairGroupPublicData);
@@ -290,8 +288,7 @@ static void RunInternalHairStrandsInterpolation(
 		{
 			FHairGroupInstance* Instance = static_cast<FHairGroupInstance*>(AbstractInstance);
 
-			check(Instance->WorldType == WorldType);
-			if (Instance->WorldType != WorldType || Instance->GeometryType == EHairGeometryType::NoneGeometry)
+			if (Instance->GeometryType == EHairGeometryType::NoneGeometry)
 				continue;
 
 			// HAIR_TODO: Do culling on the output of the view rather than the macro group cluster, in order to get consistent result with draw logic
@@ -314,8 +311,7 @@ static void RunInternalHairStrandsInterpolation(
 		{
 			FHairGroupInstance* Instance = static_cast<FHairGroupInstance*>(AbstractInstance);
 
-			check(Instance->WorldType == WorldType);
-			if (Instance->WorldType != WorldType || Instance->GeometryType == EHairGeometryType::NoneGeometry)
+			if (Instance->GeometryType == EHairGeometryType::NoneGeometry)
 				continue;
 
 			// HAIR_TODO: Do culling on the output of the view rather than the macro group cluster, in order to get consistent result with draw logic
@@ -342,7 +338,6 @@ static void RunHairStrandsInterpolation_Guide(
 	FRDGBuilder& GraphBuilder,
 	const FSceneView* View,
 	const FHairStrandsInstances& Instances,
-	EWorldType::Type WorldType,
 	const FGPUSkinCache* SkinCache,
 	const FShaderDrawDebugData* ShaderDrawData,
 	FGlobalShaderMap* ShaderMap,
@@ -358,7 +353,6 @@ static void RunHairStrandsInterpolation_Guide(
 		GraphBuilder,
 		View,
 		Instances,
-		WorldType,
 		SkinCache,
 		ShaderDrawData,
 		ShaderMap,
@@ -370,7 +364,6 @@ static void RunHairStrandsInterpolation_Strands(
 	FRDGBuilder& GraphBuilder,
 	const FSceneView* View,
 	const FHairStrandsInstances& Instances,
-	EWorldType::Type WorldType,
 	const FGPUSkinCache* SkinCache,
 	const FShaderDrawDebugData* ShaderDrawData,
 	FGlobalShaderMap* ShaderMap,
@@ -386,7 +379,6 @@ static void RunHairStrandsInterpolation_Strands(
 		GraphBuilder,
 		View,
 		Instances,
-		WorldType,
 		SkinCache,
 		ShaderDrawData,
 		ShaderMap,
@@ -397,15 +389,13 @@ static void RunHairStrandsInterpolation_Strands(
 
 static void RunHairStrandsGatherCluster(
 	const FHairStrandsInstances& Instances,
-	EWorldType::Type WorldType,
 	FHairStrandClusterData* ClusterData)
 {
 	for (FHairStrandsInstance* AbstractInstance : Instances)
 	{
 		FHairGroupInstance* Instance = static_cast<FHairGroupInstance*>(AbstractInstance);
 
-		check(Instance->WorldType == WorldType);
-		if (Instance->WorldType != WorldType || Instance->GeometryType != EHairGeometryType::Strands)
+		if (Instance->GeometryType != EHairGeometryType::Strands)
 			continue;
 
 		if (Instance->Strands.IsValid())
@@ -466,7 +456,7 @@ static EHairGeometryType ConvertLODGeometryType(EHairGeometryType Type, bool Inb
 	return EHairGeometryType::NoneGeometry;
 }
 
-static void RunHairBufferSwap(const FHairStrandsInstances& Instances, EWorldType::Type WorldType, const TArray<const FSceneView*> Views)
+static void RunHairBufferSwap(const FHairStrandsInstances& Instances, const TArray<const FSceneView*> Views)
 {
 	EShaderPlatform ShaderPlatform = EShaderPlatform::SP_NumPlatforms;
 	if (Views.Num() > 0)
@@ -480,8 +470,7 @@ static void RunHairBufferSwap(const FHairStrandsInstances& Instances, EWorldType
 
 		int32 MeshLODIndex = -1;
 		check(Instance);
-		check(Instance->WorldType == WorldType);
-		if (!Instance || Instance->WorldType != WorldType)
+		if (!Instance)
 			continue;
 
 		check(Instance->HairGroupPublicData);
@@ -549,7 +538,7 @@ static void RunHairBufferSwap(const FHairStrandsInstances& Instances, EWorldType
 	}
 }
 
-static void RunHairLODSelection(const FHairStrandsInstances& Instances, EWorldType::Type WorldType, const TArray<const FSceneView*> Views)
+static void RunHairLODSelection(const FHairStrandsInstances& Instances, const TArray<const FSceneView*> Views)
 {
 	EShaderPlatform ShaderPlatform = EShaderPlatform::SP_NumPlatforms;
 	if (Views.Num() > 0)
@@ -563,8 +552,6 @@ static void RunHairLODSelection(const FHairStrandsInstances& Instances, EWorldTy
 
 		int32 MeshLODIndex = -1;
 		check(Instance);
-		check(Instance->WorldType == WorldType);
-
 		check(Instance->HairGroupPublicData);
 
 		//if (Instance->ProxyLocalToWorld)
@@ -709,7 +696,6 @@ static void RunHairStrandsProcess(FRDGBuilder& GraphBuilder, FGlobalShaderMap* S
 void RunHairStrandsDebug(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
-	EWorldType::Type WorldType,
 	const FSceneView& View,
 	const FHairStrandsInstances& Instances,
 	const FGPUSkinCache* SkinCache,
@@ -750,12 +736,10 @@ void ProcessHairStrandsBookmark(
 		{
 			RunHairBufferSwap(
 				*Parameters.Instances,
-				Parameters.WorldType,
 				Parameters.AllViews);
 		}
 		RunHairLODSelection(
 			*Parameters.Instances,
-			Parameters.WorldType,
 			Parameters.AllViews);
 	}
 	else if (Bookmark == EHairStrandsBookmark::ProcessEndOfFrame)
@@ -764,7 +748,6 @@ void ProcessHairStrandsBookmark(
 		{
 			RunHairBufferSwap(
 				*Parameters.Instances,
-				Parameters.WorldType,
 				Parameters.AllViews);
 		}
 	}
@@ -775,7 +758,6 @@ void ProcessHairStrandsBookmark(
 			*GraphBuilder,
 			Parameters.View,
 			*Parameters.Instances,
-			Parameters.WorldType,
 			Parameters.SkinCache,
 			Parameters.DebugShaderData,
 			Parameters.ShaderMap,
@@ -785,7 +767,6 @@ void ProcessHairStrandsBookmark(
 	{
 		RunHairStrandsGatherCluster(
 			*Parameters.Instances,
-			Parameters.WorldType,
 			&Parameters.HairClusterData);
 	}
 	else if (Bookmark == EHairStrandsBookmark::ProcessStrandsInterpolation)
@@ -795,7 +776,6 @@ void ProcessHairStrandsBookmark(
 			*GraphBuilder,
 			Parameters.View,
 			*Parameters.Instances,
-			Parameters.WorldType,
 			Parameters.SkinCache,
 			Parameters.DebugShaderData,
 			Parameters.ShaderMap,
@@ -807,7 +787,6 @@ void ProcessHairStrandsBookmark(
 		RunHairStrandsDebug(
 			*GraphBuilder,
 			Parameters.ShaderMap,
-			Parameters.WorldType,
 			*Parameters.View,
 			*Parameters.Instances,
 			Parameters.SkinCache,
