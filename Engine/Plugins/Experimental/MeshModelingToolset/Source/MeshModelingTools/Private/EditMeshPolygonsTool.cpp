@@ -1567,7 +1567,7 @@ void UEditMeshPolygonsTool::ApplySetUVs()
 
 void UEditMeshPolygonsTool::ApplyMerge()
 {
-	if (BeginMeshFaceEditChangeWithPreview() == false)
+	if (BeginMeshFaceEditChange() == false)
 	{
 		GetToolManager()->DisplayMessage(
 			LOCTEXT("OnMergeFailedMessage", "Cannot Merge Current Selection"),
@@ -1578,7 +1578,7 @@ void UEditMeshPolygonsTool::ApplyMerge()
 	FDynamicMesh3* Mesh = DynamicMeshComponent->GetMesh();
 	FDynamicMeshChangeTracker ChangeTracker(Mesh);
 	ChangeTracker.BeginChange();
-	ChangeTracker.SaveTriangles(ActiveTriangleSelection, false);
+	ChangeTracker.SaveTriangles(ActiveTriangleSelection, true);
 	FMeshConnectedComponents Components(Mesh);
 	Components.FindConnectedTriangles(ActiveTriangleSelection);
 	FGroupTopologySelection NewSelection;
@@ -1612,6 +1612,15 @@ void UEditMeshPolygonsTool::ApplyDelete()
 	}
 
 	FDynamicMesh3* Mesh = DynamicMeshComponent->GetMesh();
+
+	// prevent deleting all triangles
+	if (ActiveTriangleSelection.Num() >= Mesh->TriangleCount())
+	{
+		GetToolManager()->DisplayMessage(
+			LOCTEXT("OnDeleteAllFailedMessage", "Cannot Delete Entire Mesh"),
+			EToolMessageLevel::UserWarning);
+		return;
+	}
 
 	FDynamicMeshChangeTracker ChangeTracker(Mesh);
 	ChangeTracker.BeginChange();
@@ -1780,7 +1789,7 @@ void UEditMeshPolygonsTool::ApplyDecompose()
 	for (int32 GroupID : SelectionMechanic->GetActiveSelection().SelectedGroupIDs)
 	{
 		const TArray<int32>& Triangles = Topology->GetGroupTriangles(GroupID);
-		ChangeTracker.SaveTriangles(Triangles, false);
+		ChangeTracker.SaveTriangles(Triangles, true);
 		for (int32 tid : Triangles)
 		{
 			int32 NewGroupID = Mesh->AllocateTriangleGroup();
@@ -2013,7 +2022,7 @@ void UEditMeshPolygonsTool::ApplyPokeSingleFace()
 	FDynamicMesh3* Mesh = DynamicMeshComponent->GetMesh();
 	FDynamicMeshChangeTracker ChangeTracker(Mesh);
 	ChangeTracker.BeginChange();
-	ChangeTracker.SaveTriangles(ActiveTriangleSelection, false);
+	ChangeTracker.SaveTriangles(ActiveTriangleSelection, true);
 	FGroupTopologySelection NewSelection;
 	for (int32 tid : ActiveTriangleSelection)
 	{
