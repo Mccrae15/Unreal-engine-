@@ -60,6 +60,8 @@
 #include "GPUScene.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "VT/RuntimeVirtualTextureSceneProxy.h"
+#include "HairStrandsInterface.h"
+
 #if RHI_RAYTRACING
 #include "RayTracingDynamicGeometryCollection.h"
 #endif
@@ -1985,6 +1987,34 @@ void FScene::UpdateDecalFadeInTime(UDecalComponent* Decal)
 	}
 }
 
+void FScene::AddHairStrands(FHairStrandsInstance* Proxy)
+{
+	if (Proxy)
+	{
+		check(IsInRenderingThread());
+		const int32 PackedIndex = HairStrandsSceneData.RegisteredProxies.Add(Proxy);
+		Proxy->RegisteredIndex = PackedIndex;
+	}
+}
+
+void FScene::RemoveHairStrands(FHairStrandsInstance* Proxy)
+{
+	if (Proxy)
+	{
+		check(IsInRenderingThread());
+		int32 ProxyIndex = Proxy->RegisteredIndex;
+		if (HairStrandsSceneData.RegisteredProxies.IsValidIndex(ProxyIndex))
+		{
+			HairStrandsSceneData.RegisteredProxies.RemoveAtSwap(ProxyIndex);
+		}
+		Proxy->RegisteredIndex = -1;
+		if (HairStrandsSceneData.RegisteredProxies.IsValidIndex(ProxyIndex))
+		{
+			FHairStrandsInstance* Other = HairStrandsSceneData.RegisteredProxies[ProxyIndex];
+			Other->RegisteredIndex = ProxyIndex;
+		}
+	}
+}
 
 void FScene::AddReflectionCapture(UReflectionCaptureComponent* Component)
 {
@@ -4373,6 +4403,9 @@ public:
 	virtual void RemoveSkyAtmosphere(FSkyAtmosphereSceneProxy* SkyAtmosphereSceneProxy) override {}
 	virtual FSkyAtmosphereRenderSceneInfo* GetSkyAtmosphereSceneInfo() override { return NULL; }
 	virtual const FSkyAtmosphereRenderSceneInfo* GetSkyAtmosphereSceneInfo() const override { return NULL; }
+
+	virtual void AddHairStrands(FHairStrandsInstance* Proxy) override {}
+	virtual void RemoveHairStrands(FHairStrandsInstance* Proxy) override {}
 
 	virtual void SetPhysicsField(FPhysicsFieldSceneProxy* PhysicsFieldSceneProxy) override {}
 	virtual void ResetPhysicsField() override {}

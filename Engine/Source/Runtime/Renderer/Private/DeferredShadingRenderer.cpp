@@ -1805,7 +1805,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	{
 		if (IsHairStrandsEnabled(EHairStrandsShaderType::All, Scene->GetShaderPlatform()))
 		{
-			HairStrandsBookmarkParameters = CreateHairStrandsBookmarkParameters(Views[0]);
+			HairStrandsBookmarkParameters = CreateHairStrandsBookmarkParameters(Scene, Views[0]);
 			RunHairStrandsBookmark(GraphBuilder, EHairStrandsBookmark::ProcessTasks, HairStrandsBookmarkParameters);
 		}
 
@@ -2676,7 +2676,7 @@ void FDeferredShadingSceneRenderer::Render(FRDGBuilder& GraphBuilder)
 	{
 		if (HairStrandsBookmarkParameters.bHasElements)
 		{
-			RenderHairStrandsDebugInfo(GraphBuilder, Views, HairStrandsBookmarkParameters.HairClusterData, SceneTextures.Color.Target);
+			RenderHairStrandsDebugInfo(GraphBuilder, Scene, Views, HairStrandsBookmarkParameters.HairClusterData, SceneTextures.Color.Target);
 		}
 	}
 

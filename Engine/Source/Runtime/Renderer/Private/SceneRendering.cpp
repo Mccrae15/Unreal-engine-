@@ -3613,7 +3613,7 @@ static void RenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, 
 			
 			if (SceneRenderer->Views.Num() > 0 && !ViewFamily.EngineShowFlags.HitProxies)
 			{
-				FHairStrandsBookmarkParameters Parameters = CreateHairStrandsBookmarkParameters(SceneRenderer->Views);
+				FHairStrandsBookmarkParameters Parameters = CreateHairStrandsBookmarkParameters(SceneRenderer->Scene, SceneRenderer->Views);
 				if (Parameters.bHasElements)
 				{
 					RunHairStrandsBookmark(EHairStrandsBookmark::ProcessEndOfFrame, Parameters);
