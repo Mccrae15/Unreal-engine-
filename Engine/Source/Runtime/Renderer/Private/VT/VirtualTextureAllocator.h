@@ -12,18 +12,16 @@ class FAllocatedVirtualTexture;
 class RENDERER_API FVirtualTextureAllocator
 {
 public:
-	FVirtualTextureAllocator(uint32 Dimensions);
+	explicit FVirtualTextureAllocator(uint32 Dimensions);
 	~FVirtualTextureAllocator() {}
 
 	/**
-	 * Initialise the allocator with the given initial size.
+	 * Initialise the allocator
 	 */
-	void Initialize(uint32 InSize);
+	void Initialize(uint32 MaxSize);
 
-	/**
-	 * Increase size of region managed by allocator by factor of 2 in each dimension.
-	 */
-	void Grow();
+	uint32 GetAllocatedWidth() const { return AllocatedWidth; }
+	uint32 GetAllocatedHeight() const { return AllocatedHeight; }
 
 	/**
 	 * Translate a virtual page address in the address space to a local page address within a virtual texture.
@@ -58,10 +56,45 @@ public:
 	/** Output debugging information to the console. */
 	void DumpToConsole(bool verbose);
 
+#if WITH_EDITOR
+	void SaveDebugImage(const TCHAR* ImageName) const;
+#endif
+
 private:
+	enum class EBlockState : uint8
+	{
+		None,
+		GlobalFreeList,
+		FreeList,
+		PartiallyFreeList,
+		AllocatedTexture,
+	};
+
+	struct FTestRegion
+	{
+		uint32 BaseIndex;
+		uint32 vTileX0;
+		uint32 vTileY0;
+		uint32 vTileX1;
+		uint32 vTileY1;
+	};
+
+	void LinkFreeList(uint16& InOutListHead, EBlockState State, uint16 Index);
+	void UnlinkFreeList(uint16& InOutListHead, EBlockState State, uint16 Index);
+
 	int32 AcquireBlock();
-	void FreeAddressBlock(uint32 Index);
+	void FreeAddressBlock(uint32 Index, bool bTopLevelBlock);
 	uint32 FindAddressBlock(uint32 vAddress) const;
+
+	void SubdivideBlock(uint32 ParentIndex);
+
+	void MarkBlockAllocated(uint32 Index, uint32 vAllocatedTileX, uint32 vAllocatedTileY, FAllocatedVirtualTexture* VT);
+
+	bool TestAllocation(uint32 Index, uint32 vTileX0, uint32 vTileY0, uint32 vTileX1, uint32 vTileY1) const;
+
+#if WITH_EDITOR
+	void FillDebugImage(uint32 Index, uint32* ImageData, TMap<FAllocatedVirtualTexture*, uint32>& ColorMap) const;
+#endif
 
 	struct FAddressBlock
 	{
@@ -75,6 +108,7 @@ private:
 		uint16						NextSibling;
 		uint16						NextFree;
 		uint16						PrevFree;
+		EBlockState                 State;
 
 		FAddressBlock()
 		{}
@@ -90,6 +124,7 @@ private:
 			, NextSibling(0xffff)
 			, NextFree(0xffff)
 			, PrevFree(0xffff)
+			, State(EBlockState::None)
 		{}
 
 		FAddressBlock(const FAddressBlock& Block, uint32 Offset, uint32 Dimensions)
@@ -103,14 +138,17 @@ private:
 			, NextSibling(0xffff)
 			, NextFree(0xffff)
 			, PrevFree(0xffff)
+			, State(EBlockState::None)
 		{}
 	};
 
 	const uint32			vDimensions;
-	uint32					LogSize;
+	uint32					AllocatedWidth;
+	uint32					AllocatedHeight;
 
 	TArray< FAddressBlock >	AddressBlocks;
 	TArray< uint16 >		FreeList;
+	TArray< uint16 >		PartiallyFreeList;
 	uint16					GlobalFreeList;
 	TArray< uint32 >		SortedAddresses;
 	TArray< uint16 >		SortedIndices;

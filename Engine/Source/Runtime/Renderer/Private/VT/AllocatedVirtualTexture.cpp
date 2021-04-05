@@ -6,6 +6,7 @@
 #include "VT/VirtualTextureSystem.h"
 #include "VT/VirtualTextureSpace.h"
 #include "VT/VirtualTexturePhysicalSpace.h"
+#include "Misc/StringBuilder.h"
 
 FAllocatedVirtualTexture::FAllocatedVirtualTexture(FVirtualTextureSystem* InSystem,
 	uint32 InFrame,
@@ -55,7 +56,10 @@ FAllocatedVirtualTexture::FAllocatedVirtualTexture(FVirtualTextureSystem* InSyst
 
 	// Max level of overall allocated VT is limited by size in tiles
 	// With multiple layers of different sizes, some layers may have mips smaller than a single tile
-	MaxLevel = FMath::Min(MaxLevel, FMath::CeilLogTwo(FMath::Max(GetWidthInTiles(), GetHeightInTiles())));
+	// We can either use the Min or Max of Width/Height to determine the number of mips
+	// - Using Max will allow more mips for rectangular VTs, which could potentially reduce aliasing in certain situations
+	// - Using Min will relax alignment requirements for the page table allocator, which will tend to reduce overall VRAM usage
+	MaxLevel = FMath::Min(MaxLevel, FMath::CeilLogTwo(FMath::Min(GetWidthInTiles(), GetHeightInTiles())));
 
 	MaxLevel = FMath::Min(MaxLevel, VIRTUALTEXTURE_LOG2_MAX_PAGETABLE_SIZE - 1u);
 
@@ -177,8 +181,8 @@ void FAllocatedVirtualTexture::Release(FVirtualTextureSystem* System)
 
 	// Physical pool needs to evict all pages that belong to this VT
 	{
-		// Allocator always allocates square regions, need to update logic here if that changes
-		const uint32 BlockSize = FMath::Max(GetWidthInTiles(), GetHeightInTiles());
+		const uint32 WidthInTiles = GetWidthInTiles();
+		const uint32 HeightInTiles = GetHeightInTiles();
 
 		TArray<FVirtualTexturePhysicalSpace*> UniquePhysicalSpaces;
 		for (int32 PageTableIndex = 0u; PageTableIndex < UniquePageTableLayers.Num(); ++PageTableIndex)
@@ -191,7 +195,7 @@ void FAllocatedVirtualTexture::Release(FVirtualTextureSystem* System)
 
 		for (FVirtualTexturePhysicalSpace* PhysicalSpace : UniquePhysicalSpaces)
 		{
-			PhysicalSpace->GetPagePool().UnmapAllPagesForSpace(System, Space->GetID(), VirtualAddress, BlockSize, MaxLevel);
+			PhysicalSpace->GetPagePool().UnmapAllPagesForSpace(System, Space->GetID(), VirtualAddress, WidthInTiles, HeightInTiles, MaxLevel);
 		}
 
 		for (int32 PageTableIndex = 0u; PageTableIndex < UniquePageTableLayers.Num(); ++PageTableIndex)
@@ -199,11 +203,32 @@ void FAllocatedVirtualTexture::Release(FVirtualTextureSystem* System)
 			UniquePageTableLayers[PageTableIndex].PhysicalSpace.SafeRelease();
 		}
 
+#if DO_CHECK
 		for (uint32 LayerIndex = 0; LayerIndex < Space->GetNumPageTableLayers(); ++LayerIndex)
 		{
 			const FTexturePageMap& PageMap = Space->GetPageMapForPageTableLayer(LayerIndex);
-			PageMap.VerifyAddressRangeUnmapped(VirtualAddress, BlockSize);
+
+			TArray<FMappedTexturePage> MappedPages;
+			PageMap.GetMappedPagesInRange(VirtualAddress, WidthInTiles, HeightInTiles, MappedPages);
+			if (MappedPages.Num() > 0)
+			{
+				TStringBuilder<2048> Message;
+				Message.Appendf(TEXT("Mapped pages remain after releasing AllocatedVT - vAddress: %d, Size: %d x %d, PhysicalSpaces: ["), VirtualAddress, WidthInTiles, HeightInTiles);
+				for (FVirtualTexturePhysicalSpace* PhysicalSpace : UniquePhysicalSpaces)
+				{
+					Message.Appendf(TEXT("%d "), PhysicalSpace->GetID());
+				}
+				Message.Appendf(TEXT("], MappedPages: ["));
+
+				for (const FMappedTexturePage& MappedPage : MappedPages)
+				{
+					Message.Appendf(TEXT("(vAddress: %d, PhysicalSpace: %d) "), MappedPage.Page.vAddress, MappedPage.PhysicalSpaceID);
+				}
+				Message.Appendf(TEXT("]"));
+				UE_LOG(LogVirtualTexturing, Warning, TEXT("%s"), Message.ToString());
+			}
 		}
+#endif // DO_CHECK
 	}
 
 	Space->FreeVirtualTexture(this);
