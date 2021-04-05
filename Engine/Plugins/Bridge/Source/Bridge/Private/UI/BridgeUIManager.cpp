@@ -92,13 +92,6 @@ void FBridgeUIManagerImpl::SetupMenuItem()
 		FUIAction(FExecuteAction::CreateRaw(this, &FBridgeUIManagerImpl::CreateWIndow), FCanExecuteAction())
 	);
 
-	TSharedPtr<FExtender> NewMenuExtender = MakeShareable(new FExtender);
-	NewMenuExtender->AddMenuExtension("LevelEditor",
-		EExtensionHook::After,
-		NULL,
-		FMenuExtensionDelegate::CreateRaw(this, &FBridgeUIManagerImpl::AddPluginMenu));
-	LevelEditorModule.GetMenuExtensibilityManager()->AddExtender(NewMenuExtender);
-
 	//FGlobalTabmanager::Get()->RegisterNomadTabSpawner(BridgeTabName,
 	//FOnSpawnTab::CreateRaw(this, &FBridgeUIManagerImpl::CreateBridgeTab))
 	//	.SetDisplayName(BridgeTabDisplay)

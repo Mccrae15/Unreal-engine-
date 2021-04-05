@@ -64,6 +64,11 @@ protected:
 	static void RegisterWindowMenu();
 
 	/**
+	 * Called to fill the app menu's content.
+	 */
+	static void RegisterToolsMenu();
+
+	/**
 	 * Called to fill the help menu's content.
 	 */
 	static void RegisterHelpMenu();
@@ -76,7 +81,7 @@ protected:
 	/**
 	 * Called to fill the file menu's recent and exit content.
 	 */
-	static void RegisterRecentFileAndExitMenuItems();
+	static void RegisterExitMenuItems();
 
 private:
 	/** 
