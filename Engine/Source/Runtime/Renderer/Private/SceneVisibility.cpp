@@ -1727,6 +1727,11 @@ static int32 OcclusionCull(FRHICommandListImmediate& RHICmdList, const FScene* S
 								  (!FrameParity && IStereoRendering::IsASecondaryView(View));
 			}
 
+			View.ViewState->PrimitiveOcclusionQueryPool.AdvanceFrame(
+				ViewState->OcclusionFrameCounter,
+				FOcclusionQueryHelpers::GetNumBufferedFrames(Scene->GetFeatureLevel()),
+				View.ViewState->IsRoundRobinEnabled() && !View.bIsSceneCapture && IStereoRendering::IsStereoEyeView(View));
+
 			NumOccludedPrimitives += FetchVisibilityForPrimitives(Scene, View, bSubmitQueries, bHZBOcclusion, DynamicVertexBuffer);
 
 			if( bHZBOcclusion )
