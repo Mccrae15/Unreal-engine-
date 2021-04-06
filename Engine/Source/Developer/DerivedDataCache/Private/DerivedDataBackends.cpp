@@ -24,7 +24,7 @@
 #include "Misc/EngineBuildSettings.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/ConfigCacheIni.h"
-
+#include <atomic>
 
 DEFINE_LOG_CATEGORY(LogDerivedDataCache);
 
@@ -51,6 +51,7 @@ public:
 		, KeyLengthWrapper(NULL)
 		, HierarchicalWrapper(NULL)
 		, bUsingSharedDDC(false)
+		, bIsShuttingDown(false)
 		, MountPakCommand(
 		TEXT( "DDC.MountPak" ),
 		*LOCTEXT("CommandText_DDCMountPak", "Mounts read-only pak file").ToString(),
@@ -859,10 +860,16 @@ public:
 	{
 		double StartTime = FPlatformTime::Seconds();
 		double LastPrint = StartTime;
+
+		if (bShutdown)
+		{
+			bIsShuttingDown.store(true, std::memory_order_relaxed);
+		}
+
 		while (AsyncCompletionCounter.GetValue())
 		{
 			check(AsyncCompletionCounter.GetValue() >= 0);
-			FPlatformProcess::Sleep(1.0f);
+			FPlatformProcess::Sleep(0.1f);
 			if (FPlatformTime::Seconds() - LastPrint > 5.0)
 			{
 				UE_LOG(LogDerivedDataCache, Log, TEXT("Waited %ds for derived data cache to finish..."), int32(FPlatformTime::Seconds() - StartTime));
@@ -936,6 +943,11 @@ public:
 	{
 		AsyncCompletionCounter.Add(Addend);
 		check(AsyncCompletionCounter.GetValue() >= 0);
+	}
+
+	virtual bool IsShuttingDown() override
+	{
+		return bIsShuttingDown.load(std::memory_order_relaxed);
 	}
 
 	virtual void GetDirectories(TArray<FString>& OutResults) override
@@ -1061,6 +1073,9 @@ private:
 
 	/** Whether a shared cache is in use */
 	bool bUsingSharedDDC;
+
+	/** Whether a shutdown is pending */
+	std::atomic<bool> bIsShuttingDown;
 
 	/** MountPak console command */
 	FAutoConsoleCommand MountPakCommand;

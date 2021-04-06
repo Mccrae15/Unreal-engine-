@@ -961,6 +961,11 @@ bool HashPayload(FRequest* Request, const TArrayView<const uint8> Payload)
 	return true;
 }
 
+bool ShouldAbortForShutdown()
+{
+	return !GIsBuildMachine && FDerivedDataBackend::Get().IsShuttingDown();
+}
+
 //----------------------------------------------------------------------------------------------------------
 // FHttpAccessToken
 //----------------------------------------------------------------------------------------------------------
@@ -1332,6 +1337,11 @@ FDerivedDataBackendInterface::EPutStatus FHttpDerivedDataBackend::PutCachedData(
 	// Retry request until we get an accepted response or exhaust allowed number of attempts.
 	while (ResponseCode == 0 && ++Attempts < UE_HTTPDDC_MAX_ATTEMPTS)
 	{
+		if (ShouldAbortForShutdown())
+		{
+			return EPutStatus::NotCached;
+		}
+
 		FScopedRequestPtr Request(RequestPool.Get());
 		if (Request.IsValid())
 		{
