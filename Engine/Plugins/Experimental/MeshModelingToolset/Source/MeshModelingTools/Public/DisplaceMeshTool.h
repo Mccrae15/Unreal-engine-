@@ -125,7 +125,7 @@ public:
 	bool bApplyAdjustmentCurve = false;
 
 	/** This curve is queried in the range [0,1] to adjust contrast of the displacement map. */
-	UPROPERTY(VisibleAnywhere, Category = Options, meta = (EditCondition = "bApplyAdjustmentCurve", EditConditionHides))
+	UPROPERTY(EditAnywhere, Category = Options, meta = (EditCondition = "bApplyAdjustmentCurve", EditConditionHides))
 	UCurveFloat* AdjustmentCurve = nullptr;
 
 	/** Recalculate normals from displaced mesh. Disable this if you are applying Displacements that are paired with an existing Normal Map in your Material. */
@@ -273,6 +273,10 @@ public:
 	UPROPERTY()
 	UDisplaceMeshSineWaveProperties* SineWaveProperties;
 
+	/** Contrast Curve we are actively listening to */
+	UPROPERTY()
+	UCurveFloat* ActiveContrastCurveTarget = nullptr;
+
 private:
 	void StartComputation();
 	void AdvanceComputation();
@@ -294,4 +298,9 @@ private:
 
 	TUniquePtr<IDynamicMeshOperatorFactory> Subdivider = nullptr;
 	TUniquePtr<IDynamicMeshOperatorFactory> Displacer = nullptr;
+
+	// management of TextureMapProperties->AdjustmentCurve.OnUpdateCurve listener
+	FDelegateHandle ActiveContrastCurveListenerHandle;
+	void UpdateActiveContrastCurveTarget();
+	void DisconnectActiveContrastCurveTarget();
 };
