@@ -110,9 +110,9 @@ FQueuedThreadPool* FAssetCompilingManager::GetThreadPool() const
 
 		// Wrapping GThreadPool to give AssetThreadPool it's own set of priorities and allow Pausable functionality
 		// We're using GThreadPool instead of GLargeThreadPool because asset compilation is hard on total memory and memory bandwidth and can run slower when going wider than actual cores.
-		// All asset priorities will resolve to a Low priority once being scheduled in the LargeThreadPool.
+		// All asset priorities will resolve to a Low priority once being scheduled in GThreadPool unless marked as EQueuedWorkPriority::Highest, which means the game-thread is waiting on it.
 		// Any asset supporting being built async should be scheduled lower than Normal to let non-async stuff go first
-		GAssetThreadPool = new FMemoryBoundQueuedThreadPoolWrapper(GThreadPool, -1, [](EQueuedWorkPriority) { return EQueuedWorkPriority::Low; });
+		GAssetThreadPool = new FMemoryBoundQueuedThreadPoolWrapper(GThreadPool, -1, [](EQueuedWorkPriority QueuedWorkPriority) { return QueuedWorkPriority == EQueuedWorkPriority::Highest ? QueuedWorkPriority : EQueuedWorkPriority::Low; });
 
 		AsyncCompilationHelpers::BindThreadPoolToCVar(
 			GAssetThreadPool,
