@@ -1426,7 +1426,9 @@ DEFINE_STAT(STAT_D3D12ExecuteCommandListTime);
 DEFINE_STAT(STAT_D3D12WaitForFenceTime);
 
 DEFINE_STAT(STAT_D3D12UsedVideoMemory);
+DEFINE_STAT(STAT_D3D12UsedSystemMemory);
 DEFINE_STAT(STAT_D3D12AvailableVideoMemory);
+DEFINE_STAT(STAT_D3D12DemotedVideoMemory);
 DEFINE_STAT(STAT_D3D12TotalVideoMemory);
 
 DEFINE_STAT(STAT_D3D12RenderTargetStandAloneAllocated);
