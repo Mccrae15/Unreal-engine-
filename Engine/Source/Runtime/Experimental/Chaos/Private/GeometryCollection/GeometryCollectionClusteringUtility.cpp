@@ -278,7 +278,10 @@ void FGeometryCollectionClusteringUtility::ClusterBonesUnderExistingNode(FGeomet
 
 			for (int32 NodeIndex : ParentsToUpdateNames)
 			{
-				RecursivelyUpdateChildBoneNames(NodeIndex, Children, BoneNames);
+				if (NodeIndex != INDEX_NONE)
+				{
+					RecursivelyUpdateChildBoneNames(NodeIndex, Children, BoneNames);
+				}
 			}
 		}
 	}
@@ -533,7 +536,10 @@ int32 FGeometryCollectionClusteringUtility::GetParentOfBoneAtSpecifiedLevel(cons
 
 void FGeometryCollectionClusteringUtility::RecursivelyUpdateChildBoneNames(int32 BoneIndex, const TManagedArray<TSet<int32>>& Children, TManagedArray<FString>& BoneNames, bool OverrideBoneNames /*= false*/)
 {
-	check(BoneIndex < Children.Num());
+	if (!ensure(BoneIndex > -1 && BoneIndex < Children.Num()))
+	{
+		return;
+	}
 
 	if (Children[BoneIndex].Num() > 0)
 	{
