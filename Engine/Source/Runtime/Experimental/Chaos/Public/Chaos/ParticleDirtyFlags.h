@@ -14,6 +14,7 @@
 #include "UObject/ExternalPhysicsMaterialCustomObjectVersion.h"
 #include "UObject/PhysicsObjectVersion.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
 
 class FName;
 
@@ -251,12 +252,15 @@ class FParticleDynamicMisc
 public:
 	void Serialize(FChaosArchive& Ar)
 	{
+		Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 		Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 		Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
+
 		Ar << MLinearEtherDrag;
 		Ar << MAngularEtherDrag;
 		Ar << MObjectState;
 		Ar << MGravityEnabled;
+
 		if (Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) >= FExternalPhysicsCustomObjectVersion::AddOneWayInteraction)
 		{
 			Ar << MOneWayInteraction;
@@ -265,6 +269,7 @@ public:
 		{
 			MOneWayInteraction = false;
 		}
+
 		if (Ar.CustomVer(FPhysicsObjectVersion::GUID) >= FPhysicsObjectVersion::AddCCDEnableFlag)
 		{
 			Ar << bCCDEnabled;
@@ -274,6 +279,12 @@ public:
 		{
 			Ar << MCollisionConstraintFlag;
 		}
+
+		if(Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) >= FUE5ReleaseStreamObjectVersion::AddChaosMaxLinearAngularSpeed)
+		{
+			Ar << MMaxLinearSpeedSq;
+			Ar << MMaxAngularSpeedSq;
+		}
 	}
 
 	template <typename TOther>
@@ -281,6 +292,8 @@ public:
 	{
 		SetLinearEtherDrag(Other.LinearEtherDrag());
 		SetAngularEtherDrag(Other.AngularEtherDrag());
+		SetMaxLinearSpeedSq(Other.MaxLinearSpeedSq());
+		SetMaxAngularSpeedSq(Other.MaxAngularSpeedSq());
 		SetObjectState(Other.ObjectState());
 		SetGravityEnabled(Other.GravityEnabled());
 		SetCollisionGroup(Other.CollisionGroup());
@@ -296,6 +309,8 @@ public:
 		return ObjectState() == Other.ObjectState()
 			&& LinearEtherDrag() == Other.LinearEtherDrag()
 			&& AngularEtherDrag() == Other.AngularEtherDrag()
+			&& MaxLinearSpeedSq() == Other.MaxLinearSpeedSq()
+			&& MaxAngularSpeedSq() == Other.MaxAngularSpeedSq()
 			&& GravityEnabled() == Other.GravityEnabled()
 			&& CollisionGroup() == Other.CollisionGroup()
 			&& ResimType() == Other.ResimType()
@@ -314,6 +329,12 @@ public:
 
 	FReal AngularEtherDrag() const { return MAngularEtherDrag; }
 	void SetAngularEtherDrag(FReal InAngularEtherDrag) { MAngularEtherDrag = InAngularEtherDrag; }
+
+	FReal MaxLinearSpeedSq() const { return MMaxLinearSpeedSq; }
+	void SetMaxLinearSpeedSq(FReal InMaxLinearSpeed) { MMaxLinearSpeedSq = InMaxLinearSpeed; }
+
+	FReal MaxAngularSpeedSq() const { return MMaxAngularSpeedSq; }
+	void SetMaxAngularSpeedSq(FReal InMaxAngularSpeed) { MMaxAngularSpeedSq = InMaxAngularSpeed; }
 
 	EObjectStateType ObjectState() const { return MObjectState; }
 	void SetObjectState(EObjectStateType InState){ MObjectState = InState; }
@@ -338,6 +359,8 @@ public:
 private:
 	FReal MLinearEtherDrag;
 	FReal MAngularEtherDrag;
+	FReal MMaxLinearSpeedSq;
+	FReal MMaxAngularSpeedSq;
 	int32 MCollisionGroup;
 
 	EObjectStateType MObjectState;
