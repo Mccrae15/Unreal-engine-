@@ -273,8 +273,8 @@ bool FCustomPresent::IsSRGB(ovrpTextureFormat InFormat)
 
 int FCustomPresent::GetSystemRecommendedMSAALevel() const
 {
-	int SystemRecommendedMSAALevel = 1;
-	FOculusHMDModule::GetPluginWrapper().GetSystemRecommendedMSAALevel2(&SystemRecommendedMSAALevel);
+	int SystemRecommendedMSAALevel = 2;
+	//FOculusHMDModule::GetPluginWrapper().GetSystemRecommendedMSAALevel2(&SystemRecommendedMSAALevel);
 	return SystemRecommendedMSAALevel;
 }
 
