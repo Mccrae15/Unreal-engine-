@@ -2083,63 +2083,62 @@ namespace Chaos
 
 		const T Delta = FMath::Min(FMath::Max(Parameters.CoillisionThicknessPercent, (T)0), T(1));
 		const TArray<TPBDRigidParticleHandle<T, d>*>& Children = MChildren[Parent];
-		for (int32 i = 0; i < Children.Num(); ++i)
-		{
-			TPBDRigidParticleHandle<T, d>* Child1 = Children[i];
-			if (!Child1->Geometry() || !Child1->Geometry()->HasBoundingBox())
+
+		typedef TPair<TPBDRigidParticleHandle<T, d>*, TPBDRigidParticleHandle<T, d>*> ParticlePair;
+		typedef TSet<ParticlePair> ParticlePairArray;
+		
+		TArray<ParticlePairArray> Connections;
+		Connections.Init(ParticlePairArray(), Children.Num());
+	
+		PhysicsParallelFor(Children.Num(), [&](int32 i)
 			{
-				continue;
-			}
-			const TVector<T,d>& Child1X = Child1->X();
-			if (!(ensure(!FMath::IsNaN(Child1X[0])) && ensure(!FMath::IsNaN(Child1X[1])) && ensure(!FMath::IsNaN(Child1X[2]))))
-			{
-				continue;
-			}
-			TRigidTransform<T, d> TM1 = TRigidTransform<T, d>(Child1X, Child1->R());
-
-			const int32 Offset = i + 1;
-			const int32 NumRemainingChildren = Children.Num() - Offset;
-			typedef TPair<TPBDRigidParticleHandle<T, d>*, TPBDRigidParticleHandle<T, d>*> ParticlePair;
-			typedef TArray<ParticlePair> ParticlePairArray;
-			TArray<ParticlePairArray> Connections;
-			Connections.Init(ParticlePairArray(), NumRemainingChildren);
-			PhysicsParallelFor(NumRemainingChildren, [&](int32 Idx) 
-			{
-				const int32 ChildrenIdx = Offset + Idx;
-				TPBDRigidParticleHandle<T, d>* Child2 = Children[ChildrenIdx];
-				if(!Child2->CollisionParticles())
-					return;
-
-				const TVector<T, d>& Child2X = Child2->X();
-				if (!(ensure(!FMath::IsNaN(Child2X[0])) && ensure(!FMath::IsNaN(Child2X[1])) && ensure(!FMath::IsNaN(Child2X[2]))))
-					return;
-
-				const TRigidTransform<T, d> TM = TM1.GetRelativeTransform(TRigidTransform<T, d>(Child2X, Child2->R()));
-
-				bool bCollided = false;
-				for (uint32 CollisionIdx = 0; !bCollided && CollisionIdx < Child2->CollisionParticles()->Size(); ++CollisionIdx)
+				TPBDRigidParticleHandle<T, d>* Child1 = Children[i];
+				if (Child1->Geometry() && Child1->Geometry()->HasBoundingBox())
 				{
-					const TVector<T, d> LocalPoint = 
-						TM.TransformPositionNoScale(Child2->CollisionParticles()->X(CollisionIdx));
-					const T Phi = Child1->Geometry()->SignedDistance(LocalPoint - (LocalPoint * Delta));
-					if (Phi < 0.0)
-						bCollided = true;
-				}
-				if (bCollided)
-				{
-					Connections[Idx].Add(ParticlePair(Child1, Child2));
+					ParticlePairArray& ConnectionList = Connections[i];
+
+					const TVector<T, d>& Child1X = Child1->X();
+					TRigidTransform<T, d> TM1 = TRigidTransform<T, d>(Child1X, Child1->R());
+
+					const int32 Offset = i + 1;
+					const int32 NumRemainingChildren = Children.Num() - Offset;
+
+					for (int32 Idx=0; Idx < NumRemainingChildren; ++Idx)
+					{
+						const int32 ChildrenIdx = Offset + Idx;
+						TPBDRigidParticleHandle<T, d>* Child2 = Children[ChildrenIdx];
+						if (Child2->CollisionParticles())
+						{
+
+							const TVector<T, d>& Child2X = Child2->X();
+							const TRigidTransform<T, d> TM = TM1.GetRelativeTransform(TRigidTransform<T, d>(Child2X, Child2->R()));
+							const uint32 NumCollisionParticles = Child2->CollisionParticles()->Size();
+							for (uint32 CollisionIdx = 0; CollisionIdx < NumCollisionParticles; ++CollisionIdx)
+							{
+								const TVector<T, d> LocalPoint =
+									TM.TransformPositionNoScale(Child2->CollisionParticles()->X(CollisionIdx));
+								const T Phi = Child1->Geometry()->SignedDistance(LocalPoint - (LocalPoint * Delta));
+								if (Phi < 0.0)
+								{
+									ConnectionList.Add(ParticlePair(Child1, Child2));
+									break;
+								}
+
+							}
+						}
+					}
 				}
 			});
 
-			// join results and make connections
-			for (const ParticlePairArray& ConnectionList : Connections)
+		// join results and make connections
+		for (const ParticlePairArray& ConnectionList : Connections)
+		{
+			for (const ParticlePair& Edge : ConnectionList)
 			{
-				for (const ParticlePair& Edge : ConnectionList)
-				{
-					ConnectNodes(Edge.Key, Edge.Value);
-				}
+				ConnectNodes(Edge.Key, Edge.Value);
 			}
 		}
+
 	}
 
 	DECLARE_CYCLE_STAT(TEXT("TPBDRigidClustering<>::FixConnectivityGraphUsingDelaunayTriangulation"), STAT_FixConnectivityGraphUsingDelaunayTriangulation, STATGROUP_Chaos);
