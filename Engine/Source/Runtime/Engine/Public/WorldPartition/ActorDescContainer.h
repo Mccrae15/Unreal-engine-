@@ -28,6 +28,13 @@ public:
 	virtual void OnPackageDeleted(UPackage* Package);
 
 	FName GetContainerPackage() const { return ContainerPackageName; }
+
+public:
+	DECLARE_EVENT_OneParam(UWorldPartition, FActorDescAddedEvent, FWorldPartitionActorDesc*);
+	FActorDescAddedEvent OnActorDescAddedEvent;
+	
+	DECLARE_EVENT_OneParam(UWorldPartition, FActorDescRemovedEvent, FWorldPartitionActorDesc*);
+	FActorDescRemovedEvent OnActorDescRemovedEvent;
 #endif
 
 	UPROPERTY(Transient)
@@ -42,8 +49,8 @@ protected:
 	virtual void RegisterDelegates();
 	virtual void UnregisterDelegates();
 
-	virtual void OnActorDescAdded(FWorldPartitionActorDesc* NewActorDesc) {}
-	virtual void OnActorDescRemoved(FWorldPartitionActorDesc* ActorDesc) {}
+	virtual void OnActorDescAdded(FWorldPartitionActorDesc* NewActorDesc);
+	virtual void OnActorDescRemoved(FWorldPartitionActorDesc* ActorDesc);
 	virtual void OnActorDescUpdating(FWorldPartitionActorDesc* ActorDesc) {}
 	virtual void OnActorDescUpdated(FWorldPartitionActorDesc* ActorDesc) {}
 
