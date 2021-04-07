@@ -644,6 +644,9 @@ void FScene::CheckPrimitiveArrays(int MaxTypeOffsetIndex)
 	check(Primitives.Num() == PrimitiveVirtualTextureLod.Num());
 	check(Primitives.Num() == PrimitiveOcclusionBounds.Num());
 	check(Primitives.Num() == PrimitivesAlwaysVisible.Num());
+#if WITH_EDITOR
+	check(Primitives.Num() == PrimitivesSelected.Num());
+#endif
 	check(Primitives.Num() == PrimitivesNeedingStaticMeshUpdate.Num());
 
 #if UE_BUILD_DEBUG
@@ -3858,6 +3861,9 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 							TArraySwapElements(PrimitiveVirtualTextureLod, DestIndex, SourceIndex);
 							TArraySwapElements(PrimitiveOcclusionBounds, DestIndex, SourceIndex);
 							TBitArraySwapElements(PrimitivesAlwaysVisible, DestIndex, SourceIndex);
+						#if WITH_EDITOR
+							TBitArraySwapElements(PrimitivesSelected, DestIndex, SourceIndex);
+						#endif
 							TBitArraySwapElements(PrimitivesNeedingStaticMeshUpdate, DestIndex, SourceIndex);
 
 							GPUScene.AddPrimitiveToUpdate(SourceIndex);
@@ -3907,6 +3913,9 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 				PrimitiveVirtualTextureLod.Pop();
 				PrimitiveOcclusionBounds.Pop();
 				PrimitivesAlwaysVisible.RemoveAt(PrimitivesAlwaysVisible.Num() - 1);
+			#if WITH_EDITOR
+				PrimitivesSelected.RemoveAt(PrimitivesSelected.Num() - 1);
+			#endif
 				PrimitivesNeedingStaticMeshUpdate.RemoveAt(PrimitivesNeedingStaticMeshUpdate.Num() - 1);
 			}
 
@@ -3966,6 +3975,9 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 			PrimitiveVirtualTextureLod.Reserve(PrimitiveVirtualTextureLod.Num() + AddedLocalPrimitiveSceneInfos.Num());
 			PrimitiveOcclusionBounds.Reserve(PrimitiveOcclusionBounds.Num() + AddedLocalPrimitiveSceneInfos.Num());
 			PrimitivesAlwaysVisible.Reserve(PrimitivesAlwaysVisible.Num() + AddedLocalPrimitiveSceneInfos.Num());
+		#if WITH_EDITOR
+			PrimitivesSelected.Reserve(PrimitivesSelected.Num() + AddedLocalPrimitiveSceneInfos.Num());
+		#endif
 			PrimitivesNeedingStaticMeshUpdate.Reserve(PrimitivesNeedingStaticMeshUpdate.Num() + AddedLocalPrimitiveSceneInfos.Num());
 		}
 
@@ -3995,6 +4007,9 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 				PrimitiveVirtualTextureLod.AddUninitialized();
 				PrimitiveOcclusionBounds.AddUninitialized();
 				PrimitivesAlwaysVisible.Add(PrimitiveSceneInfo->Proxy->IsAlwaysVisible());
+			#if WITH_EDITOR
+				PrimitivesSelected.Add(PrimitiveSceneInfo->Proxy->IsSelected());
+			#endif
 				PrimitivesNeedingStaticMeshUpdate.Add(false);
 
 				const int32 SourceIndex = PrimitiveSceneProxies.Num() - 1;
@@ -4075,6 +4090,9 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 							TArraySwapElements(PrimitiveVirtualTextureLod, DestIndex, SourceIndex);
 							TArraySwapElements(PrimitiveOcclusionBounds, DestIndex, SourceIndex);
 							TBitArraySwapElements(PrimitivesAlwaysVisible, DestIndex, SourceIndex);
+						#if WITH_EDITOR
+							TBitArraySwapElements(PrimitivesSelected, DestIndex, SourceIndex);
+						#endif
 							TBitArraySwapElements(PrimitivesNeedingStaticMeshUpdate, DestIndex, SourceIndex);
 
 							GPUScene.AddPrimitiveToUpdate(DestIndex);
