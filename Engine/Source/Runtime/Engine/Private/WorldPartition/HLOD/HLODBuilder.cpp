@@ -401,7 +401,6 @@ class FHLODBuilder_MeshMerge : public FHLODBuilder
 		Algo::ForEach(Assets, [this, InHLODActor, &Component, &MergedActorLocation](UObject* Asset)
 		{
 			Asset->ClearFlags(RF_Public | RF_Standalone);
-			Asset->Rename(nullptr, InHLODActor);
 
 			if (Cast<UStaticMesh>(Asset))
 			{
@@ -439,7 +438,6 @@ class FHLODBuilder_MeshSimplify : public FHLODBuilder
 		Algo::ForEach(Assets, [this, InHLODActor, &Component](UObject* Asset)
 		{
 			Asset->ClearFlags(RF_Public | RF_Standalone);
-			Asset->Rename(nullptr, InHLODActor, REN_ForceNoResetLoaders | REN_NonTransactional | REN_DoNotDirty);
 
 			if (Cast<UStaticMesh>(Asset))
 			{
