@@ -318,17 +318,19 @@ void FClothConstraints::SetVolumeConstraints(TArray<TVector<int32, 3>>&& Surface
 	++NumConstraintRules;
 }
 
-void FClothConstraints::SetLongRangeConstraints(const TMap<int32, TSet<uint32>>& PointToNeighborsMap, float StrainLimitingStiffness, float LimitScale, ETetherMode TetherMode, bool bUseXPBDConstraints)
+void FClothConstraints::SetLongRangeConstraints(const TMap<int32, TSet<int32>>& PointToNeighborsMap, float StrainLimitingStiffness, float LimitScale, ETetherMode TetherMode, bool bUseXPBDConstraints)
 {
 	check(Evolution);
 	check(StrainLimitingStiffness > 0.f && StrainLimitingStiffness <= 1.f);
+
+	static const int32 MaxNumTetherIslands = 4;  // The max number of connected neighbors per particle.
 
 	if (bUseXPBDConstraints)
 	{
 		XLongRangeConstraints = MakeShared<TXPBDLongRangeConstraints<float, 3>>(
 			Evolution->Particles(),
-			PointToNeighborsMap, 
-			10, // The max number of connected neighbors per particle.
+			PointToNeighborsMap,
+			MaxNumTetherIslands,
 			StrainLimitingStiffness);  // TODO: Add LimitScale to the XPBD constraint
 		++NumConstraintInits;
 	}
@@ -337,7 +339,7 @@ void FClothConstraints::SetLongRangeConstraints(const TMap<int32, TSet<uint32>>&
 		LongRangeConstraints = MakeShared<TPBDLongRangeConstraints<float, 3>>(
 			Evolution->Particles(),
 			PointToNeighborsMap,
-			10, // The max number of connected neighbors per particle.
+			MaxNumTetherIslands,
 			StrainLimitingStiffness,
 			LimitScale,
 			TetherMode);
