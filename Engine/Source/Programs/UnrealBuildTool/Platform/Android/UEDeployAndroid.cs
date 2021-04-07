@@ -2509,8 +2509,8 @@ namespace UnrealBuildTool
 			}
 			Text.AppendLine("\t\t<meta-data android:name=\"com.google.android.gms.games.APP_ID\"");
 			Text.AppendLine("\t\t           android:value=\"@string/app_id\" />");
-			Text.AppendLine("\t\t<meta-data android:name=\"com.google.android.gms.version\"");
-			Text.AppendLine("\t\t           android:value=\"@integer/google_play_services_version\" />");
+			//Text.AppendLine("\t\t<meta-data android:name=\"com.google.android.gms.version\"");
+			//Text.AppendLine("\t\t           android:value=\"@integer/google_play_services_version\" />");
 			if (bSupportAdMob)
 			{
 			Text.AppendLine("\t\t<activity android:name=\"com.google.android.gms.ads.AdActivity\"");
