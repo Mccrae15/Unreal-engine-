@@ -351,7 +351,7 @@ void TPBDLongRangeConstraintsBase<T, d>::ComputeGeodesicConstraints(
 		NewTethers.Reserve(MaxNumTetherIslands);
 	}
 
-	TAtomic<int32> NumTethers = 0;
+	TAtomic<int32> NumTethers(0);
 
 	PhysicsParallelFor(Nodes.Num(), [&](int32 Index)
 	{
