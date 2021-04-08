@@ -26,6 +26,7 @@ public:
 	FDynamicMesh3* Mesh;
 	int32 NumPasses;
 	double PlanarDotThresh;
+	bool bRespectGroupBoundaries = true;
 
 	/**
 	 * Apply the operation to the mesh.
