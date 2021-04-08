@@ -4,6 +4,9 @@
 #include "ProfilingDebugging/ExternalProfiler.h"
 #include "HAL/PlatformProcess.h"
 #include "Features/IModularFeatures.h"
+#include "Math/Color.h"
+#include "Misc/Paths.h"
+
 
 #if !defined(WITH_PIX_EVENT_RUNTIME)
 	#define WITH_PIX_EVENT_RUNTIME 0
