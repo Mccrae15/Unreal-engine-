@@ -132,6 +132,11 @@ void UMotionControllerComponent::TickComponent(float DeltaTime, enum ELevelTick 
 		FRotator Orientation = GetRelativeTransform().GetRotation().Rotator();
 		float WorldToMeters = GetWorld() ? GetWorld()->GetWorldSettings()->WorldToMeters : 100.0f;
 		const bool bNewTrackedState = PollControllerState(Position, Orientation, WorldToMeters);
+		if (GEngine)
+		{
+			FString DebugString = FString(" Orientation is ") + Orientation.ToString() + FString(" Position is " ) + Position.ToString();
+			GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Green, DebugString);
+		}
 		if (bNewTrackedState)
 		{
 			SetRelativeLocationAndRotation(Position, Orientation);
