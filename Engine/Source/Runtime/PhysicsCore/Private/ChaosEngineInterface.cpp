@@ -468,6 +468,12 @@ void FChaosEngineInterface::SetIsKinematic_AssumesLocked(const FPhysicsActorHand
 		if(AllowedToChangeToNewState)
 		{
 			InActorReference->GetGameThreadAPI().SetObjectState(NewState);
+			if (NewState == Chaos::EObjectStateType::Kinematic)
+			{
+				// Reset velocity on a state change here
+				InActorReference->GetGameThreadAPI().SetV(Chaos::FVec3((Chaos::FReal) 0));
+				InActorReference->GetGameThreadAPI().SetW(Chaos::FVec3((Chaos::FReal) 0));
+			}
 		}
 	}
 }
