@@ -189,6 +189,7 @@ private:
 	TArray<FSequencerAndOptions> BoundSequencers;
 
 	TSharedRef< ISceneOutlinerColumn > CreateSequencerInfoColumn( ISceneOutliner& SceneOutliner ) const;
+	TSharedRef< ISceneOutlinerColumn > CreateSequencerSpawnableColumn( ISceneOutliner& SceneOutliner ) const;
 
 private:
 
