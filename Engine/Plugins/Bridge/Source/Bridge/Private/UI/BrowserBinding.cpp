@@ -91,10 +91,10 @@ void UBrowserBinding::ShowLoginDialog(bool Production)
 					.OnUrlChanged_Lambda([Production](const FText& Url) 
 								{
 									FString RedirectedUrl = Url.ToString();
-									TCHAR *ProdCodeUrl = TEXT("https://quixel.com/?code=");
-									TCHAR *StagingCodeUrl = TEXT("https://staging2.megascans.se/?code=");
+									FString ProdCodeUrl = TEXT("https://quixel.com/?code=");
+									FString StagingCodeUrl = TEXT("https://staging2.megascans.se/?code=");
 
-									TCHAR *CodeUrl = ProdCodeUrl;
+									FString CodeUrl = ProdCodeUrl;
 									if (!Production)
 									{
 										CodeUrl = StagingCodeUrl;
@@ -104,7 +104,8 @@ void UBrowserBinding::ShowLoginDialog(bool Production)
 									{
 										FBridgeUIManager::BrowserBinding->DialogMainWindow->RequestDestroyWindow();
 
-										FString LoginCode = RedirectedUrl.Replace(CodeUrl, TEXT(""));
+										FString LoginCode = RedirectedUrl.Replace(*CodeUrl, TEXT(""));
+										
 										FBridgeUIManager::BrowserBinding->DialogSuccessDelegate.ExecuteIfBound("Login", LoginCode);
 										
 										FBridgeUIManager::BrowserBinding->DialogMainBrowser.Reset();
