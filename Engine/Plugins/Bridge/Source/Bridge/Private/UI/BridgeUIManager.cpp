@@ -70,14 +70,14 @@ void FBridgeUIManagerImpl::SetupMenuItem()
 
 	// Adding Bridge entry to Quick Content menu.
 	UToolMenu* ContentMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.LevelEditorToolBar.ContentQuickMenu");
-	FToolMenuSection& Section = ContentMenu->FindOrAddSection("GetContent");
+	FToolMenuSection& Section = ContentMenu->FindOrAddSection("ExternalContent");
 	Section.AddMenuEntry("OpenBridgeTab",
 		LOCTEXT("OpenBridgeTab_Label", "Quixel Bridge"),
 		LOCTEXT("OpenBridgeTab_Desc", "Opens the Quixel Bridge."),
 		FSlateIcon(FBridgeStyle::GetStyleSetName(), "Bridge.Logo"),
 		FUIAction(FExecuteAction::CreateRaw(this, &FBridgeUIManagerImpl::CreateWIndow), FCanExecuteAction())
 	);
-	Section.AddSeparator(NAME_None);
+	//Section.AddSeparator(NAME_None);
 
 	//Adding Bridge entry to Content Browser context and New menu.
 	UToolMenu* ContextMenu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AddNewContextMenu");
@@ -91,6 +91,13 @@ void FBridgeUIManagerImpl::SetupMenuItem()
 		FSlateIcon(FBridgeStyle::GetStyleSetName(), "Bridge.Logo"),
 		FUIAction(FExecuteAction::CreateRaw(this, &FBridgeUIManagerImpl::CreateWIndow), FCanExecuteAction())
 	);
+
+	/*TSharedPtr<FExtender> NewMenuExtender = MakeShareable(new FExtender);
+	NewMenuExtender->AddMenuExtension("LevelEditor",
+		EExtensionHook::After,
+		NULL,
+		FMenuExtensionDelegate::CreateRaw(this, &FBridgeUIManagerImpl::AddPluginMenu));
+	LevelEditorModule.GetMenuExtensibilityManager()->AddExtender(NewMenuExtender);*/
 
 	//FGlobalTabmanager::Get()->RegisterNomadTabSpawner(BridgeTabName,
 	//FOnSpawnTab::CreateRaw(this, &FBridgeUIManagerImpl::CreateBridgeTab))
@@ -146,7 +153,7 @@ void FBridgeUIManagerImpl::CreateWIndow()
 	// Temp workaround which enables authentication (by impersonating Launcher's user agent)
 	FWebBrowserInitSettings browserInitSettings = FWebBrowserInitSettings();
 	// browserInitSettings.ProductVersion = TEXT("EpicGamesLauncher/255.255.255-7654321+++Debug+Launcher UnrealEngine/4.23.0-0+UE4 Chrome/59.0.3071.15");
-	browserInitSettings.ProductVersion = TEXT("EpicGamesLauncher/12.0.5-15338009+++Portal+Release-Live UnrealEngine/4.23.0-0+UE4 Chrome/84.0.4147.38");
+	// browserInitSettings.ProductVersion = TEXT("EpicGamesLauncher/12.0.6-15417171+++Portal+Release-Live UnrealEngine/4.23.0-0+UE4 Chrome/84.0.4147.38");
 	IWebBrowserModule::Get().CustomInitialize(browserInitSettings);
 
 	FString PluginPath = FPaths::Combine(FPaths::EnginePluginsDir(), TEXT("Bridge"));

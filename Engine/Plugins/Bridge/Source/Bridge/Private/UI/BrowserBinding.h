@@ -6,6 +6,8 @@
 #include "WebJSFunction.h"
 #include "SWebBrowser.h"
 #include "Widgets/SWindow.h"
+#include "NodePort.h"
+#include "NodeProcess.h"
 #include "BrowserBinding.generated.h"
 
 UCLASS()
@@ -59,7 +61,8 @@ public:
 	UFUNCTION()
 	void DragStarted(TArray<FString> ImageUrl);
 
-	void ShowLoginDialog(FString Url);
+	UFUNCTION()
+	void ShowLoginDialog(bool Production);
 
 	UFUNCTION()
 	void OpenExternalUrl(FString Url);
@@ -69,6 +72,9 @@ public:
 
 	UFUNCTION()
 	void Logout();
+
+	UFUNCTION()
+	void StartNodeProcess();
 
 	UFUNCTION()
 	void OpenMegascansPluginSettings();

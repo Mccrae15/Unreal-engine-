@@ -2547,7 +2547,10 @@ a, a:hover, a:visited, a:active {
   display: grid;
   align-items: center;
   position: absolute;
-  inset: 0; }
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0; }
 
 .inner___3E-ko {
   display: grid;
@@ -3054,7 +3057,9 @@ a, a:hover, a:visited, a:active {
   padding: 8px; }
 
 .textLabel___HrKD6 {
-  display: none; }
+  display: none;
+  max-width: 100px;
+  text-overflow: ellipsis; }
   @media (min-width: 1121px) {
     .textLabel___HrKD6 {
       display: block; } }
@@ -3980,22 +3985,69 @@ a, a:hover, a:visited, a:active {
   .btn___1J4CQ button {
     width: 100%; }
 
-.container___xOesm {
+/**
+ * Color palette choices
+ */
+/**
+ * Box shadow size choices
+ */
+/**
+ * Font size choices
+ */
+/**
+ * Line height choices
+ */
+/**
+ * Letter spacing choices
+ */
+/**
+ * Border size choices
+ */
+/**
+ * Padding choices
+ */
+/**
+ * Element fixed height choices
+ */
+/**
+ * Font family choices
+ */
+/**
+ * Font weight choices
+ */
+/**
+ * Timing choices
+ */
+.notifications___Uxlu2 {
   position: fixed;
+  display: grid;
+  grid-gap: 8px;
+  left: 24px;
+  bottom: 24px;
+  z-index: 20; }
+
+.toast___28qSq > div {
   display: flex;
-  flex-direction: column;
-  z-index: 99999;
-  top: 70px;
-  right: 26px;
-  min-width: 300px; }
-  .container___xOesm .notification___bHrZQ {
-    padding: 16px;
-    background: rgba(0, 0, 0, 0.8);
-    margin: 6px;
-    display: flex;
-    border-radius: 4px;
-    box-shadow: 0 0 10px #000;
-    align-items: center; }
+  flex-direction: column; }
+
+.action___3gCj0 {
+  margin-top: 16px;
+  align-self: flex-end;
+  margin-right: -8px; }
+
+.transition-group-fade-enter {
+  opacity: 0; }
+
+.transition-group-fade-enter-active {
+  opacity: 1;
+  transition: opacity 0.2s; }
+
+.transition-group-fade-exit {
+  opacity: 1; }
+
+.transition-group-fade-exit-active {
+  opacity: 0;
+  transition: opacity 0.2s; }
 
 
 /*# sourceMappingURL=styles.chunk.css.map*/

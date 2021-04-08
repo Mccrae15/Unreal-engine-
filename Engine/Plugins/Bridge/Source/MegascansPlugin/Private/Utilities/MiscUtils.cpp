@@ -293,7 +293,7 @@ void CopyMSPresets()
 	{
 		const UMegascansSettings* MegascansSettings = GetDefault<UMegascansSettings>();
 
-		if (AssetMetaData.assetType == TEXT("surface") && MegascansSettings->bApplyToSelection)
+		if ((AssetMetaData.assetType == TEXT("surface") || AssetMetaData.assetType == TEXT("atlas")) && MegascansSettings->bApplyToSelection)
 		{			
 			
 			FMaterialUtils::ApplyMaterialToSelection(AssetMetaData.materialInstances[0].instancePath);

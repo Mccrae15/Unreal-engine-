@@ -660,11 +660,12 @@
   grid-area: main;
   grid-template-areas: "ltop top rtop" "l mid r" "lbot bot rbot";
   grid-template-columns: auto 1fr auto;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: 40px 1fr 40px;
   pointer-events: none;
 }
 
 .gnt-card__region {
+  align-items: center;
   display: grid;
   grid-auto-flow: column;
   padding: 8px;
@@ -685,14 +686,16 @@
   justify-self: flex-end;
 }
 .gnt-card__region--position-bottom-left {
-  align-self: flex-end;
   grid-area: lbot;
   justify-self: flex-start;
 }
 .gnt-card__region--position-bottom-right {
-  align-self: flex-end;
   grid-area: rbot;
   justify-self: flex-end;
+}
+
+.gnt-card__labelwrapper {
+  padding: 0 4px;
 }
 /**
  * Color palette choices
@@ -2172,14 +2175,14 @@
  * Timing choices
  */
 .gnt-popup {
+  border-radius: 6px;
   box-shadow: 0 16px 24px 0 rgba(0, 0, 0, 0.24);
+  overflow: hidden;
 }
 
 .gnt-popup__header {
   align-items: center;
   background: #2f2f2f;
-  border-top-left-radius: 6px;
-  border-top-right-radius: 6px;
   display: grid;
   grid-auto-flow: column;
   height: 48px;
@@ -2192,15 +2195,8 @@
   padding: 48px;
 }
 
-.gnt-popup__guts--without-footer {
-  border-bottom-left-radius: 6px;
-  border-bottom-right-radius: 6px;
-}
-
 .gnt-popup__footer {
   background: #242424;
-  border-bottom-left-radius: 6px;
-  border-bottom-right-radius: 6px;
   border-top: 2px solid #1a1a1a;
   padding: 16px;
 }
@@ -2457,5 +2453,374 @@
 /**
  * Timing choices
  */
+/**
+ * Color palette choices
+ */
+/**
+ * Box shadow size choices
+ */
+/**
+ * Font size choices
+ */
+/**
+ * Line height choices
+ */
+/**
+ * Letter spacing choices
+ */
+/**
+ * Border size choices
+ */
+/**
+ * Padding choices
+ */
+/**
+ * Element fixed height choices
+ */
+/**
+ * Font family choices
+ */
+/**
+ * Font weight choices
+ */
+/**
+ * Timing choices
+ */
+/**
+ * Color palette choices
+ */
+/**
+ * Box shadow size choices
+ */
+/**
+ * Font size choices
+ */
+/**
+ * Line height choices
+ */
+/**
+ * Letter spacing choices
+ */
+/**
+ * Border size choices
+ */
+/**
+ * Padding choices
+ */
+/**
+ * Element fixed height choices
+ */
+/**
+ * Font family choices
+ */
+/**
+ * Font weight choices
+ */
+/**
+ * Timing choices
+ */
+.gnt-card-base {
+  background-repeat: no-repeat;
+  background-size: cover;
+  cursor: default;
+  display: grid;
+  grid-template-areas: "main";
+}
+
+.gnt-card-base--is-clickable {
+  border-radius: 6px;
+  overflow: hidden;
+  user-select: none;
+}
+.gnt-card-base--is-clickable:hover {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25), 0 16px 24px 0 rgba(0, 0, 0, 0.24);
+}
+
+.gnt-card-base--has-aspectratio::after {
+  content: "";
+  grid-area: main;
+  padding-bottom: 56.25%;
+  pointer-events: none;
+}
+
+.gnt-card-base__content {
+  align-content: end;
+  display: grid;
+  grid-area: main;
+  grid-gap: 8px;
+  grid-template-areas: "main";
+  padding: var(--content-padding);
+}
+
+.gnt-card-base__content--gradient-horizontal {
+  background-image: linear-gradient(to right, rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0.6273) 19%, rgba(0, 0, 0, 0.45985) 34%, rgba(0, 0, 0, 0.3247) 47%, rgba(0, 0, 0, 0.2363) 56.5%, rgba(0, 0, 0, 0.1649) 65%, rgba(0, 0, 0, 0.1071) 73%, rgba(0, 0, 0, 0.06375) 80.2%, rgba(0, 0, 0, 0.0357) 86.1%, rgba(0, 0, 0, 0.01785) 91%, rgba(0, 0, 0, 0.0068) 95.2%, rgba(0, 0, 0, 0.0017) 98.2%, rgba(0, 0, 0, 0) 100%);
+  background-repeat: no-repeat;
+  justify-self: flex-start;
+  padding-right: calc(var(--content-padding) * 4);
+}
+
+.gnt-card-base__content--gradient-vertical {
+  align-self: flex-end;
+  background-image: linear-gradient(to top, rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0.6273) 19%, rgba(0, 0, 0, 0.45985) 34%, rgba(0, 0, 0, 0.3247) 47%, rgba(0, 0, 0, 0.2363) 56.5%, rgba(0, 0, 0, 0.1649) 65%, rgba(0, 0, 0, 0.1071) 73%, rgba(0, 0, 0, 0.06375) 80.2%, rgba(0, 0, 0, 0.0357) 86.1%, rgba(0, 0, 0, 0.01785) 91%, rgba(0, 0, 0, 0.0068) 95.2%, rgba(0, 0, 0, 0.0017) 98.2%, rgba(0, 0, 0, 0) 100%);
+  background-repeat: no-repeat;
+  padding-top: calc(var(--content-padding) * 2);
+}
+/**
+ * Color palette choices
+ */
+/**
+ * Box shadow size choices
+ */
+/**
+ * Font size choices
+ */
+/**
+ * Line height choices
+ */
+/**
+ * Letter spacing choices
+ */
+/**
+ * Border size choices
+ */
+/**
+ * Padding choices
+ */
+/**
+ * Element fixed height choices
+ */
+/**
+ * Font family choices
+ */
+/**
+ * Font weight choices
+ */
+/**
+ * Timing choices
+ */
+.gnt-banner-card {
+  height: 400px;
+}
+
+.gnt-banner-card__content {
+  max-width: min(560px, 50%);
+  min-width: min(480px, 75%);
+}
+
+.gnt-banner-card__body {
+  display: grid;
+  grid-gap: 8px;
+}
+
+.gnt-banner-card__actions {
+  display: flex;
+  grid-gap: 24px;
+  margin: 16px 0 0 0;
+  place-items: center left;
+}
+/**
+ * Color palette choices
+ */
+/**
+ * Box shadow size choices
+ */
+/**
+ * Font size choices
+ */
+/**
+ * Line height choices
+ */
+/**
+ * Letter spacing choices
+ */
+/**
+ * Border size choices
+ */
+/**
+ * Padding choices
+ */
+/**
+ * Element fixed height choices
+ */
+/**
+ * Font family choices
+ */
+/**
+ * Font weight choices
+ */
+/**
+ * Timing choices
+ */
+/**
+ * Color palette choices
+ */
+/**
+ * Box shadow size choices
+ */
+/**
+ * Font size choices
+ */
+/**
+ * Line height choices
+ */
+/**
+ * Letter spacing choices
+ */
+/**
+ * Border size choices
+ */
+/**
+ * Padding choices
+ */
+/**
+ * Element fixed height choices
+ */
+/**
+ * Font family choices
+ */
+/**
+ * Font weight choices
+ */
+/**
+ * Timing choices
+ */
+/**
+ * Color palette choices
+ */
+/**
+ * Box shadow size choices
+ */
+/**
+ * Font size choices
+ */
+/**
+ * Line height choices
+ */
+/**
+ * Letter spacing choices
+ */
+/**
+ * Border size choices
+ */
+/**
+ * Padding choices
+ */
+/**
+ * Element fixed height choices
+ */
+/**
+ * Font family choices
+ */
+/**
+ * Font weight choices
+ */
+/**
+ * Timing choices
+ */
+.gnt-brand-logo {
+  --bgcolor: transparent;
+  --symbolcolor: #fff;
+  background-color: var(--bgcolor);
+  height: calc(var(--size) * 1px);
+  width: calc(var(--size) * 1px);
+}
+.gnt-brand-logo--quixel {
+  --hovercolor: transparent;
+}
+.gnt-brand-logo--megascans {
+  --bgcolor: #8bc24a;
+  --hovercolor: #a8d177;
+}
+.gnt-brand-logo--bridge {
+  --bgcolor: #26bbff;
+  --hovercolor: #5cccff;
+}
+.gnt-brand-logo--mixer {
+  --bgcolor: #ff4040;
+  --hovercolor: #ff7070;
+}
+.gnt-brand-logo--tracker {
+  --bgcolor: #fe9b07;
+  --hovercolor: #feb445;
+}
+.gnt-brand-logo--palette {
+  --bgcolor: transparent;
+  background-image: conic-gradient(from -90deg at 50% 50%, #fe9b07 -44.92deg, #8bc24a 44.85deg, #26bbff 135.08deg, #ff4040 225.15deg, #fe9b07 315.08deg, #8bc24a 404.85deg);
+}
+
+.gnt-brand-logo--is-hoverable {
+  transition: background-color 120ms, background-image 120ms;
+  will-change: background-color, background-image;
+}
+.gnt-brand-logo--is-hoverable:hover {
+  transition: background-color 60ms, background-image 60ms;
+  will-change: background-color, background-image;
+  background-color: var(--hovercolor);
+}
+.gnt-brand-logo--is-hoverable:hover.gnt-brand-logo--quixel {
+  --symbolcolor: rgba(255, 255, 255, 0.85);
+}
+.gnt-brand-logo--is-hoverable:hover.gnt-brand-logo--palette {
+  --hovercolor: transparent;
+  background-image: conic-gradient(from -90deg at 50% 50%, #feb445 -44.92deg, #a8d177 44.85deg, #5cccff 135.08deg, #ff7070 225.15deg, #feb445 315.08deg, #a8d177 404.85deg);
+}
+
+.gnt-brand-logo__symbol {
+  transition: fill 120ms;
+  will-change: fill;
+  fill: var(--symbolcolor);
+}
+.gnt-brand-logo--is-hoverable:hover .gnt-brand-logo__symbol {
+  transition: fill 60ms;
+  will-change: fill;
+}
+/**
+ * Color palette choices
+ */
+/**
+ * Box shadow size choices
+ */
+/**
+ * Font size choices
+ */
+/**
+ * Line height choices
+ */
+/**
+ * Letter spacing choices
+ */
+/**
+ * Border size choices
+ */
+/**
+ * Padding choices
+ */
+/**
+ * Element fixed height choices
+ */
+/**
+ * Font family choices
+ */
+/**
+ * Font weight choices
+ */
+/**
+ * Timing choices
+ */
+.gnt-toast {
+  background-color: #383838;
+  border-radius: 4px;
+  box-shadow: 0 16px 24px 0 rgba(0, 0, 0, 0.24);
+  padding: 16px;
+  padding-right: 24px;
+  position: relative;
+  width: 320px;
+}
+
+.gnt-toast__close {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+}
 
 /*# sourceMappingURL=granite.css.map*/
