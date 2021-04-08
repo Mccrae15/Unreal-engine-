@@ -2624,12 +2624,6 @@ void FRDGBuilder::EndResourceRHI(FTransientResourceAllocator& TransientResourceA
 
 	if (Texture->ReferenceCount == 0)
 	{
-		// External and transient textures never release the reference.
-		if (!Texture->bExternal && !Texture->bTransient)
-		{
-			Texture->Allocation = nullptr;
-		}
-
 		if (Texture->bTransient)
 		{
 			TransientResourceAllocator->DeallocateMemory(Texture->GetRHIUnchecked());
@@ -2638,6 +2632,10 @@ void FRDGBuilder::EndResourceRHI(FTransientResourceAllocator& TransientResourceA
 			{
 				Barriers.AddAlias(Texture, FRHITransientAliasingInfo::Discard(Texture->GetRHIUnchecked()));
 			});
+		}
+		else if (Texture->PooledRenderTarget && Texture->PooledRenderTarget->IsTracked())
+		{
+			Texture->Allocation = nullptr;
 		}
 
 		Texture->LastPass = PassHandle;
@@ -2652,12 +2650,6 @@ void FRDGBuilder::EndResourceRHI(FTransientResourceAllocator& TransientResourceA
 
 	if (Buffer->ReferenceCount == 0)
 	{
-		// External and transient buffers never release the reference.
-		if (!Buffer->bExternal && !Buffer->bTransient)
-		{
-			Buffer->Allocation = nullptr;
-		}
-
 		if (Buffer->bTransient)
 		{
 			TransientResourceAllocator->DeallocateMemory(Buffer->GetRHIUnchecked());
@@ -2666,6 +2658,10 @@ void FRDGBuilder::EndResourceRHI(FTransientResourceAllocator& TransientResourceA
 			{
 				Barriers.AddAlias(Buffer, FRHITransientAliasingInfo::Discard(Buffer->GetRHIUnchecked()));
 			});
+		}
+		else
+		{
+			Buffer->Allocation = nullptr;
 		}
 
 		Buffer->LastPass = PassHandle;
