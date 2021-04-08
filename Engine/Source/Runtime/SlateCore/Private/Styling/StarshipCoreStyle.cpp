@@ -656,6 +656,14 @@ TSharedRef<ISlateStyle> FStarshipCoreStyle::Create()
 			.SetRightShadowBrush(BOX_BRUSH("Common/ScrollBoxShadowRight", FVector2D(8, 16), FMargin(0, 0.5, 1, 0.5)))
 			.SetBarThickness(8.0)
 		);
+
+		Style->Set("ScrollBoxNoShadow", FScrollBoxStyle()
+			.SetTopShadowBrush(FSlateNoResource())
+			.SetBottomShadowBrush(FSlateNoResource())
+			.SetLeftShadowBrush(FSlateNoResource())
+			.SetRightShadowBrush(FSlateNoResource())
+			.SetBarThickness(8.0)
+		);
 	}
 
 	// SScrollBorder defaults...
