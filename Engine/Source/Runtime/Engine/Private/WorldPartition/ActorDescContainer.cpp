@@ -203,14 +203,19 @@ void UActorDescContainer::OnPackageDeleted(UPackage* Package)
 
 	if (ShouldHandleActorEvent(Actor))
 	{
-		if (TUniquePtr<FWorldPartitionActorDesc>* ExistingActorDesc = GetActorDescriptor(Actor->GetActorGuid()))
-		{
-			FWorldPartitionActorDesc* const RemovedActorDesc = ExistingActorDesc->Get();
-			OnActorDescRemovedEvent.Broadcast(RemovedActorDesc);
-			OnActorDescRemoved(RemovedActorDesc);
-			RemoveActorDescriptor(RemovedActorDesc);
-			ExistingActorDesc->Reset();
-		}
+		RemoveActor(Actor->GetActorGuid());
+	}
+}
+
+void UActorDescContainer::RemoveActor(const FGuid& ActorGuid)
+{
+	if (TUniquePtr<FWorldPartitionActorDesc>* ExistingActorDesc = GetActorDescriptor(ActorGuid))
+	{
+		OnActorDescRemovedEvent.Broadcast(ExistingActorDesc->Get());
+
+		OnActorDescRemoved(ExistingActorDesc->Get());
+		RemoveActorDescriptor(ExistingActorDesc->Get());
+		ExistingActorDesc->Reset();
 	}
 }
 
