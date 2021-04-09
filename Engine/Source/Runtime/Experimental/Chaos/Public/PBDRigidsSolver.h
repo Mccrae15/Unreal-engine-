@@ -196,13 +196,8 @@ namespace Chaos
 		const float GetSolverTime() const { return MTime; }
 
 		/**/
-		void SetMaxDeltaTime(const float InMaxDeltaTime) { MMaxDeltaTime = InMaxDeltaTime; }
 		float GetLastDt() const { return MLastDt; }
-		float GetMaxDeltaTime() const { return MMaxDeltaTime; }
-		float GetMinDeltaTime() const { return MMinDeltaTime; }
-		void SetMaxSubSteps(const int32 InMaxSubSteps) { MMaxSubSteps = InMaxSubSteps; }
-		int32 GetMaxSubSteps() const { return MMaxSubSteps; }
-
+		
 		/**/
 		void SetIterations(const int32 InNumIterations) { GetEvolution()->SetNumIterations(InNumIterations); }
 		void SetPushOutIterations(const int32 InNumIterations) {  GetEvolution()->SetNumPushOutIterations(InNumIterations); }
@@ -327,9 +322,6 @@ namespace Chaos
 		int32 CurrentFrame;
 		float MTime;
 		float MLastDt;
-		float MMaxDeltaTime;
-		float MMinDeltaTime;
-		int32 MMaxSubSteps;
 		bool bHasFloor;
 		bool bIsFloorAnalytic;
 		float FloorHeight;

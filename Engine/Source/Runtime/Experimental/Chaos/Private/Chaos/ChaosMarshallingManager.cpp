@@ -52,7 +52,7 @@ void FChaosMarshallingManager::PrepareExternalQueue_External()
 	ProducerData->StartTime = ExternalTime_External;
 }
 
-void FChaosMarshallingManager::Step_External(FReal ExternalDT, const int32 NumSteps)
+void FChaosMarshallingManager::Step_External(FReal ExternalDT, const int32 NumSteps, bool bInSolverSubstepped)
 {
 	ensure(NumSteps > 0);
 
@@ -71,6 +71,7 @@ void FChaosMarshallingManager::Step_External(FReal ExternalDT, const int32 NumSt
 		ProducerData->ExternalTimestamp = ExternalTimestamp_External;
 		ProducerData->IntervalStep = Step;
 		ProducerData->IntervalNumSteps = NumSteps;
+		ProducerData->bSolverSubstepped = bInSolverSubstepped;
 
 		ExternalQueue.Insert(ProducerData, 0);
 

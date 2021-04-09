@@ -35,6 +35,7 @@ namespace Chaos
 			: PseudoFraction(1.0)
 			, Step(1)
 			, NumSteps(1)
+			, bSolverSubstepped(false)
 		{
 		}
 
@@ -42,6 +43,16 @@ namespace Chaos
 			: PseudoFraction(InPseudoFraction)
 			, Step(InStep)
 			, NumSteps(InNumSteps)
+			, bSolverSubstepped(false)
+		{
+
+		}
+
+		FSubStepInfo(const FReal InPseudoFraction, const int32 InStep, const int32 InNumSteps, bool bInSolverSubstepped)
+			: PseudoFraction(InPseudoFraction)
+			, Step(InStep)
+			, NumSteps(InNumSteps)
+			, bSolverSubstepped(bInSolverSubstepped)
 		{
 
 		}
@@ -50,6 +61,7 @@ namespace Chaos
 		FReal PseudoFraction;
 		int32 Step;
 		int32 NumSteps;
+		bool bSolverSubstepped;
 	};
 
 	/**
@@ -260,6 +272,8 @@ namespace Chaos
 
 		FGraphEventRef AdvanceAndDispatch_External(FReal InDt)
 		{
+			const bool bSubstepping = MMaxSubSteps > 1;
+			SetSolverSubstep_External(bSubstepping);
 			const FReal DtWithPause = bPaused_External ? 0.0f : InDt;
 			FReal InternalDt = DtWithPause;
 			int32 NumSteps = 1;
@@ -276,9 +290,25 @@ namespace Chaos
 				}
 				else
 				{
+
 					InternalDt = AsyncDt;
 					NumSteps = FMath::FloorToInt(AccumulatedTime / InternalDt);
 					AccumulatedTime -= InternalDt * NumSteps;
+				}
+			}
+			else if(bSubstepping && InDt > 0)
+			{
+				NumSteps = FMath::CeilToInt(DtWithPause / MMaxDeltaTime);
+				if(NumSteps > MMaxSubSteps)
+				{
+					// Hitting this case means we're losing time, given the constraints of MaxSteps and MaxDt we can't
+					// fully handle the Dt requested, the simulation will appear to the viewer to run slower than realtime
+					NumSteps = MMaxSubSteps;
+					InternalDt = MMaxDeltaTime;
+				}
+				else
+				{
+					InternalDt = DtWithPause / NumSteps;
 				}
 			}
 
@@ -330,9 +360,11 @@ namespace Chaos
 					}
 				}
 
-				if(IsUsingAsyncResults() == false)
+				// This break is mainly here to satisfy unit testing. The call to StepInternalTime_External will decrement the
+				// delay in the marshaling manager and throw of tests that are explicitly testing for propagation delays
+				if(IsUsingAsyncResults() == false && !bSubstepping)
 				{
-					break;	//non async can only process one step at a time
+					break;
 				}
 			}
 
@@ -393,6 +425,46 @@ namespace Chaos
 		bool IsUsingFixedDt() const
 		{
 			return IsUsingAsyncResults() && UseAsyncInterpolation;
+		}
+
+		void SetMaxDeltaTime_External(float InMaxDeltaTime)
+		{
+			MMaxDeltaTime = InMaxDeltaTime;
+		}
+
+		void SetMinDeltaTime_External(float InMinDeltaTime)
+		{
+			MMinDeltaTime = InMinDeltaTime;
+		}
+
+		float GetMaxDeltaTime_External() const
+		{
+			return MMaxDeltaTime;
+		}
+
+		float GetMinDeltaTime_External() const
+		{
+			return MMinDeltaTime;
+		}
+
+		void SetMaxSubSteps_External(const int32 InMaxSubSteps)
+		{
+			MMaxSubSteps = InMaxSubSteps;
+		}
+
+		int32 GetMaxSubSteps_External() const
+		{
+			return MMaxSubSteps;
+		}
+
+		void SetSolverSubstep_External(bool bInSubstepExternal)
+		{
+			bSolverSubstep_External = bInSubstepExternal;
+		}
+
+		bool GetSolverSubstep_External() const
+		{
+			return bSolverSubstep_External;
 		}
 
 		/** Returns the time used by physics results. If fixed dt is used this will be the interpolated time */
@@ -491,8 +563,12 @@ namespace Chaos
 		ETraits TraitIdx;
 
 		bool bIsShuttingDown;
+		bool bSolverSubstep_External;
 		FReal AsyncDt;
 		FReal AccumulatedTime;
+		float MMaxDeltaTime;
+		float MMinDeltaTime;
+		int32 MMaxSubSteps;
 		int32 ExternalSteps;
 		TArray<FGeometryParticle*> UniqueIdxToGTParticles;
 
