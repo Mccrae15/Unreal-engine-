@@ -977,9 +977,15 @@ bool FOculusInput::GetControllerOrientationAndPosition( const int32 ControllerIn
 								{
 									if (/*bIsPositionValid*/true)
 									{
+
+										GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Green, "Position valid");
 										OutPosition = OutPose.Position;
 									}
+									else
+									{
 
+										GEngine->AddOnScreenDebugMessage(-1, 0.0f, FColor::Red, "Position Invalid");
+									}
 									if (bIsOrientationValid)
 									{
 										OutOrientation = OutPose.Orientation.Rotator();
