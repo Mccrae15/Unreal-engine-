@@ -975,7 +975,7 @@ bool FOculusInput::GetControllerOrientationAndPosition( const int32 ControllerIn
 								if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetNodePoseState3(ovrpStep_Render, CurrentFrame ? CurrentFrame->FrameNumber : OVRP_CURRENT_FRAMEINDEX, Node, &InPoseState)) &&
 									OculusHMD->ConvertPose_Internal(InPoseState.Pose, OutPose, Settings, WorldToMetersScale))
 								{
-									if (bIsPositionValid)
+									if (/*bIsPositionValid*/true)
 									{
 										OutPosition = OutPose.Position;
 									}
