@@ -668,9 +668,9 @@ void ProcessHairStrandsBookmark(
 	FHairStrandsBookmarkParameters& Parameters)
 {
 	check(Parameters.Instances != nullptr);
+
 	const bool bCulling =
 		IsInstanceFrustumCullingEnable() && (
-			Bookmark == EHairStrandsBookmark::ProcessGuideInterpolation ||
 			Bookmark == EHairStrandsBookmark::ProcessGatherCluster ||
 			Bookmark == EHairStrandsBookmark::ProcessStrandsInterpolation ||
 			Bookmark == EHairStrandsBookmark::ProcessDebug);
