@@ -98,6 +98,12 @@ static TAutoConsoleVariable<int32> CVarNaniteShadowsUseHZB(
 	TEXT("Enables HZB for Nanite shadows."),
 	ECVF_RenderThreadSafe);
 
+static TAutoConsoleVariable<int32> CVarShadowsVirtualUseHZB(
+	TEXT("r.Shadow.Virtual.UseHZB"),
+	0,
+	TEXT("Enables HZB for Virtual Shadow Maps."),
+	ECVF_RenderThreadSafe);
+
 static TAutoConsoleVariable<float> CVarNaniteShadowsLODBias(
 	TEXT("r.Shadow.NaniteLODBias"),
 	1.0f,
@@ -1587,13 +1593,14 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 	const bool bHasVSMShadows = SortedShadowsForShadowDepthPass.VirtualShadowMapShadows.Num() > 0;
 	const bool bHasVSMClipMaps = SortedShadowsForShadowDepthPass.VirtualShadowMapClipmaps.Num() > 0;
 	const bool bNaniteEnabled = UseNanite(ShaderPlatform) && ViewFamily.EngineShowFlags.NaniteMeshes;
-	const bool bUseHZB = (CVarNaniteShadowsUseHZB.GetValueOnRenderThread() != 0);
 	const bool bAllocatePageRectAtlas = CVarAllocatePagesUsingRects.GetValueOnRenderThread() != 0;
 
 	if (bNaniteEnabled && (bHasVSMShadows || bHasVSMClipMaps))
-	{				
+	{
+		const bool bVSMUseHZB = (CVarShadowsVirtualUseHZB.GetValueOnRenderThread() != 0);
+
 		FVirtualShadowMapArrayCacheManager *CacheManager = Scene->VirtualShadowMapArrayCacheManager;
-		const TRefCountPtr<IPooledRenderTarget> PrevHZBPhysical = bUseHZB ? CacheManager->PrevBuffers.HZBPhysical : nullptr;
+		const TRefCountPtr<IPooledRenderTarget> PrevHZBPhysical = bVSMUseHZB ? CacheManager->PrevBuffers.HZBPhysical : nullptr;
 		
 		{
 			RDG_EVENT_SCOPE(GraphBuilder, "RenderVirtualShadowMaps");
@@ -1628,7 +1635,7 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 				&VirtualShadowMapArray = VirtualShadowMapArray,
 				&GraphBuilder,
 				bUpdateStreaming,
-				bUseHZB,
+				bVSMUseHZB,
 				Scene = Scene,
 				CacheManager = CacheManager,
 				PrevHZBPhysical
@@ -1684,7 +1691,7 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 							}
 
 							// If we're going to generate a new HZB this frame, save the associated metadata
-							if (bUseHZB)
+							if (bVSMUseHZB)
 							{
 								FVirtualShadowMapHZBMetadata& HZBMeta = VirtualShadowMapArray.HZBMetadata.FindOrAdd(HZBKey);
 								HZBMeta.TargetLayerIndex = Params.TargetLayerIndex;
@@ -1735,7 +1742,7 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 							}
 
 							// If we're going to generate a new HZB this frame, save the associated metadata
-							if (bUseHZB)
+							if (bVSMUseHZB)
 							{
 								FVirtualShadowMapHZBMetadata& HZBMeta = VirtualShadowMapArray.HZBMetadata.FindOrAdd(HZBKey);
 								HZBMeta.TargetLayerIndex = Params.TargetLayerIndex;
@@ -1807,7 +1814,7 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 				FilterAndRenderVirtualShadowMaps(false, VirtualFilterName);
 			}
 
-			if (bUseHZB)
+			if (bVSMUseHZB)
 			{
 				FRDGTextureRef SceneDepth = GraphBuilder.RegisterExternalTexture( GSystemTextures.BlackDummy );
 
@@ -1870,6 +1877,8 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 			ProjectedShadowInfo->CacheMode != SDCM_MovablePrimitivesOnly		// See note in RenderShadowDepthMapAtlases
 			)
 		{
+			const bool bUseHZB = (CVarNaniteShadowsUseHZB.GetValueOnRenderThread() != 0);
+
 			FString LightName;
 			GetLightNameForDrawEvent(ProjectedShadowInfo->GetLightSceneInfo().Proxy, LightName);
 

@@ -1920,6 +1920,9 @@ public:
 
 	FGPUSceneDynamicContext& GetGPUSceneDynamicContext() { return GPUSceneDynamicContext; }
 
+	/** Gets a readable light name for use with a draw event. */
+	static void GetLightNameForDrawEvent(const FLightSceneProxy* LightProxy, FString& LightNameWithLevel);
+
 protected:
 
 	/** Size of the family. */
@@ -2022,9 +2025,6 @@ protected:
 
 	/** Updates the preshadow cache, allocating new preshadows that can fit and evicting old ones. */
 	void UpdatePreshadowCache();
-
-	/** Gets a readable light name for use with a draw event. */
-	static void GetLightNameForDrawEvent(const FLightSceneProxy* LightProxy, FString& LightNameWithLevel);
 
 	/** Gathers simple lights from visible primtives in the passed in views. */
 	static void GatherSimpleLights(const FSceneViewFamily& ViewFamily, const TArray<FViewInfo>& Views, FSimpleLightArray& SimpleLights);
