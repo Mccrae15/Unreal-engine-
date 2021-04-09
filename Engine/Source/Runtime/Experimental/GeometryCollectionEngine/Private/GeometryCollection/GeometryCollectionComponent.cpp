@@ -514,7 +514,10 @@ FPrimitiveSceneProxy* UGeometryCollectionComponent::CreateSceneProxy()
 						{
 							GeometryCollectionSceneProxy->SetConstantData_RenderThread(ConstantData);
 							GeometryCollectionSceneProxy->SetDynamicData_RenderThread(DynamicData);
-							GeometryCollectionSceneProxy->GetPrimitiveSceneInfo()->RequestGPUSceneUpdate();
+							if (GeometryCollectionSceneProxy->GetPrimitiveSceneInfo())
+							{
+								GeometryCollectionSceneProxy->GetPrimitiveSceneInfo()->RequestGPUSceneUpdate();
+							}
 						}
 					}
 				);
@@ -2983,3 +2986,4 @@ void UGeometryCollectionComponent::InitializeEmbeddedGeometry()
 
 	}
 }
+
