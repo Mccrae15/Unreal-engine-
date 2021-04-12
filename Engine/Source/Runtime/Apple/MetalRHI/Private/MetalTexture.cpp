@@ -194,6 +194,7 @@ void SafeReleaseMetalTexture(FMetalSurface* Surface, FMetalTexture& Texture)
 	}
 }
 
+#if !PLATFORM_IOS
 mtlpp::PixelFormat ToSRGBFormat_NonAppleMacGPU(mtlpp::PixelFormat MTLFormat)
 {
 	switch (MTLFormat)
@@ -221,6 +222,7 @@ mtlpp::PixelFormat ToSRGBFormat_NonAppleMacGPU(mtlpp::PixelFormat MTLFormat)
 	}
 	return MTLFormat;
 }
+#endif
 
 mtlpp::PixelFormat ToSRGBFormat_AppleGPU(mtlpp::PixelFormat MTLFormat)
 {
@@ -268,11 +270,12 @@ mtlpp::PixelFormat ToSRGBFormat(mtlpp::PixelFormat MTLFormat)
 	{
 		MTLFormat = ToSRGBFormat_AppleGPU(MTLFormat);
 	}
+#if !PLATFORM_IOS
 	else if([GetMetalDeviceContext().GetDevice().GetPtr() supportsFamily:MTLGPUFamilyMac1])
 	{
 		MTLFormat = ToSRGBFormat_NonAppleMacGPU(MTLFormat);
 	}
-	
+#endif	
 	return MTLFormat;
 }
 
