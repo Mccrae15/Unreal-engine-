@@ -472,6 +472,12 @@ void FChaosEngineInterface::SetIsKinematic_AssumesLocked(const FPhysicsActorHand
 		if(AllowedToChangeToNewState)
 		{
 			Particle->SetObjectState(NewState);
+			if (NewState == Chaos::EObjectStateType::Kinematic)
+			{
+				// Reset velocity on a state change here
+				Particle->SetV(Chaos::FVec3((Chaos::FReal) 0));
+				Particle->SetW(Chaos::FVec3((Chaos::FReal) 0));
+			}
 		}
 	} else
 	{
