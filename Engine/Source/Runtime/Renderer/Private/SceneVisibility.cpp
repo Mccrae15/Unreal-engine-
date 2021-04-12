@@ -1832,8 +1832,8 @@ namespace EMarkMaskBits
 	};
 }
 
-typedef TArray<FVisibleMeshDrawCommand, TInlineAllocator<AverageMeshBatchNumPerRelevancePacket>> FPassDrawCommandArray;
-typedef TArray<const FStaticMeshBatch*, TInlineAllocator<AverageMeshBatchNumPerRelevancePacket>> FPassDrawCommandBuildRequestArray;
+typedef TArray<FVisibleMeshDrawCommand> FPassDrawCommandArray;
+typedef TArray<const FStaticMeshBatch*> FPassDrawCommandBuildRequestArray;
 
 struct FDrawCommandRelevancePacket
 {
