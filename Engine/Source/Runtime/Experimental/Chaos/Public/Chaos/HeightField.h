@@ -533,7 +533,7 @@ namespace Chaos
 
 		// Query functions - sweep, ray, overlap
 		template<typename SQVisitor>
-		bool GridSweep(const FVec3& StartPoint, const FVec3& Dir, const FReal Length, const TVector<FReal, 2> InHalfExtents, SQVisitor& Visitor) const;
+		bool GridSweep(const FVec3& StartPoint, const FVec3& Dir, const FReal Length, const TVector<FReal, 3> InHalfExtents, SQVisitor& Visitor) const;
 		bool GridCast(const FVec3& StartPoint, const FVec3& Dir, const FReal Length, FHeightfieldRaycastVisitor& Visitor) const;
 		bool GetGridIntersections(FBounds2D InFlatBounds, TArray<TVector<int32, 2>>& OutInterssctions) const;
 		
