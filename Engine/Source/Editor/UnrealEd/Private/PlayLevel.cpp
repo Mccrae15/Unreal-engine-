@@ -426,6 +426,9 @@ void UEditorEngine::EndPlayMap()
 
 		// Garbage Collect
 		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+		// Garbage collect a second time to include async mesh compilations that were canceled from the previous GC (see UE-113185).
+		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 	}
 
 	// Make sure that all objects in the temp levels were entirely garbage collected.
