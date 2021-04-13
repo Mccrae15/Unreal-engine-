@@ -365,19 +365,12 @@ IMediaSamples::EFetchBestSampleResult FImgMediaLoader::FetchBestVideoSampleForTi
 					}
 					else if (ImagePaths.Num() == 1)
 					{
-						if (PlayRate >= 0.0f)
-						{
-							++NewSequenceIndex;
-						}
-						else
-						{
-							--NewSequenceIndex;
-						}
+						NewSequenceIndex = TimeRange.GetLowerBoundValue().SequenceIndex;
 					}
 				}
 
 				// Different from the last one we returned?
-				if ((QueuedSampleFetch.LastFrameIndex != MaxIdx) || (QueuedSampleFetch.CurrentSequenceIndex != NewSequenceIndex))
+				if ((QueuedSampleFetch.LastFrameIndex != MaxIdx) || (QueuedSampleFetch.CurrentSequenceIndex != NewSequenceIndex) || (ImagePaths.Num() == 1))
 				{
 					QueuedSampleFetch.LastFrameIndex = MaxIdx;
 					QueuedSampleFetch.CurrentSequenceIndex = NewSequenceIndex;
