@@ -10,6 +10,8 @@ using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -18,6 +20,22 @@ namespace UnrealGameSync
 {
 	static class Program
 	{
+		public static string GetVersionString()
+		{
+			Version Version = Assembly.GetExecutingAssembly().GetName().Version;
+			return $"{Version.Major}.{Version.Minor}-Core";
+		}
+
+		static JsonSerializerOptions GetDefaultJsonSerializerOptions()
+		{
+			JsonSerializerOptions Options = new JsonSerializerOptions();
+			Options.PropertyNameCaseInsensitive = true;
+			Options.Converters.Add(new JsonStringEnumConverter());
+			return Options;
+		}
+
+		public static JsonSerializerOptions DefaultJsonSerializerOptions { get; } = GetDefaultJsonSerializerOptions();
+
 		public static string SyncVersion = null;
 
 		[STAThread]

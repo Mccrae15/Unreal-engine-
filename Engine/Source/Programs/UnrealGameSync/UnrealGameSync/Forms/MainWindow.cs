@@ -106,7 +106,7 @@ namespace UnrealGameSync
 		Rectangle PrimaryWorkArea;
 		List<IssueAlertWindow> AlertWindows = new List<IssueAlertWindow>();
 
-		ToolUpdateMonitor ToolUpdateMonitor;
+		public ToolUpdateMonitor ToolUpdateMonitor { get; private set; }
 
 		NetCoreWindow NetCoreWindow;
 
@@ -126,7 +126,8 @@ namespace UnrealGameSync
 			OriginalExecutableFileName = InOriginalExecutableFileName;
 			bUnstable = bInUnstable;
 			DefaultConnection = InDefaultConnection;
-	
+			ToolUpdateMonitor = new ToolUpdateMonitor(DefaultConnection, DataFolder, InSettings);
+
 			Settings = InSettings;
 			OIDCTokenManager = InOidcTokenManager;
 
@@ -177,7 +178,7 @@ namespace UnrealGameSync
 
 			if(bUnstable)
 			{
-				Text += String.Format(" (UNSTABLE BUILD {0})", Assembly.GetExecutingAssembly().GetName().Version);
+				Text += $" {Program.GetVersionString()} (UNSTABLE)";
 			}
 
 			AutomationLog = new TimestampLogWriter(new BoundedLogWriter(Path.Combine(DataFolder, "Automation.log")));
@@ -199,7 +200,7 @@ namespace UnrealGameSync
 				WorkspaceIssueMonitor.IssueMonitor.Start();
 			}
 
-			ToolUpdateMonitor = new ToolUpdateMonitor(DefaultConnection, DataFolder, Settings);
+			ToolUpdateMonitor.Start();
 		}
 
 		void PostAutomationRequest(AutomationRequest Request)
