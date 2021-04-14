@@ -1236,10 +1236,9 @@ public:
 		return false;
 	}
 
-	// @todo(ccaulfield): should be available on kinematics?
 	const TVector<T, d>& PreV() const
 	{
-		if (MHandle->CastToRigidParticle() && MHandle->ObjectState() == EObjectStateType::Dynamic)
+		if (MHandle->CastToRigidParticle())
 		{
 			return MHandle->CastToRigidParticle()->PreV();
 		}
@@ -1247,10 +1246,9 @@ public:
 		return ZeroVector;
 	}
 
-	// @todo(ccaulfield): should be available on kinematics?
 	const TVector<T, d>& PreW() const
 	{
-		if (MHandle->CastToRigidParticle() && MHandle->ObjectState() == EObjectStateType::Dynamic)
+		if (MHandle->CastToRigidParticle())
 		{
 			return MHandle->CastToRigidParticle()->PreW();
 		}
