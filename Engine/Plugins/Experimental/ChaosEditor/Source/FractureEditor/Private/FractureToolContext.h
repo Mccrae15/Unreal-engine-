@@ -44,6 +44,8 @@ public:
 
 	bool IsValid() const { return GeometryCollection.IsValid() && (SelectedBones.Num()>0); }
 
+	void GenerateGuids(int32 StartIdx);
+
 private:
 	bool HasSelectedAncestor(int32 Index) const;
 	void ConvertSelectionToLeafNodes(int32 Index, TArray<int32>& LeafSelection);
@@ -60,4 +62,5 @@ private:
 	FTransform Transform;
 	FBox Bounds;
 	int32 RandomSeed;
+
 };

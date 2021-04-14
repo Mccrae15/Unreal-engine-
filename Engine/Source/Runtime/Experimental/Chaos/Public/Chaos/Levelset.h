@@ -45,7 +45,7 @@ class TLevelSet final : public FImplicitObject
 	virtual T PhiWithNormal(const TVector<T, d>& x, TVector<T, d>& Normal) const override;
 	T SignedDistance(const TVector<T, d>& x) const;
 
-	virtual const TAABB<T, d> BoundingBox() const override { return MOriginalLocalBoundingBox; }
+	virtual const TAABB<T, d> BoundingBox() const override { return MLocalBoundingBox; }
 
 	// Returns a const ref to the underlying phi grid
 	const TArrayND<T, d>& GetPhiArray() const { return MPhi; }
