@@ -355,7 +355,14 @@ static void RunHairStrandsGatherCluster(
 
 		if (Instance->Strands.IsValid())
 		{
-			RegisterClusterData(Instance, ClusterData);
+			if (Instance->Strands.bIsCullingEnabled)
+			{
+				RegisterClusterData(Instance, ClusterData);
+			}
+			else
+			{
+				Instance->HairGroupPublicData->bCullingResultAvailable = false;
+			}
 		}
 	}
 }
@@ -561,6 +568,8 @@ static void RunHairLODSelection(const FHairStrandsInstances& Instances, const TA
 		const bool bForceCards = GHairStrands_UseCards > 0 || Instance->bForceCards; // todo
 		EHairGeometryType GeometryType = ConvertLODGeometryType(LODGeometryTypes[IntLODIndex], bForceCards, ShaderPlatform);
 
+		// Skip cluster culling if strands have a single LOD (i.e.: LOD0), and the instance is static (i.e., no skinning, no simulation, ...)
+		bool bCullingEnable = false;
 		if (GeometryType == EHairGeometryType::Meshes)
 		{
 			if (!Instance->Meshes.IsValid(IntLODIndex))
@@ -581,6 +590,12 @@ static void RunHairLODSelection(const FHairStrandsInstances& Instances, const TA
 			{
 				GeometryType = EHairGeometryType::NoneGeometry;
 			}
+			else
+			{
+				const bool bNeedLODing		= LODIndex > 0;
+				const bool bNeedDeformation = Instance->Strands.DeformedResource != nullptr;
+				bCullingEnable = bNeedLODing || bNeedDeformation;
+			}
 		}
 
 		if (!bIsVisible)
@@ -597,6 +612,7 @@ static void RunHairLODSelection(const FHairStrandsInstances& Instances, const TA
 		Instance->BindingType = Instance->HairGroupPublicData->GetBindingType(IntLODIndex);
 		Instance->Guides.bIsSimulationEnable = Instance->HairGroupPublicData->IsSimulationEnable(IntLODIndex);
 		Instance->Guides.bHasGlobalInterpolation = Instance->HairGroupPublicData->IsGlobalInterpolationEnable(IntLODIndex);
+		Instance->Strands.bIsCullingEnabled = bCullingEnable;
 
 	}
 }
