@@ -243,6 +243,7 @@ UAssetRegistryImpl::UAssetRegistryImpl(const FObjectInitializer& ObjectInitializ
 	const double StartupStartTime = FPlatformTime::Seconds();
 
 	bInitialSearchCompleted = true;
+	bSearchAllAssets = false;
 	AmortizeStartTime = 0;
 	TotalAmortizeTime = 0;
 
@@ -828,6 +829,7 @@ void UAssetRegistryImpl::SearchAllAssets(bool bSynchronousSearch)
 	// for that via a delegate, and add those directories to scan later as them come in.
 	TArray<FString> PathsToSearch;
 	FPackageName::QueryRootContentPaths(PathsToSearch);
+	bSearchAllAssets = true;
 
 	// Start the asset search (synchronous in commandlets)
 	if (bSynchronousSearch)
@@ -1176,7 +1178,25 @@ void UAssetRegistryImpl::GetPackagesByName(FStringView PackageName, TArray<FName
 
 FName UAssetRegistryImpl::GetFirstPackageByName(FStringView PackageName) const
 {
-	return State.GetFirstPackageByName(PackageName);
+	FName LongPackageName = State.GetFirstPackageByName(PackageName);
+#if WITH_EDITOR
+	if (!GIsEditor && !bSearchAllAssets)
+	{
+		// Temporary support for -game:
+		// When running editor.exe with -game, we do not have a cooked AssetRegistry and we do not scan either
+		// In that case, fall back to searching on disk if the search in the AssetRegistry (as expected) fails
+		// In the future we plan to avoid this situation by having -game run the scan as well
+		if (LongPackageName.IsNone())
+		{
+			FString LongPackageNameString;
+			if (FPackageName::SearchForPackageOnDisk(FString(PackageName), &LongPackageNameString))
+			{
+				LongPackageName = FName(*LongPackageNameString);
+			}
+		}
+	}
+#endif
+	return LongPackageName;
 }
 
 bool UAssetRegistryImpl::GetDependencies(const FAssetIdentifier& AssetIdentifier, TArray<FAssetIdentifier>& OutDependencies, EAssetRegistryDependencyType::Type InDependencyType) const

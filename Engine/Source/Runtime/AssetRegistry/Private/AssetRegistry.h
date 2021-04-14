@@ -429,6 +429,9 @@ private:
 	/** Enables extra check to make sure path still mounted before adding. Removing mount point can happen between scan (background thread + multiple ticks and the add). */
 	bool bVerifyMountPointAfterGather;
 
+	/** Record whether SearchAllAssets has been called; if so we will also search new mountpoints when added */
+	bool bSearchAllAssets;
+
 	/** A set used to ignore repeated requests to synchronously scan the same folder or file multiple times */
 	TSet<FString> SynchronouslyScannedPathsAndFiles;
 
