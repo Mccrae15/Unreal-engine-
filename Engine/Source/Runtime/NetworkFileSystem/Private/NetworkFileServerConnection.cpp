@@ -45,15 +45,31 @@ static FString MakeAbsoluteNormalizedDir(const FString& InPath)
 	return Out;
 }
 
+struct FSandboxOnlyScope
+{
+	FSandboxOnlyScope(FSandboxPlatformFile& InSandbox, bool bInSandboxOnly)
+		: Sandbox(InSandbox)
+	{
+		Sandbox.SetSandboxOnly(bInSandboxOnly);
+	}
+
+	~FSandboxOnlyScope()
+	{
+		Sandbox.SetSandboxOnly(false);
+	}
+
+	FSandboxPlatformFile& Sandbox;
+};
 
 /* FNetworkFileServerClientConnection structors
  *****************************************************************************/
 
-FNetworkFileServerClientConnection::FNetworkFileServerClientConnection( const FNetworkFileDelegateContainer* InNetworkFileDelegates, const TArray<ITargetPlatform*>& InActiveTargetPlatforms )
+FNetworkFileServerClientConnection::FNetworkFileServerClientConnection(const FNetworkFileServerOptions& Options)
 	: LastHandleId(0)
 	, Sandbox(NULL)
-	, NetworkFileDelegates(InNetworkFileDelegates)
-	, ActiveTargetPlatforms(InActiveTargetPlatforms)
+	, NetworkFileDelegates(&Options.Delegates)
+	, ActiveTargetPlatforms(Options.TargetPlatforms)
+	, bRestrictPackageAssetsToSandbox(Options.bRestrictPackageAssetsToSandbox)
 {	
 	//stats
 	FileRequestDelegateTime = 0.0;
@@ -456,6 +472,10 @@ void FNetworkFileServerClientConnection::ProcessOpenFile( FArchive& In, FArchive
 
 	TArray<FString> NewUnsolictedFiles;
 	NetworkFileDelegates->FileRequestDelegate.ExecuteIfBound(Filename, ConnectedPlatformName, NewUnsolictedFiles);
+
+	// Disable access to outside the sandbox to prevent sending uncooked packages to the client
+	const bool bSandboxOnly = bRestrictPackageAssetsToSandbox && !bIsWriting && FPackageName::IsPackageExtension(*FPaths::GetExtension(Filename, true));
+	FSandboxOnlyScope _(*Sandbox, bSandboxOnly);
 
 	FDateTime ServerTimeStamp = Sandbox->GetTimeStamp(*Filename);
 	int64 ServerFileSize = 0;
@@ -1206,6 +1226,10 @@ bool FNetworkFileServerClientConnection::PackageFile( FString& Filename, FString
 {
 	// get file timestamp and send it to client
 	FDateTime ServerTimeStamp = Sandbox->GetTimeStamp(*Filename);
+
+	// Disable access to outside the sandbox to prevent sending uncooked packages to the client
+	const bool bSandboxOnly = bRestrictPackageAssetsToSandbox && FPackageName::IsPackageExtension(*FPaths::GetExtension(Filename, true));
+	FSandboxOnlyScope _(*Sandbox, bSandboxOnly);
 
 	FString AbsHostFile = Sandbox->ConvertToAbsolutePathForExternalAppForRead(*Filename);
 	if (ConnectedTargetPlatform != nullptr && ConnectedTargetPlatform->CopyFileToTarget(ConnectedIPAddress, AbsHostFile, TargetFilename, ConnectedTargetCustomData))
