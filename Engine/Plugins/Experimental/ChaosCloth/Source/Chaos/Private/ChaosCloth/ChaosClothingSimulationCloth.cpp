@@ -190,12 +190,14 @@ void FClothingSimulationCloth::FLODData::Add(FClothingSimulationSolver* Solver, 
 	}
 
 	// Long range constraints
-	if (Cloth->TetherStiffness)
+	if (Cloth->TetherStiffness[0] > 0.f || Cloth->TetherStiffness[1] > 0.f)
 	{
 		const TMap<int32, TSet<int32>>& PointToNeighborsMap = TriangleMesh.GetPointToNeighborsMap();
+		const TConstArrayView<float>& TetherStiffnessMultipliers = WeightMaps[(int32)EChaosWeightMapTarget::TetherStiffness];
 
 		ClothConstraints.SetLongRangeConstraints(
 			PointToNeighborsMap,
+			TetherStiffnessMultipliers,
 			Cloth->TetherStiffness,
 			Cloth->LimitScale,
 			Cloth->TetherMode,
@@ -336,7 +338,7 @@ FClothingSimulationCloth::FClothingSimulationCloth(
 	float InAreaStiffness,
 	float InVolumeStiffness,
 	bool bInUseThinShellVolumeConstraints,
-	float InTetherStiffness,
+	const TVector<float, 2>& InTetherStiffness,
 	float InLimitScale,
 	ETetherMode InTetherMode,
 	float InMaxDistancesMultiplier,

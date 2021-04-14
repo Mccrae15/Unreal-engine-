@@ -3,7 +3,7 @@
 
 #include "Chaos/PBDParticles.h"
 #include "Chaos/PBDActiveView.h"
-#include "Containers/Array.h"
+#include "Chaos/PBDStiffness.h"
 #include "Containers/Map.h"
 #include "Containers/Set.h"
 
@@ -54,9 +54,12 @@ public:
 
 	TPBDLongRangeConstraintsBase(
 		const TPBDParticles<T, d>& Particles,
+		const int32 InParticleOffset,
+		const int32 InParticleCount,
 		const TMap<int32, TSet<int32>>& PointToNeighbors,
+		const TConstArrayView<T>& StiffnessMultipliers,
 		const int32 MaxNumTetherIslands = 4,
-		const T InStiffness = (T)1,
+		const TVector<T, 2>& InStiffness = TVector<T, 2>((T)0., (T)1.),
 		const T LimitScale = (T)1,
 		const EMode InMode = EMode::AccurateTetherFastLength);
 
@@ -64,11 +67,18 @@ public:
 
 	EMode GetMode() const { return Mode; }
 
+	// Return the stiffness input values used by the constraint
+	TVector<T, 2> GetStiffness() const { return Stiffness.GetWeightedValue(); }
+
+	// Set the stiffness input values used by the constraint
+	void SetStiffness(const TVector<T, 2>& InStiffness) { Stiffness.SetWeightedValue(InStiffness); }
+
+	// Set stiffness offset and range, as well as the simulation stiffness exponent
+	void ApplyProperties(const T Dt, const int32 NumIterations) { Stiffness.ApplyValues(Dt, NumIterations); }
+
 	const TArray<FTether>& GetTethers() const { return Tethers; }
 
 	static TArray<TArray<int32>> ComputeIslands(const TMap<int32, TSet<int32>>& PointToNeighbors, const TArray<int32>& KinematicParticles);
-
-	void SetStiffness(T InStiffness) { Stiffness = FMath::Clamp(InStiffness, (T)0., (T)1.); }  // TODO: Exponential stiffness
 
 protected:
 	void ComputeEuclideanConstraints(const TPBDParticles<T, d>& Particles, const TMap<int32, TSet<int32>>& PointToNeighbors, const int32 NumberOfAttachments);
@@ -77,7 +87,9 @@ protected:
 protected:
 	TArray<FTether> Tethers;
 	TPBDActiveView<TArray<FTether>> TethersView;
-	T Stiffness;
-	EMode Mode;
+	TPBDStiffness<T, d> Stiffness;
+	const EMode Mode;
+	const int32 ParticleOffset;
+	const int32 ParticleCount;
 };
 }

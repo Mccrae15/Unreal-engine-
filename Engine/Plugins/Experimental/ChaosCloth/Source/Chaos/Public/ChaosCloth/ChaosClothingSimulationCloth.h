@@ -39,7 +39,7 @@ namespace Chaos
 			float InAreaStiffness,
 			float InVolumeStiffness,
 			bool bInUseThinShellVolumeConstraints,
-			float InTetherStiffness,
+			const TVector<float, 2>& InTetherStiffness,
 			float InLimitScale,
 			ETetherMode InTetherMode,
 			float InMaxDistancesMultiplier,
@@ -77,7 +77,7 @@ namespace Chaos
 		void SetMaxDistancesMultiplier(float InMaxDistancesMultiplier) { MaxDistancesMultiplier = InMaxDistancesMultiplier; }
 
 		void SetMaterialProperties(float InEdgeStiffness, float InBendingStiffness, float InAreaStiffness) { EdgeStiffness = InEdgeStiffness; BendingStiffness = InBendingStiffness; AreaStiffness = InAreaStiffness; }
-		void SetLongRangeAttachmentProperties(float InTetherStiffness) { TetherStiffness = InTetherStiffness; }
+		void SetLongRangeAttachmentProperties(const TVector<float, 2>& InTetherStiffness) { TetherStiffness = InTetherStiffness; }
 		void SetCollisionProperties(float InCollisionThickness, float InFrictionCoefficient, bool bInUseCCD, float InSelfCollisionThickness) { CollisionThickness = InCollisionThickness; FrictionCoefficient = InFrictionCoefficient; bUseCCD = bInUseCCD; SelfCollisionThickness = InSelfCollisionThickness; }
 		void SetDampingProperties(float InDampingCoefficient) { DampingCoefficient = InDampingCoefficient; }
 		void SetAerodynamicsProperties(float InDragCoefficient, float InLiftCoefficient) { DragCoefficient = InDragCoefficient; LiftCoefficient = InLiftCoefficient; }
@@ -191,7 +191,7 @@ namespace Chaos
 		float AreaStiffness;
 		float VolumeStiffness;
 		bool bUseThinShellVolumeConstraints;
-		float TetherStiffness;
+		TVector<float, 2> TetherStiffness;
 		float LimitScale;
 		ETetherMode TetherMode;
 		float MaxDistancesMultiplier;

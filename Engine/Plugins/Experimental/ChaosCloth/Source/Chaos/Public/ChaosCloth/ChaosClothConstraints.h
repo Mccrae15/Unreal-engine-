@@ -48,7 +48,7 @@ namespace Chaos
 		void SetAreaConstraints(TArray<TVector<int32, 3>>&& SurfaceElements, float AreaStiffness, bool bUseXPBDConstraints);
 		void SetVolumeConstraints(TArray<TVector<int32, 2>>&& DoubleBendingEdges, float VolumeStiffness);
 		void SetVolumeConstraints(TArray<TVector<int32, 3>>&& SurfaceElements, float VolumeStiffness);
-		void SetLongRangeConstraints(const TMap<int32, TSet<int32>>& PointToNeighborsMap, float StrainLimitingStiffness, float LimitScale, ETetherMode TetherMode, bool bUseXPBDConstraints);
+		void SetLongRangeConstraints(const TMap<int32, TSet<int32>>& PointToNeighborsMap, const TConstArrayView<float>& TetherStiffnessMultipliers, const TVector<float, 2>& TetherStiffness, float LimitScale, ETetherMode TetherMode, bool bUseXPBDConstraints);
 		void SetMaximumDistanceConstraints(const TConstArrayView<float>& MaxDistances);
 		void SetBackstopConstraints(const TConstArrayView<float>& BackstopDistances, const TConstArrayView<float>& BackstopRadiuses, bool bUseLegacyBackstop);
 		void SetAnimDriveConstraints(const TConstArrayView<float>& AnimDriveStiffnessMultipliers, const TConstArrayView<float>& AnimDriveDampingMultipliers);
@@ -63,7 +63,7 @@ namespace Chaos
 		void SetAreaProperties(float AreaStiffness);
 		void SetThinShellVolumeProperties(float VolumeStiffness);
 		void SetVolumeProperties(float VolumeStiffness);
-		void SetLongRangeAttachmentProperties(float TetherStiffness);
+		void SetLongRangeAttachmentProperties(const TVector<float, 2>& TetherStiffness);
 		void SetMaximumDistanceProperties(float MaxDistancesMultiplier);
 		void SetAnimDriveProperties(const TVector<float, 2>& AnimDriveStiffness, const TVector<float, 2>& AnimDriveDamping);
 		void SetSelfCollisionProperties(float SelfCollisionThickness);

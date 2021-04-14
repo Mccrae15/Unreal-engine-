@@ -77,8 +77,8 @@ class CHAOS_API TPBDEvolution : public TArrayCollection
 	void ActivateConstraintRuleRange(int32 Offset, bool bActivate) { MConstraintRulesActiveView.ActivateRange(Offset, bActivate); }
 
 	// Constraint accessors
-	const TArray<TFunction<void(const TPBDParticles<T, d>&)>>& ConstraintInits() const { return MConstraintInits; }
-	TArray<TFunction<void(const TPBDParticles<T, d>&)>>& ConstraintInits() { return MConstraintInits; }
+	const TArray<TFunction<void(const TPBDParticles<T, d>&, const T)>>& ConstraintInits() const { return MConstraintInits; }
+	TArray<TFunction<void(const TPBDParticles<T, d>&, const T)>>& ConstraintInits() { return MConstraintInits; }
 	const TArray<TFunction<void(TPBDParticles<T, d>&, const T)>>& ConstraintRules() const { return MConstraintRules; }
 	TArray<TFunction<void(TPBDParticles<T, d>&, const T)>>& ConstraintRules() { return MConstraintRules; }
 	
@@ -159,8 +159,8 @@ private:
 	TArrayCollectionArray<T> MGroupDampings;
 	TArrayCollectionArray<bool> MGroupUseCCDs;
 	
-	TArray<TFunction<void(const TPBDParticles<T, d>&)>> MConstraintInits;
-	TPBDActiveView<TArray<TFunction<void(const TPBDParticles<T, d>&)>>> MConstraintInitsActiveView;
+	TArray<TFunction<void(const TPBDParticles<T, d>&, const T)>> MConstraintInits;
+	TPBDActiveView<TArray<TFunction<void(const TPBDParticles<T, d>&, const T)>>> MConstraintInitsActiveView;
 	TArray<TFunction<void(TPBDParticles<T, d>&, const T)>> MConstraintRules;
 	TPBDActiveView<TArray<TFunction<void(TPBDParticles<T, d>&, const T)>>> MConstraintRulesActiveView;
 

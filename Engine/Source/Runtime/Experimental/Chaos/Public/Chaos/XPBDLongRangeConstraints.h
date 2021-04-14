@@ -22,12 +22,15 @@ public:
 
 	TXPBDLongRangeConstraints(
 		const TPBDParticles<T, d>& Particles,
+		const int32 InParticleOffset,
+		const int32 InParticleCount,
 		const TMap<int32, TSet<int32>>& PointToNeighbors,
+		const TConstArrayView<T>& StiffnessMultipliers,
 		const int32 NumberOfAttachments = 4,
-		const T InStiffness = (T)1,
+		const TVector<T, 2>& InStiffness = TVector<T, 2>((T)1., (T)1.),
 		const T LimitScale = (T)1,
 		const EMode InMode = EMode::Geodesic)
-	    : TPBDLongRangeConstraintsBase<T, d>(Particles, PointToNeighbors, NumberOfAttachments, InStiffness, LimitScale, InMode)
+	    : TPBDLongRangeConstraintsBase<T, d>(Particles, InParticleOffset, InParticleCount, PointToNeighbors, StiffnessMultipliers, NumberOfAttachments, InStiffness, LimitScale, InMode)
 	{
 		Lambdas.Reserve(Tethers.Num());
 	}
@@ -45,23 +48,47 @@ public:
 		SCOPE_CYCLE_COUNTER(STAT_XPBD_LongRange);
 		// Run particles in parallel, and ranges in sequence to avoid a race condition when updating the same particle from different tethers
 		static const int32 MinParallelSize = 500;
-		TethersView.ParallelFor([this, &Particles, Dt](TArray<FTether>& /*InTethers*/, int32 Index)
-			{
-				Apply(Particles, Dt, Index);
-			}, MinParallelSize);
+		if (Stiffness.HasWeightMap())
+		{
+			TethersView.ParallelFor([this, &Particles, Dt](TArray<FTether>& /*InTethers*/, int32 Index)
+				{
+					const T ExpStiffnessValue = Stiffness[Index - ParticleOffset];
+					Apply(Particles, Dt, Index, ExpStiffnessValue);
+				}, MinParallelSize);
+		}
+		else
+		{
+			const T ExpStiffnessValue = (T)Stiffness;
+			TethersView.ParallelFor([this, &Particles, Dt, ExpStiffnessValue](TArray<FTether>& /*InTethers*/, int32 Index)
+				{
+					Apply(Particles, Dt, Index, ExpStiffnessValue);
+				}, MinParallelSize);
+		}
 	}
 
 	void Apply(TPBDParticles<T, d>& Particles, const T Dt, const TArray<int32>& ConstraintIndices) const
 	{
 		SCOPE_CYCLE_COUNTER(STAT_XPBD_LongRange);
-		for (const int32 Index : ConstraintIndices)
+		if (Stiffness.HasWeightMap())
 		{
-			Apply(Particles, Dt, Index);
+			for (const int32 Index : ConstraintIndices)
+			{
+				const T ExpStiffnessValue = Stiffness[Index - ParticleOffset];
+				Apply(Particles, Dt, Index, ExpStiffnessValue);
+			}
+		}
+		else
+		{
+			const T ExpStiffnessValue = (T)Stiffness;
+			for (const int32 Index : ConstraintIndices)
+			{
+				Apply(Particles, Dt, Index, ExpStiffnessValue);
+			}
 		}
 	}
 
 private:
-	void Apply(TPBDParticles<T, d>& Particles, const T Dt, int32 Index) const
+	void Apply(TPBDParticles<T, d>& Particles, const T Dt, int32 Index, const T InStiffness) const
 	{
 		const FTether& Tether = Tethers[Index];
 
@@ -70,7 +97,7 @@ private:
 		Tether.GetDelta(Particles, Direction, Offset);
 
 		T& Lambda = Lambdas[Index];
-		const T Alpha = (T)XPBDLongRangeMaxCompliance / (Stiffness * Dt * Dt);
+		const T Alpha = (T)XPBDLongRangeMaxCompliance / (InStiffness * Dt * Dt);
 
 		const T DLambda = (Offset - Alpha * Lambda) / ((T)1. + Alpha);
 		Particles.P(Tether.End) += DLambda * Direction;
@@ -81,6 +108,7 @@ private:
 	using Base::Tethers;
 	using Base::TethersView;
 	using Base::Stiffness;
+	using Base::ParticleOffset;
 
 	mutable TArray<T> Lambdas;
 };

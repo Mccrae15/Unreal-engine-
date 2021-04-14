@@ -16,16 +16,17 @@ public:
 	typedef typename Base::FTether FTether;
 	typedef typename Base::EMode EMode;
 
-	using Base::GetMode;
-
 	TPBDLongRangeConstraints(
 		const TPBDParticles<T, d>& Particles,
+		const int32 InParticleOffset,
+		const int32 InParticleCount,
 		const TMap<int32, TSet<int32>>& PointToNeighbors,
+		const TConstArrayView<T>& StiffnessMultipliers,
 		const int32 MaxNumTetherIslands = 4,
-		const T InStiffness = (T)1,
+		const TVector<T, 2>& InStiffness = TVector<T, 2>((T)1., (T)1.),
 		const T LimitScale = (T)1,
 		const EMode InMode = EMode::Geodesic)
-		: TPBDLongRangeConstraintsBase<T, d>(Particles, PointToNeighbors, MaxNumTetherIslands, InStiffness, LimitScale, InMode) {}
+		: TPBDLongRangeConstraintsBase<T, d>(Particles, InParticleOffset, InParticleCount, PointToNeighbors, StiffnessMultipliers, MaxNumTetherIslands, InStiffness, LimitScale, InMode) {}
 	~TPBDLongRangeConstraints() {}
 
 	void Apply(TPBDParticles<T, d>& Particles, const T Dt, const TArray<int32>& ConstraintIndices) const;
@@ -35,6 +36,7 @@ private:
 	using Base::Tethers;
 	using Base::TethersView;
 	using Base::Stiffness;
+	using Base::ParticleOffset;
 };
 }
 

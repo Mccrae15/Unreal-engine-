@@ -358,9 +358,9 @@ void TPBDEvolution<T, d>::AdvanceOneTimeStep(const T Dt)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_ChaosXPBDConstraintsInit);
 		MConstraintInitsActiveView.SequentialFor(
-			[this](TArray<TFunction<void(const TPBDParticles<T, d>&)>>& ConstraintInits, int32 Index)
+			[this, Dt](TArray<TFunction<void(const TPBDParticles<T, d>&, const T)>>& ConstraintInits, int32 Index)
 			{
-				ConstraintInits[Index](MParticles);
+				ConstraintInits[Index](MParticles, Dt);
 			});
 	}
 
