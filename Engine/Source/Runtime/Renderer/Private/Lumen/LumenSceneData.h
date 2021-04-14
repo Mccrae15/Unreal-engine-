@@ -16,6 +16,7 @@
 #include "SceneTypes.h"
 #include "UniformBuffer.h"
 #include "LumenSparseSpanArray.h"
+#include "LumenUniqueList.h"
 
 class FLumenSceneData;
 class FLumenMeshCards;
@@ -134,7 +135,7 @@ public:
 class FLumenPrimitiveInstance
 {
 public:
-	FBox BoundingBox;
+	FBox WorldSpaceBoundingBox;
 	int32 MeshCardsIndex;
 	bool bValidMeshCards;
 };
@@ -142,9 +143,9 @@ public:
 class FLumenPrimitive
 {
 public:
-	FBox BoundingBox;
+	FBox WorldSpaceBoundingBox;
 
-	// Max extent of a card in any of instances belonging to this primitive. Used for culling.
+	// Max extent of cards belonging to this primitive. Used for early culling.
 	float MaxCardExtent;
 
 	TArray<FLumenPrimitiveInstance, TInlineAllocator<1>> Instances;
@@ -186,7 +187,7 @@ public:
 	FScatterUploadBuffer ByteBufferUploadBuffer;
 	FScatterUploadBuffer UploadPrimitiveBuffer;
 
-	TArray<int32> CardIndicesToUpdateInBuffer;
+	FUniqueIndexList CardIndicesToUpdateInBuffer;
 	FRWBufferStructured CardBuffer;
 
 	TArray<FBox> PrimitiveModifiedBounds;
@@ -195,8 +196,7 @@ public:
 	TArray<FLumenPrimitive> LumenPrimitives;
 
 	// Mesh Cards
-	TArray<int32> DFObjectIndicesToUpdateInBuffer;
-	TArray<int32> MeshCardsIndicesToUpdateInBuffer;
+	FUniqueIndexList MeshCardsIndicesToUpdateInBuffer;
 	TSparseSpanArray<FLumenMeshCards> MeshCards;
 	TSparseSpanArray<FLumenCard> Cards;
 	TArray<int32, TInlineAllocator<8>> DistantCardIndices;
@@ -204,13 +204,13 @@ public:
 	FRWByteAddressBuffer DFObjectToMeshCardsIndexBuffer;
 
 	// Mapping from Primitive to LumenDFInstance
-	TArray<int32> PrimitivesToUpdate;
-	TBitArray<>	PrimitivesMarkedToUpdate;
+	FUniqueIndexList PrimitivesToUpdate;
 	FRWByteAddressBuffer PrimitiveToDFLumenInstanceOffsetBuffer;
 	uint32 PrimitiveToLumenDFInstanceOffsetBufferSize = 0;
 
 	// Mapping from LumenDFInstance to DFObjectIndex
-	TArray<int32> LumenDFInstancesToUpdate;
+	FUniqueIndexList DFObjectIndicesToUpdateInBuffer;
+	FUniqueIndexList LumenDFInstancesToUpdate;
 	TSparseSpanArray<int32> LumenDFInstanceToDFObjectIndex;
 	FRWByteAddressBuffer LumenDFInstanceToDFObjectIndexBuffer;
 	uint32 LumenDFInstanceToDFObjectIndexBufferSize = 0;

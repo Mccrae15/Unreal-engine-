@@ -1140,6 +1140,59 @@ public:
 	TArray<FMeshCardsAdd> MeshCardsAdds;
 	TArray<FMeshCardsRemove> MeshCardsRemoves;
 
+	void UpdateLumenInstance(int32 PrimitiveIndex, int32 InstanceIndex, int32 MeshCardsIndex, float DistanceSquared)
+	{
+		float UpdatePriority = 0.0f;
+
+		if (MeshCardsIndex >= 0)
+		{
+			const FLumenMeshCards& MeshCardsInstance = LumenMeshCards[MeshCardsIndex];
+
+			for (uint32 CardIndex = MeshCardsInstance.FirstCardIndex; CardIndex < MeshCardsInstance.FirstCardIndex + MeshCardsInstance.NumCards; ++CardIndex)
+			{
+				const FLumenCard& LumenCard = LumenCards[CardIndex];
+
+				FCardAllocationOutput CardAllocation;
+				ComputeCardAllocation(LumenCard, ViewOrigin, MaxDistanceFromCamera, CardAllocation);
+
+				if (LumenCard.bVisible != CardAllocation.bVisible)
+				{
+					UpdatePriority += 1.0f;
+				}
+				else if (LumenCard.bVisible && CardAllocation.bVisible && LumenCard.DesiredResolution != CardAllocation.TextureAllocationSize)
+				{
+					// Make reallocation less important than capturing new cards.
+					const float ResChangeFactor = FMath::Abs(
+						FMath::Log2(static_cast<float>(CardAllocation.TextureAllocationSize.X * CardAllocation.TextureAllocationSize.Y)) - FMath::Log2(static_cast<float>(LumenCard.DesiredResolution.X * LumenCard.DesiredResolution.X))
+					);
+					UpdatePriority += FMath::Clamp((ResChangeFactor - 1.0f) / 3.0f, 0.0f, 1.0f);
+				}
+			}
+
+			// Normalize
+			if (MeshCardsInstance.NumCards > 0.0f)
+			{
+				UpdatePriority *= 1.0f / MeshCardsInstance.NumCards;
+			}
+		}
+		else
+		{
+			UpdatePriority = 1.0f;
+		}
+
+		if (UpdatePriority > 0.0f)
+		{
+			const float DistanceInMeters = FMath::Sqrt(DistanceSquared) / 100.0f;
+
+			FMeshCardsAdd MeshCardsAdd;
+			MeshCardsAdd.LumenPrimitiveIndex = PrimitiveIndex;
+			MeshCardsAdd.LumenInstanceIndex = InstanceIndex;
+			MeshCardsAdd.Priority = FMath::Clamp<float>((DistanceInMeters - 1.0f + 500.0f * (1.0f - UpdatePriority)) / 10.0f, 0.0f, MAX_ADD_PRIMITIVE_PRIORITY);
+			MeshCardsAdd.ResolutionMultiplier = 1.0f;
+			MeshCardsAdds.Add(MeshCardsAdd);
+		}
+	}
+
 	void AnyThreadTask()
 	{
 		const int32 LastLumenPrimitiveIndex = FMath::Min(FirstLumenPrimitiveIndex + NumPrimitivesPerPacket, LumenPrimitives.Num());
@@ -1149,63 +1202,30 @@ public:
 		{
 			const FLumenPrimitive& LumenPrimitive = LumenPrimitives[PrimitiveIndex];
 
-			// Rought card min resolution test
-			const float DistanceSquared = ComputeSquaredDistanceFromBoxToPoint(LumenPrimitive.BoundingBox.Min, LumenPrimitive.BoundingBox.Max, ViewOrigin);
-			const float MaxProjectedSize = (TexelDensityScale * LumenPrimitive.MaxCardExtent) / FMath::Sqrt(FMath::Max(DistanceSquared, 1.0f)) + 0.01f;
+			// Rough card min resolution test
+			float DistanceSquared = ComputeSquaredDistanceFromBoxToPoint(LumenPrimitive.WorldSpaceBoundingBox.Min, LumenPrimitive.WorldSpaceBoundingBox.Max, ViewOrigin);
+			float MaxCardResolution = (TexelDensityScale * LumenPrimitive.MaxCardExtent) / FMath::Sqrt(FMath::Max(DistanceSquared, 1.0f)) + 0.01f;
 
-			if (DistanceSquared <= MaxDistanceSquared && MaxProjectedSize > 2.0f)
+			if (DistanceSquared <= MaxDistanceSquared && MaxCardResolution >= 2.0f)
 			{
 				for (int32 InstanceIndex = 0; InstanceIndex < LumenPrimitive.Instances.Num(); ++InstanceIndex)
-				{	
-					const FLumenPrimitiveInstance& Instance = LumenPrimitive.Instances[InstanceIndex];
-					float UpdatePriority = 0.0f;
+				{
+					const FLumenPrimitiveInstance& LumenInstance = LumenPrimitive.Instances[InstanceIndex];
+					const float LumenInstanceMaxCardExtent = LumenInstance.WorldSpaceBoundingBox.GetExtent().GetMax();
 
-					if (Instance.MeshCardsIndex >= 0)
+					DistanceSquared = ComputeSquaredDistanceFromBoxToPoint(LumenInstance.WorldSpaceBoundingBox.Min, LumenInstance.WorldSpaceBoundingBox.Max, ViewOrigin);
+					MaxCardResolution = (TexelDensityScale * LumenInstanceMaxCardExtent) / FMath::Sqrt(FMath::Max(DistanceSquared, 1.0f)) + 0.01f;
+
+					if (DistanceSquared <= MaxDistanceSquared && MaxCardResolution >= 2.0f && LumenInstance.bValidMeshCards)
 					{
-						const FLumenMeshCards& MeshCardsInstance = LumenMeshCards[Instance.MeshCardsIndex];
-
-						for (uint32 CardIndex = MeshCardsInstance.FirstCardIndex; CardIndex < MeshCardsInstance.FirstCardIndex + MeshCardsInstance.NumCards; ++CardIndex)
-						{
-							const FLumenCard& LumenCard = LumenCards[CardIndex];
-
-							FCardAllocationOutput CardAllocation;
-							ComputeCardAllocation(LumenCard, ViewOrigin, MaxDistanceFromCamera, CardAllocation);
-
-							if (LumenCard.bVisible != CardAllocation.bVisible)
-							{
-								UpdatePriority += 1.0f;
-							}
-							else if (LumenCard.bVisible && CardAllocation.bVisible && LumenCard.DesiredResolution != CardAllocation.TextureAllocationSize)
-							{
-								// Make reallocation less important than capturing new cards.
-								const float ResChangeFactor = FMath::Abs(
-									FMath::Log2(static_cast<float>(CardAllocation.TextureAllocationSize.X * CardAllocation.TextureAllocationSize.Y)) - FMath::Log2(static_cast<float>(LumenCard.DesiredResolution.X * LumenCard.DesiredResolution.X))
-								);
-								UpdatePriority += FMath::Clamp((ResChangeFactor - 1.0f) / 3.0f, 0.0f, 1.0f);
-							}
-						}
-
-						// Normalize
-						if (MeshCardsInstance.NumCards > 0.0f)
-						{
-							UpdatePriority *= 1.0f / MeshCardsInstance.NumCards;
-						}
+						UpdateLumenInstance(PrimitiveIndex, InstanceIndex, LumenInstance.MeshCardsIndex, DistanceSquared);
 					}
-					else if (Instance.bValidMeshCards)
+					else if (LumenInstance.MeshCardsIndex >= 0)
 					{
-						UpdatePriority = 1.0f;
-					}
-
-					if (UpdatePriority > 0.0f)
-					{
-						const float DistanceInMeters = FMath::Sqrt(DistanceSquared) / 100.0f;
-
-						FMeshCardsAdd MeshCardsAdd;
-						MeshCardsAdd.LumenPrimitiveIndex = PrimitiveIndex;
-						MeshCardsAdd.LumenInstanceIndex = InstanceIndex;
-						MeshCardsAdd.Priority = FMath::Clamp<float>((DistanceInMeters - 1.0f + 500.0f * (1.0f - UpdatePriority)) / 10.0f, 0.0f, MAX_ADD_PRIMITIVE_PRIORITY);
-						MeshCardsAdd.ResolutionMultiplier = 1.0f;
-						MeshCardsAdds.Add(MeshCardsAdd);
+						FMeshCardsRemove MeshCardsRemove;
+						MeshCardsRemove.LumenPrimitiveIndex = PrimitiveIndex;
+						MeshCardsRemove.LumenInstanceIndex = InstanceIndex;
+						MeshCardsRemoves.Add(MeshCardsRemove);
 					}
 				}
 			}
@@ -1213,9 +1233,9 @@ public:
 			{
 				for (int32 InstanceIndex = 0; InstanceIndex < LumenPrimitive.Instances.Num(); ++InstanceIndex)
 				{
-					const FLumenPrimitiveInstance& Instance = LumenPrimitive.Instances[InstanceIndex];
+					const FLumenPrimitiveInstance& LumenInstance = LumenPrimitive.Instances[InstanceIndex];
 
-					if (Instance.MeshCardsIndex >= 0)
+					if (LumenInstance.MeshCardsIndex >= 0)
 					{
 						FMeshCardsRemove MeshCardsRemove;
 						MeshCardsRemove.LumenPrimitiveIndex = PrimitiveIndex;
