@@ -2835,9 +2835,20 @@ void UWorld::RemoveFromWorld( ULevel* Level, bool bAllowIncrementalRemoval )
 
 	Level->bIsDisassociatingLevel = true;
 
+	auto BeginRemoval = [Level, this]()
+	{
+		Level->bIsBeingRemoved = true;
+
+		if (Level->bRequireFullVisibilityToRender)
+		{
+			Level->bIsVisible = false;
+			ULevelStreaming::BroadcastLevelVisibleStatus(this, Level->GetOutermost()->GetFName(), false);
+		}
+	};
+
 	// To be removed from the world a world must be visible and not pending being made visible (this may be redundent, but for safety)
 	// If the level may be removed incrementally then there must also be no level pending visibility
-	if ( ((CurrentLevelPendingVisibility == nullptr) || (!bAllowIncrementalRemoval && (CurrentLevelPendingVisibility != Level))) && Level->bIsVisible )
+	if ( ((CurrentLevelPendingVisibility == nullptr) || (!bAllowIncrementalRemoval && (CurrentLevelPendingVisibility != Level))) && (Level->bIsVisible || Level->bIsBeingRemoved) )
 	{
 		// Keep track of timing.
 		double StartTime = FPlatformTime::Seconds();	
@@ -2851,7 +2862,8 @@ void UWorld::RemoveFromWorld( ULevel* Level, bool bAllowIncrementalRemoval )
 				// Mark level as being the one in process of being made invisible. 
 				// This will prevent this level from being unloaded or made visible in the meantime
 				CurrentLevelPendingInvisibility = Level;
-				Level->bIsBeingRemoved = true;
+
+				BeginRemoval();
 			}
 
 			if ( CurrentLevelPendingInvisibility == Level )
@@ -2874,7 +2886,7 @@ void UWorld::RemoveFromWorld( ULevel* Level, bool bAllowIncrementalRemoval )
 		}
 		else
 		{
-			Level->bIsBeingRemoved = true;
+			BeginRemoval();
 		}
 
 		if ( bFinishRemovingLevel )
@@ -2930,6 +2942,8 @@ void UWorld::RemoveFromWorld( ULevel* Level, bool bAllowIncrementalRemoval )
 				}
 			}
 
+			// We expect level that use the bRequireFullVisibilityToRender flag to already be !visible at this point
+			check(!Level->bRequireFullVisibilityToRender || !Level->bIsVisible);
 			Level->bIsVisible = false;
 
 			// Notify world composition: will place a level at original position
@@ -2949,7 +2963,11 @@ void UWorld::RemoveFromWorld( ULevel* Level, bool bAllowIncrementalRemoval )
 			FWorldDelegates::LevelRemovedFromWorld.Broadcast(Level, this);
 			BroadcastLevelsChanged();
 
-			ULevelStreaming::BroadcastLevelVisibleStatus(this, Level->GetOutermost()->GetFName(), false);
+			// If the level requires full visibility to be rendered, we already made it non visible in BeginRemoval()
+			if (!Level->bRequireFullVisibilityToRender)
+			{
+				ULevelStreaming::BroadcastLevelVisibleStatus(this, Level->GetOutermost()->GetFName(), false);
+			}
 
 			Level->bIsBeingRemoved = false;
 		} // if ( bFinishRemovingLevel )

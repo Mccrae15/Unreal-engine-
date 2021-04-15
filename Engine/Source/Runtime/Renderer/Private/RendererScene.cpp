@@ -3658,6 +3658,8 @@ void FScene::OnLevelAddedToWorld(FName LevelAddedName, UWorld* InWorld, bool bIs
 
 void FScene::OnLevelAddedToWorld_RenderThread(FName InLevelName)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FScene::OnLevelAddedToWorld_RenderThread);
+
 	// Mark level primitives
 	TArray<FPrimitiveSceneInfo*> PrimitivesToAdd;
 
@@ -3679,6 +3681,38 @@ void FScene::OnLevelAddedToWorld_RenderThread(FName InLevelName)
 
 	FPrimitiveSceneInfo::AddStaticMeshes(FRHICommandListExecutor::GetImmediateCommandList(), this, PrimitivesToAdd);
 }
+
+void FScene::OnLevelRemovedFromWorld(FName LevelRemovedName, UWorld* InWorld, bool bIsLightingScenario)
+{
+	if (bIsLightingScenario)
+	{
+		InWorld->PropagateLightingScenarioChange();
+	}
+
+	FScene* Scene = this;
+	ENQUEUE_RENDER_COMMAND(FLevelRemovedFromWorld)(
+		[Scene, LevelRemovedName](FRHICommandListImmediate& RHICmdList)
+		{
+			Scene->UpdateAllPrimitiveSceneInfos(RHICmdList);
+			Scene->OnLevelRemovedFromWorld_RenderThread(LevelRemovedName);
+		});
+}
+
+
+void FScene::OnLevelRemovedFromWorld_RenderThread(FName InLevelName)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FScene::OnLevelRemovedFromWorld_RenderThread);
+
+	for (auto It = Primitives.CreateIterator(); It; ++It)
+	{
+		FPrimitiveSceneProxy* Proxy = (*It)->Proxy;
+		if (Proxy->LevelName == InLevelName)
+		{
+			Proxy->bIsComponentLevelVisible = false;
+		}
+	}
+}
+
 
 void FScene::ProcessAtmosphereLightAddition_RenderThread(FLightSceneInfo* LightSceneInfo)
 {
@@ -3715,14 +3749,6 @@ void FScene::ProcessAtmosphereLightRemoval_RenderThread(FLightSceneInfo* LightSc
 				SelectedLightLuminance = LightLuminance;
 			}
 		}
-	}
-}
-
-void FScene::OnLevelRemovedFromWorld(UWorld* InWorld, bool bIsLightingScenario)
-{
-	if (bIsLightingScenario)
-	{
-		InWorld->PropagateLightingScenarioChange();
 	}
 }
 
