@@ -259,10 +259,10 @@ struct FUploadDataSourceAdapterScenePrimitives
 {
 	static constexpr bool bUpdateNaniteMaterialTables = true;
 
-	FUploadDataSourceAdapterScenePrimitives(FGPUScene& InGPUScene, FScene& InScene, uint32 InSceneFrameNumber)
-		: GPUScene(InGPUScene)
-		, Scene(InScene)
+	FUploadDataSourceAdapterScenePrimitives(FScene& InScene, uint32 InSceneFrameNumber, const TArray<int32> &InPrimitivesToUpdate)
+		: Scene(InScene)
 		, SceneFrameNumber(InSceneFrameNumber)
+		, PrimitivesToUpdate(InPrimitivesToUpdate)
 	{}
 
 	/**
@@ -270,7 +270,7 @@ struct FUploadDataSourceAdapterScenePrimitives
 	 */
 	FORCEINLINE int32 NumPrimitivesToUpload() const 
 	{ 
-		return GPUScene.PrimitivesToUpdate.Num(); 
+		return PrimitivesToUpdate.Num(); 
 	}
 
 	/**
@@ -279,7 +279,7 @@ struct FUploadDataSourceAdapterScenePrimitives
 	 */
 	FORCEINLINE bool GetPrimitiveInfo(int32 ItemIndex, FPrimitiveUploadInfo& PrimitiveUploadInfo) const
 	{
-		int32 PrimitiveID = GPUScene.PrimitivesToUpdate[ItemIndex];
+		int32 PrimitiveID = PrimitivesToUpdate[ItemIndex];
 		if (PrimitiveID < Scene.PrimitiveSceneProxies.Num())
 		{
 			const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy = Scene.PrimitiveSceneProxies[PrimitiveID];
@@ -315,7 +315,7 @@ struct FUploadDataSourceAdapterScenePrimitives
 
 	FORCEINLINE bool GetInstanceInfo(int32 ItemIndex, FInstanceUploadInfo& InstanceUploadInfo) const
 	{
-		const int32 PrimitiveID = GPUScene.PrimitivesToUpdate[ItemIndex];
+		const int32 PrimitiveID = PrimitivesToUpdate[ItemIndex];
 		if (PrimitiveID < Scene.PrimitiveSceneProxies.Num())
 		{
 			FPrimitiveSceneProxy* PrimitiveSceneProxy = Scene.PrimitiveSceneProxies[PrimitiveID];
@@ -353,7 +353,7 @@ struct FUploadDataSourceAdapterScenePrimitives
 
 	FORCEINLINE void UpdateInstanceTransforms(int32 ItemIndex) const
 	{
-		const int32 PrimitiveID = GPUScene.PrimitivesToUpdate[ItemIndex];
+		const int32 PrimitiveID = PrimitivesToUpdate[ItemIndex];
 		if (PrimitiveID < Scene.PrimitiveSceneProxies.Num())
 		{
 			FPrimitiveSceneProxy* PrimitiveSceneProxy = Scene.PrimitiveSceneProxies[PrimitiveID];
@@ -384,7 +384,7 @@ struct FUploadDataSourceAdapterScenePrimitives
 
 	FORCEINLINE bool GetLightMapInfo(int32 ItemIndex, FLightMapUploadInfo &UploadInfo) const
 	{
-		const int32 PrimitiveID = GPUScene.PrimitivesToUpdate[ItemIndex];
+		const int32 PrimitiveID = PrimitivesToUpdate[ItemIndex];
 		if (PrimitiveID < Scene.PrimitiveSceneProxies.Num())
 		{
 			FPrimitiveSceneProxy* PrimitiveSceneProxy = Scene.PrimitiveSceneProxies[PrimitiveID];
@@ -398,9 +398,9 @@ struct FUploadDataSourceAdapterScenePrimitives
 		return false;
 	}
 
-	FGPUScene& GPUScene;
 	FScene& Scene;
 	const uint32 SceneFrameNumber;
+	TArray<int, SceneRenderingAllocator> PrimitivesToUpdate;
 };
 
 void FGPUScene::SetEnabled(ERHIFeatureLevel::Type InFeatureLevel)
@@ -472,11 +472,19 @@ void FGPUScene::UpdateInternal(FRDGBuilder& GraphBuilder, FScene& Scene)
 	// Store in GPU-scene to enable validation that update has been carried out.
 	SceneFrameNumber = Scene.GetFrameNumber();
 
-	FUploadDataSourceAdapterScenePrimitives Adapter(*this, Scene, SceneFrameNumber);
+	FUploadDataSourceAdapterScenePrimitives Adapter(Scene, SceneFrameNumber, PrimitivesToUpdate);
 	FGPUSceneBufferState BufferState = UpdateBufferState(GraphBuilder, &Scene, Adapter);
 
+	// The adapter copies the IDs of primitives to update such that any that are (incorrectly) marked for update after are not lost.
+	PrimitivesToUpdate.Reset();
+	PrimitivesMarkedToUpdate.Init(false, PrimitivesMarkedToUpdate.Num());
+
+	// Clear the flags that mark newly added primitives.
+	AddedPrimitiveFlags.Init(false, AddedPrimitiveFlags.Num());
+
+
 	AddPass(GraphBuilder, RDG_EVENT_NAME("GPUSceneUpdate"), 
-		[this, &Scene, Adapter, BufferState = MoveTemp(BufferState)](FRHICommandListImmediate& RHICmdList)
+		[this, &Scene, Adapter = MoveTemp(Adapter), BufferState = MoveTemp(BufferState)](FRHICommandListImmediate& RHICmdList)
 	{
 		SCOPED_NAMED_EVENT(STAT_UpdateGPUScene, FColor::Green);
 		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(UpdateGPUScene);
@@ -484,8 +492,6 @@ void FGPUScene::UpdateInternal(FRDGBuilder& GraphBuilder, FScene& Scene)
 		SCOPE_CYCLE_COUNTER(STAT_UpdateGPUSceneTime);
 
 		UploadGeneral<FUploadDataSourceAdapterScenePrimitives>(RHICmdList, &Scene, Adapter, BufferState);
-
-		PrimitivesMarkedToUpdate.Init(false, PrimitivesMarkedToUpdate.Num());
 
 #if DO_CHECK
 		// Validate the scene primitives are identical to the uploaded data (not the dynamic ones).
@@ -517,13 +523,6 @@ void FGPUScene::UpdateInternal(FRDGBuilder& GraphBuilder, FScene& Scene)
 			RHIUnlockBuffer(BufferState.PrimitiveBuffer.Buffer);
 		}
 #endif // DO_CHECK
-
-		PrimitivesToUpdate.Reset();
-
-		// Clear the flags that mark newly added primitives.
-		AddedPrimitiveFlags.Init(false, AddedPrimitiveFlags.Num());
-
-		checkSlow(PrimitivesToUpdate.Num() == 0);
 	});
 }
 
@@ -609,7 +608,7 @@ FGPUSceneBufferState FGPUScene::UpdateBufferState(FRDGBuilder& GraphBuilder, FSc
 		{
 			for (int32 NaniteMeshPassIndex = 0; NaniteMeshPassIndex < ENaniteMeshPass::Num; ++NaniteMeshPassIndex)
 			{
-				Scene->MaterialTables[NaniteMeshPassIndex].UpdateBufferState(GraphBuilder, Scene->Primitives.Num(), UploadDataSourceAdapter.NumPrimitivesToUpload());
+				Scene->MaterialTables[NaniteMeshPassIndex].UpdateBufferState(GraphBuilder, Scene->Primitives.Num());
 			}
 		}
 	}
