@@ -575,10 +575,7 @@ void UWorldPartition::RegisterDelegates()
 		FEditorDelegates::CancelPIE.AddUObject(this, &UWorldPartition::OnCancelPIE);
 		FGameDelegates::Get().GetEndPlayMapDelegate().AddUObject(this, &UWorldPartition::OnEndPlay);
 
-		if (IsMainWorldPartition())
-		{
-			FCoreUObjectDelegates::PostReachabilityAnalysis.AddUObject(this, &UWorldPartition::OnGCPostReachabilityAnalysis);
-		}
+		FCoreUObjectDelegates::PostReachabilityAnalysis.AddUObject(this, &UWorldPartition::OnGCPostReachabilityAnalysis);
 	}
 }
 
@@ -592,7 +589,7 @@ void UWorldPartition::UnregisterDelegates()
 		FEditorDelegates::CancelPIE.RemoveAll(this);
 		FGameDelegates::Get().GetEndPlayMapDelegate().RemoveAll(this);
 
-		if (!IsEngineExitRequested() && IsMainWorldPartition())
+		if (!IsEngineExitRequested())
 		{
 			FCoreUObjectDelegates::PostReachabilityAnalysis.RemoveAll(this);
 		}
