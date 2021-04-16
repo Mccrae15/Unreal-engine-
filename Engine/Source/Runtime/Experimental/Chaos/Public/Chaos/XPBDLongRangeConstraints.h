@@ -3,7 +3,6 @@
 
 #include "Chaos/PBDLongRangeConstraintsBase.h"
 #include "Chaos/PBDParticles.h"
-#include "Chaos/PBDConstraintContainer.h"
 #include "ChaosStats.h"
 
 DECLARE_CYCLE_STAT(TEXT("Chaos XPBD Long Range Constraint"), STAT_XPBD_LongRange, STATGROUP_Chaos);
@@ -14,75 +13,75 @@ namespace Chaos
 static const double XPBDLongRangeMaxCompliance = 1.e-3;
 
 template<class T, int d>
-class TXPBDLongRangeConstraints : public TPBDLongRangeConstraintsBase<T, d>, public FPBDConstraintContainer
+class TXPBDLongRangeConstraints final : public TPBDLongRangeConstraintsBase<T, d>
 {
-	typedef TPBDLongRangeConstraintsBase<T, d> Base;
-	using Base::MEuclideanConstraints;
-	using Base::MDists;
-	using Base::MStiffness;
-
 public:
-	TXPBDLongRangeConstraints(const TDynamicParticles<T, d>& InParticles, const TMap<int32, TSet<uint32>>& PointToNeighbors, const int32 NumberOfAttachments = 1, const T Stiffness = (T)1)
-	    : TPBDLongRangeConstraintsBase<T, d>(InParticles, PointToNeighbors, NumberOfAttachments, Stiffness)
-	{ MLambdas.Init(0.f, MEuclideanConstraints.Num()); }
+	typedef TPBDLongRangeConstraintsBase<T, d> Base;
+	typedef typename Base::FTether FTether;
+	typedef typename Base::EMode EMode;
 
-	virtual ~TXPBDLongRangeConstraints() {}
-
-	void Init() const { for (T& Lambda : MLambdas) { Lambda = (T)0.; } }
-
-	void Apply(TPBDParticles<T, d>& InParticles, const T Dt, int32 Index) const
+	TXPBDLongRangeConstraints(
+		const TPBDParticles<T, d>& Particles,
+		const TMap<int32, TSet<int32>>& PointToNeighbors,
+		const int32 NumberOfAttachments = 4,
+		const T InStiffness = (T)1,
+		const T LimitScale = (T)1,
+		const EMode InMode = EMode::Geodesic)
+	    : TPBDLongRangeConstraintsBase<T, d>(Particles, PointToNeighbors, NumberOfAttachments, InStiffness, LimitScale, InMode)
 	{
-		const auto& Constraint = MEuclideanConstraints[Index];
-		int32 i2 = Constraint[Constraint.Num() - 1];
-		check(InParticles.InvM(i2) > 0);
-		InParticles.P(i2) += GetDelta(InParticles, Dt, Index);
+		Lambdas.Reserve(Tethers.Num());
 	}
 
-	void Apply(TPBDParticles<T, d>& InParticles, const T Dt) const 
+	~TXPBDLongRangeConstraints() {}
+
+	void Init() const
 	{
-		SCOPE_CYCLE_COUNTER(STAT_XPBD_LongRange);
-		for (int32 i = 0; i < MEuclideanConstraints.Num(); ++i)
-		{
-			Apply(InParticles, Dt, i);
-		}
+		Lambdas.Reset();
+		Lambdas.AddZeroed(Tethers.Num());
 	}
 
-	void Apply(TPBDParticles<T, d>& InParticles, const T Dt, const TArray<int32>& InConstraintIndices) const
+	void Apply(TPBDParticles<T, d>& Particles, const T Dt) const 
 	{
 		SCOPE_CYCLE_COUNTER(STAT_XPBD_LongRange);
-		for (int32 i : InConstraintIndices)
+		// Run particles in parallel, and ranges in sequence to avoid a race condition when updating the same particle from different tethers
+		static const int32 MinParallelSize = 500;
+		TethersView.ParallelFor([this, &Particles, Dt](TArray<FTether>& /*InTethers*/, int32 Index)
+			{
+				Apply(Particles, Dt, Index);
+			}, MinParallelSize);
+	}
+
+	void Apply(TPBDParticles<T, d>& Particles, const T Dt, const TArray<int32>& ConstraintIndices) const
+	{
+		SCOPE_CYCLE_COUNTER(STAT_XPBD_LongRange);
+		for (const int32 Index : ConstraintIndices)
 		{
-			Apply(InParticles, Dt, i);
+			Apply(Particles, Dt, Index);
 		}
 	}
 
 private:
-	inline TVector<T, d> GetDelta(const TPBDParticles<T, d>& InParticles, const T Dt, const int32 InConstraintIndices) const
+	void Apply(TPBDParticles<T, d>& Particles, const T Dt, int32 Index) const
 	{
-		const TVector<uint32, 2>& Constraint = MEuclideanConstraints[InConstraintIndices];
-		check(Constraint.Num() > 1);
-		const uint32 i1 = Constraint[0];
-		const uint32 i2 = Constraint[1];
-		check(InParticles.InvM(i1) == 0);
-		check(InParticles.InvM(i2) > 0);
-		const T Distance = Base::ComputeGeodesicDistance(InParticles, Constraint); // This function is used for either Euclidean or Geodesic distances
-		if (Distance < MDists[InConstraintIndices]) { return TVector<T, d>(0); }
-		const T Offset = Distance - MDists[InConstraintIndices];
+		const FTether& Tether = Tethers[Index];
 
-		TVector<T, d> Direction = InParticles.P(i1) - InParticles.P(i2);
-		Direction.SafeNormalize();
+		TVector<T, d> Direction;
+		T Offset;
+		Tether.GetDelta(Particles, Direction, Offset);
 
-		T& Lambda = MLambdas[InConstraintIndices];
-		const T Alpha = (T)XPBDLongRangeMaxCompliance / (MStiffness * Dt * Dt);
+		T& Lambda = Lambdas[Index];
+		const T Alpha = (T)XPBDLongRangeMaxCompliance / (Stiffness * Dt * Dt);
 
 		const T DLambda = (Offset - Alpha * Lambda) / ((T)1. + Alpha);
-		const TVector<T, d> Delta = DLambda * Direction;
+		Particles.P(Tether.End) += DLambda * Direction;
 		Lambda += DLambda;
-
-		return Delta;
-	};
+	}
 
 private:
-	mutable TArray<T> MLambdas;
+	using Base::Tethers;
+	using Base::TethersView;
+	using Base::Stiffness;
+
+	mutable TArray<T> Lambdas;
 };
 }

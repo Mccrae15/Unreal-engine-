@@ -140,7 +140,7 @@ void TTriangleMesh<T>::GetVertexSet(TSet<int32>& VertexSet) const
 }
 
 template<class T>
-const TMap<int32, TSet<uint32>>& TTriangleMesh<T>::GetPointToNeighborsMap() const
+const TMap<int32, TSet<int32>>& TTriangleMesh<T>::GetPointToNeighborsMap() const
 {
 	if (MPointToNeighborsMap.Num())
 	{
@@ -149,9 +149,9 @@ const TMap<int32, TSet<uint32>>& TTriangleMesh<T>::GetPointToNeighborsMap() cons
 	MPointToNeighborsMap.Reserve(MNumIndices);
 	for (int i = 0; i < MElements.Num(); ++i)
 	{
-		TSet<uint32>& Elems0 = MPointToNeighborsMap.FindOrAdd(MElements[i][0]);
-		TSet<uint32>& Elems1 = MPointToNeighborsMap.FindOrAdd(MElements[i][1]);
-		TSet<uint32>& Elems2 = MPointToNeighborsMap.FindOrAdd(MElements[i][2]);
+		TSet<int32>& Elems0 = MPointToNeighborsMap.FindOrAdd(MElements[i][0]);
+		TSet<int32>& Elems1 = MPointToNeighborsMap.FindOrAdd(MElements[i][1]);
+		TSet<int32>& Elems2 = MPointToNeighborsMap.FindOrAdd(MElements[i][2]);
 		Elems0.Reserve(Elems0.Num() + 2);
 		Elems1.Reserve(Elems1.Num() + 2);
 		Elems2.Reserve(Elems2.Num() + 2);

@@ -20,7 +20,6 @@
 //  LinearDrag
 //  AngularDrag
 //  StiffnessFrequency
-//  TetherLimit
 //  AnimDriveSpringStiffness
 //  AnimDriveDamperStiffness
 
@@ -32,6 +31,7 @@ UChaosClothConfig::~UChaosClothConfig()
 
 void UChaosClothConfig::MigrateFrom(const FClothConfig_Legacy& ClothConfig)
 {
+#if WITH_EDITORONLY_DATA
 	const float VerticalStiffness =
 		ClothConfig.VerticalConstraintConfig.Stiffness *
 		ClothConfig.VerticalConstraintConfig.StiffnessMultiplier;
@@ -78,10 +78,12 @@ void UChaosClothConfig::MigrateFrom(const FClothConfig_Legacy& ClothConfig)
 	Gravity = ClothConfig.GravityOverride;
 
 	bUseLegacyBackstop = true;
+#endif  // #if WITH_EDITORONLY_DATA
 }
 
 void UChaosClothConfig::MigrateFrom(const UClothSharedConfigCommon* ClothSharedConfig)
 {
+#if WITH_EDITORONLY_DATA
 	if (const UChaosClothSharedSimConfig* const ChaosClothSharedSimConfig = Cast<UChaosClothSharedSimConfig>(ClothSharedConfig))
 	{
 		const int32 ChaosClothConfigCustomVersion = GetLinkerCustomVersion(FChaosClothConfigCustomVersion::GUID);
@@ -102,6 +104,7 @@ void UChaosClothConfig::MigrateFrom(const UClothSharedConfigCommon* ClothSharedC
 			Gravity = ChaosClothSharedSimConfig->Gravity_DEPRECATED;
 		}
 	}
+#endif  // #if WITH_EDITORONLY_DATA
 }
 
 void UChaosClothConfig::Serialize(FArchive& Ar)
@@ -113,6 +116,8 @@ void UChaosClothConfig::Serialize(FArchive& Ar)
 void UChaosClothConfig::PostLoad()
 {
 	Super::PostLoad();
+
+#if WITH_EDITORONLY_DATA
 	const int32 ChaosClothConfigCustomVersion = GetLinkerCustomVersion(FChaosClothConfigCustomVersion::GUID);
 
 	if (ChaosClothConfigCustomVersion < FChaosClothConfigCustomVersion::UpdateDragDefault)
@@ -129,6 +134,15 @@ void UChaosClothConfig::PostLoad()
 	{
 		bUseLegacyBackstop = true;
 	}
+
+	if (TetherMode_DEPRECATED != EChaosClothTetherMode::MaxChaosClothTetherMode)
+	{
+		// Note: MaxChaosClothTetherMode is used here to detect that the TetherMode parameter isn't set to its default value and therefore needs to be migrated.
+		bUseGeodesicDistance = (TetherMode_DEPRECATED != EChaosClothTetherMode::FastTetherFastLength);
+		TetherMode_DEPRECATED = EChaosClothTetherMode::MaxChaosClothTetherMode;
+	}
+
+#endif  // #if WITH_EDITORONLY_DATA
 }
 
 float UChaosClothConfig::GetMassValue() const
@@ -150,9 +164,11 @@ UChaosClothSharedSimConfig::~UChaosClothSharedSimConfig()
 
 void UChaosClothSharedSimConfig::MigrateFrom(const FClothConfig_Legacy& ClothConfig)
 {
+#if WITH_EDITORONLY_DATA
 	IterationCount = FMath::Clamp(int32(ClothConfig.SolverFrequency / 60.f), 1, 100);
 
 	bUseDampingOverride_DEPRECATED = false;  // Damping is migrated to per cloth configs
+#endif
 }
 
 void UChaosClothSharedSimConfig::Serialize(FArchive& Ar)
@@ -164,12 +180,15 @@ void UChaosClothSharedSimConfig::Serialize(FArchive& Ar)
 void UChaosClothSharedSimConfig::PostLoad()
 {
 	Super::PostLoad();
+
+#if WITH_EDITORONLY_DATA
 	const int32 ChaosClothSharedConfigCustomVersion = GetLinkerCustomVersion(FChaosClothSharedConfigCustomVersion::GUID);
 
 	if (ChaosClothSharedConfigCustomVersion < FChaosClothSharedConfigCustomVersion::AddGravityOverride)
 	{
 		bUseGravityOverride_DEPRECATED = true;  // Default gravity override would otherwise disable the currently set gravity on older versions
 	}
+#endif
 }
 
 #if WITH_EDITOR

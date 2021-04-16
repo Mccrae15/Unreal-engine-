@@ -2,8 +2,6 @@
 #pragma once
 
 #include "Chaos/PBDLongRangeConstraintsBase.h"
-#include "Chaos/PBDParticles.h"
-#include "Chaos/PBDConstraintContainer.h"
 #include "ChaosStats.h"
 
 DECLARE_CYCLE_STAT(TEXT("Chaos PBD Long Range Constraint"), STAT_PBD_LongRange, STATGROUP_Chaos);
@@ -11,41 +9,32 @@ DECLARE_CYCLE_STAT(TEXT("Chaos PBD Long Range Constraint"), STAT_PBD_LongRange, 
 namespace Chaos
 {
 template<class T, int d>
-class CHAOS_API TPBDLongRangeConstraints : public TPBDLongRangeConstraintsBase<T, d>, public FPBDConstraintContainer
+class CHAOS_API TPBDLongRangeConstraints final : public TPBDLongRangeConstraintsBase<T, d>
 {
 public:
 	typedef TPBDLongRangeConstraintsBase<T, d> Base;
+	typedef typename Base::FTether FTether;
 	typedef typename Base::EMode EMode;
 
 	using Base::GetMode;
 
 	TPBDLongRangeConstraints(
-		const TDynamicParticles<T, d>& InParticles,
-		const TMap<int32, TSet<uint32>>& PointToNeighbors,
-		const int32 NumberOfAttachments = 1,
-		const T Stiffness = (T)1,
+		const TPBDParticles<T, d>& Particles,
+		const TMap<int32, TSet<int32>>& PointToNeighbors,
+		const int32 MaxNumTetherIslands = 4,
+		const T InStiffness = (T)1,
 		const T LimitScale = (T)1,
-		const EMode Mode = EMode::AccurateTetherFastLength)
-		: TPBDLongRangeConstraintsBase<T, d>(InParticles, PointToNeighbors, NumberOfAttachments, Stiffness, LimitScale, Mode) {}
-	virtual ~TPBDLongRangeConstraints() {}
+		const EMode InMode = EMode::Geodesic)
+		: TPBDLongRangeConstraintsBase<T, d>(Particles, PointToNeighbors, MaxNumTetherIslands, InStiffness, LimitScale, InMode) {}
+	~TPBDLongRangeConstraints() {}
 
-	void Apply(TPBDParticles<T, d>& InParticles, const T Dt, const TArray<int32>& InConstraintIndices) const;
-	void Apply(TPBDParticles<T, d>& InParticles, const T Dt) const;
+	void Apply(TPBDParticles<T, d>& Particles, const T Dt, const TArray<int32>& ConstraintIndices) const;
+	void Apply(TPBDParticles<T, d>& Particles, const T Dt) const;
 
 private:
-	using Base::MEuclideanConstraints;
-	using Base::MGeodesicConstraints;
-	using Base::MDists;
-	using Base::GetDelta;
-
-	template<class TConstraintType>
-	void Apply(const TConstraintType& Constraint, TPBDParticles<T, d>& InParticles, const T Dt, const T RefDist) const
-	{
-		const int32 i2 = Constraint[Constraint.Num() - 1];
-		checkSlow(InParticles.InvM(i2) > (T)0.);
-		InParticles.P(i2) += GetDelta(Constraint, InParticles, RefDist);
-	}
-
+	using Base::Tethers;
+	using Base::TethersView;
+	using Base::Stiffness;
 };
 }
 
