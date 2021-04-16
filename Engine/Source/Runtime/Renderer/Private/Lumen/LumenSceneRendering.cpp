@@ -954,6 +954,15 @@ void AddCardCaptureDraws(const FScene* Scene,
 							MeshDrawCommand = &SceneDrawList.MeshDrawCommands[CachedMeshDrawCommand.CommandIndex];
 						}
 
+						CardRenderData.InstanceRuns.Reset();
+
+						if (MeshDrawCommand->NumInstances > 1 && CardRenderData.PrimitiveInstanceIndexOrMergedFlag >= 0)
+						{
+							// Render only a single specified instance
+							CardRenderData.InstanceRuns.Add(CardRenderData.PrimitiveInstanceIndexOrMergedFlag);
+							CardRenderData.InstanceRuns.Add(CardRenderData.PrimitiveInstanceIndexOrMergedFlag);
+						}
+
 						FVisibleMeshDrawCommand NewVisibleMeshDrawCommand;
 
 						NewVisibleMeshDrawCommand.Setup(
@@ -964,7 +973,9 @@ void AddCardCaptureDraws(const FScene* Scene,
 							CachedMeshDrawCommand.MeshFillMode,
 							CachedMeshDrawCommand.MeshCullMode,
 							CachedMeshDrawCommand.Flags,
-							CachedMeshDrawCommand.SortKey);
+							CachedMeshDrawCommand.SortKey,
+							CardRenderData.InstanceRuns.Num() > 0 ? CardRenderData.InstanceRuns.GetData() : nullptr,
+							CardRenderData.InstanceRuns.Num() / 2);
 
 						VisibleMeshCommands.Add(NewVisibleMeshDrawCommand);
 						PrimitiveIds.Add(PrimitiveSceneInfo->GetIndex());
