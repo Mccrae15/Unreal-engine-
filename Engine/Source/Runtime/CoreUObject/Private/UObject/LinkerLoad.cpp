@@ -2593,9 +2593,17 @@ void FLinkerLoad::Verify()
 	}
 #endif
 
-	if (!FApp::IsGame() || GIsEditor || IsRunningCommandlet())
+	if (!bHaveImportsBeenVerified)
 	{
-		if (!bHaveImportsBeenVerified)
+		bool bShouldVerifiedAllImports = IsRunningCommandlet();
+
+#if WITH_EDITOR
+		// In editor builds using OFPA, we need to resolve imports for BP classes referenced by the level script in order to be able
+		// to properly reinstanced them. We could filter out imports to resolve here, but we resolve all of them instead.
+		bShouldVerifiedAllImports = true;
+#endif
+
+		if (bShouldVerifiedAllImports)
 		{
 #if WITH_EDITOR
 			TOptional<FScopedSlowTask> SlowTask;
@@ -2620,9 +2628,9 @@ void FLinkerLoad::Verify()
 				VerifyImport( ImportIndex );
 			}
 		}
-	}
 
-	bHaveImportsBeenVerified = true;
+		bHaveImportsBeenVerified = true;
+	}
 }
 
 FName FLinkerLoad::GetExportClassPackage( int32 i )
