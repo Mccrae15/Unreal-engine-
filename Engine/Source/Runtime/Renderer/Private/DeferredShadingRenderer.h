@@ -679,7 +679,8 @@ private:
 		const FLightSceneInfo* LightSceneInfo,
 		FRDGTextureRef ScreenShadowMaskTexture,
 		bool bLightAttenuationCleared,
-		bool bProjectingForForwardShading);
+		bool bProjectingForForwardShading, 
+		bool bUseHairStrands);
 
 	/** Renders a light function indicating that whole scene shadowing being displayed is for previewing only, and will go away in game. */
 	bool RenderPreviewShadowsIndicator(
@@ -687,7 +688,8 @@ private:
 		const FMinimalSceneTextures& SceneTextures,
 		const FLightSceneInfo* LightSceneInfo,
 		FRDGTextureRef ScreenShadowMaskTexture,
-		bool bLightAttenuationCleared);
+		bool bLightAttenuationCleared,
+		bool bUseHairStrands);
 
 	/** Renders a light function with the given material. */
 	bool RenderLightFunctionForMaterial(
@@ -698,7 +700,8 @@ private:
 		const FMaterialRenderProxy* MaterialProxy,
 		bool bLightAttenuationCleared,
 		bool bProjectingForForwardShading,
-		bool bRenderingPreviewShadowsIndicator);
+		bool bRenderingPreviewShadowsIndicator, 
+		bool bUseHairStrands);
 
 	/** Used by RenderLights to render a light to the scene color buffer. */
 	void RenderLight(
