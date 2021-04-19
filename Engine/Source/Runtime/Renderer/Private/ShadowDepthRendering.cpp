@@ -124,7 +124,6 @@ static FAutoConsoleVariableRef CVarShadowShadowUseGS(
 	ECVF_RenderThreadSafe);
 
 extern int32 GVirtualShadowMapAtomicWrites;
-extern int32 GNaniteDebugFlags;
 extern int32 GNaniteShowStats;
 extern int32 GEnableNonNaniteVSM;
 
@@ -1376,7 +1375,7 @@ static void RenderShadowDepthAtlasNanite(
 		Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(GraphBuilder, FeatureLevel, AtlasSize, Nanite::EOutputBufferMode::DepthOnly);
 
 		bool bExtractStats = false;		
-		if (GNaniteDebugFlags != 0 && GNaniteShowStats != 0)
+		if (GNaniteShowStats != 0)
 		{
 			FString AtlasFilterName = FString::Printf(TEXT("ShadowAtlas%d"), AtlasIndex);
 			bExtractStats = Nanite::IsStatFilterActive(AtlasFilterName);
@@ -1896,7 +1895,7 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 				FLightSceneInfo& LightSceneInfo = ProjectedShadowInfo->GetLightSceneInfo();
 
 				FString CubeFilterName;
-				if (GNaniteDebugFlags != 0 && GNaniteShowStats != 0)
+				if (GNaniteShowStats != 0)
 				{
 					// Get the base light filter name.
 					CubeFilterName = Nanite::GetFilterNameForLight(LightSceneInfo.Proxy);
@@ -1944,7 +1943,7 @@ void FSceneRenderer::RenderShadowDepthMaps(FRDGBuilder& GraphBuilder, FInstanceC
 					}
 
 					FString CubeFaceFilterName;
-					if (GNaniteDebugFlags != 0 && GNaniteShowStats != 0)
+					if (GNaniteShowStats != 0)
 					{
 						CubeFaceFilterName = CubeFilterName;
 						CubeFaceFilterName.AppendInt(CubemapFaceIndex);
