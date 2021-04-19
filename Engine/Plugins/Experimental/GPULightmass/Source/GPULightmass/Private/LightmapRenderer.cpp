@@ -528,7 +528,7 @@ void FCachedRayTracingSceneData::SetupFromSceneRenderState(FSceneRenderState& Sc
 		{
 			FStaticMeshInstanceRenderState& Instance = Scene.StaticMeshInstanceRenderStates.Elements[StaticMeshIndex];
 
-			TArray<FMeshBatch> MeshBatches = Instance.GetMeshBatchesForGBufferRendering(0);
+			TArray<FMeshBatch> MeshBatches = Instance.GetMeshBatchesForGBufferRendering(Instance.ClampedMinLOD);
 
 			bool bAllSegmentsUnlit = true;
 			bool bAllSegmentsOpaque = true;
@@ -546,7 +546,7 @@ void FCachedRayTracingSceneData::SetupFromSceneRenderState(FSceneRenderState& Sc
 			{
 				int32 InstanceIndex = RayTracingGeometryInstances.AddDefaulted(1);
 				FRayTracingGeometryInstance& RayTracingInstance = RayTracingGeometryInstances[InstanceIndex];
-				RayTracingInstance.GeometryRHI = Instance.RenderData->LODResources[0].RayTracingGeometry.RayTracingGeometryRHI;
+				RayTracingInstance.GeometryRHI = Instance.RenderData->LODResources[Instance.ClampedMinLOD].RayTracingGeometry.RayTracingGeometryRHI;
 				RayTracingInstance.Transforms.Add(Instance.LocalToWorld);
 				RayTracingInstance.NumTransforms = 1;
 				RayTracingInstance.UserData.Add((uint32)StaticMeshIndex);
@@ -1383,6 +1383,11 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 				}
 			}
 		}
+
+		if (!bIsRecordingTileRequests && RecordedTileRequests.Num() > 0)
+		{
+			PendingTileRequests = PendingTileRequests.FilterByPredicate([&RecordedTileRequests = RecordedTileRequests](const FLightmapTileRequest& Tile) { return RecordedTileRequests.Find(Tile) != INDEX_NONE; });
+		}
 	}
 
 	PendingTileRequests.Sort([](const FLightmapTileRequest& A, const FLightmapTileRequest& B) { 
@@ -1675,8 +1680,17 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 
 				if (SampleIndex % AAvsGIMultiplier == 0)
 				{
+					TArray<int32>& PendingGIRenderPassIndices = *GraphBuilder.AllocObject<TArray<int32>>();
+
+					for (auto& Tile : PendingGITileRequests)
+					{
+						PendingGIRenderPassIndices.Add(Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex);
+					}
+
 					for (int ScratchLayerIndex = 0; ScratchLayerIndex < 3; ScratchLayerIndex++)
 					{
+						RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::All());
+						
 						TResourceArray<FIntPoint> TilePositionsToClear;
 						for (auto& Tile : PendingGITileRequests)
 						{
@@ -1713,10 +1727,12 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 								RDG_EVENT_NAME("LightmapGBuffer"),
 								PassParameters,
 								ERDGPassFlags::Raster,
-								[this, ReferenceView = Scene->ReferenceView, &PendingGITileRequests, GPUIndex, AAvsGIMultiplier](FRHICommandList& RHICmdList)
+								[this, ReferenceView = Scene->ReferenceView, &PendingGITileRequests, &PendingGIRenderPassIndices, GPUIndex, AAvsGIMultiplier](FRHICommandList& RHICmdList)
 							{
-								for (const FLightmapTileRequest& Tile : PendingGITileRequests)
+								for (int32 Index = 0; Index < PendingGITileRequests.Num(); Index++)
 								{
+									const FLightmapTileRequest& Tile = PendingGITileRequests[Index];
+
 									if (Tile.RenderState->IsTileGIConverged(Tile.VirtualCoordinates, Scene->Settings->GISamples)) continue;
 									uint32 AssignedGPUIndex = (Tile.RenderState->DistributionPrefixSum + Tile.RenderState->RetrieveTileStateIndex(Tile.VirtualCoordinates)) % GNumExplicitGPUsForRendering;
 									if (AssignedGPUIndex != GPUIndex) continue;
@@ -1805,6 +1821,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 						if (GPUBatchedTileRequests.BatchedTilesDesc.Num() > 0)
 						{
 							FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
+							CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
 							CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
 
 							GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
@@ -1957,13 +1974,16 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 							TilePositionsToClear.Add(ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch));
 						}
 
-						FRWBuffer TilePositionsBuffer;
-						TilePositionsBuffer.Initialize(TEXT("TilePositionsBufferForClear"), TilePositionsToClear.GetTypeSize(), TilePositionsToClear.Num(), PF_R32G32_UINT, 0, &TilePositionsToClear);
+						FRHIResourceCreateInfo CreateInfo(TEXT("TilePositionsBufferForClear"));
+						CreateInfo.ResourceArray = &TilePositionsToClear;
+						CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
+						FBufferRHIRef TilePositionsBuffer = RHICreateVertexBuffer(TilePositionsToClear.GetTypeSize() * TilePositionsToClear.Num(), BUF_ShaderResource, CreateInfo);
+						FShaderResourceViewRHIRef TilePositionsBufferSRV = RHICreateShaderResourceView(TilePositionsBuffer, TilePositionsToClear.GetTypeSize(), PF_R32G32_UINT);
 
 						FMultiTileClearCS::FParameters* Parameters = GraphBuilder.AllocParameters<FMultiTileClearCS::FParameters>();
 						Parameters->NumTiles = TilePositionsToClear.Num();
 						Parameters->TileSize = GPreviewLightmapPhysicalTileSize;
-						Parameters->TilePositions = HoldReference(GraphBuilder, TilePositionsBuffer.SRV);
+						Parameters->TilePositions = HoldReference(GraphBuilder, TilePositionsBufferSRV);
 						Parameters->TilePool = ScratchTilePoolLayerUAVs[ScratchLayerIndex];
 
 						TShaderMapRef<FMultiTileClearCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
@@ -2127,24 +2147,28 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 
 					{
 						FRHIResourceCreateInfo CreateInfo(TEXT("LightTypeBuffer"), &LightTypeArray);
+						CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
 						LightTypeBuffer = RHICreateVertexBuffer(LightTypeArray.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						LightTypeSRV = RHICreateShaderResourceView(LightTypeBuffer, sizeof(int32), PF_R32_SINT);
 					}
 
 					{
 						FRHIResourceCreateInfo CreateInfo(TEXT("ChannelIndexBuffer"), &ChannelIndexArray);
+						CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
 						ChannelIndexBuffer = RHICreateVertexBuffer(ChannelIndexArray.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						ChannelIndexSRV = RHICreateShaderResourceView(ChannelIndexBuffer, sizeof(int32), PF_R32_SINT);
 					}
 
 					{
 						FRHIResourceCreateInfo CreateInfo(TEXT("LightSampleIndexSRV"), &LightSampleIndexArray);
+						CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
 						LightSampleIndexBuffer = RHICreateVertexBuffer(LightSampleIndexArray.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						LightSampleIndexSRV = RHICreateShaderResourceView(LightSampleIndexBuffer, sizeof(int32), PF_R32_SINT);
 					}
 
 					{
 						FRHIResourceCreateInfo CreateInfo(TEXT("LightShaderParameterBuffer"), &LightShaderParameterArray);
+						CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
 						LightShaderParameterBuffer = RHICreateStructuredBuffer(sizeof(FLightShaderConstants), LightShaderParameterArray.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 						LightShaderParameterSRV = RHICreateShaderResourceView(LightShaderParameterBuffer);
 					}
@@ -2229,6 +2253,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 
 							{
 								FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
+								CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
 								CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
 
 								GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
@@ -2456,7 +2481,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 
 				for (TUniquePtr<FLightmapReadbackGroup>& ReadbackGroup : RecycledReadbacks)
 				{
-					if (ReadbackGroup->bIsFree && ReadbackGroup->ReadbackTilePoolGPU->SizeInTiles.X >= NewSize)
+					if (ReadbackGroup->bIsFree && ReadbackGroup->ReadbackTilePoolGPU->SizeInTiles.X >= NewSize && ReadbackGroup->GPUIndex == GPUIndex)
 					{
 						ReadbackGroupToUse = ReadbackGroup.Get();
 						break;
@@ -2503,6 +2528,7 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 				}
 
 				FRHIResourceCreateInfo CreateInfo(TEXT("BatchedTilesBuffer"));
+				CreateInfo.GPUMask = FRHIGPUMask::FromIndex(GPUIndex);
 				CreateInfo.ResourceArray = &GPUBatchedTileRequests.BatchedTilesDesc;
 
 				GPUBatchedTileRequests.BatchedTilesBuffer = RHICreateStructuredBuffer(sizeof(FGPUTileDescription), GPUBatchedTileRequests.BatchedTilesDesc.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
@@ -2689,9 +2715,9 @@ void FLightmapRenderer::BackgroundTick()
 			ReadbackGroup.StagingHQLayer1Readback->LockTexture(RHICmdList, LockedData[1], ReadbackGroup.TextureData->RowPitchInPixels[1]); // This forces a GPU stall
 			ReadbackGroup.StagingShadowMaskReadback->LockTexture(RHICmdList, LockedData[2], ReadbackGroup.TextureData->RowPitchInPixels[2]); // This forces a GPU stall
 
-			ReadbackGroup.TextureData->Texture[0].AddZeroed(ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[0]);
-			ReadbackGroup.TextureData->Texture[1].AddZeroed(ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[1]);
-			ReadbackGroup.TextureData->Texture[2].AddZeroed(ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[2]);
+			ReadbackGroup.TextureData->Texture[0].AddUninitialized(ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[0]);
+			ReadbackGroup.TextureData->Texture[1].AddUninitialized(ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[1]);
+			ReadbackGroup.TextureData->Texture[2].AddUninitialized(ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[2]);
 			FMemory::Memcpy(ReadbackGroup.TextureData->Texture[0].GetData(), LockedData[0], ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[0] * sizeof(FLinearColor));
 			FMemory::Memcpy(ReadbackGroup.TextureData->Texture[1].GetData(), LockedData[1], ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[1] * sizeof(FLinearColor));
 			FMemory::Memcpy(ReadbackGroup.TextureData->Texture[2].GetData(), LockedData[2], ReadbackGroup.ReadbackTilePoolGPU->SizeInTiles.Y * GPreviewLightmapPhysicalTileSize * ReadbackGroup.TextureData->RowPitchInPixels[2] * sizeof(FLinearColor));
@@ -2709,6 +2735,23 @@ void FLightmapRenderer::BackgroundTick()
 				const int32 SrcRowPitchInPixels = ReadbackGroup.TextureData->RowPitchInPixels[0];
 				const int32 DstRowPitchInPixels = GPreviewLightmapVirtualTileSize;
 
+				if (!ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage.Contains(ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates))
+				{
+					ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage.Add(ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates, FTileStorage{});
+				}
+
+				FTileStorage& TileStorage = ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage[ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates];
+
+				if (bDenoiseDuringInteractiveBake)
+				{
+					TileStorage.CPUTextureRawData[0]->Decompress();
+					TileStorage.CPUTextureRawData[1]->Decompress();
+				}
+
+				TileStorage.CPUTextureData[0]->Decompress();
+				TileStorage.CPUTextureData[1]->Decompress();
+				TileStorage.CPUTextureData[2]->Decompress();
+
 				for (int32 Y = 0; Y < GPreviewLightmapVirtualTileSize; Y++)
 				{
 					for (int32 X = 0; X < GPreviewLightmapVirtualTileSize; X++)
@@ -2719,29 +2762,18 @@ void FLightmapRenderer::BackgroundTick()
 						int32 SrcLinearIndex = SrcPixelPosition.Y * SrcRowPitchInPixels + SrcPixelPosition.X;
 						int32 DstLinearIndex = DstPixelPosition.Y * DstRowPitchInPixels + DstPixelPosition.X;
 
-						if (!ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage.Contains(ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates))
-						{
-							ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage.Add(ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates, FTileStorage{});
-						}
-
 						if (bDenoiseDuringInteractiveBake)
 						{
-							ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage[ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates].CPUTextureRawData[0]->Decompress();
-							ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage[ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates].CPUTextureRawData[1]->Decompress();
-
-							ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage[ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates].CPUTextureRawData[0]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[0][SrcLinearIndex];
-							ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage[ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates].CPUTextureRawData[1]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[1][SrcLinearIndex];
+							TileStorage.CPUTextureRawData[0]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[0][SrcLinearIndex];
+							TileStorage.CPUTextureRawData[1]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[1][SrcLinearIndex];
 						}
 
 						// Always write into display data so we have something to show before denoising completes
-						ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage[ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates].CPUTextureData[0]->Decompress();
-						ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage[ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates].CPUTextureData[1]->Decompress();
-						ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage[ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates].CPUTextureData[0]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[0][SrcLinearIndex];
-						ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage[ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates].CPUTextureData[1]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[1][SrcLinearIndex];
-						
+						TileStorage.CPUTextureData[0]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[0][SrcLinearIndex];
+						TileStorage.CPUTextureData[1]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[1][SrcLinearIndex];
+
 						// For shadow maps, pass through
-						ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage[ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates].CPUTextureData[2]->Decompress();
-						ReadbackGroup.ConvergedTileRequests[TileIndex].RenderState->TileStorage[ReadbackGroup.ConvergedTileRequests[TileIndex].VirtualCoordinates].CPUTextureData[2]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[2][SrcLinearIndex];
+						TileStorage.CPUTextureData[2]->Data[DstLinearIndex] = ReadbackGroup.TextureData->Texture[2][SrcLinearIndex];
 					}
 				}
 			}
@@ -2942,29 +2974,8 @@ void FLightmapRenderer::BackgroundTick()
 
 		if (Mip0WorkDoneLastFrame < NumWorkPerFrame)
 		{
-			int32 PoolSize = FMath::CeilToInt(FMath::Sqrt(static_cast<float>(NumWorkPerFrame * 3.f)));
-
-			FIntPoint TextureSize(PoolSize * GPreviewLightmapPhysicalTileSize, PoolSize * GPreviewLightmapPhysicalTileSize);
-
-			EPixelFormat RenderTargetFormat = PF_A32B32G32R32F;
-
-			TRefCountPtr<IPooledRenderTarget> OutputTileAtlas;
-
-			const FPooledRenderTargetDesc Desc = FPooledRenderTargetDesc::Create2DDesc(
-				TextureSize,
-				RenderTargetFormat,
-				FClearValueBinding::None,
-				TexCreate_None,
-				TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_UAV,
-				false);
-
-			GRenderTargetPool.FindFreeElement(RHICmdList, Desc, OutputTileAtlas, TEXT("BackgroundTilePoolGPU"));
-
-			ensure(OutputTileAtlas.IsValid());
-
 			int32 WorkToGenerate = NumWorkPerFrame - Mip0WorkDoneLastFrame;
 			int32 WorkGenerated = 0;
-			int32 TileLinearIndexInAtlas = 0;
 
 			TArray<FString> SelectedLightmapNames;
 
@@ -2983,16 +2994,6 @@ void FLightmapRenderer::BackgroundTick()
 							bAnyTileSelected = true;
 
 							FVTProduceTargetLayer TargetLayers[3];
-							TargetLayers[0].pPageLocation = FIntVector(TileLinearIndexInAtlas % PoolSize, TileLinearIndexInAtlas / PoolSize, 0);
-							TargetLayers[0].PooledRenderTarget = OutputTileAtlas;
-							TileLinearIndexInAtlas++;
-							TargetLayers[1].pPageLocation = FIntVector(TileLinearIndexInAtlas % PoolSize, TileLinearIndexInAtlas / PoolSize, 0);
-							TargetLayers[1].PooledRenderTarget = OutputTileAtlas;
-							TileLinearIndexInAtlas++;
-							TargetLayers[2].pPageLocation = FIntVector(TileLinearIndexInAtlas % PoolSize, TileLinearIndexInAtlas / PoolSize, 0);
-							TargetLayers[2].PooledRenderTarget = OutputTileAtlas;
-							TileLinearIndexInAtlas++;
-							check(TileLinearIndexInAtlas <= PoolSize * PoolSize);
 
 							Lightmap.LightmapPreviewVirtualTexture->ProducePageData(
 								RHICmdList,
@@ -3044,7 +3045,8 @@ void FLightmapRenderer::BackgroundTick()
 
 		Mip0WorkDoneLastFrame = 0;
 	}
-	else
+
+	if (bOnlyBakeWhatYouSee)
 	{
 		if (bLastFewFramesIdle)
 		{
@@ -3131,28 +3133,57 @@ void FLightmapRenderer::BumpRevision()
 	}	
 
 	RecordedTileRequests.Empty();
+
+	LightmapTilePoolGPU.UnmapAll();
 }
 
 void FLightmapRenderer::DeduplicateRecordedTileRequests()
 {
 	RecordedTileRequests.Sort([](const FLightmapTileRequest& A, const FLightmapTileRequest& B) { return A.VirtualCoordinates.MipLevel > B.VirtualCoordinates.MipLevel; });
 
+	int32 OldNum = RecordedTileRequests.Num();
+
 	for (int32 Index = 0; Index < RecordedTileRequests.Num(); Index++)
 	{
 		FLightmapTileRequest& Tile = RecordedTileRequests[Index];
-		if (RecordedTileRequests.FindByPredicate([&Tile](const FLightmapTileRequest& Entry) { 
+		if (
+			Tile.VirtualCoordinates.MipLevel > 0 &&
+			RecordedTileRequests.FindByPredicate([&Tile](const FLightmapTileRequest& Entry) {
 			return Entry.VirtualCoordinates.MipLevel == Tile.VirtualCoordinates.MipLevel - 1
-				&& Entry.VirtualCoordinates.Position.X >= Tile.VirtualCoordinates.Position.X * 2
-				&& Entry.VirtualCoordinates.Position.Y >= Tile.VirtualCoordinates.Position.Y * 2
-				&& Entry.VirtualCoordinates.Position.X < (Tile.VirtualCoordinates.Position.X + 1) * 2
-				&& Entry.VirtualCoordinates.Position.Y < (Tile.VirtualCoordinates.Position.Y + 1) * 2
+				&& Entry.RenderState == Tile.RenderState
+				&& (Entry.VirtualCoordinates.Position.X == Tile.VirtualCoordinates.Position.X * 2 + 0)
+				&& (Entry.VirtualCoordinates.Position.Y == Tile.VirtualCoordinates.Position.Y * 2 + 0)
 				;
-		}))
+		}) &&
+			RecordedTileRequests.FindByPredicate([&Tile](const FLightmapTileRequest& Entry) {
+			return Entry.VirtualCoordinates.MipLevel == Tile.VirtualCoordinates.MipLevel - 1
+				&& Entry.RenderState == Tile.RenderState
+				&& (Entry.VirtualCoordinates.Position.X == Tile.VirtualCoordinates.Position.X * 2 + 0)
+				&& (Entry.VirtualCoordinates.Position.Y == FMath::Min(Tile.VirtualCoordinates.Position.Y * 2 + 1, Tile.RenderState->GetPaddedSizeInTilesAtMipLevel(Tile.VirtualCoordinates.MipLevel - 1).Y - 1))
+				;
+		}) &&
+			RecordedTileRequests.FindByPredicate([&Tile](const FLightmapTileRequest& Entry) {
+			return Entry.VirtualCoordinates.MipLevel == Tile.VirtualCoordinates.MipLevel - 1
+				&& Entry.RenderState == Tile.RenderState
+				&& (Entry.VirtualCoordinates.Position.X == FMath::Min(Tile.VirtualCoordinates.Position.X * 2 + 1, Tile.RenderState->GetPaddedSizeInTilesAtMipLevel(Tile.VirtualCoordinates.MipLevel - 1).X - 1))
+				&& (Entry.VirtualCoordinates.Position.Y == Tile.VirtualCoordinates.Position.Y * 2 + 0)
+				;
+		}) &&
+			RecordedTileRequests.FindByPredicate([&Tile](const FLightmapTileRequest& Entry) {
+			return Entry.VirtualCoordinates.MipLevel == Tile.VirtualCoordinates.MipLevel - 1
+				&& Entry.RenderState == Tile.RenderState
+				&& (Entry.VirtualCoordinates.Position.X == FMath::Min(Tile.VirtualCoordinates.Position.X * 2 + 1, Tile.RenderState->GetPaddedSizeInTilesAtMipLevel(Tile.VirtualCoordinates.MipLevel - 1).X - 1))
+				&& (Entry.VirtualCoordinates.Position.Y == FMath::Min(Tile.VirtualCoordinates.Position.Y * 2 + 1, Tile.RenderState->GetPaddedSizeInTilesAtMipLevel(Tile.VirtualCoordinates.MipLevel - 1).Y - 1))
+				;
+		})
+			)
 		{
 			RecordedTileRequests.RemoveAt(Index);
 			Index--;
 		}
 	}
+
+	UE_LOG(LogGPULightmass, Log, TEXT("Tile deduplication removed %d tiles"), OldNum - RecordedTileRequests.Num());
 }
 
 void FLightmapRenderer::RenderIrradianceCacheVisualization(FPostOpaqueRenderParameters& Parameters)
