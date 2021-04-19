@@ -2045,6 +2045,15 @@ UHierarchicalInstancedStaticMeshComponent::~UHierarchicalInstancedStaticMeshComp
 
 #if WITH_EDITOR
 
+void UHierarchicalInstancedStaticMeshComponent::PreSave(const class ITargetPlatform* TargetPlatform)
+{
+	Super::PreSave(TargetPlatform);
+
+	// BuildTree here so that FArchiveSaveTagImports has all proper tags.
+	// @todo_ow: validate that we still need the BuildTreeIfOutdated call in UHierarchicalInstancedStaticMeshComponent::Serialize and do proper fix in main
+	BuildTreeIfOutdated(/*Async*/false, /*ForceUpdate*/true);
+}
+
 void UHierarchicalInstancedStaticMeshComponent::PostStaticMeshCompilation()
 {
 	BuildTreeIfOutdated(false, true);

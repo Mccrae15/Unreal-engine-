@@ -213,6 +213,7 @@ public:
 	virtual FBoxSphereBounds CalcBounds(const FTransform& BoundTransform) const override;
 	
 #if WITH_EDITOR
+	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
 	virtual void PostStaticMeshCompilation() override;
 	virtual void PostEditUndo() override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
