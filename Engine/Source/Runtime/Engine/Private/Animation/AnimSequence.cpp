@@ -2625,7 +2625,7 @@ void UAnimSequence::ResetAnimation()
 
 	Controller->OpenBracket(LOCTEXT("ResetAnimation_Bracket", "Resetting Animation Sequence"));
 	{
-		DeleteBoneAnimationData();
+		Controller->ResetModel();
 		DeleteNotifyTrackData();
 	}
 	Controller->CloseBracket();
@@ -2660,7 +2660,7 @@ void UAnimSequence::DeleteNotifyTrackData()
 void UAnimSequence::DeleteBoneAnimationData()
 {
 	ValidateModel();
-	Controller->ResetModel();
+	Controller->RemoveAllBoneTracks();
 }
 #endif // WITH_EDITOR
 		
