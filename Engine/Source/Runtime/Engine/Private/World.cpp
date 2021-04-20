@@ -2601,8 +2601,8 @@ void UWorld::AddToWorld( ULevel* Level, const FTransform& LevelTransform, bool b
 		bExecuteNextStep = (!bConsiderTimeLimit || !IsTimeLimitExceeded( TEXT("shifting actors"), StartTime, Level, TimeLimit ));
 	}
 
-	// Wait on any async DDC handles
 #if WITH_EDITOR
+	// Wait on any async DDC handles
 	if (bExecuteNextStep && AsyncPreRegisterDDCRequests.Num())
 	{
 		if (!bConsiderTimeLimit)
@@ -2631,6 +2631,9 @@ void UWorld::AddToWorld( ULevel* Level, const FTransform& LevelTransform, bool b
 			}
 		}
 	}
+
+	// Gives a chance to any assets being used for PIE/game to complete
+	FAssetCompilingManager::Get().ProcessAsyncTasks();
 #endif
 
 	// Updates the level components (Actor components and UModelComponents).
