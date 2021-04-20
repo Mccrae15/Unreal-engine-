@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "Engine/Level.h"
 #include "LevelInstance/LevelInstanceActor.h"
+#include "LevelInstance/LevelInstanceSubsystem.h"
 #include "WorldPartition/WorldPartition.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
 
@@ -79,19 +80,12 @@ void FLevelInstanceActorDesc::Serialize(FArchive& Ar)
 
 	if (Ar.IsLoading())
 	{
-		if (!LevelPackage.IsNone())
+		if (!LevelPackage.IsNone() && GetActorClass()->GetDefaultObject<ALevelInstance>()->SupportsLoading())
 		{
-			FBox LevelBounds;
-			if (ULevel::GetLevelBoundsFromPackage(LevelPackage, LevelBounds))
+			FBox OutBounds;
+			if (ULevelInstanceSubsystem::GetLevelInstanceBoundsFromPackage(LevelInstanceTransform, LevelPackage, OutBounds))
 			{
-				FVector LevelBoundsLocation;
-				LevelBounds.GetCenterAndExtents(BoundsLocation, BoundsExtent);
-
-				//@todo_ow: This will result in a new BoundsExtent that is larger than it should. To fix this, we would need the Object Oriented BoundingBox of the actor (the BV of the actor without rotation)
-				const FVector BoundsMin = BoundsLocation - BoundsExtent;
-				const FVector BoundsMax = BoundsLocation + BoundsExtent;
-				const FBox NewBounds = FBox(BoundsMin, BoundsMax).TransformBy(LevelInstanceTransform);
-				NewBounds.GetCenterAndExtents(BoundsLocation, BoundsExtent);
+				OutBounds.GetCenterAndExtents(BoundsLocation, BoundsExtent);
 			}
 		}
 	}
