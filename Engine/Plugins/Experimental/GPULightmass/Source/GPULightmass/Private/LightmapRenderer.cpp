@@ -24,6 +24,7 @@
 #include "PostProcess/PostProcessing.h"
 #include "RayTracingGeometryManager.h"
 #include "ScreenPass.h"
+#include "RayTracingDynamicGeometryCollection.h"
 
 class FCopyConvergedLightmapTilesCS : public FGlobalShader
 {
@@ -417,26 +418,59 @@ void FLightmapRenderer::AddRequest(FLightmapTileRequest TileRequest)
 	PendingTileRequests.AddUnique(TileRequest);
 }
 
+int32 FSceneRenderState::GetPrimitiveIdForGPUScene(const FGeometryInstanceRenderStateRef& GeometryInstanceRef) const
+{
+	int32 PrimitiveId = GeometryInstanceRef.GetElementIdChecked();
+	if (StaticMeshInstanceRenderStates.Contains(GeometryInstanceRef)) return PrimitiveId;
+	PrimitiveId += StaticMeshInstanceRenderStates.Elements.Num();
+	if (InstanceGroupRenderStates.Contains(GeometryInstanceRef)) return PrimitiveId;
+	PrimitiveId += InstanceGroupRenderStates.Elements.Num();
+	if (LandscapeRenderStates.Contains(GeometryInstanceRef)) return PrimitiveId;
+
+	checkf(false, TEXT("The referenced geometry isn't in any of the geometry arrays"));
+	return INDEX_NONE;
+}
+
 void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSceneRenderState& Scene)
 {
 	TResourceArray<FPrimitiveSceneShaderData> PrimitiveSceneData;
 	TResourceArray<FLightmapSceneShaderData> LightmapSceneData;
+	TResourceArray<FInstanceSceneShaderData> InstanceSceneData;
 
 	PrimitiveSceneData.AddZeroed(Scene.StaticMeshInstanceRenderStates.Elements.Num());
+	InstanceSceneData.AddZeroed(Scene.StaticMeshInstanceRenderStates.Elements.Num());
+	InstanceDataOriginalOffsets.AddZeroed(Scene.StaticMeshInstanceRenderStates.Elements.Num());
 
 	TArray<int32> LightmapSceneDataStartOffsets;
 	LightmapSceneDataStartOffsets.AddZeroed(Scene.StaticMeshInstanceRenderStates.Elements.Num());
+	LightmapSceneDataStartOffsets.AddZeroed(Scene.InstanceGroupRenderStates.Elements.Num());
+	LightmapSceneDataStartOffsets.AddZeroed(Scene.LandscapeRenderStates.Elements.Num());
 
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(ComputePrefixSum);
 
 		int32 ConservativeLightmapEntriesNum = 0;
+		int32 PrimitiveId = 0;
 
 		for (int32 InstanceIndex = 0; InstanceIndex < Scene.StaticMeshInstanceRenderStates.Elements.Num(); InstanceIndex++)
 		{
 			FStaticMeshInstanceRenderState& Instance = Scene.StaticMeshInstanceRenderStates.Elements[InstanceIndex];
-			LightmapSceneDataStartOffsets[InstanceIndex] = ConservativeLightmapEntriesNum;
+			LightmapSceneDataStartOffsets[PrimitiveId++] = ConservativeLightmapEntriesNum;
 			ConservativeLightmapEntriesNum += Instance.LODLightmapRenderStates.Num();
+		}
+
+		for (int32 InstanceGroupIndex = 0; InstanceGroupIndex < Scene.InstanceGroupRenderStates.Elements.Num(); InstanceGroupIndex++)
+		{
+			FInstanceGroupRenderState& InstanceGroup = Scene.InstanceGroupRenderStates.Elements[InstanceGroupIndex];
+			LightmapSceneDataStartOffsets[PrimitiveId++] = ConservativeLightmapEntriesNum;
+			ConservativeLightmapEntriesNum += InstanceGroup.LODLightmapRenderStates.Num();
+		}
+
+		for (int32 LandscapeIndex = 0; LandscapeIndex < Scene.LandscapeRenderStates.Elements.Num(); LandscapeIndex++)
+		{
+			FLandscapeRenderState& Landscape = Scene.LandscapeRenderStates.Elements[LandscapeIndex];
+			LightmapSceneDataStartOffsets[PrimitiveId++] = ConservativeLightmapEntriesNum;
+			ConservativeLightmapEntriesNum += Landscape.LODLightmapRenderStates.Num();
 		}
 
 		LightmapSceneData.AddZeroed(ConservativeLightmapEntriesNum);
@@ -451,7 +485,9 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 				&Scene,
 				&PrimitiveSceneData,
 				&LightmapSceneData,
-				&LightmapSceneDataStartOffsets
+				&LightmapSceneDataStartOffsets,
+				&InstanceSceneData,
+				&InstanceDataOriginalOffsets = InstanceDataOriginalOffsets
 			](int32 InstanceIndex = 0)
 			{
 				FStaticMeshInstanceRenderState& Instance = Scene.StaticMeshInstanceRenderStates.Elements[InstanceIndex];
@@ -459,7 +495,24 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 				FPrimitiveUniformShaderParameters PrimitiveUniformShaderParameters = Instance.PrimitiveUniformShaderParameters;
 				PrimitiveUniformShaderParameters.LightmapDataIndex = LightmapSceneDataStartOffsets[InstanceIndex];
 				PrimitiveUniformShaderParameters.LightmapUVIndex = 0; // TODO: LightmapUVIndex
+				PrimitiveUniformShaderParameters.InstanceDataOffset = InstanceIndex;
+				InstanceDataOriginalOffsets[InstanceIndex] = InstanceIndex;
+				PrimitiveUniformShaderParameters.NumInstanceDataEntries = 1;
 				PrimitiveSceneData[InstanceIndex] = FPrimitiveSceneShaderData(PrimitiveUniformShaderParameters);
+				InstanceSceneData[InstanceIndex] = FInstanceSceneShaderData(
+					GetInstanceUniformShaderParameters(
+						PrimitiveUniformShaderParameters.LocalToWorld, 
+						PrimitiveUniformShaderParameters.PreviousLocalToWorld,
+						(PrimitiveUniformShaderParameters.LocalObjectBoundsMin + PrimitiveUniformShaderParameters.LocalObjectBoundsMax) * 0.5f,
+						PrimitiveUniformShaderParameters.LocalObjectBoundsMax - PrimitiveUniformShaderParameters.LocalObjectBoundsMin,
+						PrimitiveUniformShaderParameters.NonUniformScale, PrimitiveUniformShaderParameters.InvNonUniformScaleAndDeterminantSign,
+						FVector4(ForceInitToZero),
+						FNaniteInfo(),
+						InstanceIndex,
+						0xFFFFFFFFu,
+						0.0f,
+						true
+					));
 
 				for (int32 LODIndex = 0; LODIndex < Instance.LODLightmapRenderStates.Num(); LODIndex++)
 				{
@@ -480,6 +533,156 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 					LightmapSceneData[LightmapSceneDataStartOffsets[InstanceIndex] + LODIndex] = FLightmapSceneShaderData(LightmapParams);
 				}
 			});
+
+		int32 PrimitiveId = Scene.StaticMeshInstanceRenderStates.Elements.Num();
+
+		for (int32 InstanceGroupIndex = 0; InstanceGroupIndex < Scene.InstanceGroupRenderStates.Elements.Num(); InstanceGroupIndex++)
+		{
+			FInstanceGroupRenderState& InstanceGroup = Scene.InstanceGroupRenderStates.Elements[InstanceGroupIndex];
+
+			int32 NumInstancesThisGroup = (int32)InstanceGroup.InstancedRenderData->PerInstanceRenderData->InstanceBuffer.GetNumInstances();
+
+			FPrimitiveUniformShaderParameters PrimitiveUniformShaderParameters = GetPrimitiveUniformShaderParameters(
+				InstanceGroup.LocalToWorld,
+				InstanceGroup.LocalToWorld,
+				InstanceGroup.ActorPosition,
+				InstanceGroup.WorldBounds,
+				InstanceGroup.LocalBounds,
+				InstanceGroup.LocalBounds,
+				false,
+				false,
+				false,
+				false,
+				false,
+				false,
+				0b111,
+				LightmapSceneDataStartOffsets[PrimitiveId],
+				INDEX_NONE,
+				INDEX_NONE,
+				/* bOutputVelocity = */ false,
+				nullptr,
+				/* bCastContactShadow = */ true,
+				InstanceSceneData.Num(),
+				NumInstancesThisGroup,
+				/* bCastShadow = */ true
+			);
+
+			InstanceDataOriginalOffsets.Add(InstanceSceneData.Num());
+
+			for (int32 LODIndex = 0; LODIndex < InstanceGroup.LODLightmapRenderStates.Num(); LODIndex++)
+			{
+				FPrecomputedLightingUniformParameters LightmapParams;
+				GetDefaultPrecomputedLightingParameters(LightmapParams);
+
+				if (InstanceGroup.LODLightmapRenderStates[LODIndex].IsValid())
+				{
+					LightmapParams.LightmapVTPackedPageTableUniform[0] = InstanceGroup.LODLightmapRenderStates[LODIndex]->LightmapVTPackedPageTableUniform[0];
+					for (uint32 LayerIndex = 0u; LayerIndex < 5u; ++LayerIndex)
+					{
+						LightmapParams.LightmapVTPackedUniform[LayerIndex] = InstanceGroup.LODLightmapRenderStates[LODIndex]->LightmapVTPackedUniform[LayerIndex];
+					}
+
+					LightmapParams.LightMapCoordinateScaleBias = InstanceGroup.LODLightmapRenderStates[LODIndex]->LightmapCoordinateScaleBias;
+				}
+
+				LightmapSceneData[LightmapSceneDataStartOffsets[PrimitiveId] + LODIndex] = FLightmapSceneShaderData(LightmapParams);
+			}
+
+			for (int32 InstanceIdx = 0; InstanceIdx < NumInstancesThisGroup; InstanceIdx++)
+			{
+				FMatrix Transform;
+				InstanceGroup.InstancedRenderData->PerInstanceRenderData->InstanceBuffer.GetInstanceTransform(InstanceIdx, Transform);
+				Transform.M[3][3] = 1.0f;
+				FMatrix InstanceTransform = Transform * InstanceGroup.LocalToWorld;
+
+				FPrimitiveInstance Instance;
+				Instance.PrimitiveId = PrimitiveId;
+				Instance.InstanceToLocal = Transform;
+				// GPUCULL_TODO: not sure this is needed either - might be better to delegate to later anyway since inverse can then be threaded, plus some platforms might not need it at all.
+				Instance.LocalToInstance = Instance.InstanceToLocal.Inverse();
+				// Filled in during GPU Scene update...
+				Instance.LocalToWorld = InstanceTransform;
+				Instance.PrevLocalToWorld = InstanceTransform;
+				Instance.RenderBounds = InstanceGroup.RenderData->Bounds;
+				Instance.LocalBounds = Instance.RenderBounds.TransformBy(Instance.InstanceToLocal);
+
+				InstanceSceneData.Add(FInstanceSceneShaderData(Instance));
+			}
+
+			PrimitiveSceneData.Add(FPrimitiveSceneShaderData(PrimitiveUniformShaderParameters));
+
+			PrimitiveId++;
+		}
+
+		for (int32 LandscapeIndex = 0; LandscapeIndex < Scene.LandscapeRenderStates.Elements.Num(); LandscapeIndex++)
+		{
+			FLandscapeRenderState& Landscape = Scene.LandscapeRenderStates.Elements[LandscapeIndex];
+			
+			FPrimitiveUniformShaderParameters PrimitiveUniformShaderParameters = GetPrimitiveUniformShaderParameters(
+				Landscape.LocalToWorld,
+				Landscape.LocalToWorld,
+				Landscape.ActorPosition,
+				Landscape.WorldBounds,
+				Landscape.LocalBounds,
+				Landscape.LocalBounds,
+				false,
+				false,
+				false,
+				false,
+				false,
+				false,
+				0b111,
+				LightmapSceneDataStartOffsets[PrimitiveId],
+				INDEX_NONE,
+				INDEX_NONE,
+				/* bOutputVelocity = */ false,
+				nullptr,
+				/* bCastContactShadow = */ true,
+				InstanceSceneData.Num(),
+				1,
+				/* bCastShadow = */ true
+			);
+
+			InstanceDataOriginalOffsets.Add(InstanceSceneData.Num());
+
+			for (int32 LODIndex = 0; LODIndex < Landscape.LODLightmapRenderStates.Num(); LODIndex++)
+			{
+				FPrecomputedLightingUniformParameters LightmapParams;
+				GetDefaultPrecomputedLightingParameters(LightmapParams);
+
+				if (Landscape.LODLightmapRenderStates[LODIndex].IsValid())
+				{
+					LightmapParams.LightmapVTPackedPageTableUniform[0] = Landscape.LODLightmapRenderStates[LODIndex]->LightmapVTPackedPageTableUniform[0];
+					for (uint32 LayerIndex = 0u; LayerIndex < 5u; ++LayerIndex)
+					{
+						LightmapParams.LightmapVTPackedUniform[LayerIndex] = Landscape.LODLightmapRenderStates[LODIndex]->LightmapVTPackedUniform[LayerIndex];
+					}
+
+					LightmapParams.LightMapCoordinateScaleBias = Landscape.LODLightmapRenderStates[LODIndex]->LightmapCoordinateScaleBias;
+				}
+
+				LightmapSceneData[LightmapSceneDataStartOffsets[PrimitiveId] + LODIndex] = FLightmapSceneShaderData(LightmapParams);
+			}
+
+			InstanceSceneData.Add(FInstanceSceneShaderData(
+				GetInstanceUniformShaderParameters(
+					PrimitiveUniformShaderParameters.LocalToWorld,
+					PrimitiveUniformShaderParameters.PreviousLocalToWorld,
+					(PrimitiveUniformShaderParameters.LocalObjectBoundsMin + PrimitiveUniformShaderParameters.LocalObjectBoundsMax) * 0.5f,
+					PrimitiveUniformShaderParameters.LocalObjectBoundsMax - PrimitiveUniformShaderParameters.LocalObjectBoundsMin,
+					PrimitiveUniformShaderParameters.NonUniformScale, PrimitiveUniformShaderParameters.InvNonUniformScaleAndDeterminantSign,
+					FVector4(ForceInitToZero),
+					FNaniteInfo(),
+					PrimitiveId,
+					0xFFFFFFFFu,
+					0.0f,
+					true
+				)));
+
+			PrimitiveSceneData.Add(FPrimitiveSceneShaderData(PrimitiveUniformShaderParameters));
+
+			PrimitiveId++;
+		}
 	}
 
 	{
@@ -509,6 +712,49 @@ void FCachedRayTracingSceneData::SetupViewUniformBufferFromSceneRenderState(FSce
 
 			LightmapSceneDataBufferRHI = RHICreateStructuredBuffer(sizeof(FVector4), LightmapSceneData.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 			LightmapSceneDataBufferSRV = RHICreateShaderResourceView(LightmapSceneDataBufferRHI);
+		}
+
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(InstanceSceneData);
+
+			TResourceArray<FVector4> InstanceSceneDataSOA;
+			InstanceSceneDataSOA.AddZeroed(FInstanceSceneShaderData::InstanceDataStrideInFloat4s * InstanceSceneData.Num());
+			for (int32 ArrayIndex = 0; ArrayIndex < FInstanceSceneShaderData::InstanceDataStrideInFloat4s; ArrayIndex++)
+			{
+				for (int32 DataIndex = 0; DataIndex < InstanceSceneData.Num(); DataIndex++)
+				{
+					InstanceSceneDataSOA[ArrayIndex * InstanceSceneData.Num() + DataIndex] = InstanceSceneData[DataIndex].Data[ArrayIndex];
+				}
+			}
+
+			FRHIResourceCreateInfo CreateInfo(TEXT("InstanceSceneDataBuffer"), &InstanceSceneDataSOA);
+			if (InstanceSceneDataSOA.GetResourceDataSize() == 0)
+			{
+				InstanceSceneDataSOA.AddZeroed(FInstanceSceneShaderData::InstanceDataStrideInFloat4s);
+			}
+
+			InstanceSceneDataBufferRHI = RHICreateStructuredBuffer(sizeof(FVector4), InstanceSceneDataSOA.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
+			InstanceSceneDataBufferSRV = RHICreateShaderResourceView(InstanceSceneDataBufferRHI);
+			InstanceSceneDataSOAStride = InstanceSceneData.Num();
+		}
+
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(InstanceIdsIdentityBuffer);
+
+			TResourceArray<uint32> InstanceIdsIdentity;
+			for (int32 Index = 0; Index < InstanceSceneData.Num(); Index++)
+			{
+				InstanceIdsIdentity.Add(Index);
+			}
+
+			FRHIResourceCreateInfo CreateInfo(TEXT("InstanceIdsIdentityBuffer"), &InstanceIdsIdentity);
+			if (InstanceIdsIdentity.GetResourceDataSize() == 0)
+			{
+				InstanceIdsIdentity.Add(0);
+			}
+
+			InstanceIdsIdentityBufferRHI = RHICreateStructuredBuffer(sizeof(uint32), InstanceIdsIdentity.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
+			InstanceIdsIdentityBufferSRV = RHICreateShaderResourceView(InstanceIdsIdentityBufferRHI);
 		}
 
 		FViewUniformShaderParameters ViewUniformBufferParameters;
@@ -693,6 +939,7 @@ void FSceneRenderState::SetupRayTracingScene()
 
 		View.PrimitiveSceneDataOverrideSRV = CachedRayTracingScene->PrimitiveSceneDataBufferSRV;
 		View.LightmapSceneDataOverrideSRV = CachedRayTracingScene->LightmapSceneDataBufferSRV;
+		View.InstanceSceneDataOverrideSRV = CachedRayTracingScene->InstanceSceneDataBufferSRV;
 
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(SetupUniformBufferParameters);
@@ -705,6 +952,9 @@ void FSceneRenderState::SetupRayTracingScene()
 				UnusedVolumeBounds,
 				TVC_MAX,
 				*View.CachedViewUniformShaderParameters);
+
+			View.CachedViewUniformShaderParameters->InstanceDataSOAStride = CachedRayTracingScene->InstanceSceneDataSOAStride;
+			View.CachedViewUniformShaderParameters->InstanceIdsBuffer = CachedRayTracingScene->InstanceIdsIdentityBufferSRV;
 
 			if (LightSceneRenderState.SkyLight.IsSet())
 			{
@@ -758,8 +1008,10 @@ void FSceneRenderState::SetupRayTracingScene()
 
 			int32 NumLandscapeInstances = 0;
 
-			for (FLandscapeRenderState& Landscape : LandscapeRenderStates.Elements)
+			for (int32 LandscapeIndex = 0; LandscapeIndex < LandscapeRenderStates.Elements.Num(); LandscapeIndex++)
 			{
+				FLandscapeRenderState& Landscape = LandscapeRenderStates.Elements[LandscapeIndex];
+
 				for (int32 SubY = 0; SubY < Landscape.NumSubsections; SubY++)
 				{
 					for (int32 SubX = 0; SubX < Landscape.NumSubsections; SubX++)
@@ -769,6 +1021,74 @@ void FSceneRenderState::SetupRayTracingScene()
 
 						int32 InstanceIndex = LandscapeStartOffset + NumLandscapeInstances;
 						NumLandscapeInstances++;
+
+						if (!Landscape.SectionRayTracingStates[SubSectionIdx].IsValid())
+						{
+							FRayTracingGeometryInitializer GeometryInitializer;
+							GeometryInitializer.IndexBuffer = Landscape.SharedBuffers->ZeroOffsetIndexBuffers[0]->IndexBufferRHI;
+							GeometryInitializer.TotalPrimitiveCount = NumPrimitives;
+							GeometryInitializer.GeometryType = RTGT_Triangles;
+							GeometryInitializer.bFastBuild = false;
+							GeometryInitializer.bAllowUpdate = false;
+
+							FRayTracingGeometrySegment Segment;
+							Segment.VertexBuffer = nullptr;
+							Segment.VertexBufferStride = sizeof(FVector);
+							Segment.VertexBufferElementType = VET_Float3;
+							Segment.NumPrimitives = NumPrimitives;
+							GeometryInitializer.Segments.Add(Segment);
+
+							Landscape.SectionRayTracingStates[SubSectionIdx] = MakeUnique<FLandscapeRenderState::FLandscapeSectionRayTracingState>();
+							Landscape.SectionRayTracingStates[SubSectionIdx]->Geometry.SetInitializer(GeometryInitializer);
+							Landscape.SectionRayTracingStates[SubSectionIdx]->Geometry.InitResource();
+
+							FRayTracingDynamicGeometryCollection DynamicGeometryCollection;
+
+							TArray<FMeshBatch> MeshBatches = Landscape.GetMeshBatchesForGBufferRendering(0);
+
+							FLandscapeVertexFactoryMVFParameters UniformBufferParams;
+							UniformBufferParams.SubXY = FIntPoint(SubX, SubY);
+							Landscape.SectionRayTracingStates[SubSectionIdx]->UniformBuffer = FLandscapeVertexFactoryMVFUniformBufferRef::CreateUniformBufferImmediate(UniformBufferParams, UniformBuffer_MultiFrame);
+
+							FLandscapeBatchElementParams& BatchElementParams = *(FLandscapeBatchElementParams*)MeshBatches[0].Elements[0].UserData;
+							BatchElementParams.LandscapeVertexFactoryMVFUniformBuffer = Landscape.SectionRayTracingStates[SubSectionIdx]->UniformBuffer;
+
+							MeshBatches[0].Elements[0].IndexBuffer = Landscape.SharedBuffers->ZeroOffsetIndexBuffers[0];
+							MeshBatches[0].Elements[0].FirstIndex = 0;
+							MeshBatches[0].Elements[0].NumPrimitives = NumPrimitives;
+							MeshBatches[0].Elements[0].MinVertexIndex = 0;
+							MeshBatches[0].Elements[0].MaxVertexIndex = 0;
+
+							MeshBatches[0].Elements[0].DynamicPrimitiveShaderDataIndex = LandscapeIndex;
+							MeshBatches[0].Elements[0].DynamicPrimitiveShaderDataIndex += StaticMeshInstanceRenderStates.Elements.Num();
+							MeshBatches[0].Elements[0].DynamicPrimitiveShaderDataIndex += InstanceGroupRenderStates.Elements.Num();
+
+							FRayTracingDynamicGeometryUpdateParams UpdateParams
+							{
+								MeshBatches,
+								false,
+								(uint32)FMath::Square(Landscape.SubsectionSizeVerts),
+								FMath::Square(Landscape.SubsectionSizeVerts) * (uint32)sizeof(FVector),
+								(uint32)FMath::Square(Landscape.SubsectionSizeVerts - 1) * 2,
+								&Landscape.SectionRayTracingStates[SubSectionIdx]->Geometry,
+								&Landscape.SectionRayTracingStates[SubSectionIdx]->RayTracingDynamicVertexBuffer,
+								false
+							};
+
+							DynamicGeometryCollection.AddDynamicMeshBatchForGeometryUpdate(
+								Landscape.ComponentUObject->GetWorld()->Scene->GetRenderScene(),
+								ReferenceView.Get(),
+								nullptr,
+								UpdateParams,
+								StaticMeshInstanceRenderStates.Elements.Num() + InstanceGroupRenderStates.Elements.Num() + LandscapeIndex
+							);
+
+							DynamicGeometryCollection.DispatchUpdates(RHICmdList);
+
+							// Landscape VF doesn't really use the vertex buffer in HitGroupSystemParameters
+							// We can release after all related RHI cmds get dispatched onto the cmd list
+							Landscape.SectionRayTracingStates[SubSectionIdx]->RayTracingDynamicVertexBuffer.Release();
+						}
 
 						FRayTracingGeometryInstance& RayTracingInstance = RayTracingGeometryInstances[InstanceIndex];
 						RayTracingInstance.GeometryRHI = Landscape.SectionRayTracingStates[SubSectionIdx]->Geometry.RayTracingGeometryRHI;
@@ -1000,6 +1320,81 @@ bool ClampTexelPositionAndOffsetTile(FIntPoint& SrcVirtualTexelPosition, FIntPoi
 	}
 
 	return bLoadingOutOfBounds;
+}
+
+void FLightmapRenderer::RenderMeshBatchesIntoGBuffer(
+	FRHICommandList& RHICmdList,
+	const FSceneView* View,
+	int32 GPUScenePrimitiveId,
+	TArray<FMeshBatch>& MeshBatches, 
+	FVector4 VirtualTexturePhysicalTileCoordinateScaleAndBias,
+	int32 RenderPassIndex,
+	FIntPoint ScratchTilePoolOffset)
+{
+	TArray<FMeshBatch> MeshBatchesToDrawImmediately;
+	TArray<FMeshBatch> MeshBatchesNeedingInstanceOffsetUpdates;
+
+	for (auto& MeshBatch : MeshBatches)
+	{
+		FMeshBatchElement& Element = MeshBatch.Elements[0];
+		Element.DynamicPrimitiveShaderDataIndex = GPUScenePrimitiveId;
+		if (Element.UserIndex == INDEX_NONE)
+		{
+			MeshBatchesToDrawImmediately.Add(MeshBatch);
+		}
+		else
+		{
+			MeshBatchesNeedingInstanceOffsetUpdates.Add(MeshBatch);
+		}
+	}
+
+	DrawDynamicMeshPass(
+		*View, RHICmdList,
+		[
+			View,
+			MeshBatchesToDrawImmediately,
+			VirtualTexturePhysicalTileCoordinateScaleAndBias,
+			RenderPassIndex,
+			ScratchTilePoolOffset
+		](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+	{
+		FLightmapGBufferMeshProcessor MeshProcessor(nullptr, View, DynamicMeshPassContext, VirtualTexturePhysicalTileCoordinateScaleAndBias, RenderPassIndex, ScratchTilePoolOffset);
+
+		for (auto& MeshBatch : MeshBatchesToDrawImmediately)
+		{
+			MeshProcessor.AddMeshBatch(MeshBatch, ~0ull, nullptr);
+		}
+	});
+
+	for (auto& MeshBatch : MeshBatchesNeedingInstanceOffsetUpdates)
+	{
+		FDynamicMeshDrawCommandStorage DynamicMeshDrawCommandStorage;
+		FMeshCommandOneFrameArray VisibleMeshDrawCommands;
+		FGraphicsMinimalPipelineStateSet GraphicsMinimalPipelineStateSet;
+		bool NeedsShaderInitialisation;
+
+		FDynamicPassMeshDrawListContext DynamicMeshPassContext(DynamicMeshDrawCommandStorage, VisibleMeshDrawCommands, GraphicsMinimalPipelineStateSet, NeedsShaderInitialisation);
+
+		FLightmapGBufferMeshProcessor MeshProcessor(nullptr, View, &DynamicMeshPassContext, VirtualTexturePhysicalTileCoordinateScaleAndBias, RenderPassIndex, ScratchTilePoolOffset);
+
+		MeshProcessor.AddMeshBatch(MeshBatch, ~0ull, nullptr);
+
+		const uint32 InstanceFactor = 1;
+		FRHIBuffer* PrimitiveIdVertexBuffer = nullptr;
+		const bool bDynamicInstancing = false;
+
+		for (FVisibleMeshDrawCommand& Cmd : VisibleMeshDrawCommands)
+		{
+			Cmd.DrawPrimitiveId = Scene->CachedRayTracingScene->InstanceDataOriginalOffsets[MeshBatch.Elements[0].DynamicPrimitiveShaderDataIndex] + MeshBatch.Elements[0].UserIndex;
+		}
+
+		TRange<int32> Range = TRange<int32>::Empty();
+		Range.SetLowerBoundValue(INDEX_NONE);
+		SortAndMergeDynamicPassMeshDrawCommands(View->GetFeatureLevel(), VisibleMeshDrawCommands, DynamicMeshDrawCommandStorage, PrimitiveIdVertexBuffer, InstanceFactor, Range);
+		SubmitMeshDrawCommands(VisibleMeshDrawCommands, GraphicsMinimalPipelineStateSet, PrimitiveIdVertexBuffer, 0, bDynamicInstancing, InstanceFactor, RHICmdList);
+	}
+
+	GPrimitiveIdVertexBufferPool.DiscardAll();
 }
 
 void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
@@ -1748,30 +2143,14 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 
 									TArray<FMeshBatch> MeshBatches = Tile.RenderState->GeometryInstanceRef.GetMeshBatchesForGBufferRendering(Tile.VirtualCoordinates);
 
-									for (auto& MeshBatch : MeshBatches)
-									{
-										FMeshBatchElement& Element = MeshBatch.Elements[0];
-
-										Element.DynamicPrimitiveShaderDataIndex = Tile.RenderState->GeometryInstanceRef.GetElementId();
-									}
-
-									DrawDynamicMeshPass(
-										*ReferenceView, RHICmdList,
-										[
-											View = ReferenceView.Get(),
-											MeshBatches,
-											VirtualTexturePhysicalTileCoordinateScaleAndBias,
-											RenderPassIndex = Tile.RenderState->RetrieveTileState(Tile.VirtualCoordinates).RenderPassIndex / AAvsGIMultiplier,
-											ScratchTilePoolOffset = ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch) * GPreviewLightmapPhysicalTileSize
-										](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
-									{
-										FLightmapGBufferMeshProcessor MeshProcessor(nullptr, View, DynamicMeshPassContext, VirtualTexturePhysicalTileCoordinateScaleAndBias, RenderPassIndex, ScratchTilePoolOffset);
-
-										for (auto& MeshBatch : MeshBatches)
-										{
-											MeshProcessor.AddMeshBatch(MeshBatch, ~0ull, nullptr);
-										}
-									});
+									RenderMeshBatchesIntoGBuffer(
+										RHICmdList,
+										ReferenceView.Get(),
+										Scene->GetPrimitiveIdForGPUScene(Tile.RenderState->GeometryInstanceRef),
+										MeshBatches,
+										VirtualTexturePhysicalTileCoordinateScaleAndBias,
+										PendingGIRenderPassIndices[Index] / AAvsGIMultiplier,
+										ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch)* GPreviewLightmapPhysicalTileSize);
 
 									GPrimitiveIdVertexBufferPool.DiscardAll();
 								}
@@ -2199,30 +2578,14 @@ void FLightmapRenderer::Finalize(FRDGBuilder& GraphBuilder)
 
 								TArray<FMeshBatch> MeshBatches = Tile.RenderState->GeometryInstanceRef.GetMeshBatchesForGBufferRendering(Tile.VirtualCoordinates);
 
-								for (auto& MeshBatch : MeshBatches)
-								{
-									FMeshBatchElement& Element = MeshBatch.Elements[0];
-
-									Element.DynamicPrimitiveShaderDataIndex = Tile.RenderState->GeometryInstanceRef.GetElementId();
-								}
-
-								DrawDynamicMeshPass(
-									*ReferenceView, RHICmdList,
-									[
-										View = ReferenceView.Get(),
-										MeshBatches,
-										VirtualTexturePhysicalTileCoordinateScaleAndBias,
-										RenderPassIndex = LightSampleIndexArray[TileIndex],
-										ScratchTilePoolOffset = ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch) * GPreviewLightmapPhysicalTileSize
-									](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
-								{
-									FLightmapGBufferMeshProcessor MeshProcessor(nullptr, View, DynamicMeshPassContext, VirtualTexturePhysicalTileCoordinateScaleAndBias, RenderPassIndex, ScratchTilePoolOffset);
-
-									for (auto& MeshBatch : MeshBatches)
-									{
-										MeshProcessor.AddMeshBatch(MeshBatch, ~0ull, nullptr);
-									}
-								});
+								RenderMeshBatchesIntoGBuffer(
+									RHICmdList,
+									ReferenceView.Get(),
+									Scene->GetPrimitiveIdForGPUScene(Tile.RenderState->GeometryInstanceRef),
+									MeshBatches,
+									VirtualTexturePhysicalTileCoordinateScaleAndBias,
+									LightSampleIndexArray[TileIndex],
+									ScratchTilePoolGPU->GetPositionFromLinearAddress(Tile.TileAddressInScratch)* GPreviewLightmapPhysicalTileSize);
 
 								GPrimitiveIdVertexBufferPool.DiscardAll();
 							}

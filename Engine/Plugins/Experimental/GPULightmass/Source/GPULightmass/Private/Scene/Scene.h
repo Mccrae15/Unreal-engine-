@@ -66,6 +66,14 @@ struct FCachedRayTracingSceneData
 	FBufferRHIRef LightmapSceneDataBufferRHI;
 	FShaderResourceViewRHIRef LightmapSceneDataBufferSRV;
 
+	FBufferRHIRef InstanceSceneDataBufferRHI;
+	FShaderResourceViewRHIRef InstanceSceneDataBufferSRV;
+	uint32 InstanceSceneDataSOAStride;
+
+	FBufferRHIRef InstanceIdsIdentityBufferRHI;
+	FShaderResourceViewRHIRef InstanceIdsIdentityBufferSRV;
+	TArray<uint32> InstanceDataOriginalOffsets;
+
 	TArray<FRayTracingGeometryInstance> RayTracingGeometryInstances;
 
 	TUniformBufferRef<FViewUniformShaderParameters> CachedViewUniformBuffer;
@@ -99,6 +107,8 @@ public:
 	TUniquePtr<FLightmapRenderer> LightmapRenderer;
 	TUniquePtr<FVolumetricLightmapRenderer> VolumetricLightmapRenderer;
 	TUniquePtr<FIrradianceCache> IrradianceCache;
+
+	int32 GetPrimitiveIdForGPUScene(const FGeometryInstanceRenderStateRef& GeometryInstanceRef) const;
 
 	void SetupRayTracingScene();
 	void DestroyRayTracingScene();
