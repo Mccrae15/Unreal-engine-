@@ -1923,18 +1923,6 @@ FRHICOMMAND_MACRO(FRHICommandDebugBreak)
 	}
 };
 
-FRHICOMMAND_MACRO(FRHICommandUpdateTextureReference)
-{
-	FRHITextureReference* TextureRef;
-	FRHITexture* NewTexture;
-	FORCEINLINE_DEBUGGABLE FRHICommandUpdateTextureReference(FRHITextureReference* InTextureRef, FRHITexture* InNewTexture)
-		: TextureRef(InTextureRef)
-		, NewTexture(InNewTexture)
-	{
-	}
-	RHI_API void Execute(FRHICommandListBase& CmdList);
-};
-
 struct FRHIShaderResourceViewUpdateInfo
 {
 	FRHIShaderResourceView* SRV;
@@ -4136,12 +4124,6 @@ public:
 		return GDynamicRHI->RHIGetTextureMemoryVisualizeData(TextureData,SizeX,SizeY,Pitch,PixelSize);
 	}
 	
-	FORCEINLINE FTextureReferenceRHIRef CreateTextureReference(FLastRenderTimeContainer* LastRenderTime)
-	{
-		LLM_SCOPE(ELLMTag::Textures);
-		return GDynamicRHI->RHICreateTextureReference_RenderThread(*this, LastRenderTime);
-	}
-	
 	FORCEINLINE void CopySharedMips(FRHITexture2D* DestTexture2D, FRHITexture2D* SrcTexture2D)
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_CopySharedMips_Flush);
@@ -5168,12 +5150,13 @@ FORCEINLINE void RHIUpdateRHIResources(FRHIResourceUpdateInfo* UpdateInfos, int3
 
 FORCEINLINE FTextureReferenceRHIRef RHICreateTextureReference(FLastRenderTimeContainer* LastRenderTime)
 {
-	return FRHICommandListExecutor::GetImmediateCommandList().CreateTextureReference(LastRenderTime);
+	return new FRHITextureReference(LastRenderTime);
 }
 
 FORCEINLINE void RHIUpdateTextureReference(FRHITextureReference* TextureRef, FRHITexture* NewTexture)
 {
-	 FRHICommandListExecutor::GetImmediateCommandList().UpdateTextureReference(TextureRef, NewTexture);
+	check(IsInRenderingThread());
+	FRHICommandListExecutor::GetImmediateCommandList().UpdateTextureReference(TextureRef, NewTexture);
 }
 
 FORCEINLINE FTexture2DRHIRef RHICreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo)

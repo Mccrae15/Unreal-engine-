@@ -54,7 +54,6 @@ struct FRHICommandTransitionTextures;
 struct FRHICommandTransitionTexturesPipeline;
 struct FRHICommandTransitionTexturesDepth;
 struct FRHICommandTransitionTexturesArray;
-struct FRHICommandUpdateTextureReference;
 struct FRHICommandClearRayTracingBindings;
 struct FRHICommandRayTraceOcclusion;
 struct FRHICommandRayTraceIntersection;
@@ -587,12 +586,6 @@ void FRHICommandSetRayTracingBindings::Execute(FRHICommandListBase& CmdList)
 }
 
 #endif // RHI_RAYTRACING
-
-void FRHICommandUpdateTextureReference::Execute(FRHICommandListBase& CmdList)
-{
-	RHISTAT(UpdateTextureReference);
-	INTERNAL_DECORATOR(RHIUpdateTextureReference)(TextureRef, NewTexture);
-}
 
 void FRHIResourceUpdateInfo::ReleaseRefs()
 {

@@ -307,7 +307,6 @@ public:
 	virtual void RHISetDepthBounds(float MinDepth, float MaxDepth) final override;
     virtual void RHISetShadingRate(EVRSShadingRate ShadingRate, EVRSRateCombiner Combiner) final override;
     virtual void RHISetShadingRateImage(FRHITexture* RateImageTexture, EVRSRateCombiner Combiner) final override;
-	virtual void RHIUpdateTextureReference(FRHITextureReference* TextureRef, FRHITexture* NewTexture) final override;
 #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
 	virtual void RHIBackBufferWaitTrackingBeginFrame(uint64 FrameToken, bool bDeferred) final override;
 #endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
@@ -686,11 +685,6 @@ public:
 	FORCEINLINE virtual void RHISetShadingRateImage(FRHITexture* RateImageTexture, EVRSRateCombiner Combiner) final override
 	{
 		ContextRedirect(RHISetShadingRateImage(RateImageTexture, Combiner));
-	}
-
-	FORCEINLINE virtual void RHIUpdateTextureReference(FRHITextureReference* TextureRef, FRHITexture* NewTexture) final override
-	{
-		ContextRedirect(RHIUpdateTextureReference(TextureRef, NewTexture));
 	}
 
 	FORCEINLINE virtual void RHIWaitForTemporalEffect(const FName& InEffectName) final AFR_API_OVERRIDE
