@@ -385,7 +385,7 @@ private:
 	Result PerformBlocking(const TCHAR* Uri, RequestVerb Verb, uint32 ContentLength)
 	{
 		static const char* CommonHeaders[] = {
-			"User-Agent: UE4",
+			"User-Agent: Unreal Engine",
 			nullptr
 		};
 
