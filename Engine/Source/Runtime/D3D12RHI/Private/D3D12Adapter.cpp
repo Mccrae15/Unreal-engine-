@@ -887,6 +887,8 @@ void FD3D12Adapter::InitializeDevices()
 
 		PipelineStateCache.RebuildFromDiskCache(StaticGraphicsRS, StaticComputeRS);
 	}
+
+	TransientResourceSystem = FD3D12TransientResourceSystem::Create(this, FRHIGPUMask::All());
 }
 
 void FD3D12Adapter::InitializeRayTracing()
@@ -935,6 +937,8 @@ void FD3D12Adapter::Cleanup()
 {
 	// Reset the RHI initialized flag.
 	GIsRHIInitialized = false;
+
+	TransientResourceSystem.Reset();
 
 	for (auto& Viewport : Viewports)
 	{
@@ -1136,6 +1140,7 @@ void FD3D12Adapter::EndFrame()
 		GetUploadHeapAllocator(GPUIndex).CleanUpAllocations(FrameLag);
 	}
 	GetDeferredDeletionQueue().ReleaseResources(false, false);
+	GetTransientResourceSystem().GarbageCollect();
 
 #if D3D12_SUBMISSION_GAP_RECORDER
 	SubmitGapRecorderTimestamps();

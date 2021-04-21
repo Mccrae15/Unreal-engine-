@@ -253,13 +253,13 @@ namespace RHIValidation
 		bool bTransient = false;
 		EStatus Status = EStatus::None;
 
-		bool IsAcquired() const
-		{
-			return Status == EStatus::Acquired;
-		}
+		FORCEINLINE bool IsAcquired() const { return Status == EStatus::Acquired; }
+		FORCEINLINE bool IsDiscarded() const { return Status == EStatus::Discarded; }
 
 		void Acquire(FResource* Resource, void* CreateTrace);
 		void Discard(FResource* Resource, void* CreateTrace);
+
+		static void AliasingOverlap(FResource* ResourceBefore, FResource* ResourceAfter, void* CreateTrace);
 	};
 
 	class FResource
@@ -269,6 +269,7 @@ namespace RHIValidation
 		friend FOperation;
 		friend FSubresourceState;
 		friend FSubresourceRange;
+		friend FTransientState;
 		friend FValidationRHI;
 
 	protected:
@@ -537,6 +538,7 @@ namespace RHIValidation
 	{
 		BeginTransition,
 		EndTransition,
+		AliasingOverlap,
 		AcquireTransient,
 		DiscardTransient,
 		Assert,
@@ -580,6 +582,13 @@ namespace RHIValidation
 				FState NextState;
 				void* CreateBacktrace;
 			} Data_EndTransition;
+
+			struct
+			{
+				FResource* ResourceBefore;
+				FResource* ResourceAfter;
+				void* CreateBacktrace;
+			} Data_AliasingOverlap;
 
 			struct
 			{
@@ -669,6 +678,19 @@ namespace RHIValidation
 			Op.Data_EndTransition.NextState = NextState;
 			Op.Data_EndTransition.CreateBacktrace = CreateBacktrace;
 			return MoveTemp(Op);
+		}
+
+		static inline FOperation AliasingOverlap(FResource* ResourceBefore, FResource* ResourceAfter, void* CreateBacktrace)
+		{
+			ResourceBefore->AddOpRef();
+			ResourceAfter->AddOpRef();
+
+			FOperation Op;
+			Op.Type = EOpType::AliasingOverlap;
+			Op.Data_AliasingOverlap.ResourceBefore = ResourceBefore;
+			Op.Data_AliasingOverlap.ResourceAfter = ResourceAfter;
+			Op.Data_AliasingOverlap.CreateBacktrace = CreateBacktrace;
+			return Op;
 		}
 
 		static inline FOperation AcquireTransientResource(FResource* Resource, void* CreateBacktrace)
