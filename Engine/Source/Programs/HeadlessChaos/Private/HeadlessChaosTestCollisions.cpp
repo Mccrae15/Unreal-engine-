@@ -57,7 +57,7 @@ namespace ChaosTest {
 		Box2->Q() = Box2->R();
 		Box2->AuxilaryValue(PhysicsMaterials) = MakeSerializable(PhysicsMaterial);
 
-		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 1, 1, T(0));
+		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 1, 1);
 		Collisions.ComputeConstraints(0.f);
 		EXPECT_EQ(Collisions.NumConstraints(), 1);
 
@@ -106,7 +106,7 @@ namespace ChaosTest {
 		Box2->Q() = Box2->R();
 		Box2->AuxilaryValue(PhysicsMaterials) = MakeSerializable(PhysicsMaterial);
 
-		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 1, 1, T(0));
+		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 1, 1);
 		Collisions.ComputeConstraints(0.f);
 		EXPECT_EQ(Collisions.NumConstraints(), 1);
 
@@ -148,7 +148,7 @@ namespace ChaosTest {
 
 		const float Dt = 1 / 24.;
 
-		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 2, 5, T(0));
+		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 2, 5);
 
 		Collisions.ComputeConstraints(Dt);
 		EXPECT_EQ(Collisions.NumConstraints(), 1);
@@ -228,7 +228,7 @@ namespace ChaosTest {
 
 		const float Dt = 1 / 24.;
 
-		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 2, 5, T(0));
+		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 2, 5);
 
 		Collisions.ComputeConstraints(Dt);
 		EXPECT_EQ(Collisions.NumConstraints(), 1);
@@ -304,7 +304,7 @@ namespace ChaosTest {
 
 		const float Dt = 1 / 24.;
 
-		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 2, 5, T(0));
+		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 2, 5);
 
 		Collisions.ComputeConstraints(Dt);
 		EXPECT_EQ(Collisions.NumConstraints(), 1);
@@ -378,7 +378,7 @@ namespace ChaosTest {
 
 		const float Dt = 1 / 24.;
 
-		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 2, 5, T(0));
+		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 2, 5);
 
 		Collisions.ComputeConstraints(Dt);
 		EXPECT_EQ(Collisions.NumConstraints(), 1);
@@ -457,7 +457,7 @@ namespace ChaosTest {
 
 		const float Dt = 1 / 24.;
 
-		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 2, 5, T(0));
+		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 2, 5);
 
 		Collisions.ComputeConstraints(Dt);
 		EXPECT_EQ(Collisions.NumConstraints(), 1);
@@ -522,12 +522,12 @@ namespace ChaosTest {
 
 		float Dt = 1 / 24.;
 
-		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 1, 1, T(0));
+		FPBDCollisionConstraintAccessor Collisions(Particles, Collided, PhysicsMaterials, PerParticlePhysicsMaterials, 1, 1);
 		Collisions.ComputeConstraints(Dt);
 		EXPECT_EQ(Collisions.NumConstraints(), 1);
 
 		FCollisionConstraintBase & Constraint = Collisions.GetConstraint(0);
-		Collisions.Update(Constraint, 100.0f);
+		Collisions.Update(Constraint);
 
 		//Collisions.UpdateLevelsetConstraintGJK(Particles, Constraint);
 		//EXPECT_EQ(Constraint.ParticleIndex, 1);
