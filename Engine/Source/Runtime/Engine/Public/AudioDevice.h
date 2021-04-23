@@ -850,7 +850,7 @@ public:
 	virtual void InitSoundSubmixes() {}
 
 	/** Registers the sound submix */
-	virtual void RegisterSoundSubmix(const USoundSubmixBase* SoundSubmix, bool bInit) {}
+	virtual void RegisterSoundSubmix(USoundSubmixBase* SoundSubmix, bool bInit) {}
 
 	/** Unregisters the sound submix */
 	virtual void UnregisterSoundSubmix(const USoundSubmixBase* SoundSubmix) {}
@@ -930,7 +930,7 @@ public:
 	*/
 	bool GetDistanceSquaredToNearestListener(const FVector& Location, float& OutSqDistance) const;
 		
-		/**
+	/**
 	* Returns a position from the appropriate listener representation, depending on calling thread.
 	*
 	* @param	ListenerIndex	index of the listener or proxy
@@ -1844,7 +1844,6 @@ private:
 	/** Next resource ID to assign out to a wave/buffer */
 	int32 NextResourceID;
 
-	/** Set of sources used to play sounds (platform will subclass these) */
 protected:
 	// Audio thread representation of listeners
 	TArray<FListener> Listeners;
