@@ -216,6 +216,26 @@ void SOculusToolWidget::RebuildLayout()
 	];
 		*/
 
+	UOculusHMDRuntimeSettings* Settings = GetMutableDefault<UOculusHMDRuntimeSettings>();
+	box.Get().AddSlot()
+	.Padding(5, 5)
+	[
+		SNew(SHorizontalBox)
+		.Visibility(this, &SOculusToolWidget::ColorSpaceVisibility)
+		+ SHorizontalBox::Slot().FillWidth(10).VAlign(VAlign_Top)
+		[
+			SNew(SRichTextBlock)
+			.Text(LOCTEXT("ColorGamutSetting", "Enabling a specific color gamut provides greater control over the colors in the HMD.\nRecommend to select one or an unknown value will default to Rift CV1 color space."))
+		]
+		+SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Top)
+		[
+			SNew(STextComboBox)
+			.OptionsSource(&ColorSpaces)
+			.InitiallySelectedItem(ColorSpaces[0])
+			.OnSelectionChanged(this, &SOculusToolWidget::OnChangeColorSpace)
+		]
+	];
+
 	AddSimpleSetting(box, SimpleSettings.Find(FName("StartInVR")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("SupportDash")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("ForwardShading")));
@@ -287,6 +307,18 @@ void SOculusToolWidget::RebuildLayout()
 	AddSimpleSetting(box, SimpleSettings.Find(FName("MobileNumDynamicPointLights")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("MobileMovableSpotlights")));
 
+	box = NewCategory(scroller, LOCTEXT("MiscellaneousHeader", "<RichTextBlock.Bold>Miscellaneous</>"));
+	if (FModuleManager::Get().IsModuleLoaded(FName("GooglePAD")))
+	{
+		box.Get().AddSlot()
+		.Padding(5, 5)
+		.AutoHeight()
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("GooglePADNotRecommended", "GooglePAD plugin is not recommended when packaging for Oculus. Please disable the plugin and restart editor."))
+		];
+	}
+
 	box = NewCategory(scroller, FText::GetEmpty());
 	box.Get().AddSlot()
 	.Padding(10, 5)
@@ -336,6 +368,12 @@ void SOculusToolWidget::Construct(const FArguments& InArgs)
 	for (TActorIterator<APostProcessVolume> ActorItr(GEditor->GetEditorWorldContext().World()); ActorItr; ++ActorItr)
 	{
 		PostProcessVolume = *ActorItr;
+	}
+
+	ColorSpaceEnum = StaticEnum<EColorSpace>();
+	for (int64 i = 0; i < ColorSpaceEnum->GetMaxEnumValue(); ++i)
+	{
+		ColorSpaces.Add(MakeShareable(new FString(ColorSpaceEnum->GetNameStringByIndex((int64)i))));
 	}
 
 	SimpleSettings.Add(FName("StartInVR"), {
@@ -608,6 +646,30 @@ void SOculusToolWidget::OnChangePlatform(TSharedPtr<FString> ItemSelected, ESele
 		EditorSettings->SaveConfig();
 	}
 	RebuildLayout();
+}
+
+void SOculusToolWidget::OnChangeColorSpace(TSharedPtr<FString> ItemSelected, ESelectInfo::Type SelectInfo)
+{
+	if (!ItemSelected.IsValid())
+	{
+		return;
+	}
+
+	int32 idx = ColorSpaceEnum->GetIndexByNameString(*ItemSelected);
+	if (idx != INDEX_NONE)
+	{
+		UOculusHMDRuntimeSettings* Settings = GetMutableDefault<UOculusHMDRuntimeSettings>();
+		Settings->bEnableSpecificColorGamut = true;
+		Settings->ColorSpace = (EColorSpace)idx;
+		Settings->SaveConfig();
+	}
+	RebuildLayout();
+}
+
+EVisibility SOculusToolWidget::ColorSpaceVisibility() const
+{
+	UOculusHMDRuntimeSettings* Settings = GetMutableDefault<UOculusHMDRuntimeSettings>();
+	return Settings->bEnableSpecificColorGamut ? EVisibility::Collapsed : EVisibility::Visible;
 }
 
 FReply SOculusToolWidget::IgnoreRecommendation(FName tag)

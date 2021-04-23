@@ -2,14 +2,8 @@
 
 Copyright (c) Facebook Technologies, LLC and its affiliates.  All rights reserved.
 
-Licensed under the Oculus Master SDK License Version 1.0 (the "License");
-you may not use the Oculus SDK except in compliance with the License,
-which is provided at the time of installation or download, or which
-otherwise accompanies this software in either electronic or hard copy form.
-
-You may obtain a copy of the License at
-
-https://developer.oculus.com/licenses/oculusmastersdk-1.0/
+Your use of this SDK or tool is subject to the Oculus SDK License Agreement, available at
+https://developer.oculus.com/licenses/oculussdk/
 
 Unless required by applicable law or agreed to in writing, the Oculus SDK
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -28,6 +22,22 @@ limitations under the License.
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Deprecated to avoid an extra shutdown/initialize on the mobile side
+OVRP_EXPORT ovrpResult ovrp_PreInitialize3(void* activity);
+
+// Deprecated for getting extra Vulkan paramters from Unity Oculus XR Plugin
+
+OVRP_EXPORT ovrpResult ovrp_Initialize5(
+    ovrpRenderAPIType apiType,
+    ovrpLogCallback logCallback,
+    void* activity,
+    void* vkInstance,
+    void* vkPhysicalDevice,
+    void* vkDevice,
+    void* vkQueue,
+    int initializeFlags,
+    OVRP_CONSTREF(ovrpVersion) version);
 
 // Deprecated by VRAPI_Vulkan changes
 OVRP_EXPORT ovrpResult ovrp_PreInitialize2();
@@ -207,6 +217,8 @@ OVRP_EXPORT ovrpBool ovrp_SetDesiredEyeTextureFormat(ovrpTextureFormat value);
 OVRP_EXPORT ovrpBool ovrp_GetEyePreviewRect(int eyeIndex, ovrpRecti* outputRect);
 OVRP_EXPORT ovrpBool ovrp_GetAppChromaticCorrection();
 OVRP_EXPORT ovrpBool ovrp_SetAppChromaticCorrection(ovrpBool value);
+OVRP_EXPORT ovrpResult ovrp_GetReorientHMDOnControllerRecenter(ovrpBool* recenter);
+OVRP_EXPORT ovrpResult ovrp_SetReorientHMDOnControllerRecenter(ovrpBool recenter);
 OVRP_EXPORT ovrpBool ovrp_EndEye(ovrpEye eye);
 OVRP_EXPORT ovrpBool ovrp_EndFrame(int frameIndex);
 OVRP_EXPORT ovrpBool ovrpi_SetTrackingCalibratedOrigin();
@@ -266,6 +278,26 @@ OVRP_EXPORT ovrpResult ovrp_EnqueueSubmitLayer2(
   ovrpBool overridePerLayerColorScaleAndOffset,
   OVRP_CONSTREF(ovrpVector4f) colorScale,
   OVRP_CONSTREF(ovrpVector4f) colorOffset);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 // Previously deprecated
 OVRP_EXPORT ovrpBool ovrp_Initialize(ovrpRenderAPIType apiType, void* platformArgs);
@@ -370,6 +402,7 @@ OVRP_EXPORT ovrpResult ovrp_SetASWEnable(ovrpBool enable);
 // Return current ASW status
 OVRP_EXPORT ovrpResult ovrp_GetASWEnable(ovrpBool* enable);
 
+OVRP_EXPORT ovrpResult ovrp_GetSkeleton(ovrpSkeletonType skeletonType, ovrpSkeleton* skeleton);
 #ifdef __cplusplus
 }
 #endif

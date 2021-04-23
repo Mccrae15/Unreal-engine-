@@ -98,6 +98,27 @@ ETrackingConfidence FOculusHandTracking::GetTrackingConfidence(const int32 Contr
 	return ETrackingConfidence::Low;
 }
 
+ETrackingConfidence FOculusHandTracking::GetFingerTrackingConfidence(const int32 ControllerIndex, const EOculusHandType DeviceHand, const EOculusHandAxes Finger)
+{
+	TSharedPtr<FOculusInput> OculusInputModule = StaticCastSharedPtr<FOculusInput>(IOculusInputModule::Get().GetInputDevice());
+	if (OculusInputModule.IsValid())
+	{
+		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
+		for (const FOculusControllerPair& HandPair : ControllerPairs)
+		{
+			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			{
+				if (DeviceHand != EOculusHandType::None)
+				{
+					ovrpHand Hand = DeviceHand == EOculusHandType::HandLeft ? ovrpHand_Left : ovrpHand_Right;
+					return HandPair.HandControllerStates[Hand].FingerConfidences[(int)Finger];
+				}
+			}
+		}
+	}
+	return ETrackingConfidence::Low;
+}
+
 FTransform FOculusHandTracking::GetPointerPose(const int32 ControllerIndex, const EOculusHandType DeviceHand, const float WorldToMeters)
 {
 #if OCULUS_INPUT_SUPPORTED_PLATFORMS
@@ -180,17 +201,38 @@ bool FOculusHandTracking::IsHandDominant(const int32 ControllerIndex, const EOcu
 	return false;
 }
 
+bool FOculusHandTracking::IsHandPositionValid(int32 ControllerIndex, EOculusHandType DeviceHand)
+{
+	TSharedPtr<FOculusInput> OculusInputModule = StaticCastSharedPtr<FOculusInput>(IOculusInputModule::Get().GetInputDevice());
+	if (OculusInputModule.IsValid())
+	{
+		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
+		for (const FOculusControllerPair& HandPair : ControllerPairs)
+		{
+			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			{
+				if (DeviceHand != EOculusHandType::None)
+				{
+					ovrpHand Hand = DeviceHand == EOculusHandType::HandLeft ? ovrpHand_Left : ovrpHand_Right;
+					return HandPair.HandControllerStates[Hand].bIsPositionValid;
+				}
+			}
+		}
+	}
+	return false;
+}
+
 bool FOculusHandTracking::GetHandSkeletalMesh(USkeletalMesh* HandSkeletalMesh, const EOculusHandType SkeletonType, const EOculusHandType MeshType, const float WorldToMeters)
 {
 #if OCULUS_INPUT_SUPPORTED_PLATFORMS
 	if (HandSkeletalMesh)
 	{
 		ovrpMesh* OvrMesh = new ovrpMesh();
-		ovrpSkeleton* OvrSkeleton = new ovrpSkeleton();
+		ovrpSkeleton2* OvrSkeleton = new ovrpSkeleton2();
 
 		ovrpSkeletonType OvrSkeletonType = (ovrpSkeletonType)((int32)SkeletonType - 1);
 		ovrpMeshType OvrMeshType = (ovrpMeshType)((int32)MeshType - 1);
-		ovrpResult SkelResult = FOculusHMDModule::GetPluginWrapper().GetSkeleton(OvrSkeletonType, OvrSkeleton);
+		ovrpResult SkelResult = FOculusHMDModule::GetPluginWrapper().GetSkeleton2(OvrSkeletonType, OvrSkeleton);
 		ovrpResult MeshResult = FOculusHMDModule::GetPluginWrapper().GetMesh(OvrMeshType, OvrMesh);
 		if (SkelResult != ovrpSuccess || MeshResult != ovrpSuccess)
 		{
@@ -437,7 +479,7 @@ void FOculusHandTracking::InitializeHandMesh(USkeletalMesh* SkeletalMesh, const 
 #endif
 }
 
-void FOculusHandTracking::InitializeHandSkeleton(USkeletalMesh* SkeletalMesh, const ovrpSkeleton* OvrSkeleton, const float WorldToMeters)
+void FOculusHandTracking::InitializeHandSkeleton(USkeletalMesh* SkeletalMesh, const ovrpSkeleton2* OvrSkeleton, const float WorldToMeters)
 {
 	SkeletalMesh->RefSkeleton.Empty(OvrSkeleton->NumBones);
 
@@ -484,11 +526,11 @@ void FOculusHandTracking::InitializeHandSkeleton(USkeletalMesh* SkeletalMesh, co
 TArray<FOculusCapsuleCollider> FOculusHandTracking::InitializeHandPhysics(const EOculusHandType SkeletonType, USkinnedMeshComponent* HandComponent, const float WorldToMeters)
 {
 	TArray<FOculusCapsuleCollider> CollisionCapsules;
-	ovrpSkeleton* OvrSkeleton = new ovrpSkeleton();
+	ovrpSkeleton2* OvrSkeleton = new ovrpSkeleton2();
 
 #if OCULUS_INPUT_SUPPORTED_PLATFORMS
 	ovrpSkeletonType OvrSkeletonType = (ovrpSkeletonType)((int32)SkeletonType - 1);
-	if (FOculusHMDModule::GetPluginWrapper().GetSkeleton(OvrSkeletonType, OvrSkeleton) != ovrpSuccess)
+	if (FOculusHMDModule::GetPluginWrapper().GetSkeleton2(OvrSkeletonType, OvrSkeleton) != ovrpSuccess)
 	{
 #if !WITH_EDITOR
 		UE_LOG(LogOcHandTracking, Error, TEXT("Failed to get skeleton data from Oculus runtime."));

@@ -38,6 +38,9 @@ FOculusBuildAnalytics::FOculusBuildAnalytics()
 	bool TelemetryEnabled = false;
 	if (!GConfig->GetBool(TEXT("/Script/OculusEditor.OculusEditorSettings"), TEXT("bEnableOculusBuildTelemetry"), TelemetryEnabled, GEditorIni))
 	{
+#if WITH_OCULUS_PRIVATE_CODE
+		TelemetryEnabled = true;
+#endif
 		GConfig->SetBool(TEXT("/Script/OculusEditor.OculusEditorSettings"), TEXT("bEnableOculusBuildTelemetry"), TelemetryEnabled, GEditorIni);
 		GConfig->Flush(0);
 	}

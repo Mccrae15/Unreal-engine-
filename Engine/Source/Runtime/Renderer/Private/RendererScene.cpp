@@ -966,6 +966,8 @@ bool FPersistentUniformBuffers::UpdateViewUniformBuffer(const FViewInfo& View, b
 		Extension->BeginRenderView(&View, bShouldWaitForPersistentViewUniformBufferExtensionsJobs);
 	}
 
+	FInstancedViewUniformShaderParameters LocalInstancedViewUniformShaderParameters;
+
 	// ViewUniformBuffer can be cached by mesh commands, so we need to update it every time we change current view.
 	if (CachedView != &View)
 	{
@@ -974,14 +976,18 @@ bool FPersistentUniformBuffers::UpdateViewUniformBuffer(const FViewInfo& View, b
 		if ((View.IsInstancedStereoPass() || View.bIsMobileMultiViewEnabled) && View.Family->Views.Num() > 0)
 		{
 			const FViewInfo& InstancedView = GetInstancedView(View);
-			InstancedViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(*InstancedView.CachedViewUniformShaderParameters));
+			InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 0);
+			InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *InstancedView.CachedViewUniformShaderParameters, 1);
+			InstancedViewUniformBuffer.UpdateUniformBufferImmediate(LocalInstancedViewUniformShaderParameters);
 		}
 		else
 		{
 			// If we don't render this pass in stereo we simply update the buffer with the same view uniform parameters.
 			// The shader will detect this and it will not attempt to apply ISR while this view is being rendered.
 			// TODO: It's more efficient to change the shader binding to point to ViewUniformBuffer instead of updating InstancedViewUniformBuffer.
-			InstancedViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(*View.CachedViewUniformShaderParameters));
+			InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 0);
+			InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 1);
+			InstancedViewUniformBuffer.UpdateUniformBufferImmediate(LocalInstancedViewUniformShaderParameters);
 		}
 
 		CachedView = &View;

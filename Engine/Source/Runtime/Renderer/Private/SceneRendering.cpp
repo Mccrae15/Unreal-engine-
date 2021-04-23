@@ -272,6 +272,14 @@ static TAutoConsoleVariable<int32> CVarEnableMultiGPUForkAndJoin(
 	ECVF_Default
 	);
 
+#if WITH_LATE_LATCHING_CODE
+static TAutoConsoleVariable<int32> CVarDisableLateLatching(
+	TEXT("r.ForceDisableLateLatching"),
+	0,
+	TEXT("Force Disable LateLatching dynamiclly."),
+	ECVF_RenderThreadSafe | ECVF_Scalability);
+#endif
+
 /*-----------------------------------------------------------------------------
 	FParallelCommandListSet
 -----------------------------------------------------------------------------*/
@@ -1775,6 +1783,30 @@ void FViewInfo::SetupUniformBufferParameters(
 	ViewUniformShaderParameters.QuadOverdraw = SceneContext.GetQuadOverdrawBufferUAV();
 }
 
+#if WITH_LATE_LATCHING_CODE
+void FViewInfo::UpdateLateLatchData()
+{
+	FBox VolumeBounds[TVC_MAX];
+	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(FRHICommandListExecutor::GetImmediateCommandList());
+	SetupUniformBufferParameters(
+		SceneContext,
+		VolumeBounds,
+		TVC_MAX,
+		*CachedViewUniformShaderParameters);
+
+	ViewUniformBuffer.UpdateUniformBufferImmediate(*CachedViewUniformShaderParameters);
+
+	FVector PreViewOrigin = CachedViewUniformShaderParameters->PrevPreViewTranslation;
+	FVector CurrentOrigin = CachedViewUniformShaderParameters->PreViewTranslation;
+
+	// Refresh for next frame
+	if (this->ViewState)
+	{
+		this->ViewState->PrevFrameViewInfo.ViewMatrices = ViewMatrices;
+	}
+}
+#endif
+
 void FViewInfo::InitRHIResources()
 {
 	FBox VolumeBounds[TVC_MAX];
@@ -3277,6 +3309,7 @@ void FSceneRenderer::RenderCustomDepthPass(FRDGBuilder& GraphBuilder)
 						SetStereoViewport(RHICmdList, View, bMobileCustomDepthDownSample ? 0.5f : 1.0f);
 					}
 
+					FInstancedViewUniformShaderParameters LocalInstancedViewUniformShaderParameters;
 					if (CVarCustomDepthTemporalAAJitter.GetValueOnRenderThread() == 0 && View.AntiAliasingMethod == AAM_TemporalAA)
 					{
 						// Handle the "current" view the same, always.
@@ -3305,7 +3338,7 @@ void FSceneRenderer::RenderCustomDepthPass(FRDGBuilder& GraphBuilder)
 
 							const FViewInfo& InstancedView = static_cast<const FViewInfo&>(View.Family->GetStereoEyeView(StereoPassIndex));
 
-							CustomDepthViewUniformBufferParameters = *InstancedView.CachedViewUniformShaderParameters;
+							FViewUniformShaderParameters InstancedCustomDepthViewUniformBufferParameters = *InstancedView.CachedViewUniformShaderParameters;
 							ModifiedViewMatrices = InstancedView.ViewMatrices;
 							ModifiedViewMatrices.HackRemoveTemporalAAProjectionJitter();
 
@@ -3315,9 +3348,11 @@ void FSceneRenderer::RenderCustomDepthPass(FRDGBuilder& GraphBuilder)
 								ModifiedViewMatrices,
 								VolumeBounds,
 								TVC_MAX,
-								CustomDepthViewUniformBufferParameters);
+								InstancedCustomDepthViewUniformBufferParameters);
 
-							Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(CustomDepthViewUniformBufferParameters));
+							InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, CustomDepthViewUniformBufferParameters, 0);
+							InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, InstancedCustomDepthViewUniformBufferParameters, 1);
+							Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(LocalInstancedViewUniformShaderParameters);
 						}
 					}
 					else
@@ -3326,12 +3361,16 @@ void FSceneRenderer::RenderCustomDepthPass(FRDGBuilder& GraphBuilder)
 						if ((View.IsInstancedStereoPass() || View.bIsMobileMultiViewEnabled) && View.Family->Views.Num() > 0)
 						{
 							const FViewInfo& InstancedView = Scene->UniformBuffers.GetInstancedView(View);
-							Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(*InstancedView.CachedViewUniformShaderParameters));
+							InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 0);
+							InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *InstancedView.CachedViewUniformShaderParameters, 1);
+							Scene->UniformBuffers.InstancedViewUniformBuffer.UpdateUniformBufferImmediate(LocalInstancedViewUniformShaderParameters);
 						}
 						else
 						{
 							// If we don't render this pass in stereo we simply update the buffer with the same view uniform parameters.
-							Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(*View.CachedViewUniformShaderParameters));
+							InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 0);
+							InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, *View.CachedViewUniformShaderParameters, 1);
+							Scene->UniformBuffers.InstancedCustomDepthViewUniformBuffer.UpdateUniformBufferImmediate(LocalInstancedViewUniformShaderParameters);
 						}
 					}
 

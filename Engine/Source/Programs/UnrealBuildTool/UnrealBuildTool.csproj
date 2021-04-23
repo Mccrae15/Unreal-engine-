@@ -166,6 +166,7 @@
     <Compile Include="Executors\SNDBS.cs" />
     <Compile Include="Executors\XGE.cs" />
     <Compile Include="Executors\Experimental\FASTBuild.cs" />
+    <Compile Include="Executors\Experimental\FASTBuild2.cs" />
     <Compile Include="Modes\WriteMetadataMode.cs" />
     <Compile Include="Platform\IOS\IOSPostBuildSyncMode.cs" />
     <Compile Include="Platform\IOS\MobileProvisionContents.cs" />

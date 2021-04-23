@@ -52,7 +52,7 @@ bool FOnlineIdentityOculus::Login(int32 LocalUserNum, const FOnlineAccountCreden
 			auto OculusId = ovr_GetLoggedInUserID();
 			if (OculusId == 0)
 			{
-				ErrorStr = TEXT("Not currently logged into Oculus.  Make sure Oculus is running and you are entitled to the app.");
+				ErrorStr = TEXT("Unable to get a valid UserID. Check that Oculus is running, you have an Entitlement, and you have been approved for the Data Use Checkup UserID feature.");
 			}
 			else
 			{

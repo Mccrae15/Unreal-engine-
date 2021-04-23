@@ -125,6 +125,14 @@ void OculusAudioSpatializationAudioMixer::OnInitSource(const uint32 SourceId, co
 		Result = OVRA_CALL(ovrAudio_SetAudioReverbSendLevel)(Context, SourceId, dbToLinear(Settings->ReverbSendLevel));
 		OVR_AUDIO_CHECK(Result, "Failed to set reverb send level");
 	}
+
+	// Ensure that the Params array has enough elements in it to store FSpatializationParams
+	// for this source.  ProcessAudio will index into Params[SourceId], and this array isn't always
+	// sized correctly in Initialize because InitParams.NumSources isn't always 
+	// correct at initialization time.
+	if (Params.Num() < static_cast<int32>(SourceId + 1)) {
+		Params.SetNum(SourceId + 1, false);
+	}
 }
 
 void OculusAudioSpatializationAudioMixer::SetSpatializationParameters(uint32 VoiceId, const FSpatializationParams& InParams)
@@ -171,10 +179,8 @@ bool OculusAudioSpatializationAudioMixer::Tick(float DeltaTime)
 	{
 		if (Context != nullptr)
 		{
-			ovrResult Result = OVRA_CALL(ovrAudio_UpdateRoomModel)(Context, 1.0f);
-
 			UOculusAudioSettings* settings = GetMutableDefault<UOculusAudioSettings>();
-			Result = OVRA_CALL(ovrAudio_SetPropagationQuality)(Context, settings->PropagationQuality);
+			ovrResult Result = OVRA_CALL(ovrAudio_SetPropagationQuality)(Context, settings->PropagationQuality);
 			if (Result != ovrSuccess)
 			{
 				UE_LOG(LogTemp, Warning, TEXT("Bad Propagation Quality setting %d!"), settings->PropagationQuality);

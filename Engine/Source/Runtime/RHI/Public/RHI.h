@@ -606,6 +606,9 @@ extern RHI_API int32 GVariableRateShadingTier;
 /** Format used for the backbuffer when outputting to a HDR display. */
 extern RHI_API EPixelFormat GRHIHDRDisplayOutputFormat;
 
+/** Whether the API supports updating VRS maps late in the renderthread. */
+extern RHI_API bool GRHISupportsLateVRSUpdate;
+
 /** Counter incremented once on each frame present. Used to support game thread synchronization with swap chain frame flips. */
 extern RHI_API uint64 GRHIPresentCounter;
 

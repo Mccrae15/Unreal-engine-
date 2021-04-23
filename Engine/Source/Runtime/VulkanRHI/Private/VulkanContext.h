@@ -101,6 +101,11 @@ public:
 	virtual void RHIEndRenderPass() final override;
 	virtual void RHINextSubpass() final override;
 
+#if WITH_LATE_LATCHING_CODE
+	virtual void RHIBeginLateLatching(FRHICommandListImmediate* RHICmdList, int FrameNumber) final override;
+	virtual void RHIEndLateLatching() final override;
+#endif
+
 	inline FVulkanCommandBufferManager* GetCommandBufferManager()
 	{
 		return CommandBufferManager;
@@ -193,6 +198,10 @@ protected:
 	FVulkanCommandBufferManager* CommandBufferManager;
 
 	static VULKANRHI_API FVulkanLayoutManager LayoutManager;
+
+#if WITH_LATE_LATCHING_CODE
+	bool LateBindingPatchAborted = false;
+#endif
 
 	FVulkanOcclusionQueryPool* CurrentOcclusionQueryPool = nullptr;
 

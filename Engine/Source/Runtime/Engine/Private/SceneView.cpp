@@ -26,6 +26,7 @@
 #include "HighResScreenshot.h"
 #include "Slate/SceneViewport.h"
 #include "RenderUtils.h"
+#include "Runtime/Renderer/Private/ScenePrivate.h"
 
 DEFINE_LOG_CATEGORY(LogBufferVisualization);
 DEFINE_LOG_CATEGORY(LogMultiView);
@@ -2539,6 +2540,9 @@ FSceneViewFamily::FSceneViewFamily(const ConstructionValues& CVS)
 	bIsHDR(false),
 	bRequireMultiView(false),
 	GammaCorrection(CVS.GammaCorrection),
+#if WITH_LATE_LATCHING_CODE
+	bLateLatchingEnabled(false),
+#endif
 	SecondaryViewFraction(1.0f),
 	SecondaryScreenPercentageMethod(ESecondaryScreenPercentageMethod::LowerPixelDensitySimulation),
 	ScreenPercentageInterface(nullptr),
@@ -2600,7 +2604,6 @@ FSceneViewFamily::FSceneViewFamily(const ConstructionValues& CVS)
 	}
 
 	// TODO: Re-enable Mobile Multi-View on all platforms when all desktop XR plugins support it
-#if (PLATFORM_HOLOLENS || PLATFORM_ANDROID || PLATFORM_LUMIN)
 	if (GEngine && GEngine->IsStereoscopic3D())
 	{
 		static const auto MobileMultiViewCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
@@ -2608,7 +2611,6 @@ FSceneViewFamily::FSceneViewFamily(const ConstructionValues& CVS)
 		const bool bUsingMobileRenderer = FSceneInterface::GetShadingPath(GetFeatureLevel()) == EShadingPath::Mobile;
 		bRequireMultiView = (GSupportsMobileMultiView || GRHISupportsArrayIndexFromAnyShader) && bUsingMobileRenderer && bSkipPostprocessing && (MobileMultiViewCVar && MobileMultiViewCVar->GetValueOnAnyThread() != 0);
 	}
-#endif
 }
 
 FSceneViewFamily::~FSceneViewFamily()
@@ -2648,6 +2650,18 @@ const FSceneView& FSceneViewFamily::GetStereoEyeView(const EStereoscopicPass Eye
 	else // For extra views
 	{
 		return *Views[EyeIndex - eSSP_RIGHT_EYE + 1];
+	}
+}
+
+FRHIUniformBuffer* FSceneViewFamily::GetInstancedViewUniformBuffer() const
+{
+	if (Scene && Scene->GetRenderScene())
+	{
+		return Scene->GetRenderScene()->UniformBuffers.InstancedViewUniformBuffer;
+	}
+	else
+	{
+		return NULL;
 	}
 }
 

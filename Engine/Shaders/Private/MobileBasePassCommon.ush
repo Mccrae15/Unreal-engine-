@@ -46,7 +46,7 @@ struct FSharedMobileBasePassInterpolants
 	float OutClipDistance : OUTCLIPDIST;
 #endif
 
-#if MOBILE_MULTI_VIEW
+#if ( MOBILE_MULTI_VIEW && MOBILE_EMULATION ) || INSTANCED_STEREO
 	float MultiViewId : VIEW_ID;
 #endif
 

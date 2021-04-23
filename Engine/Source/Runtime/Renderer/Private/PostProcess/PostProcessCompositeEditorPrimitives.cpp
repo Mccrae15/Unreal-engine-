@@ -341,6 +341,7 @@ FScreenPassTexture AddEditorPrimitivePass(
 				FMeshPassProcessorRenderState DrawRenderState(*EditorView, BasePassUniformBuffer);
 				DrawRenderState.SetDepthStencilAccess(FExclusiveDepthStencil::DepthWrite_StencilWrite);
 				DrawRenderState.SetBlendState(TStaticBlendStateWriteMask<CW_RGBA>::GetRHI());
+				DrawRenderState.SetInstancedViewUniformBuffer(SceneUniformBuffers.InstancedViewUniformBuffer);
 
 				// Draw editor primitives.
 				{

@@ -45,6 +45,8 @@ struct FOptionalVulkanDeviceExtensions
 			uint32 HasMemoryBudget : 1;
 			uint32 HasDriverProperties : 1;
 			uint32 HasEXTFragmentDensityMap : 1;
+			uint32 HasEXTFragmentDensityMap2 : 1;
+			uint32 HasKHRMultiview : 1;
 			uint32 HasEXTFullscreenExclusive : 1;
 			uint32 HasKHRImageFormatList : 1;
 			uint32 HasEXTASTCDecodeMode : 1;
@@ -211,6 +213,27 @@ public:
 	{
 		return GpuProps;
 	}
+
+#if VULKAN_SUPPORTS_FDM
+	inline const VkPhysicalDeviceFragmentDensityMapFeaturesEXT& GetFDMFeatures() const
+	{
+		return FragmentDensityMapFeatures;
+	}
+#endif
+
+#if VULKAN_SUPPORTS_FDM2
+	inline const VkPhysicalDeviceFragmentDensityMap2FeaturesEXT& GetFDM2Features() const
+	{
+		return FragmentDensityMap2Features;
+	}
+#endif
+
+#if VULKAN_SUPPORTS_MULTIVIEW
+	inline const VkPhysicalDeviceMultiviewFeatures& GetMultiviewFeatures() const
+	{
+		return MultiviewFeatures;
+	}
+#endif
 
 	inline const VkPhysicalDeviceLimits& GetLimits() const
 	{
@@ -457,7 +480,15 @@ private:
 #if VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
 	VkPhysicalDeviceIDPropertiesKHR GpuIdProps;
 #endif
-
+#if VULKAN_SUPPORTS_FDM
+	VkPhysicalDeviceFragmentDensityMapFeaturesEXT FragmentDensityMapFeatures;
+#endif
+#if VULKAN_SUPPORTS_FDM2
+	VkPhysicalDeviceFragmentDensityMap2FeaturesEXT FragmentDensityMap2Features;
+#endif
+#if VULKAN_SUPPORTS_MULTIVIEW
+	VkPhysicalDeviceMultiviewFeatures MultiviewFeatures;
+#endif
 	VkPhysicalDeviceFeatures PhysicalFeatures;
 	bool bHasSeparateDepthStencilLayouts = false;
 

@@ -139,11 +139,6 @@ void UOculusFunctionLibrary::SetCPUAndGPULevels(int CPULevel, int GPULevel)
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 }
 
-void UOculusFunctionLibrary::SetReorientHMDOnControllerRecenter(bool recenterMode)
-{
-	// funtion deprecated
-}
-
 bool UOculusFunctionLibrary::GetUserProfile(FHmdUserProfile& Profile)
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
@@ -353,7 +348,7 @@ EOculusDeviceType UOculusFunctionLibrary::GetDeviceType()
 			switch (OculusHMD->GetSettings()->SystemHeadset) {
 			case ovrpSystemHeadset_Oculus_Quest:
 				return EOculusDeviceType::OculusQuest;
-			case ovrpSystemHeadset_Placeholder_9:
+			case ovrpSystemHeadset_Oculus_Quest_2:
 				return EOculusDeviceType::OculusQuest2;
 			/*case ovrpSystemHeadset_Placeholder_10:
 				return EOculusDeviceType::OculusMobile_Placeholder10;*/

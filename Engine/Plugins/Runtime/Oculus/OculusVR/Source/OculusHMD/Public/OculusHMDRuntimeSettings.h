@@ -19,11 +19,11 @@ class OCULUSHMD_API UOculusHMDRuntimeSettings : public UObject
 public:
 	
 	/** Whether the Splash screen is enabled. */
-	UPROPERTY(config, EditAnywhere, Category = SplashScreen)
+	UPROPERTY(config, EditAnywhere, Category = "Engine SplashScreen")
 	bool bAutoEnabled;
 
 	/** An array of splash screen descriptors listing textures to show and their positions. */
-	UPROPERTY(config, EditAnywhere, Category = SplashScreen)
+	UPROPERTY(config, EditAnywhere, Category = "Engine SplashScreen")
 	TArray<FOculusSplashDesc> SplashDescs;
 
 	/** If enabled, the target HMD will perform a color space transformation */
@@ -54,6 +54,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = PC)
 	float PixelDensityMax;
 
+	/** A png for Mobile-OS-driven launch splash screen. It will show up instantly at app launch and disappear upon first engine-driven frame (regardless of said frame being UE4 splashes or 3D scenes) */
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "OS Splash Screen", FilePathFilter = "png", RelativeToGameDir))
+	FFilePath OSSplashScreen;
+
 	/** Default CPU level controlling CPU frequency on the mobile device */
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	int CPULevel;
@@ -70,14 +74,6 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	bool FFRDynamic;
 
-	/** Compensates in the compositor for chromatic aberration, at a higher GPU cost but without the color fringes on the sides of the lenses */
-	UPROPERTY(config, EditAnywhere, Category = Mobile)
-	bool bChromaCorrection;
-
-	/** Recenters the HMD too when the controller recenter button is pressed on Go */
-	UPROPERTY(config, EditAnywhere, Category = Mobile)
-	bool bRecenterHMDWithController;
-
 	/** If enabled the app will be focus aware. This will keep the app in foreground when the User presses the oculus button (needs the app to handle input focus loss!) */
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	bool bFocusAware;
@@ -89,6 +85,20 @@ public:
 	/** Whether controllers and/or hands can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	EHandTrackingSupport HandTrackingSupport;
+
+	/** Note that a higher tracking frequency will reserve some performance headroom from the application's budget. */
+	UPROPERTY(config, EditAnywhere, Category = Mobile)
+	EHandTrackingFrequency HandTrackingFrequency;
+
+//#if WITH_LATE_LATCHING_CODE
+	/** [Experimental]Enable Late latching for reducing HMD and controller latency, improve tracking prediction quality, multiview and vulkan has to be enabled for this featuretha */
+	UPROPERTY(config, EditAnywhere, Category = Mobile)
+	bool bLateLatching;
+//#endif
+
+	/** Enable phase sync on mobile, reducing HMD and controller latency, improve tracking prediction quality */
+	UPROPERTY(config, EditAnywhere, Category = Mobile)
+	bool bPhaseSync;
 
 private:
 	void LoadFromIni();

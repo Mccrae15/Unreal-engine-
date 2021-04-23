@@ -129,6 +129,14 @@ enum class EHandTrackingSupport : uint8
 };
 
 UENUM(BlueprintType)
+enum class EHandTrackingFrequency : uint8
+{
+	LOW,
+	HIGH,
+	MAX,
+};
+
+UENUM(BlueprintType)
 enum class EOculusDeviceType : uint8
 {
 	//mobile HMDs 
@@ -220,15 +228,6 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	*/
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
 	static void SetCPUAndGPULevels(int CPULevel, int GPULevel);
-
-	/**
-	* Sets the HMD recenter behavior to a mode that specifies HMD recentering behavior when a
-	* controller recenter is performed. If the recenterMode specified is 1, the HMD will recenter
-	* on controller recenter; if it's 0, only the controller will recenter. Returns false if not
-	* supported.
-	*/
-	UFUNCTION(BlueprintCallable, Category = "OculusLibrary", meta = (DeprecatedFunction, DeprecationMessage = "This function is no longer supported."))
-	static void SetReorientHMDOnControllerRecenter(bool recenterMode);
 
 	/**
 	* Returns current user profile.

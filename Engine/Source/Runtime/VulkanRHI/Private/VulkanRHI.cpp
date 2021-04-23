@@ -710,7 +710,9 @@ void FVulkanDynamicRHI::InitInstance()
 		GSupportsRenderTargetFormat_PF_G8 = false;	// #todo-rco
 		GRHISupportsTextureStreaming = true;
 		GSupportsTimestampRenderQueries = FVulkanPlatform::SupportsTimestampRenderQueries();
-		GSupportsMobileMultiView = true;
+#if VULKAN_SUPPORTS_MULTIVIEW
+		GSupportsMobileMultiView = (bool)Device->GetMultiviewFeatures().multiview;
+#endif
 #if VULKAN_ENABLE_DUMP_LAYER
 		// Disable RHI thread by default if the dump layer is enabled
 		GRHISupportsRHIThread = false;
@@ -743,6 +745,10 @@ void FVulkanDynamicRHI::InitInstance()
 		GMaxTextureArrayLayers = Props.limits.maxImageArrayLayers;
 		GRHISupportsBaseVertexIndex = true;
 		GSupportsSeparateRenderTargetBlendState = true;
+
+#if VULKAN_SUPPORTS_FDM2
+		GRHISupportsLateVRSUpdate = GetDevice()->GetOptionalExtensions().HasEXTFragmentDensityMap2 && Device->GetFDM2Features().fragmentDensityMapDeferred;
+#endif
 
 		FVulkanPlatform::SetupFeatureLevels();
 

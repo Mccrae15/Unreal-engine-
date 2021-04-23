@@ -99,6 +99,21 @@ typedef GLfloat GLdouble;
 #define GL_TESS_CONTROL_SHADER_BIT			0x00000000
 #define GL_TESS_EVALUATION_SHADER_BIT		0x00000000
 
+#ifndef GL_QCOM_texture_foveated
+#define GL_QCOM_texture_foveated 1
+#define GL_FOVEATION_ENABLE_BIT_QCOM      0x00000001
+#define GL_FOVEATION_SCALED_BIN_METHOD_BIT_QCOM 0x00000002
+#define GL_TEXTURE_FOVEATED_FEATURE_BITS_QCOM 0x8BFB
+#define GL_TEXTURE_FOVEATED_MIN_PIXEL_DENSITY_QCOM 0x8BFC
+#define GL_TEXTURE_FOVEATED_FEATURE_QUERY_QCOM 0x8BFD
+#define GL_TEXTURE_FOVEATED_NUM_FOCAL_POINTS_QUERY_QCOM 0x8BFE
+#define GL_FRAMEBUFFER_INCOMPLETE_FOVEATION_QCOM 0x8BFF
+#endif /* GL_QCOM_texture_foveated */
+
+#ifndef GL_FOVEATION_SUBSAMPLED_LAYOUT_METHOD_BIT_QCOM
+#define	GL_FOVEATION_SUBSAMPLED_LAYOUT_METHOD_BIT_QCOM     0x4
+#endif /* GL_QCOM_texture_foveated_subsampled_layout */
+
 // Normalize debug macros due to naming differences across GL versions
 #if defined(GL_KHR_debug) && GL_KHR_debug
 #define GL_DEBUG_SOURCE_OTHER_ARB GL_DEBUG_SOURCE_OTHER_KHR
@@ -211,6 +226,7 @@ struct FOpenGLES : public FOpenGLBase
 	static FORCEINLINE GLenum GetDepthFormat() { return GL_DEPTH_COMPONENT24; }
 	static FORCEINLINE GLenum GetShadowDepthFormat() { return GL_DEPTH_COMPONENT16; }
 	static FORCEINLINE bool SupportsFramebufferSRGBEnable() { return false; }
+	static FORCEINLINE bool SupportsSubsampledLayout() { return false; }
 	static FORCEINLINE bool SupportsRGB10A2() { return bSupportsRGB10A2; }
 	static FORCEINLINE bool SupportsComputeShaders() { return true; }
 	static FORCEINLINE bool SupportsDrawIndirect() { return true; }

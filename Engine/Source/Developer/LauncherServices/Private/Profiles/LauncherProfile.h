@@ -1967,6 +1967,7 @@ public:
 
 		bNotForLicensees = false;
 		bUseIoStore = false;
+		bOculusDeploySo = false;
 
 		Validate();
 	}
@@ -2446,6 +2447,16 @@ public:
 		return bUseIoStore;
 	}
 
+	virtual void SetOculusDeploySo(bool bInOculusDeploySo) override
+	{
+		bOculusDeploySo = bInOculusDeploySo;
+	}
+
+	virtual bool IsOculusDeployingSo() const override
+	{
+		return bOculusDeploySo;
+	}
+
 	//~ End ILauncherProfile Interface
 
 protected:
@@ -2899,6 +2910,12 @@ private:
 
 	// Use I/O store.
 	bool bUseIoStore;
+
+	// Whether to skip gradle build on Android
+	bool bSkipGradle;
+
+	// Whether to copy .so to device on Oculus
+	bool bOculusDeploySo;
 
 private:
 

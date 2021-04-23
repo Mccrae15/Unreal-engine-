@@ -25,6 +25,7 @@
 		<setBoolFromPropertyContains result="bPackageForOculusQuest2" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="Quest2"/>
 		<setBoolFromProperty result="bRequiresSystemKeyboard" ini="Engine" section="/Script/OculusHMD.OculusHMDRuntimeSettings" property="bRequiresSystemKeyboard" default="false"/>
 		<setStringFromProperty result="HandTrackingSupport" ini="Engine" section="/Script/OculusHMD.OculusHMDRuntimeSettings" property="HandTrackingSupport" default="ControllersOnly"/>
+		<setStringFromProperty result="HandTrackingFrequency" ini="Engine" section="/Script/OculusHMD.OculusHMDRuntimeSettings" property="HandTrackingFrequency" default="LOW"/>
 		<setBoolOr result="bPackageForOculusMobile" 
 			arg1="$B(bPackageForOculusQuest)" arg2="$B(bPackageForOculusQuest2)"/>
 		<if condition="bPackageForOculusMobile">
@@ -143,8 +144,6 @@
 							<setElement result="vrIntent" value="category"/>
 							<addAttribute tag="$vrIntent" name="android:name" value="com.oculus.intent.category.VR"/>
 							<addElement tag="intent-filter" name="vrIntent"/>
-
-							<addPermission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
 							<addFeature android:name="android.hardware.usb.host"/>
 						</true>
 					</if>
@@ -196,6 +195,16 @@
 				</false>
 			</if>
 			<addElement tag="application" name="supportedDevices"/>
+
+			<!-- Add Hand Tracking Frequency -->
+			<if condition="bEnableHandTracking">
+				<true>
+					<setElement result="handTrackingFrequency" value="meta-data" />
+					<addAttribute tag="$handTrackingFrequency" name="android:name" value="com.oculus.handtracking.frequency" />
+					<addAttribute tag="$handTrackingFrequency" name="android:value" value="$S(HandTrackingFrequency)" />
+					<addElement tag="application" name="handTrackingFrequency"/>
+				</true>
+			</if>
 		</loopElements>
 		
 	</androidManifestUpdates>

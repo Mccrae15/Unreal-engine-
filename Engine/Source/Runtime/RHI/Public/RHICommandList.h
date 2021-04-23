@@ -1147,6 +1147,17 @@ FRHICOMMAND_MACRO(FRHICommandEndRenderPass)
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
+#if WITH_LATE_LATCHING_CODE
+FRHICOMMAND_MACRO(FRHICommandEndLateLatching)
+{
+	FRHICommandEndLateLatching()
+	{
+	}
+
+	RHI_API void Execute(FRHICommandListBase& CmdList);
+};
+#endif
+
 FRHICOMMAND_MACRO(FRHICommandNextSubpass)
 {
 	FRHICommandNextSubpass()
@@ -4714,6 +4725,27 @@ public:
 	 * @param bNeedReleaseRefs - whether Release need to be called on RHI resources referenced by update infos
 	 */
 	void UpdateRHIResources(FRHIResourceUpdateInfo* UpdateInfos, int32 Num, bool bNeedReleaseRefs);
+
+#if WITH_LATE_LATCHING_CODE
+	FORCEINLINE void BeginLateLatching(int32 FrameNumber)
+	{
+		// Todo: add bypass support
+		GetContext().RHIBeginLateLatching(this, FrameNumber);
+	}
+
+	FORCEINLINE void EndLateLatching()
+	{
+		if (Bypass())
+		{
+			GetContext().RHIEndLateLatching();
+		}
+		else
+		{
+			ALLOC_COMMAND(FRHICommandEndLateLatching)();
+		}
+	}
+#endif
+
 };
 
 class FRHICommandListScopedFlushAndExecute

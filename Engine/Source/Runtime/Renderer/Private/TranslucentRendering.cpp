@@ -819,10 +819,14 @@ static void UpdateSeparateTranslucencyViewState(FScene* Scene, const FViewInfo& 
 	{
 		// When drawing the left eye in a stereo scene, copy the right eye view values into the instanced view uniform buffer.
 		const int32 StereoPassIndex = IStereoRendering::IsStereoEyeView(View) ? View.StereoPass + 1 : eSSP_FULL;
-
+		FViewUniformShaderParameters InstancedDownsampledTranslucencyViewParameters;
 		const FViewInfo& InstancedView = static_cast<const FViewInfo&>(View.Family->GetStereoEyeView((EStereoscopicPass)StereoPassIndex));
-		SetupDownsampledTranslucencyViewParameters(InstancedView, TextureExtent, GetScaledRect(InstancedView.ViewRect, ViewportScale), DownsampledTranslucencyViewParameters);
-		Scene->UniformBuffers.InstancedViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(DownsampledTranslucencyViewParameters));
+		SetupDownsampledTranslucencyViewParameters(InstancedView, TextureExtent, GetScaledRect(View.ViewRect, ViewportScale), InstancedDownsampledTranslucencyViewParameters);
+
+		FInstancedViewUniformShaderParameters LocalInstancedViewUniformShaderParameters;
+		InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, DownsampledTranslucencyViewParameters, 0);
+		InstancedViewParametersUltil::InstancedViewParametersCopy(LocalInstancedViewUniformShaderParameters, InstancedDownsampledTranslucencyViewParameters, 1);
+		Scene->UniformBuffers.InstancedViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(LocalInstancedViewUniformShaderParameters));
 		DrawRenderState.SetInstancedViewUniformBuffer(Scene->UniformBuffers.InstancedViewUniformBuffer);
 	}
 }

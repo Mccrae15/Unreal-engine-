@@ -93,6 +93,13 @@ static TAutoConsoleVariable<int32> CVarMobileCustomDepthForTranslucency(
 	TEXT(" 1 = On [default]"),
 	ECVF_Scalability | ECVF_RenderThreadSafe);
 
+static TAutoConsoleVariable<int32> CVarMobileDisableTransluencySubpass(
+	TEXT("r.Mobile.DisableTransluencySubpass"),
+	0,
+	TEXT("0: Run transluency in its own subpass, enabling opaque depth fetch (Default)\n")
+	TEXT("1: Transluency and opaque draws are in the same subpass (no depth fetch supported!)\n"),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
 DECLARE_GPU_STAT_NAMED(MobileSceneRender, TEXT("Mobile Scene Render"));
 
 DECLARE_CYCLE_STAT(TEXT("SceneStart"), STAT_CLMM_SceneStart, STATGROUP_CommandListMarkers);
@@ -517,6 +524,47 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 	bSubmitOffscreenRendering = (!bGammaSpace || bRenderToSceneColor) && CVarMobileFlushSceneColorRendering.GetValueOnAnyThread() != 0;
 }
 
+#if WITH_LATE_LATCHING_CODE
+void FMobileSceneRenderer::BeginLateLatching(FRHICommandListImmediate& RHICmdList)
+{
+	SCOPED_NAMED_EVENT(BeginLateLatching, FColor::Orange);
+	uint32 FrameNumber = ViewFamily.FrameNumber;
+	Scene->UniformBuffers.ViewUniformBuffer->FlagPatchingFrameNumber(FrameNumber);
+	Scene->UniformBuffers.InstancedViewUniformBuffer->FlagPatchingFrameNumber(FrameNumber);
+	RHICmdList.BeginLateLatching(FrameNumber);
+}
+
+void FMobileSceneRenderer::EndLateLatching(FRHICommandListImmediate& RHICmdList, const FViewInfo& View)
+{
+	SCOPED_NAMED_EVENT(ApplyLateLatching, FColor::Orange);
+
+	// Flush to reduce post latelatching overhead
+	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+
+	for (int32 ViewExt = 0; ViewExt < ViewFamily.ViewExtensions.Num(); ++ViewExt)
+	{
+		ViewFamily.ViewExtensions[ViewExt]->PreLateLatchingViewFamily_RenderThread(RHICmdList, ViewFamily);
+	}
+
+	for (int32 ViewExt = 0; ViewExt < ViewFamily.ViewExtensions.Num(); ++ViewExt)
+	{
+		ViewFamily.ViewExtensions[ViewExt]->LateLatchingViewFamily_RenderThread(RHICmdList, ViewFamily);
+		for (int ViewIndex = 0; ViewIndex < ViewFamily.Views.Num(); ViewIndex++)
+		{
+			ViewFamily.ViewExtensions[ViewExt]->LateLatchingView_RenderThread(RHICmdList, ViewFamily, Views[ViewIndex]);
+		}
+	}
+
+	for (int ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+	{
+		Views[ViewIndex].UpdateLateLatchData();
+	}
+
+	Scene->UniformBuffers.CachedView = NULL;
+	Scene->UniformBuffers.UpdateViewUniformBuffer(View);
+	RHICmdList.EndLateLatching();
+}
+#endif
 /** 
 * Renders the view family. 
 */
@@ -564,7 +612,14 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 	// Find the visible primitives and prepare targets and buffers for rendering
 	InitViews(RHICmdList);
-	
+
+#if WITH_LATE_LATCHING_CODE
+	if (ViewFamily.bLateLatchingEnabled)
+	{
+		BeginLateLatching(RHICmdList);
+	}
+#endif
+
 	if (GRHINeedsExtraDeletionLatency || !GRHICommandList.Bypass())
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FMobileSceneRenderer_PostInitViewsFlushDel);
@@ -800,10 +855,12 @@ FRHITexture* FMobileSceneRenderer::RenderForward(FRHICommandListImmediate& RHICm
 	// so the color target would be created without MSAA, and MSAA is achieved through magical means (the framebuffer, being MSAA,
 	// tells the GPU "execute this renderpass as MSAA, and when you're done, automatically resolve and copy into this non-MSAA texture").
 	bool bMobileMSAA = NumMSAASamples > 1 && SceneContext.GetSceneColorSurface()->GetNumSamples() > 1;
+	
+	const bool bUseSubpass = CVarMobileDisableTransluencySubpass.GetValueOnAnyThread() == 0;
 
 	static const auto CVarMobileMultiView = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
 	const bool bIsMultiViewApplication = (CVarMobileMultiView && CVarMobileMultiView->GetValueOnAnyThread() != 0);
-	
+
 	if (bGammaSpace && !bRenderToSceneColor)
 	{
 		if (bMobileMSAA)
@@ -868,7 +925,7 @@ FRHITexture* FMobileSceneRenderer::RenderForward(FRHICommandListImmediate& RHICm
 		FoveationTexture,
 		FExclusiveDepthStencil::DepthWrite_StencilWrite
 	);
-	SceneColorRenderPassInfo.SubpassHint = ESubpassHint::DepthReadSubpass;
+	SceneColorRenderPassInfo.SubpassHint = bUseSubpass ? ESubpassHint::DepthReadSubpass : ESubpassHint::None;
 	SceneColorRenderPassInfo.NumOcclusionQueries = ComputeNumOcclusionQueriesToBatch();
 	SceneColorRenderPassInfo.bOcclusionQueries = SceneColorRenderPassInfo.NumOcclusionQueries != 0;
 
@@ -990,7 +1047,10 @@ FRHITexture* FMobileSceneRenderer::RenderForward(FRHICommandListImmediate& RHICm
 	}
 
 	// scene depth is read only and can be fetched
-	RHICmdList.NextSubpass();
+	if (bUseSubpass)
+	{
+		RHICmdList.NextSubpass();
+	}
 
 	if (!View.bIsPlanarReflection)
 	{
@@ -1033,6 +1093,14 @@ FRHITexture* FMobileSceneRenderer::RenderForward(FRHICommandListImmediate& RHICm
 	{
 		PreTonemapMSAA(RHICmdList);
 	}
+
+#if WITH_LATE_LATCHING_CODE
+	if (ViewFamily.bLateLatchingEnabled)
+	{
+		EndLateLatching(RHICmdList, View);
+	}
+#endif
+
 
 	// End of scene color rendering
 	RHICmdList.EndRenderPass();

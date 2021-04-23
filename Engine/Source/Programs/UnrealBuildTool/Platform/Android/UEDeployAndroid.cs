@@ -1948,6 +1948,46 @@ namespace UnrealBuildTool
 			}
 		}
 
+		private bool OculusPackageHasOSSplash()
+		{
+			bool bPackageForOculus = IsPackagingForOculusMobile();
+			if (bPackageForOculus)
+			{
+				ConfigHierarchy Ini = GetConfigCacheIni(ConfigHierarchyType.Engine);
+
+				string OculusOSSplashPath;
+				AndroidPlatformSDK.GetPath(Ini, "/Script/OculusHMD.OculusHMDRuntimeSettings", "OSSplashScreen", out OculusOSSplashPath);
+				return OculusOSSplashPath != "";
+			}
+			return false;
+		}
+
+		private void PackageForOculus(string UE4BuildPath, string ProjectDirectory)
+		{
+			bool bPackageForOculus = IsPackagingForOculusMobile();
+			
+			if (bPackageForOculus)
+			{
+				ConfigHierarchy Ini = GetConfigCacheIni(ConfigHierarchyType.Engine);
+				// if a splash is defined, copy it in the assets folder
+
+				string OculusOSSplashPath;
+				AndroidPlatformSDK.GetPath(Ini, "/Script/OculusHMD.OculusHMDRuntimeSettings", "OSSplashScreen", out OculusOSSplashPath);
+
+				if (!File.Exists(OculusOSSplashPath))
+				{
+					OculusOSSplashPath = Path.Combine(ProjectDirectory, OculusOSSplashPath);
+				}
+
+				string SplashTargetPath = UE4BuildPath + "/assets/vr_splash.png";
+				if (File.Exists(OculusOSSplashPath) && FilesAreDifferent(OculusOSSplashPath, SplashTargetPath))
+				{
+					File.Copy(OculusOSSplashPath, SplashTargetPath, true);
+					Log.TraceInformation("Copying {0} to {1} for Oculus splash", OculusOSSplashPath, SplashTargetPath);
+				}
+			}
+		}
+
 		private void PickSplashScreenOrientation(string UE4BuildPath, bool bNeedPortrait, bool bNeedLandscape)
 		{
 			ConfigHierarchy Ini = GetConfigCacheIni(ConfigHierarchyType.Engine);
@@ -2506,6 +2546,14 @@ namespace UnrealBuildTool
 			if (bPackageForDaydream)
 			{
 				Text.AppendLine(string.Format("\t\t<meta-data android:name=\"com.epicgames.ue4.GameActivity.bDaydream\" android:value=\"true\"/>"));
+			}
+			if (bPackageForOculusMobile && !bIsForDistribution)
+			{
+				Text.AppendLine("\t\t\t<meta-data android:name=\"com.oculus.extlib\" android:value=\"true\"/>");
+			}
+			if(bPackageForOculusMobile && OculusPackageHasOSSplash())
+			{
+				Text.AppendLine("\t\t\t<meta-data android:name=\"com.oculus.ossplash\" android:value=\"true\"/>");
 			}
 			Text.AppendLine("\t\t<meta-data android:name=\"com.google.android.gms.games.APP_ID\"");
 			Text.AppendLine("\t\t           android:value=\"@string/app_id\" />");
@@ -3748,6 +3796,9 @@ namespace UnrealBuildTool
 			
 				//Now package the app based on Daydream packaging settings 
 				PackageForDaydream(UE4BuildPath);
+
+				//Package the additional oculus-only data (for now, splash screen)
+				PackageForOculus(UE4BuildPath, ProjectDirectory);
 			
 				//Similarly, keep only the downloader screen image matching the orientation requested
 				PickDownloaderScreenOrientation(UE4BuildPath, bNeedPortrait, bNeedLandscape);

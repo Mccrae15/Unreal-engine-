@@ -692,6 +692,22 @@ bool FAndroidOpenGL::SupportsFramebufferSRGBEnable()
 	return bMobileUseHWsRGBEncoding;
 }
 
+bool FAndroidOpenGL::SupportsSubsampledLayout() {
+
+	GLint query = 0;
+	glGetTexParameteriv(GL_TEXTURE_2D,
+		GL_TEXTURE_FOVEATED_FEATURE_QUERY_QCOM,
+		&query);
+
+	if (((query & GL_FOVEATION_ENABLE_BIT_QCOM) == GL_FOVEATION_ENABLE_BIT_QCOM) &&
+		((query & GL_FOVEATION_SUBSAMPLED_LAYOUT_METHOD_BIT_QCOM) ==
+			GL_FOVEATION_SUBSAMPLED_LAYOUT_METHOD_BIT_QCOM))
+	{
+		return true;
+	}
+	return false; 
+}
+
 void FAndroidOpenGL::BeginQuery(GLenum QueryType, GLuint Query)
 {
 	QUERY_CHECK(QueryType == UGL_ANY_SAMPLES_PASSED || SupportsDisjointTimeQueries());

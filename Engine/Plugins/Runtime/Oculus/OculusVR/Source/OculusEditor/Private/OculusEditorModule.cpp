@@ -34,15 +34,6 @@ void FOculusEditorModule::PostLoadCallback()
 
 void FOculusEditorModule::StartupModule()
 {
-	void* ModuleCheck = FPlatformProcess::GetDllHandle(TEXT("OVRPlugin.dll"));
-	if (!ModuleCheck)
-	{
-		return;
-	}
-
-	FPlatformProcess::FreeDllHandle(ModuleCheck);
-	ModuleCheck = nullptr;
-
 	bModuleValid = true;
 	RegisterSettings();
 	FOculusAssetDirectory::LoadForCook();
@@ -280,6 +271,7 @@ void FOculusHMDSettingsDetailsCustomization::CustomizeDetails(IDetailLayoutBuild
 							[
 								SNew(STextBlock)
 								.Text(LOCTEXT("EnableBuildTelemetry", "Enable Oculus Build Telemetry"))
+								.ToolTipText(LOCTEXT("EnableBuildTelemetryToolTip", "Enables detailed timing for the major build steps. This measures time spent in each build stageand transmits the time spent per stage to Oculus. This information is used by Oculus to guide work related to optimizing the build process."))
 							]
 						]
 					+ SHorizontalBox::Slot().AutoWidth()

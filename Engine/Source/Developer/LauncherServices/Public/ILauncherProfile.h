@@ -1303,6 +1303,19 @@ public:
 	 */
 	virtual bool IsUsingIoStore() const = 0;
 
+	/**
+	 * Sets whether to deploy compiled .so directly to Oculus device
+	 * @param bInSkipGradle Whether to deploy compiled .so directly to Oculus device
+	 */
+	virtual void SetOculusDeploySo(bool bInOculusDeploySo) = 0;
+
+	/**
+	 * Deploying .so to Oculus or not
+	 *
+	 * @return true if deploying .so to Oculus
+	 */
+	virtual bool IsOculusDeployingSo() const = 0;
+
 public:
 
 	/** Virtual destructor. */

@@ -228,6 +228,9 @@ void FOpenGLES::ProcessExtensions(const FString& ExtensionsString)
 		SetEmitDrawEvents(true);
 	}
 
+        //opengl extensions (qcom_foveated) aren't map-based and function calls can be done until flush time.
+	GRHISupportsLateVRSUpdate = true;
+
 	glPushGroupMarkerEXT = (PFNGLPUSHGROUPMARKEREXTPROC)((void*)eglGetProcAddress("glPushGroupMarkerEXT"));
 	glPopGroupMarkerEXT = (PFNGLPOPGROUPMARKEREXTPROC)((void*)eglGetProcAddress("glPopGroupMarkerEXT"));
 

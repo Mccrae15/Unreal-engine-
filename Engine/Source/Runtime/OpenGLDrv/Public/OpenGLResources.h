@@ -1337,7 +1337,8 @@ public:
 		GLuint InResource,
 		GLenum InTarget,
 		uint32 InNumMips,
-		GLenum InAttachment
+		GLenum InAttachment,
+		uint32 InNumSamplesTileMem
 		)
 	: OpenGLRHI(InOpenGLRHI)
 	, SamplerState(nullptr)
@@ -1350,6 +1351,7 @@ public:
 	, bIsPowerOfTwo(false)
 	, bIsAliased(false)
 	, bMemorySizeReady(false)
+	, SampleCountTileMem(InNumSamplesTileMem)
 	{}
 
 	int32 GetMemorySize() const
@@ -1397,6 +1399,11 @@ public:
 		bIsAliased = 1;
 	}
 
+	uint32 GetNumSamplesTileMem() const
+	{
+		return SampleCountTileMem;
+	}
+
 	FOpenGLAssertRHIThreadFence CreationFence;
 
 private:
@@ -1404,6 +1411,7 @@ private:
 	uint32 bIsPowerOfTwo	: 1;
 	uint32 bIsAliased : 1;
 	uint32 bMemorySizeReady : 1;
+	uint32 SampleCountTileMem;
 };
 
 // Textures.
@@ -1431,13 +1439,14 @@ public:
 		ETextureCreateFlags InFlags,
 		const FClearValueBinding& InClearValue
 		)
-	: BaseType(InSizeX,InSizeY,InSizeZ,InNumMips,InNumSamples, InNumSamplesTileMem, InArraySize, InFormat,InFlags, InClearValue)
+	: BaseType(InSizeX,InSizeY,InSizeZ,InNumMips,InNumSamples, InArraySize, InFormat,InFlags, InClearValue)
 	, FOpenGLTextureBase(
 		InOpenGLRHI,
 		InResource,
 		InTarget,
 		InNumMips,
-		InAttachment
+		InAttachment,
+		InNumSamplesTileMem
 		)
 	, BaseLevel(0)
 	, bCubemap(bInCubemap)
@@ -1621,40 +1630,35 @@ static typename TEnableIf<TIsGLResourceWithFence<T>::Value>::Type CheckRHITFence
 class OPENGLDRV_API FOpenGLBaseTexture2D : public FRHITexture2D
 {
 public:
-	FOpenGLBaseTexture2D(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, uint32 InArraySize, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
+	FOpenGLBaseTexture2D(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, uint32 InArraySize, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture2D(InSizeX,InSizeY,InNumMips,InNumSamples,InFormat,InFlags, InClearValue)
 	, SampleCount(InNumSamples)
-	, SampleCountTileMem(InNumSamplesTileMem)
 	{}
 	uint32 GetSizeZ() const { return 0; }
 	uint32 GetNumSamples() const { return SampleCount; }
-	uint32 GetNumSamplesTileMem() const { return SampleCountTileMem; }
 private:
 	uint32 SampleCount;
-	/* For render targets on Android tiled GPUs, the number of samples to use internally */
-	uint32 SampleCountTileMem;
+
 };
 
 class FOpenGLBaseTexture2DArray : public FRHITexture2DArray
 {
 public:
-	FOpenGLBaseTexture2DArray(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, uint32 InArraySize, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
+	FOpenGLBaseTexture2DArray(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, uint32 InArraySize, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture2DArray(InSizeX,InSizeY,InSizeZ,InNumMips,InNumSamples,InFormat,InFlags, InClearValue)
 	{
 		check(InNumSamples == 1);	// OpenGL supports multisampled texture arrays, but they're currently not implemented in OpenGLDrv.
-		check(InNumSamplesTileMem == 1);
 	}
 };
 
 class FOpenGLBaseTextureCube : public FRHITextureCube
 {
 public:
-	FOpenGLBaseTextureCube(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, uint32 InArraySize, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
+	FOpenGLBaseTextureCube(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, uint32 InArraySize, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITextureCube(InSizeX,InNumMips,InFormat,InFlags,InClearValue)
 	, ArraySize(InArraySize)
 	{
 		check(InNumSamples == 1);	// OpenGL doesn't currently support multisampled cube textures
-		check(InNumSamplesTileMem == 1);
 	}
 	uint32 GetSizeX() const { return GetSize(); }
 	uint32 GetSizeY() const { return GetSize(); } //-V524
@@ -1668,11 +1672,10 @@ private:
 class FOpenGLBaseTexture3D : public FRHITexture3D
 {
 public:
-	FOpenGLBaseTexture3D(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, uint32 InNumSamplesTileMem, uint32 InArraySize, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
+	FOpenGLBaseTexture3D(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ, uint32 InNumMips, uint32 InNumSamples, uint32 InArraySize, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
 	: FRHITexture3D(InSizeX,InSizeY,InSizeZ,InNumMips,InFormat,InFlags,InClearValue)
 	{
 		check(InNumSamples == 1);	// Can't have multisampled texture 3D. Not supported anywhere.
-		check(InNumSamplesTileMem == 1);
 	}
 };
 

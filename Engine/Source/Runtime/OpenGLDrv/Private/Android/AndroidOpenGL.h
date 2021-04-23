@@ -98,6 +98,8 @@ struct FAndroidOpenGL : public FOpenGLES
 
 	static bool SupportsFramebufferSRGBEnable();
 
+	static bool SupportsSubsampledLayout();
+
 	static FORCEINLINE void DeleteSync(UGLsync Sync)
 	{
 		if (GUseThreadedRendering)

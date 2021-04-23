@@ -478,14 +478,7 @@ void FOculusMRModule::OnInitialWorldCreated(UWorld* NewWorld)
 							FOculusHMDModule::GetPluginWrapper().Media_SetAvailableQueueIndexVulkan(queueIndex);
 						}
 
-						// We use the upside down scenecapture in GLES for performance (one less copy)
-						if (IsOpenGLPlatform(GMaxRHIShaderPlatform))
-						{
-							FOculusHMDModule::GetPluginWrapper().Media_SetMrcFrameImageFlipped(ovrpBool_True);
-						}
-
 						FOculusHMDModule::GetPluginWrapper().Media_SetMrcInputVideoBufferType(ovrpMediaInputVideoBufferType_TextureHandle);
-						FOculusHMDModule::GetPluginWrapper().Media_SetMrcFrameInverseAlpha(ovrpBool_True);
 
 						FAudioDeviceHandle AudioDevice = FAudioDevice::GetMainAudioDevice();
 						float SampleRate = AudioDevice->GetSampleRate();
@@ -522,7 +515,12 @@ void FOculusMRModule::OnInitialWorldCreated(UWorld* NewWorld)
 
 void FOculusMRModule::OnTrackedCameraIndexChanged(int OldVal, int NewVal)
 {
-	if (OldVal == NewVal)
+	if (OldVal == NewVal
+		|| !bInitialized
+#if PLATFORM_ANDROID
+		|| !bActivated
+#endif
+		)
 	{
 		return;
 	}
@@ -531,7 +529,12 @@ void FOculusMRModule::OnTrackedCameraIndexChanged(int OldVal, int NewVal)
 
 void FOculusMRModule::OnCompositionMethodChanged(EOculusMR_CompositionMethod OldVal, EOculusMR_CompositionMethod NewVal)
 {
-	if (OldVal == NewVal)
+	if (OldVal == NewVal
+		|| !bInitialized
+#if PLATFORM_ANDROID
+		|| !bActivated
+#endif
+		)
 	{
 		return;
 	}
@@ -540,7 +543,12 @@ void FOculusMRModule::OnCompositionMethodChanged(EOculusMR_CompositionMethod Old
 
 void FOculusMRModule::OnCapturingCameraChanged(EOculusMR_CameraDeviceEnum OldVal, EOculusMR_CameraDeviceEnum NewVal)
 {
-	if (OldVal == NewVal)
+	if (OldVal == NewVal
+		|| !bInitialized
+#if PLATFORM_ANDROID
+		|| !bActivated
+#endif
+		)
 	{
 		return;
 	}
@@ -556,7 +564,12 @@ void FOculusMRModule::OnCapturingCameraChanged(EOculusMR_CameraDeviceEnum OldVal
 
 void FOculusMRModule::OnIsCastingChanged(bool OldVal, bool NewVal)
 {
-	if (OldVal == NewVal)
+	if (OldVal == NewVal
+		|| !bInitialized
+#if PLATFORM_ANDROID
+		|| !bActivated
+#endif
+		)
 	{
 		return;
 	}
@@ -581,7 +594,12 @@ void FOculusMRModule::OnIsCastingChanged(bool OldVal, bool NewVal)
 
 void FOculusMRModule::OnUseDynamicLightingChanged(bool OldVal, bool NewVal)
 {
-	if (OldVal == NewVal)
+	if (OldVal == NewVal
+		|| !bInitialized
+#if PLATFORM_ANDROID
+		|| !bActivated
+#endif
+		)
 	{
 		return;
 	}
@@ -590,7 +608,12 @@ void FOculusMRModule::OnUseDynamicLightingChanged(bool OldVal, bool NewVal)
 
 void FOculusMRModule::OnDepthQualityChanged(EOculusMR_DepthQuality OldVal, EOculusMR_DepthQuality NewVal)
 {
-	if (OldVal == NewVal)
+	if (OldVal == NewVal
+		|| !bInitialized
+#if PLATFORM_ANDROID
+		|| !bActivated
+#endif
+		)
 	{
 		return;
 	}

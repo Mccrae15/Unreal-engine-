@@ -353,6 +353,39 @@ void FVulkanDevice::CreateDevice()
 	}
 #endif
 
+#if VULKAN_SUPPORTS_MULTIVIEW
+	VkPhysicalDeviceMultiviewFeatures DeviceMultiviewFeatures;
+	if (OptionalDeviceExtensions.HasKHRMultiview)
+	{
+		ZeroVulkanStruct(DeviceMultiviewFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES);
+		DeviceMultiviewFeatures.multiview = VK_TRUE;
+		DeviceMultiviewFeatures.pNext = (void*)DeviceInfo.pNext;
+		DeviceInfo.pNext = &DeviceMultiviewFeatures;
+	}
+#endif
+
+#if VULKAN_SUPPORTS_FDM
+	VkPhysicalDeviceFragmentDensityMapFeaturesEXT DeviceFDMFeatures;
+	if (OptionalDeviceExtensions.HasEXTFragmentDensityMap)
+	{
+		ZeroVulkanStruct(DeviceFDMFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_FEATURES_EXT);
+		DeviceFDMFeatures.fragmentDensityMap = GetFDMFeatures().fragmentDensityMap ? VK_TRUE : VK_FALSE;
+		DeviceFDMFeatures.pNext = (void*)DeviceInfo.pNext;
+		DeviceInfo.pNext = &DeviceFDMFeatures;
+	}
+#endif
+
+#if VULKAN_SUPPORTS_FDM2
+	VkPhysicalDeviceFragmentDensityMap2FeaturesEXT DeviceFDM2Features;
+	if (OptionalDeviceExtensions.HasEXTFragmentDensityMap2)
+	{
+		ZeroVulkanStruct(DeviceFDM2Features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_2_FEATURES_EXT);
+		DeviceFDM2Features.fragmentDensityMapDeferred = VK_TRUE;
+		DeviceFDM2Features.pNext = (void*)DeviceInfo.pNext;
+		DeviceInfo.pNext = &DeviceFDM2Features;
+	}
+#endif
+
 	// Create the device
 	VkResult Result = VulkanRHI::vkCreateDevice(Gpu, &DeviceInfo, VULKAN_CPU_ALLOCATOR, &Device);
 	if (Result == VK_ERROR_INITIALIZATION_FAILED)
@@ -937,11 +970,46 @@ void FVulkanDevice::InitGPU(int32 DeviceIndex)
 #if VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
 	if (RHI->GetOptionalExtensions().HasKHRGetPhysicalDeviceProperties2)
 	{
-		VkPhysicalDeviceShaderAtomicInt64Features AtomicFeatures;
-		ZeroVulkanStruct(AtomicFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR);
 		VkPhysicalDeviceFeatures2 Features2;
 		ZeroVulkanStruct(Features2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2);
-		Features2.pNext = &AtomicFeatures;
+
+		void** NextPropsAddr = nullptr;
+		NextPropsAddr = &Features2.pNext;
+
+		VkPhysicalDeviceShaderAtomicInt64Features AtomicFeatures;
+		{
+			*NextPropsAddr = &AtomicFeatures;
+			NextPropsAddr = &AtomicFeatures.pNext;
+			ZeroVulkanStruct(AtomicFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR);
+		}
+
+#if VULKAN_SUPPORTS_FDM
+		if (GetOptionalExtensions().HasEXTFragmentDensityMap)
+		{
+			*NextPropsAddr = &FragmentDensityMapFeatures;
+			NextPropsAddr = &FragmentDensityMapFeatures.pNext;
+			ZeroVulkanStruct(FragmentDensityMapFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_FEATURES_EXT);
+		}
+#endif
+
+#if VULKAN_SUPPORTS_FDM2
+		if (GetOptionalExtensions().HasEXTFragmentDensityMap2)
+		{
+			*NextPropsAddr = &FragmentDensityMap2Features;
+			NextPropsAddr = &FragmentDensityMap2Features.pNext;
+			ZeroVulkanStruct(FragmentDensityMap2Features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_2_FEATURES_EXT);
+		}
+#endif
+
+#if VULKAN_SUPPORTS_MULTIVIEW
+		if (GetOptionalExtensions().HasKHRMultiview)
+		{
+			*NextPropsAddr = &MultiviewFeatures;
+			NextPropsAddr = &MultiviewFeatures.pNext;
+			ZeroVulkanStruct(MultiviewFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES);
+		}
+#endif
+
 		VulkanRHI::vkGetPhysicalDeviceFeatures2KHR(Gpu, &Features2);
 		OptionalDeviceExtensions.HasBufferAtomicInt64 = (AtomicFeatures.shaderBufferInt64Atomics == VK_TRUE);
 	}
@@ -1053,7 +1121,7 @@ void FVulkanDevice::InitGPU(int32 DeviceIndex)
 
 		FRHIResourceCreateInfo CreateInfo;
 		DefaultImage = new FVulkanSurface(*this, 0, VK_IMAGE_VIEW_TYPE_2D, PF_B8G8R8A8, 1, 1, 1, 1, 1, 1, TexCreate_RenderTargetable | TexCreate_ShaderResource, ERHIAccess::SRVMask, CreateInfo);
-		DefaultTextureView.Create(*this, DefaultImage->Image, VK_IMAGE_VIEW_TYPE_2D, DefaultImage->GetFullAspectMask(), PF_B8G8R8A8, VK_FORMAT_B8G8R8A8_UNORM, 0, 1, 0, 1);
+		DefaultTextureView.Create(*this, DefaultImage->Image, VK_IMAGE_VIEW_TYPE_2D, DefaultImage->GetFullAspectMask(), PF_B8G8R8A8, VK_FORMAT_B8G8R8A8_UNORM, 0, 1, 0, 1, DefaultImage->GetFlags());
 	}
 }
 

@@ -1507,7 +1507,15 @@ bool FShaderPipelineCache::Open(FString const& Name, EShaderPlatform Platform)
 		if(bReady)
 		{
 			uint64 PreCompileMask = (uint64)CVarPSOFileCachePreCompileMask.GetValueOnAnyThread();
-			FPipelineFileCache::SetGameUsageMaskWithComparison(PreCompileMask, PreCompileMaskComparison);
+			//--------------------------------------------------------------------------------------------
+			// PSOCache Note: FPipelineFileCache::SetGameUsageMaskWithComparison changes the usage mask
+			// comparison function to use PreCompileMaskComparison, which fails all UsageMasks with a value
+			// of zero even when r.ShaderPipelineCache.GameFileMaskEnabled is disabled.
+			// Some developer on the internet just opts to comment out this line entirely
+			// (which also fixes the issue):
+			// https://forums.unrealengine.com/development-discussion/android-development/1707967-after-migration-ue4-22-4-24-pso-cache-loading-running-is-not-working?p=1727252#post1727252
+			//--------------------------------------------------------------------------------------------
+			FShaderPipelineCache::SetGameUsageMaskWithComparison(PreCompileMask, PreCompileMaskComparison);
 
 			int32 Order = (int32)FPipelineFileCache::PSOOrder::Default;
 			

@@ -132,7 +132,7 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 		#endif
 	#else
 		#if MOBILE_MULTI_VIEW
-			OutColor = PointSceneColorTextureArray.SampleLevel(PointSceneColorSampler, vec3(UVAndScreenPos.xy,0), 0, int2(0, 0));
+			OutColor = PointSceneColorTextureArray.SampleLevel(PointSceneColorSampler, float3(UVAndScreenPos.xy,0), 0, int2(0, 0));
 		#else
 			OutColor = PointSceneColorTexture.SampleLevel(PointSceneColorSampler, UVAndScreenPos.xy, 0, int2(0, 0));
 		#endif
