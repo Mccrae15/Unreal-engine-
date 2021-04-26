@@ -120,16 +120,6 @@ static TAutoConsoleVariable<float> CVarGIHistoryConvolutionKernelSpreadFactor(
 	TEXT("Multiplication factor applied on the kernel sample offset (default=3)."),
 	ECVF_RenderThreadSafe);
 
-static TAutoConsoleVariable<int32> CVarVirtualShadowReconstructionSampleCount(
-	TEXT("r.Shadow.Virtual.Denoiser.ReconstructionSamples"), 8,
-	TEXT("Maximum number of samples for the reconstruction pass (default = 8)."),
-	ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarVirtualShadowPreConvolutionCount(
-	TEXT("r.Shadow.Virtual.Denoiser.PreConvolution"), 1,
-	TEXT("Number of pre-convolution passes (default = 1)."),
-	ECVF_RenderThreadSafe);
-
 /** The maximum number of mip level supported in the denoiser. */
 // TODO(Denoiser): jump to 3 because bufefr size already have a size multiple of 4.
 static const int32 kMaxMipLevel = 2;
@@ -154,7 +144,6 @@ DECLARE_GPU_STAT(ReflectionsDenoiser)
 DECLARE_GPU_STAT(ShadowsDenoiser)
 DECLARE_GPU_STAT(AmbientOcclusionDenoiser)
 DECLARE_GPU_STAT(DiffuseIndirectDenoiser)
-DECLARE_GPU_STAT(VirtualShadowsDenoiser)
 
 namespace
 {
@@ -208,9 +197,6 @@ enum class ESignalProcessing
 	// Denoise diffuse indirect hierarchy.
 	IndirectProbeHierarchy,
 
-	// Denoise a virtual shadow map mask.
-	VirtualShadowMapMask,
-
 	MAX,
 };
 
@@ -233,8 +219,7 @@ static bool UsesConstantPixelDensityPassLayout(ESignalProcessing SignalProcessin
 		SignalProcessing == ESignalProcessing::DiffuseAndAmbientOcclusion ||
 		SignalProcessing == ESignalProcessing::DiffuseSphericalHarmonic ||
 		SignalProcessing == ESignalProcessing::ScreenSpaceDiffuseIndirect ||
-		SignalProcessing == ESignalProcessing::IndirectProbeHierarchy ||
-		SignalProcessing == ESignalProcessing::VirtualShadowMapMask);
+		SignalProcessing == ESignalProcessing::IndirectProbeHierarchy);
 }
 
 /** Returns whether a signal processing support upscaling. */
@@ -266,8 +251,7 @@ static bool SignalUsesPreConvolution(ESignalProcessing SignalProcessing)
 		SignalProcessing == ESignalProcessing::ShadowVisibilityMask ||
 		SignalProcessing == ESignalProcessing::Reflections ||
 		SignalProcessing == ESignalProcessing::AmbientOcclusion ||
-		SignalProcessing == ESignalProcessing::DiffuseAndAmbientOcclusion ||
-		SignalProcessing == ESignalProcessing::VirtualShadowMapMask;
+		SignalProcessing == ESignalProcessing::DiffuseAndAmbientOcclusion;
 }
 
 /** Returns whether a signal processing uses a history rejection pre convolution pass. */
@@ -324,8 +308,7 @@ static int32 SignalMaxBatchSize(ESignalProcessing SignalProcessing)
 		SignalProcessing == ESignalProcessing::DiffuseAndAmbientOcclusion ||
 		SignalProcessing == ESignalProcessing::DiffuseSphericalHarmonic ||
 		SignalProcessing == ESignalProcessing::ScreenSpaceDiffuseIndirect ||
-		SignalProcessing == ESignalProcessing::IndirectProbeHierarchy ||
-		SignalProcessing == ESignalProcessing::VirtualShadowMapMask)
+		SignalProcessing == ESignalProcessing::IndirectProbeHierarchy)
 	{
 		return 1;
 	}
@@ -351,8 +334,7 @@ static bool SignalSupportMultiSPP(ESignalProcessing SignalProcessing)
 		SignalProcessing == ESignalProcessing::DiffuseAndAmbientOcclusion ||
 		SignalProcessing == ESignalProcessing::DiffuseSphericalHarmonic ||
 		SignalProcessing == ESignalProcessing::ScreenSpaceDiffuseIndirect ||
-		SignalProcessing == ESignalProcessing::IndirectProbeHierarchy ||
-		SignalProcessing == ESignalProcessing::VirtualShadowMapMask);
+		SignalProcessing == ESignalProcessing::IndirectProbeHierarchy);
 }
 
 
@@ -416,12 +398,6 @@ const TCHAR* const kInjestResourceNames[] = {
 	nullptr,
 	nullptr,
 	nullptr,
-
-	// VirtualShadowMapMask
-	TEXT("VirtualShadow.Denoiser.Injest0"),
-	TEXT("VirtualShadow.Denoiser.Injest1"),
-	nullptr,
-	nullptr,
 };
 
 const TCHAR* const kReduceResourceNames[] = {
@@ -468,12 +444,6 @@ const TCHAR* const kReduceResourceNames[] = {
 	nullptr,
 
 	// IndirectProbeHierarchy
-	nullptr,
-	nullptr,
-	nullptr,
-	nullptr,
-
-	// VirtualShadowMapMask
 	nullptr,
 	nullptr,
 	nullptr,
@@ -528,12 +498,6 @@ const TCHAR* const kReconstructionResourceNames[] = {
 	nullptr,
 	nullptr,
 	nullptr,
-
-	// VirtualShadowMapMask
-	TEXT("VirtualShadow.Denoiser.Reconstruction0"),
-	TEXT("VirtualShadow.Denoiser.Reconstruction1"),
-	TEXT("VirtualShadow.Denoiser.Reconstruction2"),
-	TEXT("VirtualShadow.Denoiser.Reconstruction3"),
 };
 
 const TCHAR* const kPreConvolutionResourceNames[] = {
@@ -584,12 +548,6 @@ const TCHAR* const kPreConvolutionResourceNames[] = {
 	nullptr,
 	nullptr,
 	nullptr,
-
-	// VirtualShadowMapMask
-	TEXT("VirtualShadow.Denoiser.PreConvolution0"),
-	TEXT("VirtualShadow.Denoiser.PreConvolution1"),
-	TEXT("VirtualShadow.Denoiser.PreConvolution2"),
-	TEXT("VirtualShadow.Denoiser.PreConvolution3"),
 };
 
 const TCHAR* const kRejectionPreConvolutionResourceNames[] = {
@@ -640,12 +598,6 @@ const TCHAR* const kRejectionPreConvolutionResourceNames[] = {
 	nullptr,
 	nullptr,
 	nullptr,
-
-	// VirtualShadowMapMask
-	TEXT("VirtualShadow.Denoiser.RejectionPreConvolution0"),
-	TEXT("VirtualShadow.Denoiser.RejectionPreConvolution1"),
-	TEXT("VirtualShadow.Denoiser.RejectionPreConvolution2"),
-	TEXT("VirtualShadow.Denoiser.RejectionPreConvolution3"),
 };
 
 const TCHAR* const kTemporalAccumulationResourceNames[] = {
@@ -696,12 +648,6 @@ const TCHAR* const kTemporalAccumulationResourceNames[] = {
 	TEXT("ProbeHierarchy.TemporalAccumulation1"),
 	TEXT("ProbeHierarchy.TemporalAccumulation2"),
 	nullptr,
-
-	// VirtualShadowMapMask
-	TEXT("VirtualShadow.Denoiser.TemporalAccumulation0"),
-	TEXT("VirtualShadow.Denoiser.TemporalAccumulation1"),
-	TEXT("VirtualShadow.Denoiser.TemporalAccumulation2"),
-	TEXT("VirtualShadow.Denoiser.TemporalAccumulation3"),
 };
 
 const TCHAR* const kHistoryConvolutionResourceNames[] = {
@@ -752,12 +698,6 @@ const TCHAR* const kHistoryConvolutionResourceNames[] = {
 	nullptr,
 	nullptr,
 	nullptr,
-
-	// VirtualShadowMapMask
-	TEXT("VirtualShadow.Denoiser.HistoryConvolution0"),
-	TEXT("VirtualShadow.Denoiser.HistoryConvolution1"),
-	TEXT("VirtualShadow.Denoiser.HistoryConvolution2"),
-	TEXT("VirtualShadow.Denoiser.HistoryConvolution3"),
 };
 
 const TCHAR* const kDenoiserOutputResourceNames[] = {
@@ -808,12 +748,6 @@ const TCHAR* const kDenoiserOutputResourceNames[] = {
 	nullptr,
 	nullptr,
 	nullptr,
-
-	// VirtualShadowMapMask
-	TEXT("VirtualShadow.Denoiser.DenoiserOutput0"),
-	TEXT("VirtualShadow.Denoiser.DenoiserOutput1"),
-	TEXT("VirtualShadow.Denoiser.DenoiserOutput2"),
-	TEXT("VirtualShadow.Denoiser.DenoiserOutput3"),
 };
 
 static_assert(UE_ARRAY_COUNT(kReconstructionResourceNames) == int32(ESignalProcessing::MAX) * kMaxBufferProcessingCount, "You forgot me!");
@@ -826,9 +760,7 @@ static_assert(UE_ARRAY_COUNT(kDenoiserOutputResourceNames) == int32(ESignalProce
 /** Returns whether should compile pipeline for a given shader platform.*/
 static bool ShouldCompileSignalPipeline(ESignalProcessing SignalProcessing, EShaderPlatform Platform)
 {
-	if (SignalProcessing == ESignalProcessing::ScreenSpaceDiffuseIndirect ||
-		SignalProcessing == ESignalProcessing::VirtualShadowMapMask
-		)
+	if (SignalProcessing == ESignalProcessing::ScreenSpaceDiffuseIndirect)
 	{
 		return Platform == SP_PCD3D_SM5 || FDataDrivenShaderPlatformInfo::GetCompileSignalProcessingPipeline(FStaticShaderPlatform(Platform)) || Platform == SP_METAL_SM5 || FDataDrivenShaderPlatformInfo::GetSupportsSSDIndirect(Platform);
 	}
@@ -1567,17 +1499,6 @@ static void DenoiseSignalAtConstantPixelDensity(
 			HistoryTextureCountPerSignal = 3;
 			bHasReconstructionLayoutDifferentFromHistory = true;
 		}
-		else if (Settings.SignalProcessing == ESignalProcessing::VirtualShadowMapMask)
-		{
-			check(Settings.SignalBatchSize == 1);
-
-			ReconstructionDescs[0].Format = PF_FloatRGBA;
-			HistoryDescs[0].Format = PF_FloatRGBA;
-
-			HistoryTextureCountPerSignal = 1;
-			ReconstructionTextureCount = 1;
-			bHasReconstructionLayoutDifferentFromHistory = false;
-		}
 		else
 		{
 			check(0);
@@ -1668,8 +1589,7 @@ static void DenoiseSignalAtConstantPixelDensity(
 
 	// Setup all the metadata to do spatial convolution.
 	FSSDConvolutionMetaData ConvolutionMetaData;
-	if (Settings.SignalProcessing == ESignalProcessing::ShadowVisibilityMask ||
-		Settings.SignalProcessing == ESignalProcessing::VirtualShadowMapMask
+	if (Settings.SignalProcessing == ESignalProcessing::ShadowVisibilityMask
 		)
 	{
 		for (int32 BatchedSignalId = 0; BatchedSignalId < Settings.SignalBatchSize; BatchedSignalId++)
@@ -3024,56 +2944,6 @@ FSSDSignalTextures IScreenSpaceDenoiser::DenoiseIndirectProbeHierarchy(
 	TStaticArray<FScreenSpaceDenoiserHistory*, IScreenSpaceDenoiser::kMaxBatchSize> NewHistories;
 	PrevHistories[0] = &PreviousViewInfos->DiffuseIndirectHistory;
 	NewHistories[0] = View.ViewState ? &View.ViewState->PrevFrameViewInfo.DiffuseIndirectHistory : nullptr;
-	FViewInfoPooledRenderTargets ViewInfoPooledRenderTargets;
-	SetupSceneViewInfoPooledRenderTargets(View, &ViewInfoPooledRenderTargets);
-
-	FSSDSignalTextures SignalOutput;
-	DenoiseSignalAtConstantPixelDensity(
-		GraphBuilder, View, SceneTextures, ViewInfoPooledRenderTargets,
-		InputSignal, Settings,
-		PrevHistories,
-		NewHistories,
-		&SignalOutput);
-
-	return SignalOutput;
-}
-
-// static
-FSSDSignalTextures IScreenSpaceDenoiser::DenoiseVirtualShadowMapMask(
-	FRDGBuilder& GraphBuilder,
-	const FViewInfo& View,
-	const FSceneTextureParameters& SceneTextures,
-	const FLightSceneInfo* LightSceneInfo,
-	FIntRect LightScissorRect,
-	const FVirtualShadowMapMaskInputs& InputParameters)
-{
-	RDG_GPU_STAT_SCOPE(GraphBuilder, VirtualShadowsDenoiser);
-	const FLightSceneProxy* Proxy = LightSceneInfo->Proxy;
-	const ULightComponent* LightComponent = Proxy->GetLightComponent();
-	ensure(IsSupportedLightType(ELightComponentType(Proxy->GetLightType())));
-	
-	FSSDConstantPixelDensitySettings Settings;
-	Settings.SignalProcessing = ESignalProcessing::VirtualShadowMapMask;
-	Settings.ReconstructionSamples = CVarVirtualShadowReconstructionSampleCount.GetValueOnRenderThread();
-	Settings.PreConvolutionCount = CVarVirtualShadowPreConvolutionCount.GetValueOnRenderThread();
-	Settings.bUseTemporalAccumulation = false;
-	
-	Settings.LightSceneInfo[0] = LightSceneInfo;
-	Settings.SignalScissor[0] = LightScissorRect;
-	// Force viewport to be a multiple of 2, to avoid over frame interference between TAA jitter of the frame, and Stackowiack's SampleTrackId.
-	Settings.FullResViewport = LightScissorRect;
-	Settings.FullResViewport.Min.X &= ~1;
-	Settings.FullResViewport.Min.Y &= ~1;
-	
-	// No temporal reprojection
-	TStaticArray<FScreenSpaceDenoiserHistory*, IScreenSpaceDenoiser::kMaxBatchSize> PrevHistories;
-	TStaticArray<FScreenSpaceDenoiserHistory*, IScreenSpaceDenoiser::kMaxBatchSize> NewHistories;
-	PrevHistories[0] = nullptr;
-	NewHistories[0] = nullptr;
-
-	FSSDSignalTextures InputSignal;
-	InputSignal.Textures[0] = InputParameters.Signal;
-
 	FViewInfoPooledRenderTargets ViewInfoPooledRenderTargets;
 	SetupSceneViewInfoPooledRenderTargets(View, &ViewInfoPooledRenderTargets);
 
