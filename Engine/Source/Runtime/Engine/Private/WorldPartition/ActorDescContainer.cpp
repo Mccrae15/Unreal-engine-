@@ -207,6 +207,24 @@ void UActorDescContainer::OnPackageDeleted(UPackage* Package)
 	}
 }
 
+void UActorDescContainer::OnObjectsReplaced(const TMap<UObject*, UObject*>& OldToNewObjectMap)
+{
+	// Patch up Actor pointers in ActorDescs
+	for (auto Iter = OldToNewObjectMap.CreateConstIterator(); Iter; ++Iter)
+	{
+		if (AActor* OldActor = Cast<AActor>(Iter->Key))
+		{
+			if (FWorldPartitionActorDesc* ActorDesc = GetActorDesc(OldActor->GetActorGuid()))
+			{
+				if (ActorDesc->GetActor() == OldActor)
+				{
+					ActorDesc->ActorPtr = Cast<AActor>(Iter->Value);
+				}
+			}
+		}
+	}
+}
+
 void UActorDescContainer::RemoveActor(const FGuid& ActorGuid)
 {
 	if (TUniquePtr<FWorldPartitionActorDesc>* ExistingActorDesc = GetActorDescriptor(ActorGuid))
@@ -225,6 +243,7 @@ void UActorDescContainer::RegisterDelegates()
 	{
 		FCoreUObjectDelegates::OnObjectSaved.AddUObject(this, &UActorDescContainer::OnObjectPreSave);
 		FEditorDelegates::OnPackageDeleted.AddUObject(this, &UActorDescContainer::OnPackageDeleted);
+		FCoreUObjectDelegates::OnObjectsReplaced.AddUObject(this, &UActorDescContainer::OnObjectsReplaced);
 	}
 }
 
@@ -234,6 +253,7 @@ void UActorDescContainer::UnregisterDelegates()
 	{
 		FCoreUObjectDelegates::OnObjectSaved.RemoveAll(this);
 		FEditorDelegates::OnPackageDeleted.RemoveAll(this);
+		FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
 	}
 }
 
