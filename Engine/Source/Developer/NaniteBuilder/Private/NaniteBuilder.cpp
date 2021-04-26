@@ -24,7 +24,7 @@
 // differences, etc.) replace the version GUID below with a new one.
 // In case of merge conflicts with DDC versions, you MUST generate a new GUID
 // and set this new GUID as the version.
-#define NANITE_DERIVEDDATA_VER TEXT("39D24986-7939-68C4-DFD5-AA85A25956FC")
+#define NANITE_DERIVEDDATA_VER TEXT("6C3B0660-CE75-4B38-8797-4DDE1A134FBB")
 
 namespace Nanite
 {
