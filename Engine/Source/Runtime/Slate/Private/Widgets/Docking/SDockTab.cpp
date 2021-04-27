@@ -445,6 +445,16 @@ void SDockTab::SetOnTabDrawerClosed(const FSimpleDelegate InDelegate)
 	OnTabDrawerClosedEvent = InDelegate;
 }
 
+void SDockTab::SetOnTabRelocated(const FSimpleDelegate InDelegate)
+{
+	OnTabRelocated = InDelegate;
+}
+
+void SDockTab::SetOnTabDraggedOverDockArea(const FSimpleDelegate InDelegate)
+{
+	OnTabDraggedOverDockArea = InDelegate;
+}
+
 TSharedRef<FTabManager> SDockTab::GetTabManager() const
 {
 	return MyTabManager.Pin().ToSharedRef();
@@ -504,6 +514,7 @@ float SDockTab::GetFlashValue() const
 void SDockTab::SetDraggedOverDockArea( const TSharedPtr<SDockingArea>& Area )
 {
 	DraggedOverDockingArea = Area;
+	OnTabDraggedOverDockArea.ExecuteIfBound();
 }
 
 bool SDockTab::HasSiblingTab(const FTabId& SiblingTabId, const bool TreatIndexNoneAsWildcard) const
@@ -532,6 +543,8 @@ void SDockTab::Construct( const FArguments& InArgs )
 	this->TabColorScale = InArgs._TabColorScale;
 	
 	OnTabDrawerClosedEvent = InArgs._OnTabDrawerClosed;
+	OnTabRelocated = InArgs._OnTabRelocated;
+	OnTabDraggedOverDockArea = InArgs._OnTabDraggedOverDockArea;
 
 	MajorTabStyle = &FAppStyle::Get().GetWidgetStyle<FDockTabStyle>("Docking.MajorTab");
 	GenericTabStyle = &FAppStyle::Get().GetWidgetStyle<FDockTabStyle>("Docking.Tab");
@@ -710,6 +723,11 @@ void SDockTab::OnTabDrawerOpened()
 void SDockTab::OnTabDrawerClosed()
 {
 	OnTabDrawerClosedEvent.ExecuteIfBound();
+}
+
+void SDockTab::NotifyTabRelocated()
+{
+	OnTabRelocated.ExecuteIfBound();
 }
 
 const FDockTabStyle& SDockTab::GetCurrentStyle() const

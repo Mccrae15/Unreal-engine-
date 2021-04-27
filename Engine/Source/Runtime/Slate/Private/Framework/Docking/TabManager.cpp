@@ -2136,6 +2136,8 @@ void FTabManager::OnTabForegrounded( const TSharedPtr<SDockTab>& NewForegroundTa
 
 void FTabManager::OnTabRelocated( const TSharedRef<SDockTab>& RelocatedTab, const TSharedPtr<SWindow>& NewOwnerWindow )
 {
+	RelocatedTab->NotifyTabRelocated();
+
 	CleanupPointerArray(DockAreas);
 	RemoveTabFromCollapsedAreas( FTabMatcher( RelocatedTab->GetLayoutIdentifier() ) );
 	for (int32 DockAreaIndex=0; DockAreaIndex < DockAreas.Num(); ++DockAreaIndex)
