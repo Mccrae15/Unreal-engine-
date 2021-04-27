@@ -78,8 +78,8 @@ void TSuspensionConstraintProxy<Chaos::FSuspensionConstraint>::InitializeOnPhysi
 			Chaos::TGeometryParticleHandle<Chaos::FReal, 3>* Handle0 = GetParticleHandleFromProxy(BasePairs[0]);
 			if (Handle0)
 			{
-				Handle = SuspensionConstraints.AddConstraint(Handle0, Constraint->GetLocation()
-					, SuspensionSettingsBuffer);
+				Handle = SuspensionConstraints.AddConstraint(Handle0, Constraint->GetLocation(), SuspensionSettingsBuffer);
+				Handle0->AddConstraintHandle(Handle);
 			}
 			
 		}

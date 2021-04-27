@@ -88,18 +88,45 @@ namespace Chaos
 		void RemoveConstraint(int ConstraintIndex);
 
 
-		/**
-		 * Disabled the specified constraint.
-		 */
-		void DisableConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles)
+		/*
+		* Disconnect the constraints from the attached input particles.
+		* This will set the constrained Particle elements to nullptr and
+		* set the Enable flag to false.
+		*
+		* The constraint is unuseable at this point and pending deletion.
+		*/
+
+		void DisconnectConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles)
 		{
-			for (TGeometryParticleHandle<FReal, 3>* RemovedParticle : RemovedParticles)
+			for (FGeometryParticleHandle* RemovedParticle : RemovedParticles)
 			{
 				for (FConstraintHandle* ConstraintHandle : RemovedParticle->ParticleConstraints())
 				{
-					ConstraintHandle->SetEnabled(false); // constraint lifespan is managed by the proxy
+					if (ConstraintHandle->As<FPBDSuspensionConstraintHandle>())
+					{
+						ConstraintHandle->SetEnabled(false); // constraint lifespan is managed by the proxy
+
+						int ConstraintIndex = ConstraintHandle->GetConstraintIndex();
+						if (ConstraintIndex != INDEX_NONE)
+						{
+							if (ConstrainedParticles[ConstraintIndex] == RemovedParticle)
+							{
+								ConstrainedParticles[ConstraintIndex] = nullptr;
+							}
+						}
+					}
 				}
 			}
+		}
+
+		bool IsConstraintEnabled(int32 ConstraintIndex) const
+		{
+			return ConstraintEnabledStates[ConstraintIndex];
+		}
+
+		void SetConstraintEnabled(int32 ConstraintIndex, bool bEnabled)
+		{
+			ConstraintEnabledStates[ConstraintIndex] = bEnabled;
 		}
 
 		//
@@ -201,6 +228,7 @@ namespace Chaos
 		TArray<TGeometryParticleHandle<FReal, 3>*> ConstrainedParticles;
 		TArray<FVec3> SuspensionLocalOffset;
 		TArray<FPBDSuspensionSettings> ConstraintSettings;
+		TArray<bool> ConstraintEnabledStates;
 
 		FHandles Handles;
 		FConstraintHandleAllocator HandleAllocator;

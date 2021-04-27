@@ -3,6 +3,11 @@
 
 #include "ParticleHandle.h"
 
+namespace ChaosTest
+{
+	class ConstraintGraphValidation;
+}
+
 namespace Chaos
 {
 	template<typename T, int d>
@@ -37,6 +42,9 @@ namespace Chaos
 	{
 	public:
 		friend class FPBDConstraintColor;
+
+		//Make friend with unit test code so we can verify some behavior
+		friend class ChaosTest::ConstraintGraphValidation;
 
 		/** Information required to map a graph edge back to its constraint */
 		struct FConstraintData
