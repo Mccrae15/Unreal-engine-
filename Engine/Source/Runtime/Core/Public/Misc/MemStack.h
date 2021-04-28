@@ -85,7 +85,9 @@ public:
 		, TopMark(nullptr)
 		, NumMarks(0)
 		, MinMarksToAlloc(InMinMarksToAlloc)
+		, bShouldEnforceAllocMarks(false)
 	{
+		
 	}
 
 	~FMemStackBase()
@@ -106,7 +108,7 @@ public:
 		checkSlow((Alignment&(Alignment-1))==0);
 		checkSlow(Top<=End);
 		checkSlow(NumMarks >= MinMarksToAlloc);
-
+		check(!bShouldEnforceAllocMarks || NumMarks > 0);
 
 		// Try to get memory from the current chunk.
 		uint8* Result = Align( Top, Alignment );
@@ -194,11 +196,19 @@ private:
 
 	/** Used for a checkSlow. Most stacks require a mark to allocate. Command lists don't because they never mark, only flush*/
 	int32 MinMarksToAlloc;
+
+protected:
+	bool bShouldEnforceAllocMarks;	
 };
 
 
 class CORE_API FMemStack : public TThreadSingleton<FMemStack>, public FMemStackBase
 {
+public:
+	FMemStack()
+	{
+		bShouldEnforceAllocMarks = true;
+	}
 };
 
 
