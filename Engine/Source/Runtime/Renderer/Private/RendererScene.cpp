@@ -3984,17 +3984,17 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 			{
 				int32 SourceIndex = RemovedLocalPrimitiveSceneInfos[RemoveIndex]->PackedIndex;
 				check(SourceIndex >= (Primitives.Num() - RemovedLocalPrimitiveSceneInfos.Num() + StartIndex));
-				Primitives.Pop();
-				PrimitiveTransforms.Pop();
-				PrimitiveSceneProxies.Pop();
-				PrimitiveBounds.Pop();
-				PrimitiveFlagsCompact.Pop();
-				PrimitiveVisibilityIds.Pop();
-				PrimitiveOcclusionFlags.Pop();
-				PrimitiveComponentIds.Pop();
-				PrimitiveVirtualTextureFlags.Pop();
-				PrimitiveVirtualTextureLod.Pop();
-				PrimitiveOcclusionBounds.Pop();
+				Primitives.Pop(false);
+				PrimitiveTransforms.Pop(false);
+				PrimitiveSceneProxies.Pop(false);
+				PrimitiveBounds.Pop(false);
+				PrimitiveFlagsCompact.Pop(false);
+				PrimitiveVisibilityIds.Pop(false);
+				PrimitiveOcclusionFlags.Pop(false);
+				PrimitiveComponentIds.Pop(false);
+				PrimitiveVirtualTextureFlags.Pop(false);
+				PrimitiveVirtualTextureLod.Pop(false);
+				PrimitiveOcclusionBounds.Pop(false);
 				PrimitivesAlwaysVisible.RemoveAt(PrimitivesAlwaysVisible.Num() - 1);
 			#if WITH_EDITOR
 				PrimitivesSelected.RemoveAt(PrimitivesSelected.Num() - 1);
@@ -4037,7 +4037,7 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 
 				DeletedSceneInfos.Add(PrimitiveSceneInfo);
 			}
-			RemovedLocalPrimitiveSceneInfos.RemoveAt(StartIndex, RemovedLocalPrimitiveSceneInfos.Num() - StartIndex);
+			RemovedLocalPrimitiveSceneInfos.RemoveAt(StartIndex, RemovedLocalPrimitiveSceneInfos.Num() - StartIndex, false);
 		}
 	}
 	{
@@ -4258,7 +4258,7 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsync
 				// Update scene LOD tree
 				SceneLODHierarchy.UpdateNodeSceneInfo(PrimitiveSceneInfo->PrimitiveComponentId, PrimitiveSceneInfo);
 			}
-			AddedLocalPrimitiveSceneInfos.RemoveAt(StartIndex, AddedLocalPrimitiveSceneInfos.Num() - StartIndex);
+			AddedLocalPrimitiveSceneInfos.RemoveAt(StartIndex, AddedLocalPrimitiveSceneInfos.Num() - StartIndex, false);
 		}
 	}
 	{
