@@ -238,7 +238,7 @@ public:
 	int32 NumMeshCardsToAddToSurfaceCache = 0;
 
 	bool bTrackAllPrimitives;
-	TArray<FPrimitiveSceneInfo*> PendingAddOperations;
+	TSet<FPrimitiveSceneInfo*> PendingAddOperations;
 	TSet<FPrimitiveSceneInfo*> PendingUpdateOperations;
 	TArray<FLumenPrimitiveRemoveInfo> PendingRemoveOperations;
 
