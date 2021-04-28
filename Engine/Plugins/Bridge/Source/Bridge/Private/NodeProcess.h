@@ -1,16 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 #include "CoreMinimal.h"
-#include "GenericPlatform/GenericPlatformMisc.h"
-#include "GenericPlatform/GenericPlatformProcess.h"
 
-#if PLATFORM_WINDOWS
-#include "Windows/WindowsPlatformProcess.h"
-#include "Windows/WindowsPlatformMisc.h"
-#elif PLATFORM_MAC
-#include "Mac/MacPlatformMisc.h"
-#include "Mac/MacPlatformProcess.h"
-#endif
+#include "HAL/PlatformMisc.h"
+#include "HAL/PlatformProcess.h"
 
 //struct FProcHandle;
 
@@ -30,7 +23,4 @@ private:
 public:
 	static TSharedPtr<FNodeProcessManager> Get();
 	void StartNodeProcess();
-	void KillNodeProcess() ;
-	bool bIsNodeRunning = false ;
-	void HandleBrowserUrlChanged(const FText& Url);
 };

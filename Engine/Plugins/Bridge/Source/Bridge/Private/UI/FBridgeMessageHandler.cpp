@@ -93,70 +93,55 @@ bool FBridgeMessageHandler::OnMouseDown(const TSharedPtr< FGenericWindow >& Wind
 	return false;
 }
 
+// Called on Mac & Linux
 bool FBridgeMessageHandler::OnMouseUp(const EMouseButtons::Type Button)
 {
 	if (TargetHandler.IsValid())
 	{
-
+		FBridgeMessageHandler::OnMouseUp();
 		return TargetHandler->OnMouseUp(Button);
 	}
 
 	return false;
 }
 
+// Called on Windows
 bool FBridgeMessageHandler::OnMouseUp(const EMouseButtons::Type Button, const FVector2D CursorPos)
 {
-	UE_LOG(LogTemp, Error, TEXT("Mouse Up"));
 	if (TargetHandler.IsValid())
 	{
-		// Destroy the drag popups
-		FBridgeUIManager::Instance->DragDropWindow->RequestDestroyWindow();
-		FBridgeUIManager::Instance->OverlayWindow->HideWindow();
-
-		// Get browser dimensions
-		FGeometry BrowserGeometry = FBridgeUIManager::Instance->WebBrowserWidget.Get()->GetTickSpaceGeometry();
-		FVector2D BrowserSize = BrowserGeometry.GetAbsoluteSize();
-		FVector2D BrowserPosition = BrowserGeometry.GetAbsolutePosition();
-		// TODO: Detect ViewPort Drops as well - the commented out code doesn't work, it should though. :/
-		// FVector2D ViewPortPosition = FSlateApplication::Get().GetGameViewport()->GetTickSpaceGeometry().GetAbsolutePosition();
-		// FVector2D ViewPortSize =  FSlateApplication::Get().GetGameViewport()->GetTickSpaceGeometry().GetAbsoluteSize();
-
-		// UE_LOG(LogTemp, Error, TEXT("Size in Screen! %f %f"), BrowserSize.X, BrowserSize.Y);
-		// UE_LOG(LogTemp, Error, TEXT("Position in Screen! %f %f"), BrowserPosition.X, BrowserPosition.Y);
-		
-		// Get cursor position
-		FVector2D CursorPosition = FSlateApplication::Get().GetCursorPos();
-		
-		bool WithInBrowserWidth = CursorPosition.X >= BrowserPosition.X && CursorPosition.X <= BrowserPosition.X + BrowserSize.X;
-		bool WithInBrowserHeight = CursorPosition.Y >= BrowserPosition.Y && CursorPosition.Y <= BrowserPosition.Y + BrowserSize.Y;
-
-		// bool WithInViewPortWidth = CursorPosition.X >= ViewPortPosition.X && CursorPosition.X <= ViewPortPosition.X + ViewPortSize.X;
-		// bool WithInViewPortHeight = CursorPosition.Y >= ViewPortPosition.Y && CursorPosition.Y <= ViewPortPosition.Y + ViewPortSize.Y;
-
-		if (!WithInBrowserWidth || !WithInBrowserHeight)
-		{
-			
-			FBridgeUIManager::BrowserBinding->OnDroppedDelegate.Execute(TEXT("test"));
-
-			// if (WithInViewPortWidth && WithInViewPortHeight)
-			// {
-			// 	UE_LOG(LogTemp, Error, TEXT("Within ViewPort"));
-			// }
-		}
-		else
-		{
-			
-			FBridgeUIManager::BrowserBinding->OnDropDiscardedDelegate.Execute(TEXT("test"));
-		}
-
-		// FBridgeUIManager::Instance->DragDropWindow.Get()->Resize(FVector2D(0, 0));
-
-		FSlateApplication::Get().GetPlatformApplication()->SetMessageHandler(TargetHandler.ToSharedRef());
-
+		FBridgeMessageHandler::OnMouseUp();
 		return TargetHandler->OnMouseUp(Button, CursorPos);
 	}
 
 	return false;
+}
+
+void FBridgeMessageHandler::OnMouseUp()
+{
+	// Destroy the drag popups
+	FBridgeUIManager::Instance->DragDropWindow->RequestDestroyWindow();
+	if (FBridgeUIManager::Instance->OverlayWindow != NULL)
+	{
+		FBridgeUIManager::Instance->OverlayWindow->HideWindow();
+	}
+
+	// Get browser dimensions
+	FGeometry BrowserGeometry = FBridgeUIManager::Instance->WebBrowserWidget.Get()->GetTickSpaceGeometry();
+
+	if (!BrowserGeometry.IsUnderLocation(FSlateApplication::Get().GetCursorPos()))
+	{
+		// Dropped outside browser
+		// TODO: Remove these identifiers
+		FBridgeUIManager::BrowserBinding->OnDroppedDelegate.Execute(TEXT("dropped-outside"));
+	}
+	else
+	{
+		// TODO: Remove these identifiers
+		FBridgeUIManager::BrowserBinding->OnDropDiscardedDelegate.Execute(TEXT("dropped-inside"));
+	}
+
+	FSlateApplication::Get().GetPlatformApplication()->SetMessageHandler(TargetHandler.ToSharedRef());
 }
 
 bool FBridgeMessageHandler::OnMouseDoubleClick(const TSharedPtr< FGenericWindow >& Window, const EMouseButtons::Type Button)

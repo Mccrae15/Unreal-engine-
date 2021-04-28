@@ -40,6 +40,8 @@ public:
 
 	virtual bool OnMouseUp(const EMouseButtons::Type Button, const FVector2D CursorPos) override;
 
+	virtual void OnMouseUp();
+
 	virtual bool OnMouseDoubleClick(const TSharedPtr< FGenericWindow >& Window, const EMouseButtons::Type Button) override;
 
 	virtual bool OnMouseDoubleClick(const TSharedPtr< FGenericWindow >& Window, const EMouseButtons::Type Button, const FVector2D CursorPos) override;

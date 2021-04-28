@@ -14,8 +14,8 @@
 	"EnabledByDefault": true,
 	"SupportedTargetPlatforms": [
 		"Win64",
-		"Mac"
-		
+		"Mac",
+		"Linux"
 	],
 	"Modules": [
 		{
@@ -24,8 +24,8 @@
 			"LoadingPhase": "PostDefault",
 			"WhitelistPlatforms": [
 				"Win64",
-				"Mac"
-				
+				"Mac",
+				"Linux"
 			]
 		},
 		{
@@ -34,8 +34,8 @@
 			"LoadingPhase": "PostDefault",
 			"WhitelistPlatforms": [
 				"Win64",
-				"Mac"
-				
+				"Mac",
+				"Linux"
 			]
 		}
 
@@ -46,6 +46,4 @@
 			"Enabled": true
 		}
 	]
-
-
 }

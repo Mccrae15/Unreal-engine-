@@ -158,6 +158,7 @@ void UBrowserBinding::OpenExternalUrl(FString Url)
 
 void UBrowserBinding::DragStarted(TArray<FString> ImageUrls)
 {
+#if PLATFORM_WINDOWS
 	FGeometry BridgeWindowGeometry = FBridgeUIManager::Instance->BridgeWindow->GetTickSpaceGeometry();
 	FVector2D BridgeWindowSize = BridgeWindowGeometry.GetAbsoluteSize();
 	FVector2D BridgeWindowPosition = BridgeWindowGeometry.GetAbsolutePosition();
@@ -167,6 +168,7 @@ void UBrowserBinding::DragStarted(TArray<FString> ImageUrls)
 
 	FBridgeUIManager::Instance->OverlayWindow->ShowWindow();
 	FBridgeUIManager::Instance->OverlayWindow->BringToFront();
+#endif
 
 	// Create and add DragDrop Popup Window
 	TSharedPtr<SWebBrowser> PopupWebBrowser = SNew(SWebBrowser)
@@ -180,6 +182,7 @@ void UBrowserBinding::DragStarted(TArray<FString> ImageUrls)
 		.InitialOpacity(0.5f)
 		.SupportsTransparency(EWindowTransparency::PerWindow)
 		.CreateTitleBar(false)
+		.HasCloseButton(false)
 		.IsTopmostWindow(true)
 		.FocusWhenFirstShown(false)
 		.SupportsMaximize(false)
@@ -190,17 +193,21 @@ void UBrowserBinding::DragStarted(TArray<FString> ImageUrls)
 
 	if (Count > 1)
 	{
-		PopupWebBrowser->LoadString(FString::Printf(TEXT("<!DOCTYPE html><html lang=\"en\"> <head> <meta charset=\"UTF-8\"/> <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/> <style>*{padding: 0px;}body{padding: 0px; margin: 0px;}#container{display: flex; position: relative; width: 120px; height: 120px; background: #202020; justify-content: center; align-items: center;}#full-image{max-width: 110px; max-height: 110px; display: block; font-size: 0;}#number-circle{position: absolute; border-radius: 50%; width: 18px; height: 18px; padding: 4px; background: #fff; color: #666; text-align: center; font: 12px Arial, sans-serif; box-shadow: 1px 1px 1px #888888; opacity: 0.5;}</style> </head> <body> <div id=\"container\"> <img id=\"full-image\" src=\"%s\"/> <div id=\"number-circle\">+%d</div></div></body></html>"), *ImageUrl, Count-1), TEXT(""));
+		PopupWebBrowser->LoadString(FString::Printf(TEXT("<!DOCTYPE html><html lang=\"en\"> <head> <meta charset=\"UTF-8\"/> <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/> <style>*{padding: 0px;}body{padding: 0px; margin: 0px;}#container{display: flex; position: relative; width: 100%; height: 100%; min-width: 120px; min-height: 120px; background: #202020; justify-content: center; align-items: center;}#full-image{max-width: 110px; max-height: 110px; display: block; font-size: 0;}#number-circle{position: absolute; border-radius: 50%; width: 18px; height: 18px; padding: 4px; background: #fff; color: #666; text-align: center; font: 12px Arial, sans-serif; box-shadow: 1px 1px 1px #888888; opacity: 0.5;}</style> </head> <body> <div id=\"container\"> <img id=\"full-image\" src=\"%s\"/> <div id=\"number-circle\">+%d</div></div></body></html>"), *ImageUrl, Count-1), TEXT(""));
 	}
 	else
 	{
-		PopupWebBrowser->LoadString(FString::Printf(TEXT("<!DOCTYPE html><html lang=\"en\"> <head> <meta charset=\"UTF-8\"/> <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/> <style>*{padding: 0px;}body{padding: 0px; margin: 0px;}#container{display: flex; position: relative; width: 120px; height: 120px; background: #202020; justify-content: center; align-items: center;}#full-image{max-width: 110px; max-height: 110px; display: block; font-size: 0;}#number-circle{position: absolute; border-radius: 50%; width: 18px; height: 18px; padding: 4px; background: #fff; color: #666; text-align: center; font: 16px Arial, sans-serif; box-shadow: 1px 1px 1px #888888; opacity: 0.5;}</style> </head> <body> <div id=\"container\"> <img id=\"full-image\" src=\"%s\"/></div></body></html>"), *ImageUrl), TEXT(""));
+		PopupWebBrowser->LoadString(FString::Printf(TEXT("<!DOCTYPE html><html lang=\"en\"> <head> <meta charset=\"UTF-8\"/> <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/> <style>*{padding: 0px;}body{padding: 0px; margin: 0px;}#container{display: flex; position: relative; width: 100%; height: 100%; min-width: 120px; min-height: 120px; background: #202020; justify-content: center; align-items: center;}#full-image{max-width: 110px; max-height: 110px; display: block; font-size: 0;}#number-circle{position: absolute; border-radius: 50%; width: 18px; height: 18px; padding: 4px; background: #fff; color: #666; text-align: center; font: 16px Arial, sans-serif; box-shadow: 1px 1px 1px #888888; opacity: 0.5;}</style> </head> <body> <div id=\"container\"> <img id=\"full-image\" src=\"%s\"/></div></body></html>"), *ImageUrl), TEXT(""));
 	}
 
 	FSlateApplication::Get().AddWindow(FBridgeUIManager::Instance->DragDropWindow.ToSharedRef());
+
+#if PLATFORM_WINDOWS
 	FSlateApplication::Get().ProcessMouseButtonUpEvent(FPointerEvent());
+#endif
 
 	FBridgeUIManager::Instance->DragDropWindow->GetNativeWindow()->SetWindowFocus();
+	FBridgeUIManager::Instance->DragDropWindow->GetNativeWindow()->SetNativeWindowButtonsVisibility(false);
 
 	TSharedRef<FGenericApplicationMessageHandler> TargetHandler = FSlateApplication::Get().GetPlatformApplication().Get()->GetMessageHandler();
 	UBrowserBinding::BridgeMessageHandler->SetTargetHandler(TargetHandler);
