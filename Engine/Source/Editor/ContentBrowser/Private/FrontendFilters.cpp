@@ -1317,9 +1317,11 @@ void FFrontendFilter_UsedInAnyLevel::ActiveStateChanged(bool bActive)
 
 	if (bActive)
 	{
-		// Find all the levels
+		// Find all the levels & external actors
 		FARFilter Filter;
 		Filter.ClassNames.Add(UWorld::StaticClass()->GetFName());
+		Filter.ClassNames.Add(AActor::StaticClass()->GetFName());
+		Filter.bRecursiveClasses = true;
 		FrontendFilterHelper::GetDependencies(Filter, *AssetRegistry, LevelsDependencies);
 	}
 }
@@ -1359,9 +1361,11 @@ void FFrontendFilter_NotUsedInAnyLevel::ActiveStateChanged(bool bActive)
 	
 	if (bActive)
 	{
-		// Find all the levels
+		// Find all the levels & external actors
 		FARFilter Filter;
 		Filter.ClassNames.Add(UWorld::StaticClass()->GetFName());
+		Filter.ClassNames.Add(AActor::StaticClass()->GetFName());
+		Filter.bRecursiveClasses = true;
 		FrontendFilterHelper::GetDependencies(Filter, *AssetRegistry, LevelsDependencies);
 	}
 }
