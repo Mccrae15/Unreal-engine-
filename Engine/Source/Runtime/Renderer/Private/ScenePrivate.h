@@ -2576,7 +2576,7 @@ public:
 	FPersistentUniformBuffers UniformBuffers;
 
 	/** Instancing state buckets.  These are stored on the scene as they are precomputed at FPrimitiveSceneInfo::AddToScene time. */
-	FCriticalSection CachedMeshDrawCommandLock[EMeshPass::Num];
+	FRWLock CachedMeshDrawCommandLock[EMeshPass::Num];
 	FStateBucketMap CachedMeshDrawCommandStateBuckets[EMeshPass::Num];
 	FCachedPassMeshDrawList CachedDrawLists[EMeshPass::Num];
 
@@ -2584,9 +2584,8 @@ public:
 	FCachedRayTracingMeshCommandStorage CachedRayTracingMeshCommands;
 #endif
 	/** Nanite state buckets. These are stored on the scene as they are computed at FPrimitiveSceneInfo::AddToScene time. */
-	FCriticalSection NaniteDrawCommandLock[ENaniteMeshPass::Num];
+	FRWLock NaniteDrawCommandLock[ENaniteMeshPass::Num];
 	FStateBucketMap NaniteDrawCommands[ENaniteMeshPass::Num];
-
 
 	/**
 	 * The following arrays are densely packed primitive data needed by various
