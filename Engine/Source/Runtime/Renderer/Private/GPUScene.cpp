@@ -196,13 +196,18 @@ inline FPrimitiveTransforms InitPrimitiveTransforms(const FScene& Scene, const F
 	return Transforms;
 }
 
-inline void InitPrimitiveInstance(FPrimitiveInstance& PrimitiveInstance, const FPrimitiveTransforms& PrimitiveTransforms, int32 PrimitiveID, uint32 SceneFrameNumber)
+inline void InitPrimitiveInstance(FPrimitiveInstance& PrimitiveInstance, const FPrimitiveTransforms& PrimitiveTransforms, int32 PrimitiveID, uint32 SceneFrameNumber, bool bComputeTransforms)
 {
 	PrimitiveInstance.PrimitiveId = PrimitiveID;
 	PrimitiveInstance.LastUpdateSceneFrameNumber = SceneFrameNumber;
 	PrimitiveInstance.LocalBounds = PrimitiveInstance.RenderBounds;
-	PrimitiveInstance.LocalToWorld = PrimitiveInstance.InstanceToLocal * PrimitiveTransforms.LocalToWorld;
-	PrimitiveInstance.PrevLocalToWorld = PrimitiveInstance.InstanceToLocal * PrimitiveTransforms.PreviousLocalToWorld;
+	if (bComputeTransforms)
+	{
+		PrimitiveInstance.LocalToWorld = PrimitiveInstance.InstanceToLocal * PrimitiveTransforms.LocalToWorld;
+		PrimitiveInstance.PrevLocalToWorld = PrimitiveInstance.InstanceToLocal * PrimitiveTransforms.PreviousLocalToWorld;
+	}
+
+	// TODO: Can move more of the following work to be conditionally under bComputeTransforms
 
 	// TODO: This should be propagated from the Primitive, or not exist?
 	PrimitiveInstance.Flags = 0;
@@ -230,14 +235,16 @@ inline void InitPrimitiveInstanceDummy(FPrimitiveInstance& DummyInstance, const 
 	// In the future we should remove redundant data from the primitive, and then the instances should be
 	// provided by the proxy. However, this is a lot of work before we can just enable it in the base proxy class.
 	DummyInstance.InstanceToLocal = FMatrix::Identity;
-	DummyInstance.LocalToWorld = FMatrix::Identity;
-	DummyInstance.PrevLocalToWorld = FMatrix::Identity;
+	DummyInstance.PrevInstanceToLocal = FMatrix::Identity;
+	DummyInstance.LocalToWorld = PrimitiveTransforms.LocalToWorld;
+	DummyInstance.PrevLocalToWorld = PrimitiveTransforms.PreviousLocalToWorld;
 	DummyInstance.NonUniformScale = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
 	DummyInstance.InvNonUniformScaleAndDeterminantSign = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
 	DummyInstance.RenderBounds = LocalBounds;
 	DummyInstance.LocalBounds = LocalBounds;
 
-	InitPrimitiveInstance(DummyInstance, PrimitiveTransforms, PrimitiveID, SceneFrameNumber);
+	const bool bComputeTransforms = false; // No need, everything is identity
+	InitPrimitiveInstance(DummyInstance, PrimitiveTransforms, PrimitiveID, SceneFrameNumber, bComputeTransforms);
 }
 
 /**
@@ -369,6 +376,8 @@ struct FUploadDataSourceAdapterScenePrimitives
 				return;
 			}
 
+			const bool bComputeTransforms = PrimitiveSceneProxy->ShouldUpdateGPUSceneTransforms();
+
 			const FPrimitiveTransforms PrimitiveTransforms = InitPrimitiveTransforms(Scene, PrimitiveSceneProxy, PrimitiveSceneInfo);
 
 			TArray<FPrimitiveInstance>* PrimitiveInstancesPtr = PrimitiveSceneProxy->GetPrimitiveInstances();
@@ -376,7 +385,7 @@ struct FUploadDataSourceAdapterScenePrimitives
 
 			for (FPrimitiveInstance& PrimitiveInstance : *PrimitiveInstancesPtr)
 			{
-				InitPrimitiveInstance(PrimitiveInstance, PrimitiveTransforms, PrimitiveID, SceneFrameNumber);
+				InitPrimitiveInstance(PrimitiveInstance, PrimitiveTransforms, PrimitiveID, SceneFrameNumber, bComputeTransforms);
 			}
 		}
 	}
