@@ -680,6 +680,11 @@ void UStaticMeshComponent::OnUnregister()
 	Super::OnUnregister();
 }
 
+bool UStaticMeshComponent::RequiresGameThreadEndOfFrameRecreate() const
+{
+	return false;
+}
+
 void UStaticMeshComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Context)
 {
 	LLM_SCOPE(ELLMTag::StaticMesh);
@@ -2338,7 +2343,7 @@ UMaterialInterface* UStaticMeshComponent::GetMaterial(int32 MaterialIndex) const
 
 void UStaticMeshComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials) const
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMeshComponent::GetUsedMaterials);
+	//TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMeshComponent::GetUsedMaterials);
 
 	if (GetStaticMesh() && GetStaticMesh()->GetRenderData())
 	{
