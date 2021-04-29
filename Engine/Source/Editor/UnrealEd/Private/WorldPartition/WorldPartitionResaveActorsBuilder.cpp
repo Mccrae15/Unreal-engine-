@@ -34,14 +34,14 @@ bool UWorldPartitionResaveActorsBuilder::Run(UWorld* World, FPackageSourceContro
 
 		if (FWorldPartitionActorDesc* ActorDesc = WorldPartition->GetActorDesc(ActorGuid))
 		{
-			FWorldPartitionReference& Reference = InOutActorReferences.Emplace(ActorGuid);
+			InOutActorReferences.Emplace(ActorGuid);
 
 			for (FGuid ReferenceGuid : ActorDesc->GetReferences())
 			{
 				LoadReferences(ReferenceGuid, InOutActorReferences);
 			}
 
-			Reference = FWorldPartitionReference(WorldPartition, ActorGuid);
+			InOutActorReferences[ActorGuid] = FWorldPartitionReference(WorldPartition, ActorGuid);
 		}
 	};
 
