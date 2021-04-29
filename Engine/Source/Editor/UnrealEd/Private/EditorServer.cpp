@@ -3793,11 +3793,15 @@ void UEditorEngine::GetPropertyColorationTarget(FString& OutPropertyValue, FProp
 	OutPropertyChain	= GPropertyColorationChain;
 }
 
+bool UEditorEngine::IsPropertyColorationColorFeatureActivated() const
+{
+	return GPropertyColorationClass && GPropertyColorationChain;
+}
 
 bool UEditorEngine::GetPropertyColorationColor(UObject* Object, FColor& OutColor)
 {
 	bool bResult = false;
-	if ( GPropertyColorationClass && GPropertyColorationChain && GPropertyColorationChain->Num() > 0 )
+	if (IsPropertyColorationColorFeatureActivated() && GPropertyColorationChain->Num() > 0)
 	{
 		UObject* MatchingBase = NULL;
 		AActor* Owner = NULL;

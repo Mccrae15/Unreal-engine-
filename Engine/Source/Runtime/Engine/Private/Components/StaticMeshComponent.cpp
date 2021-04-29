@@ -682,6 +682,12 @@ void UStaticMeshComponent::OnUnregister()
 
 bool UStaticMeshComponent::RequiresGameThreadEndOfFrameRecreate() const
 {
+#if STATICMESH_ENABLE_DEBUG_RENDERING
+	if (GIsEditor && GEngine->IsPropertyColorationColorFeatureActivated())
+	{
+		return true;
+	}
+#endif
 	return false;
 }
 
