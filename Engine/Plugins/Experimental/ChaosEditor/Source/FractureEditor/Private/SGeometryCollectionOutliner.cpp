@@ -14,6 +14,7 @@
 #include "ScopedTransaction.h"
 #include "FractureSettings.h"
 #include "GeometryCollectionOutlinerDragDrop.h"
+#include "GeometryCollection/GeometryCollectionUtility.h"
 
 #define LOCTEXT_NAMESPACE "ChaosEditor"
 
