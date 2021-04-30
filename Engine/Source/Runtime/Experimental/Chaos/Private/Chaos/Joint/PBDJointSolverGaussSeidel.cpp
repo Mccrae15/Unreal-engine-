@@ -86,7 +86,8 @@ namespace Chaos
 		const FPBDJointSettings& JointSettings)
 	{
 		// NumActiveConstraints is initialized to -1, so there's no danger of getting invalid LastPs/Qs
-		if (NumActiveConstraints >= 0)
+		// We also check SolverStiffness mainly for testing when solver stiffness is 0 (so we don't exit immediately)
+		if ((NumActiveConstraints >= 0) && (SolverStiffness > 0.0f))
 		{
 			bool bIsSolved =
 				FVec3::IsNearlyEqual(Ps[0], LastPs[0], PositionTolerance)
@@ -161,12 +162,15 @@ namespace Chaos
 		NumActiveConstraints = -1;
 		bIsActive = true;
 
+		SolverStiffness = 1.0f;
+
 		InitDerivedState();
 	}
 
 
 	void FJointSolverGaussSeidel::Update(
 		const FReal Dt,
+		const FReal InSolverStiffness,
 		const FPBDJointSolverSettings& SolverSettings,
 		const FPBDJointSettings& JointSettings,
 		const FVec3& P0,
@@ -188,6 +192,8 @@ namespace Chaos
 		Vs[1] = V1;
 		Ws[0] = W0;
 		Ws[1] = W1;
+
+		SolverStiffness = InSolverStiffness;
 
 		UpdateDerivedState();
 
@@ -633,41 +639,38 @@ namespace Chaos
 
 	void FJointSolverGaussSeidel::ApplyPositionDelta(
 		const int32 BodyIndex,
-		const FReal Stiffness,
 		const FVec3& DP)
 	{
 		//UE_LOG(LogChaosJoint, VeryVerbose, TEXT("      Apply DP%d %f %f %f"), BodyIndex, DP.X, DP.Y, DP.Z);
 
-		Ps[BodyIndex] += Stiffness * DP;
+		Ps[BodyIndex] += DP;
 
-		Xs[BodyIndex] += Stiffness * DP;
+		Xs[BodyIndex] += DP;
 	}
 
 
 	void FJointSolverGaussSeidel::ApplyPositionDelta(
-		const FReal Stiffness,
 		const FVec3& DP0,
 		const FVec3& DP1)
 	{
 		//UE_LOG(LogChaosJoint, VeryVerbose, TEXT("      Apply DP%d %f %f %f"), 0, DP0.X, DP0.Y, DP0.Z);
 		//UE_LOG(LogChaosJoint, VeryVerbose, TEXT("      Apply DP%d %f %f %f"), 1, DP1.X, DP1.Y, DP1.Z);
 
-		Ps[0] += Stiffness * DP0;
-		Ps[1] += Stiffness * DP1;
+		Ps[0] += DP0;
+		Ps[1] += DP1;
 
-		Xs[0] += Stiffness * DP0;
-		Xs[1] += Stiffness * DP1;
+		Xs[0] += DP0;
+		Xs[1] += DP1;
 	}
 
 
 	void FJointSolverGaussSeidel::ApplyRotationDelta(
 		const int32 BodyIndex,
-		const FReal Stiffness,
 		const FVec3& DR)
 	{
 		//UE_LOG(LogChaosJoint, VeryVerbose, TEXT("      Apply DR%d %f %f %f"), BodyIndex, DR.X, DR.Y, DR.Z);
 
-		const FRotation3 DQ = (FRotation3::FromElements(Stiffness * DR, 0) * Qs[BodyIndex]) * (FReal)0.5;
+		const FRotation3 DQ = (FRotation3::FromElements(DR, 0) * Qs[BodyIndex]) * (FReal)0.5;
 		Qs[BodyIndex] = (Qs[BodyIndex] + DQ).GetNormalized();
 		Qs[1].EnforceShortestArcWith(Qs[0]);
 
@@ -676,7 +679,6 @@ namespace Chaos
 
 
 	void FJointSolverGaussSeidel::ApplyRotationDelta(
-		const FReal Stiffness,
 		const FVec3& DR0,
 		const FVec3& DR1)
 	{
@@ -686,19 +688,19 @@ namespace Chaos
 		if (bChaos_Joint_ISPC_Enabled)
 		{
 #if INTEL_ISPC
-			ispc::ApplyRotationDelta2((ispc::FJointSolverGaussSeidel*)this, Stiffness, (ispc::FVector&)DR0, (ispc::FVector&)DR1);
+			ispc::ApplyRotationDelta2((ispc::FJointSolverGaussSeidel*)this, (ispc::FVector&)DR0, (ispc::FVector&)DR1);
 #endif
 		}
 		else
 		{
 			if (InvMs[0] > 0.0f)
 			{
-				const FRotation3 DQ0 = (FRotation3::FromElements(Stiffness * DR0, 0) * Qs[0]) * (FReal)0.5;
+				const FRotation3 DQ0 = (FRotation3::FromElements(DR0, 0) * Qs[0]) * (FReal)0.5;
 				Qs[0] = (Qs[0] + DQ0).GetNormalized();
 			}
 			if (InvMs[1] > 0.0f)
 			{
-				const FRotation3 DQ1 = (FRotation3::FromElements(Stiffness * DR1, 0) * Qs[1]) * (FReal)0.5;
+				const FRotation3 DQ1 = (FRotation3::FromElements(DR1, 0) * Qs[1]) * (FReal)0.5;
 				Qs[1] = (Qs[1] + DQ1).GetNormalized();
 			}
 			Qs[1].EnforceShortestArcWith(Qs[0]);
@@ -709,15 +711,14 @@ namespace Chaos
 
 	void FJointSolverGaussSeidel::ApplyDelta(
 		const int32 BodyIndex,
-		const FReal Stiffness,
 		const FVec3& DP,
 		const FVec3& DR)
 	{
 		//UE_LOG(LogChaosJoint, VeryVerbose, TEXT("      Apply DP%d %f %f %f"), BodyIndex, DP.X, DP.Y, DP.Z);
 		//UE_LOG(LogChaosJoint, VeryVerbose, TEXT("      Apply DR%d %f %f %f"), BodyIndex, DR.X, DR.Y, DR.Z);
 
-		Ps[BodyIndex] += Stiffness * DP;
-		const FRotation3 DQ = (FRotation3::FromElements(Stiffness * DR, 0) * Qs[BodyIndex]) * (FReal)0.5;
+		Ps[BodyIndex] += DP;
+		const FRotation3 DQ = (FRotation3::FromElements(DR, 0) * Qs[BodyIndex]) * (FReal)0.5;
 		Qs[BodyIndex] = (Qs[BodyIndex] + DQ).GetNormalized();
 		Qs[1].EnforceShortestArcWith(Qs[0]);
 
@@ -727,34 +728,34 @@ namespace Chaos
 
 	void FJointSolverGaussSeidel::ApplyVelocityDelta(
 		const int32 BodyIndex,
-		const FReal Stiffness,
 		const FVec3& DV,
 		const FVec3& DW)
 	{
-		Vs[BodyIndex] = Vs[BodyIndex] + Stiffness * DV;
-		Ws[BodyIndex] = Ws[BodyIndex] + Stiffness * DW;
+		Vs[BodyIndex] = Vs[BodyIndex] + DV;
+		Ws[BodyIndex] = Ws[BodyIndex] + DW;
 	}
 
 
 	void FJointSolverGaussSeidel::ApplyVelocityDelta(
-		const FReal Stiffness,
 		const FVec3& DV0,
 		const FVec3& DW0,
 		const FVec3& DV1,
 		const FVec3& DW1)
 	{
-		Vs[0] += Stiffness * DV0;
-		Vs[1] += Stiffness * DV1;
-		Ws[0] += Stiffness * DW0;
-		Ws[1] += Stiffness * DW1;
+		Vs[0] += DV0;
+		Vs[1] += DV1;
+		Ws[0] += DW0;
+		Ws[1] += DW1;
 	}
 
 
 	void FJointSolverGaussSeidel::ApplyPositionConstraint(
-		const FReal Stiffness,
+		const FReal JointStiffness,
 		const FVec3& Axis,
 		const FReal Delta)
 	{
+		const FReal Stiffness = SolverStiffness * JointStiffness;
+
 		const FVec3 AngularAxis0 = FVec3::CrossProduct(Xs[0] - Ps[0], Axis);
 		const FVec3 AngularAxis1 = FVec3::CrossProduct(Xs[1] - Ps[1], Axis);
 		const FVec3 IA0 = Utilities::Multiply(InvIs[0], AngularAxis0);
@@ -765,18 +766,17 @@ namespace Chaos
 		const FReal II1 = FVec3::DotProduct(AngularAxis1, IA1);
 		const FReal IM = InvMs[0] + II0 + InvMs[1] + II1;
 
-		const FVec3 DX = Axis * Delta / IM;
-
 		// Apply constraint correction
+		const FVec3 DX = Axis * (Stiffness * Delta / IM);
 		const FVec3 DP0 = InvMs[0] * DX;
 		const FVec3 DP1 = -InvMs[1] * DX;
 		const FVec3 DR0 = Utilities::Multiply(InvIs[0], FVec3::CrossProduct(Xs[0] - Ps[0], DX));
 		const FVec3 DR1 = Utilities::Multiply(InvIs[1], FVec3::CrossProduct(Xs[1] - Ps[1], -DX));
 
-		ApplyPositionDelta(Stiffness, DP0, DP1);
-		ApplyRotationDelta(Stiffness, DR0, DR1);
+		ApplyPositionDelta(DP0, DP1);
+		ApplyRotationDelta(DR0, DR1);
 
-		NetLinearImpulse += Stiffness * DX;
+		NetLinearImpulse += DX;
 
 		++NumActiveConstraints;
 	}
@@ -784,8 +784,8 @@ namespace Chaos
 
 	void FJointSolverGaussSeidel::ApplyPositionConstraintSoft(
 		const FReal Dt,
-		const FReal Stiffness,
-		const FReal Damping,
+		const FReal JointStiffness,
+		const FReal JointDamping,
 		const bool bAccelerationMode,
 		const FVec3& Axis,
 		const FReal Delta,
@@ -795,7 +795,7 @@ namespace Chaos
 		if (bChaos_Joint_ISPC_Enabled)
 		{
 #if INTEL_ISPC
-			ispc::ApplyPositionConstraintSoft((ispc::FJointSolverGaussSeidel*)this, Dt, Stiffness, Damping, bAccelerationMode, (ispc::FVector&)Axis, Delta, TargetVel, Lambda);
+			ispc::ApplyPositionConstraintSoft((ispc::FJointSolverGaussSeidel*)this, Dt, JointStiffness, JointDamping, bAccelerationMode, (ispc::FVector&)Axis, Delta, TargetVel, Lambda);
 #endif
 		}
 		else
@@ -810,7 +810,7 @@ namespace Chaos
 			const FReal II = (InvMs[0] + II0 + InvMs[1] + II1);
 	
 			FReal VelDt = 0;
-			if (Damping > KINDA_SMALL_NUMBER)
+			if (JointDamping > KINDA_SMALL_NUMBER)
 			{
 				const FVec3 V0Dt = FVec3::CalculateVelocity(InitXs[0], Xs[0], 1.0f);
 				const FVec3 V1Dt = FVec3::CalculateVelocity(InitXs[1], Xs[1], 1.0f);
@@ -818,18 +818,18 @@ namespace Chaos
 			}
 	
 			const FReal SpringMassScale = (bAccelerationMode) ? 1.0f / (InvMs[0] + InvMs[1]) : 1.0f;
-			const FReal S = SpringMassScale * Stiffness * Dt * Dt;
-			const FReal D = SpringMassScale * Damping * Dt;
+			const FReal S = SpringMassScale * JointStiffness * Dt * Dt;
+			const FReal D = SpringMassScale * JointDamping * Dt;
 			const FReal Multiplier = (FReal)1 / ((S + D) * II + (FReal)1);
-			const FReal DLambda = Multiplier * (S * Delta - D * VelDt - Lambda);
+			const FReal DLambda = SolverStiffness * Multiplier * (S * Delta - D * VelDt - Lambda);
 	
 			const FVec3 DP0 = (InvMs[0] * DLambda) * Axis;
 			const FVec3 DP1 = (-InvMs[1] * DLambda) * Axis;
 			const FVec3 DR0 = DLambda * Utilities::Multiply(InvIs[0], AngularAxis0);
 			const FVec3 DR1 = -DLambda * Utilities::Multiply(InvIs[1], AngularAxis1);
 	
-			ApplyPositionDelta((FReal)1, DP0, DP1);
-			ApplyRotationDelta((FReal)1, DR0, DR1);
+			ApplyPositionDelta(DP0, DP1);
+			ApplyRotationDelta(DR0, DR1);
 
 			Lambda += DLambda;
 			NetLinearImpulse += DLambda * Axis;
@@ -842,57 +842,61 @@ namespace Chaos
 	void FJointSolverGaussSeidel::ApplyRotationConstraintKD(
 		const int32 KIndex,
 		const int32 DIndex,
-		const FReal Stiffness,
+		const FReal JointStiffness,
 		const FVec3& Axis,
 		const FReal Angle)
 	{
+		const FReal Stiffness = SolverStiffness * JointStiffness;
+
 		const FVec3 IA1 = Utilities::Multiply(InvIs[DIndex], Axis);
 		const FReal II1 = FVec3::DotProduct(Axis, IA1);
-		const FVec3 DR1 = IA1 * -(Angle / II1);
-		ApplyRotationDelta(DIndex, Stiffness, DR1);
+		const FReal DR = Stiffness * (Angle / II1);
+		const FVec3 DR1 = IA1 * -DR;
+		ApplyRotationDelta(DIndex, DR1);
 
-		NetAngularImpulse += (KIndex == 0 ? 1 : -1) * Axis * (Stiffness * Angle / II1);
+		NetAngularImpulse += (KIndex == 0 )? DR * Axis : -DR * Axis;
 	}
 
 
 	void FJointSolverGaussSeidel::ApplyRotationConstraintDD(
-		const FReal Stiffness,
+		const FReal JointStiffness,
 		const FVec3& Axis,
 		const FReal Angle)
 	{
+		const FReal Stiffness = SolverStiffness * JointStiffness;
+
 		// Joint-space inverse mass
 		const FVec3 IA0 = Utilities::Multiply(InvIs[0], Axis);
 		const FVec3 IA1 = Utilities::Multiply(InvIs[1], Axis);
 		const FReal II0 = FVec3::DotProduct(Axis, IA0);
 		const FReal II1 = FVec3::DotProduct(Axis, IA1);
 
-		const FVec3 DR0 = IA0 * (Angle / (II0 + II1));
-		const FVec3 DR1 = IA1 * -(Angle / (II0 + II1));
-		//const FVec3 DR0 = Axis * (Angle * II0 / (II0 + II1));
-		//const FVec3 DR1 = Axis * -(Angle * II1 / (II0 + II1));
+		const FReal DR = Stiffness * Angle / (II0 + II1);
+		const FVec3 DR0 = IA0 * DR;
+		const FVec3 DR1 = IA1 * -DR;
 
-		ApplyRotationDelta(Stiffness, DR0, DR1);
+		ApplyRotationDelta(DR0, DR1);
 
-		NetAngularImpulse += Axis * (Stiffness * Angle / (II0 + II1));
+		NetAngularImpulse += Axis * DR;
 	}
 
 
 	void FJointSolverGaussSeidel::ApplyRotationConstraint(
-		const FReal Stiffness,
+		const FReal JointStiffness,
 		const FVec3& Axis,
 		const FReal Angle)
 	{
 		if (InvMs[0] == 0)
 		{
-			ApplyRotationConstraintKD(0, 1, Stiffness, Axis, Angle);
+			ApplyRotationConstraintKD(0, 1, JointStiffness, Axis, Angle);
 		}
 		else if (InvMs[1] == 0)
 		{
-			ApplyRotationConstraintKD(1, 0, Stiffness, Axis, -Angle);
+			ApplyRotationConstraintKD(1, 0, JointStiffness, Axis, -Angle);
 		}
 		else
 		{
-			ApplyRotationConstraintDD(Stiffness, Axis, Angle);
+			ApplyRotationConstraintDD(JointStiffness, Axis, Angle);
 		}
 
 		++NumActiveConstraints;
@@ -904,8 +908,8 @@ namespace Chaos
 		const int32 KIndex,
 		const int32 DIndex,
 		const FReal Dt,
-		const FReal Stiffness,
-		const FReal Damping,
+		const FReal JointStiffness,
+		const FReal JointDamping,
 		const bool bAccelerationMode,
 		const FVec3& Axis,
 		const FReal Angle,
@@ -917,7 +921,7 @@ namespace Chaos
 		if (bChaos_Joint_ISPC_Enabled)
 		{
 #if INTEL_ISPC
-			ispc::ApplyRotationConstraintSoftKD((ispc::FJointSolverGaussSeidel*)this, KIndex, DIndex, Dt, Stiffness, Damping, bAccelerationMode, (ispc::FVector&) Axis, Angle, AngVelTarget, Lambda);
+			ispc::ApplyRotationConstraintSoftKD((ispc::FJointSolverGaussSeidel*)this, KIndex, DIndex, Dt, JointStiffness, JointDamping, bAccelerationMode, (ispc::FVector&) Axis, Angle, AngVelTarget, Lambda);
 #endif
 		}
 		else
@@ -931,7 +935,7 @@ namespace Chaos
 
 			// Damping angular velocity
 			FReal AngVelDt = 0;
-			if (Damping > KINDA_SMALL_NUMBER)
+			if (JointDamping > KINDA_SMALL_NUMBER)
 			{
 				const FVec3 W0Dt = FRotation3::CalculateAngularVelocity(InitRs[KIndex], Rs[KIndex], 1.0f);
 				const FVec3 W1Dt = FRotation3::CalculateAngularVelocity(InitRs[DIndex], Rs[DIndex], 1.0f);
@@ -939,15 +943,15 @@ namespace Chaos
 			}
 
 			const FReal SpringMassScale = (bAccelerationMode) ? 1.0f / II : 1.0f;
-			const FReal S = SpringMassScale * Stiffness * Dt * Dt;
-			const FReal D = SpringMassScale * Damping * Dt;
+			const FReal S = SpringMassScale * JointStiffness * Dt * Dt;
+			const FReal D = SpringMassScale * JointDamping * Dt;
 			const FReal Multiplier = (FReal)1 / ((S + D) * II + (FReal)1);
-			const FReal DLambda = Multiplier * (S * Angle - D * AngVelDt - Lambda);
+			const FReal DLambda = SolverStiffness * Multiplier * (S * Angle - D * AngVelDt - Lambda);
 
 			//const FVec3 DR1 = IA1 * -DLambda;
 			const FVec3 DR1 = Axis * -(DLambda * II1);
 
-			ApplyRotationDelta(DIndex, 1.0f, DR1);
+			ApplyRotationDelta(DIndex, DR1);
 	
 			Lambda += DLambda;
 			NetAngularImpulse += (KIndex == 0 ? 1 : -1) * DLambda * Axis;
@@ -957,8 +961,8 @@ namespace Chaos
 	// See "XPBD: Position-Based Simulation of Compliant Constrained Dynamics"
 	void FJointSolverGaussSeidel::ApplyRotationConstraintSoftDD(
 		const FReal Dt,
-		const FReal Stiffness,
-		const FReal Damping,
+		const FReal JointStiffness,
+		const FReal JointDamping,
 		const bool bAccelerationMode,
 		const FVec3& Axis,
 		const FReal Angle,
@@ -971,7 +975,7 @@ namespace Chaos
 		if (bChaos_Joint_ISPC_Enabled)
 		{
 #if INTEL_ISPC
-			ispc::ApplyRotationConstraintSoftDD((ispc::FJointSolverGaussSeidel*)this, Dt, Stiffness, Damping, bAccelerationMode, (ispc::FVector&) Axis, Angle, AngVelTarget, Lambda);
+			ispc::ApplyRotationConstraintSoftDD((ispc::FJointSolverGaussSeidel*)this, Dt, JointStiffness, JointDamping, bAccelerationMode, (ispc::FVector&) Axis, Angle, AngVelTarget, Lambda);
 #endif
 		}
 		else
@@ -987,7 +991,7 @@ namespace Chaos
 
 			// Damping angular velocity
 			FReal AngVelDt = 0;
-			if (Damping > KINDA_SMALL_NUMBER)
+			if (JointDamping > KINDA_SMALL_NUMBER)
 			{
 				const FVec3 W0Dt = FRotation3::CalculateAngularVelocity(InitRs[0], Rs[0], 1.0f);
 				const FVec3 W1Dt = FRotation3::CalculateAngularVelocity(InitRs[1], Rs[1], 1.0f);
@@ -995,17 +999,17 @@ namespace Chaos
 			}
 
 			const FReal SpringMassScale = (bAccelerationMode) ? 1.0f / II : 1.0f;
-			const FReal S = SpringMassScale * Stiffness * Dt * Dt;
-			const FReal D = SpringMassScale * Damping * Dt;
+			const FReal S = SpringMassScale * JointStiffness * Dt * Dt;
+			const FReal D = SpringMassScale * JointDamping * Dt;
 			const FReal Multiplier = (FReal)1 / ((S + D) * II + (FReal)1);
-			const FReal DLambda = Multiplier * (S * Angle - D * AngVelDt - Lambda);
+			const FReal DLambda = SolverStiffness * Multiplier * (S * Angle - D * AngVelDt - Lambda);
 
 			//const FVec3 DR0 = IA0 * DLambda;
 			//const FVec3 DR1 = IA1 * -DLambda;
 			const FVec3 DR0 = Axis * (DLambda * II0);
 			const FVec3 DR1 = Axis * -(DLambda * II1);
 
-			ApplyRotationDelta(1.0f, DR0, DR1);
+			ApplyRotationDelta(DR0, DR1);
 
 			Lambda += DLambda;
 			NetAngularImpulse += DLambda * Axis;
@@ -1014,8 +1018,8 @@ namespace Chaos
 
 	void FJointSolverGaussSeidel::ApplyRotationConstraintSoft(
 		const FReal Dt,
-		const FReal Stiffness,
-		const FReal Damping,
+		const FReal JointStiffness,
+		const FReal JointDamping,
 		const bool bAccelerationMode,
 		const FVec3& Axis,
 		const FReal Angle,
@@ -1024,15 +1028,15 @@ namespace Chaos
 	{
 		if (InvMs[0] == 0)
 		{
-			ApplyRotationConstraintSoftKD(0, 1, Dt, Stiffness, Damping, bAccelerationMode, Axis, Angle, AngVelTarget, Lambda);
+			ApplyRotationConstraintSoftKD(0, 1, Dt, JointStiffness, JointDamping, bAccelerationMode, Axis, Angle, AngVelTarget, Lambda);
 		}
 		else if (InvMs[1] == 0)
 		{
-			ApplyRotationConstraintSoftKD(1, 0, Dt, Stiffness, Damping, bAccelerationMode, Axis, -Angle, -AngVelTarget, Lambda);
+			ApplyRotationConstraintSoftKD(1, 0, Dt, JointStiffness, JointDamping, bAccelerationMode, Axis, -Angle, -AngVelTarget, Lambda);
 		}
 		else
 		{
-			ApplyRotationConstraintSoftDD(Dt, Stiffness, Damping, bAccelerationMode, Axis, Angle, AngVelTarget, Lambda);
+			ApplyRotationConstraintSoftDD(Dt, JointStiffness, JointDamping, bAccelerationMode, Axis, Angle, AngVelTarget, Lambda);
 		}
 
 		++NumActiveConstraints;
@@ -1491,7 +1495,7 @@ namespace Chaos
 	{
 		check(InvMs[DIndex] > 0);
 
-		FReal LinearStiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
+		FReal Stiffness = SolverStiffness * FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
 		const FVec3 CX = Xs[DIndex] - Xs[KIndex];
 
 		UE_LOG(LogChaosJoint, VeryVerbose, TEXT("    PointKD Delta %f [Limit %f]"), CX.Size(), PositionTolerance);
@@ -1501,7 +1505,7 @@ namespace Chaos
 			if (bChaos_Joint_ISPC_Enabled)
 			{
 #if INTEL_ISPC
-				ispc::ApplyPointPositionConstraintKD((ispc::FJointSolverGaussSeidel*)this, KIndex, DIndex, (ispc::FVector&)CX, LinearStiffness);
+				ispc::ApplyPointPositionConstraintKD((ispc::FJointSolverGaussSeidel*)this, KIndex, DIndex, (ispc::FVector&)CX, Stiffness);
 #endif
 			}
 			else
@@ -1509,15 +1513,15 @@ namespace Chaos
 				// Calculate constraint correction
 				FMatrix33 M = Utilities::ComputeJointFactorMatrix(Xs[DIndex] - Ps[DIndex], InvIs[DIndex], InvMs[DIndex]);
 				FMatrix33 MI = M.Inverse();
-				const FVec3 DX = Utilities::Multiply(MI, CX);
+				const FVec3 DX = Stiffness * Utilities::Multiply(MI, CX);
 
 				// Apply constraint correction
 				const FVec3 DP1 = -InvMs[DIndex] * DX;
 				const FVec3 DR1 = Utilities::Multiply(InvIs[DIndex], FVec3::CrossProduct(Xs[DIndex] - Ps[DIndex], -DX));
 
-				ApplyDelta(DIndex, LinearStiffness, DP1, DR1);
+				ApplyDelta(DIndex, DP1, DR1);
 
-				NetLinearImpulse += (KIndex == 0 ? 1 : -1) * LinearStiffness * DX;
+				NetLinearImpulse += (KIndex == 0) ? DX : -DX;
 			}
 
 			++NumActiveConstraints;
@@ -1534,7 +1538,7 @@ namespace Chaos
 		check(InvMs[0] > 0);
 		check(InvMs[1] > 0);
 
-		FReal LinearStiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
+		FReal Stiffness = SolverStiffness * FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
 		const FVec3 CX = Xs[1] - Xs[0];
 
 		UE_LOG(LogChaosJoint, VeryVerbose, TEXT("    PointDD Delta %f [Limit %f]"), CX.Size(), PositionTolerance);
@@ -1544,7 +1548,7 @@ namespace Chaos
 			if (bChaos_Joint_ISPC_Enabled)
 			{
 #if INTEL_ISPC
-				ispc::ApplyPointPositionConstraintDD((ispc::FJointSolverGaussSeidel*)this, (ispc::FVector&)CX, LinearStiffness);
+				ispc::ApplyPointPositionConstraintDD((ispc::FJointSolverGaussSeidel*)this, (ispc::FVector&)CX, Stiffness);
 #endif
 			}
 			else
@@ -1553,7 +1557,7 @@ namespace Chaos
 				FMatrix33 M0 = Utilities::ComputeJointFactorMatrix(Xs[0] - Ps[0], InvIs[0], InvMs[0]);
 				FMatrix33 M1 = Utilities::ComputeJointFactorMatrix(Xs[1] - Ps[1], InvIs[1], InvMs[1]);
 				FMatrix33 MI = (M0 + M1).Inverse();
-				const FVec3 DX = Utilities::Multiply(MI, CX);
+				const FVec3 DX = Stiffness * Utilities::Multiply(MI, CX);
 
 				// Apply constraint correction
 				const FVec3 DP0 = InvMs[0] * DX;
@@ -1561,10 +1565,10 @@ namespace Chaos
 				const FVec3 DR0 = Utilities::Multiply(InvIs[0], FVec3::CrossProduct(Xs[0] - Ps[0], DX));
 				const FVec3 DR1 = Utilities::Multiply(InvIs[1], FVec3::CrossProduct(Xs[1] - Ps[1], -DX));
 
-				ApplyPositionDelta(LinearStiffness, DP0, DP1);
-				ApplyRotationDelta(LinearStiffness, DR0, DR1);
+				ApplyPositionDelta(DP0, DP1);
+				ApplyRotationDelta(DR0, DR1);
 
-				NetLinearImpulse += LinearStiffness * DX;
+				NetLinearImpulse += DX;
 			}
 			
 			++NumActiveConstraints;
@@ -1594,15 +1598,15 @@ namespace Chaos
 					CalculateLinearConstraintPadding(Dt, SolverSettings, JointSettings, JointSettings.LinearRestitution, 0, Axis, Error);
 				}
 
-				const FReal Stiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
-				ApplyPositionConstraint(Stiffness, Axis, Error);
+				const FReal JointStiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
+				ApplyPositionConstraint(JointStiffness, Axis, Error);
 			}
 			else
 			{
-				const FReal Stiffness = FPBDJointUtilities::GetSoftLinearStiffness(SolverSettings, JointSettings);
-				const FReal Damping = FPBDJointUtilities::GetSoftLinearDamping(SolverSettings, JointSettings);
+				const FReal JointStiffness = FPBDJointUtilities::GetSoftLinearStiffness(SolverSettings, JointSettings);
+				const FReal JointDamping = FPBDJointUtilities::GetSoftLinearDamping(SolverSettings, JointSettings);
 				const bool bAccelerationMode = FPBDJointUtilities::GetLinearSoftAccelerationMode(SolverSettings, JointSettings);
-				ApplyPositionConstraintSoft(Dt, Stiffness, Damping, bAccelerationMode, Axis, Error, 0.0f, LinearSoftLambda);
+				ApplyPositionConstraintSoft(Dt, JointStiffness, JointDamping, bAccelerationMode, Axis, Error, 0.0f, LinearSoftLambda);
 			}
 		}
 	}
@@ -1637,10 +1641,10 @@ namespace Chaos
 			if ((AxialMotion == EJointMotionType::Limited) && FPBDJointUtilities::GetSoftLinearLimitEnabled(SolverSettings, JointSettings))
 			{
 				// Soft Axial constraint
-				const FReal Stiffness = FPBDJointUtilities::GetSoftLinearStiffness(SolverSettings, JointSettings);
-				const FReal Damping = FPBDJointUtilities::GetSoftLinearDamping(SolverSettings, JointSettings);
+				const FReal JointStiffness = FPBDJointUtilities::GetSoftLinearStiffness(SolverSettings, JointSettings);
+				const FReal JointDamping = FPBDJointUtilities::GetSoftLinearDamping(SolverSettings, JointSettings);
 				const bool bAccelerationMode = FPBDJointUtilities::GetLinearSoftAccelerationMode(SolverSettings, JointSettings);
-				ApplyPositionConstraintSoft(Dt, Stiffness, Damping, bAccelerationMode, Axis, AxialError, 0.0f, LinearSoftLambda);
+				ApplyPositionConstraintSoft(Dt, JointStiffness, JointDamping, bAccelerationMode, Axis, AxialError, 0.0f, LinearSoftLambda);
 			}
 			else if (AxialMotion != EJointMotionType::Free)
 			{
@@ -1650,8 +1654,8 @@ namespace Chaos
 					CalculateLinearConstraintPadding(Dt, SolverSettings, JointSettings, JointSettings.LinearRestitution, 0, Axis, AxialError);
 				}
 
-				const FReal Stiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
-				ApplyPositionConstraint(Stiffness, Axis, AxialError);
+				const FReal JointStiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
+				ApplyPositionConstraint(JointStiffness, Axis, AxialError);
 			}
 		}
 
@@ -1664,10 +1668,10 @@ namespace Chaos
 			if ((RadialMotion == EJointMotionType::Limited) && FPBDJointUtilities::GetSoftLinearLimitEnabled(SolverSettings, JointSettings))
 			{
 				// Soft Radial constraint
-				const FReal Stiffness = FPBDJointUtilities::GetSoftLinearStiffness(SolverSettings, JointSettings);
-				const FReal Damping = FPBDJointUtilities::GetSoftLinearDamping(SolverSettings, JointSettings);
+				const FReal JointStiffness = FPBDJointUtilities::GetSoftLinearStiffness(SolverSettings, JointSettings);
+				const FReal JointDamping = FPBDJointUtilities::GetSoftLinearDamping(SolverSettings, JointSettings);
 				const bool bAccelerationMode = FPBDJointUtilities::GetLinearSoftAccelerationMode(SolverSettings, JointSettings);
-				ApplyPositionConstraintSoft(Dt, Stiffness, Damping, bAccelerationMode, RadialAxis, RadialError, 0.0f, LinearSoftLambda);
+				ApplyPositionConstraintSoft(Dt, JointStiffness, JointDamping, bAccelerationMode, RadialAxis, RadialError, 0.0f, LinearSoftLambda);
 			}
 			else if (RadialMotion != EJointMotionType::Free)
 			{
@@ -1677,8 +1681,8 @@ namespace Chaos
 					CalculateLinearConstraintPadding(Dt, SolverSettings, JointSettings, JointSettings.LinearRestitution, 1, RadialAxis, RadialError);
 				}
 
-				const FReal Stiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
-				ApplyPositionConstraint(Stiffness, RadialAxis, RadialError);
+				const FReal JointStiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
+				ApplyPositionConstraint(JointStiffness, RadialAxis, RadialError);
 			}
 		}
 	}
@@ -1708,10 +1712,10 @@ namespace Chaos
 		{
 			if ((AxialMotion == EJointMotionType::Limited) && FPBDJointUtilities::GetSoftLinearLimitEnabled(SolverSettings, JointSettings))
 			{
-				const FReal Stiffness = FPBDJointUtilities::GetSoftLinearStiffness(SolverSettings, JointSettings);
-				const FReal Damping = FPBDJointUtilities::GetSoftLinearDamping(SolverSettings, JointSettings);
+				const FReal JointStiffness = FPBDJointUtilities::GetSoftLinearStiffness(SolverSettings, JointSettings);
+				const FReal JointDamping = FPBDJointUtilities::GetSoftLinearDamping(SolverSettings, JointSettings);
 				const bool bAccelerationMode = FPBDJointUtilities::GetLinearSoftAccelerationMode(SolverSettings, JointSettings);
-				ApplyPositionConstraintSoft(Dt, Stiffness, Damping, bAccelerationMode, Axis, Error, 0.0f, LinearSoftLambda);
+				ApplyPositionConstraintSoft(Dt, JointStiffness, JointDamping, bAccelerationMode, Axis, Error, 0.0f, LinearSoftLambda);
 			}
 			else
 			{
@@ -1720,8 +1724,8 @@ namespace Chaos
 					CalculateLinearConstraintPadding(Dt, SolverSettings, JointSettings, JointSettings.LinearRestitution, 0, Axis, Error);
 				}
 
-				const FReal Stiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
-				ApplyPositionConstraint(Stiffness, Axis, Error);
+				const FReal JointStiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
+				ApplyPositionConstraint(JointStiffness, Axis, Error);
 			}
 		}
 	}
@@ -1736,13 +1740,13 @@ namespace Chaos
 		const FReal DeltaPos,
 		const FReal DeltaVel)
 	{
-		const FReal Stiffness = FPBDJointUtilities::GetLinearDriveStiffness(SolverSettings, JointSettings, AxisIndex);
-		const FReal Damping = FPBDJointUtilities::GetLinearDriveDamping(SolverSettings, JointSettings, AxisIndex);
+		const FReal JointStiffness = FPBDJointUtilities::GetLinearDriveStiffness(SolverSettings, JointSettings, AxisIndex);
+		const FReal JointDamping = FPBDJointUtilities::GetLinearDriveDamping(SolverSettings, JointSettings, AxisIndex);
 		const bool bAccelerationMode = FPBDJointUtilities::GetDriveAccelerationMode(SolverSettings, JointSettings);
 
-		if ((FMath::Abs(DeltaPos) > PositionTolerance) || (Damping > 0.0f))
+		if ((FMath::Abs(DeltaPos) > PositionTolerance) || (JointDamping > 0.0f))
 		{
-			ApplyPositionConstraintSoft(Dt, Stiffness, Damping, bAccelerationMode, Axis, DeltaPos, DeltaVel, LinearDriveLambdas[AxisIndex]);
+			ApplyPositionConstraintSoft(Dt, JointStiffness, JointDamping, bAccelerationMode, Axis, DeltaPos, DeltaVel, LinearDriveLambdas[AxisIndex]);
 		}
 	}
 
@@ -1766,7 +1770,7 @@ namespace Chaos
 
 			const FVec3 DP1 = -Alpha * InvMs[1] * DX;
 			const FVec3 DR1 = -Alpha * Utilities::Multiply(InvIs[1], FVec3::CrossProduct(Xs[1] - Ps[1], DX));
-			ApplyDelta(1, 1.0f, DP1, DR1);
+			ApplyDelta(1, DP1, DR1);
 
 			NetDP1 += DP1;
 			NetDR1 += DR1;
@@ -1797,7 +1801,7 @@ namespace Chaos
 
 			const FVec3 DP1 = -Alpha * InvMs[1] * DX;
 			const FVec3 DR1 = -Alpha * Utilities::Multiply(InvIs[1], FVec3::CrossProduct(Xs[1] - Ps[1], DX));
-			ApplyDelta(1, 1.0f, DP1, DR1);
+			ApplyDelta(1, DP1, DR1);
 
 			NetDP1 += DP1;
 			NetDR1 += DR1;
@@ -1821,7 +1825,7 @@ namespace Chaos
 		if (Error > ProjectionPositionTolerance)
 		{
 			const FVec3 DP1 = -Alpha * Error * Axis;
-			ApplyPositionDelta(1, 1.0f, DP1);
+			ApplyPositionDelta(1, DP1);
 			
 			NetDP1 += DP1;
 		}
@@ -1852,7 +1856,7 @@ namespace Chaos
 			{
 				DP1 = -Alpha * FVec3::CrossProduct(DR1, Xs[1] - Ps[1]);
 			}
-			ApplyDelta(1, 1.0f, DP1, DR1);
+			ApplyDelta(1, DP1, DR1);
 
 			NetDP1 += DP1;
 			NetDR1 += DR1;
@@ -1898,7 +1902,7 @@ namespace Chaos
 			{
 				DP1 = -Alpha * FVec3::CrossProduct(DR1, Xs[1] - Ps[1]);
 			}
-			ApplyDelta(1, 1.0f, DP1, DR1);
+			ApplyDelta(1, DP1, DR1);
 
 			NetDP1 += DP1;
 			NetDR1 += DR1;
@@ -1941,7 +1945,7 @@ namespace Chaos
 			{
 				DP1 = -Alpha * FVec3::CrossProduct(DR1, Xs[1] - Ps[1]);
 			}
-			ApplyDelta(1, 1.0f, DP1, DR1);
+			ApplyDelta(1, DP1, DR1);
 
 			NetDP1 += DP1;
 			NetDR1 += DR1;
@@ -1985,7 +1989,7 @@ namespace Chaos
 			{
 				DP1 = -Alpha * FVec3::CrossProduct(DR1, Xs[1] - Ps[1]);
 			}
-			ApplyDelta(1, 1.0f, DP1, DR1);
+			ApplyDelta(1, DP1, DR1);
 
 			NetDP1 += DP1;
 			NetDR1 += DR1;
@@ -2025,7 +2029,7 @@ namespace Chaos
 			{
 				DP1 = -Alpha * FVec3::CrossProduct(DR1, Xs[1] - Ps[1]);
 			}
-			ApplyDelta(1, 1.0f, DP1, DR1);
+			ApplyDelta(1, DP1, DR1);
 
 			NetDP1 += DP1;
 			NetDR1 += DR1;
@@ -2042,12 +2046,13 @@ namespace Chaos
 	{
 		const FVec3 DV1 = Alpha * DP1 / Dt;
 		const FVec3 DW1 = Alpha * DR1 / Dt;
-		ApplyVelocityDelta(1, 1.0f, DV1, DW1);
+		ApplyVelocityDelta(1, DV1, DW1);
 	}
 
 	//
 	//
 	// WIP matrix based solver for this joint.
+	// 	   [ NOT CURRENTLY USED]
 	//
 	//
 
@@ -2200,6 +2205,8 @@ namespace Chaos
 		const FPBDJointSolverSettings& SolverSettings,
 		const FPBDJointSettings& JointSettings)
 	{
+		// @todo(chaos): this path isn't currently used, but it needs to use SolverStiffness if we ever use it
+
 		const FVec3 PX0 = Xs[0] - Ps[0];	// Constraint connector offset for particle 0
 		const FVec3 PX1 = Xs[1] - Ps[1];	// Constraint connector offset for particle 1
 
@@ -2424,13 +2431,12 @@ namespace Chaos
 			// Calculate and apply world-space correction: 
 			// D(6x1) = I(6x6).Jt(6xN).L(Nx1) = IJt(6xN).L(Nx1)
 			// TODO: stiffness
-			const FReal Stiffness = FPBDJointUtilities::GetLinearStiffness(SolverSettings, JointSettings);
 			if (InvMs[0] > SMALL_NUMBER)
 			{
 				const FDenseMatrix61 D0 = FDenseMatrix61::MultiplyAB(IJt0, DL);
 				const FVec3 DP0 = FVec3(D0.At(0, 0), D0.At(1, 0), D0.At(2, 0));
 				const FVec3 DR0 = FVec3(D0.At(3, 0), D0.At(4, 0), D0.At(5, 0));
-				ApplyDelta(0, Stiffness, DP0, DR0);
+				ApplyDelta(0, DP0, DR0);
 			}
 
 			if (InvMs[1] > SMALL_NUMBER)
@@ -2438,7 +2444,7 @@ namespace Chaos
 				const FDenseMatrix61 D1 = FDenseMatrix61::MultiplyAB(IJt1, DL);
 				const FVec3 DP1 = FVec3(-D1.At(0, 0), -D1.At(1, 0), -D1.At(2, 0));
 				const FVec3 DR1 = FVec3(-D1.At(3, 0), -D1.At(4, 0), -D1.At(5, 0));
-				ApplyDelta(1, Stiffness, DP1, DR1);
+				ApplyDelta(1, DP1, DR1);
 			}
 		}
 	}
