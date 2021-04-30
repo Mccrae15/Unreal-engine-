@@ -37,6 +37,7 @@ namespace Chaos
 		const TVector<float, 3>& GetGravity() const { return Gravity; }
 
 		void SetWindVelocity(const TVector<float, 3>& InWindVelocity, float InLegacyWindAdaption = 0.f);
+		const TVector<float, 3>& GetWindVelocity() const { return WindVelocity; }
 		void SetWindFluidDensity(float InWindFluidDensity) { WindFluidDensity = InWindFluidDensity; }
 
 		void SetNumIterations(int32 InNumIterations) { NumIterations = InNumIterations; }
@@ -86,6 +87,9 @@ namespace Chaos
 
 		// Set per group gravity, used to override solver's gravity. Must be called during cloth update.
 		void SetGravity(uint32 GroupId, const TVector<float, 3>& Gravity);
+
+		// Set per group wind velocity, used to override solver's wind velocity. Must be called during cloth update.
+		void SetWindVelocity(uint32 GroupId, const TVector<float, 3>& InWindVelocity);
 
 		// Set the geometry affected by wind, or disable if TriangleMesh is null.
 		void SetWindVelocityField(uint32 GroupId, float DragCoefficient, float LiftCoefficient, const TTriangleMesh<float>* TriangleMesh = nullptr);

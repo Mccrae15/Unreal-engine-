@@ -80,7 +80,7 @@ namespace Chaos
 		void SetLongRangeAttachmentProperties(const TVector<float, 2>& InTetherStiffness) { TetherStiffness = InTetherStiffness; }
 		void SetCollisionProperties(float InCollisionThickness, float InFrictionCoefficient, bool bInUseCCD, float InSelfCollisionThickness) { CollisionThickness = InCollisionThickness; FrictionCoefficient = InFrictionCoefficient; bUseCCD = bInUseCCD; SelfCollisionThickness = InSelfCollisionThickness; }
 		void SetDampingProperties(float InDampingCoefficient) { DampingCoefficient = InDampingCoefficient; }
-		void SetAerodynamicsProperties(float InDragCoefficient, float InLiftCoefficient) { DragCoefficient = InDragCoefficient; LiftCoefficient = InLiftCoefficient; }
+		void SetAerodynamicsProperties(float InDragCoefficient, float InLiftCoefficient, const TVector<float, 3>& InWindVelocity) { DragCoefficient = InDragCoefficient; LiftCoefficient = InLiftCoefficient; WindVelocity = InWindVelocity; }
 		void SetGravityProperties(float InGravityScale, bool bInIsGravityOverridden, const TVector<float, 3>& InGravityOverride) { GravityScale = InGravityScale; bIsGravityOverridden = bInIsGravityOverridden; GravityOverride = InGravityOverride; }
 		void SetAnimDriveProperties(const TVector<float, 2>& InAnimDriveStiffness, const TVector<float, 2>& InAnimDriveDamping) { AnimDriveStiffness = InAnimDriveStiffness; AnimDriveDamping = InAnimDriveDamping; }
 		void SetVelocityScaleProperties(const TVector<float, 3>& InLinearVelocityScale, float InAngularVelocityScale, float InFictitiousAngularScale) { LinearVelocityScale = InLinearVelocityScale; AngularVelocityScale = InAngularVelocityScale; FictitiousAngularScale = InFictitiousAngularScale;  }
@@ -207,6 +207,7 @@ namespace Chaos
 		float FictitiousAngularScale;
 		float DragCoefficient;
 		float LiftCoefficient;
+		TVector<float, 3> WindVelocity;
 		bool bUseLegacyWind;
 		float DampingCoefficient;
 		float CollisionThickness;
