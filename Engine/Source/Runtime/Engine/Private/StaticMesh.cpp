@@ -5059,7 +5059,6 @@ void UStaticMesh::PostLoad()
 			FStaticMeshCompilingManager::Get().FinishCompilation({ ComplexCollisionMesh });
 		}
 
-		Context.StaticMeshOwner.Reset(GetPackage());
 		AsyncTask = MakeUnique<FStaticMeshAsyncBuildTask>(this, MakeUnique<FStaticMeshPostLoadContext>(MoveTemp(Context)));
 		AsyncTask->StartBackgroundTask(StaticMeshThreadPool, BasePriority);
 		FStaticMeshCompilingManager::Get().AddStaticMeshes({this});
