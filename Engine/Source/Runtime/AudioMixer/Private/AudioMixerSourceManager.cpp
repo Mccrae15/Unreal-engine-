@@ -637,6 +637,7 @@ namespace Audio
  			const ENamedThreads::Type UnregistrationThread = IsAudioThreadRunning() ? ENamedThreads::AudioThread: ENamedThreads::GameThread;
 			AsyncTask(UnregistrationThread, [SourceEffects = MoveTemp(SourceInfo.SourceEffects)]() mutable
 			{
+				FTaskTagScope Scope(ETaskTag::EAudioThread);
 				for (int32 i = 0; i < SourceEffects.Num(); ++i)
 				{
 					USoundEffectPreset::UnregisterInstance(SourceEffects[i]);
