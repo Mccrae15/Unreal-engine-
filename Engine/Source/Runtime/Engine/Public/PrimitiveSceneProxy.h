@@ -351,9 +351,18 @@ public:
 	/**
 	 * Called to notify the proxy that the level has been fully added to
 	 * the world and the primitive will now be rendered.
-	 * Only called if bNeedsLevelAddedToWorldNotification is set to true.
+	 * Only called if bShouldNotifyOnWorldAddRemove is set to true.
+	 * 
+	 * @return return true if the primitive should be added to the scene
 	 */
-	virtual void OnLevelAddedToWorld() {}
+	virtual bool OnLevelAddedToWorld_RenderThread() {return false;}
+
+	/**
+	 * Called to notify the proxy that the level has been fully removed from
+	 * the world and the primitive will not be rendered.
+	 * Only called if bShouldNotifyOnWorldAddRemove is set to true.
+	 */
+	virtual void OnLevelRemovedFromWorld_RenderThread() {}
 
 	/**
 	* @return true if the proxy can be culled when occluded by other primitives
@@ -574,8 +583,8 @@ public:
 	inline bool SupportsHeightfieldRepresentation() const { return bSupportsHeightfieldRepresentation; }
 	inline bool SupportsInstanceDataBuffer() const { return bSupportsInstanceDataBuffer; }
 	inline bool TreatAsBackgroundForOcclusion() const { return bTreatAsBackgroundForOcclusion; }
-	inline bool NeedsLevelAddedToWorldNotification() const { return bNeedsLevelAddedToWorldNotification; }
-	inline bool IsComponentLevelVisible() const { return bIsComponentLevelVisible; }
+	inline bool ShouldNotifyOnWorldAddRemove() const { return bShouldNotifyOnWorldAddRemove; }
+	inline bool IsForceHidden() const {return bForceHidden;}
 	inline bool ShouldReceiveMobileCSMShadows() const { return bReceiveMobileCSMShadows; }
 	inline bool ShouldUpdateGPUSceneTransforms() const { return bShouldUpdateGPUSceneTransforms; }
 
@@ -794,6 +803,8 @@ protected:
 	TArray<FRayTracingGeometry*> RayTracingGeometries;
 #endif
 
+	void SetForceHidden(bool bForceHiddenIn) {bForceHidden = bForceHiddenIn;}
+
 private:
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	FLinearColor WireframeColor;
@@ -867,11 +878,8 @@ private:
 	/** If true this primitive Renders in the mainPass */
 	uint8 bRenderInMainPass : 1;
 
-	/** If true this primitive will render only after owning level becomes visible */
-	uint8 bRequiresVisibleLevelToRender : 1;
-
-	/** Whether component level is currently visible */
-	uint8 bIsComponentLevelVisible : 1;
+	/** If true this primitive will always return that it is hidden if queried*/
+	uint8 bForceHidden : 1;
 	
 	/** Whether this component has any collision enabled */
 	uint8 bCollisionEnabled : 1;
@@ -994,7 +1002,7 @@ protected:
 	uint8 bSupportsHeightfieldRepresentation : 1;
 
 	/** Whether this primitive requires notification when its level is added to the world and made visible for the first time. */
-	uint8 bNeedsLevelAddedToWorldNotification : 1;
+	uint8 bShouldNotifyOnWorldAddRemove : 1;
 
 	/** true by default, if set to false will make given proxy never drawn with selection outline */
 	uint8 bWantsSelectionOutline : 1;
