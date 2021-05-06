@@ -594,16 +594,22 @@ namespace Audio
 			FadeInfo.EffectChain.Reset();
 		}
 
-		// Unregister these source effect instances from their owning USoundEffectInstance on the next audio thread tick.
-		// If the audio thread isn't currently active (ex. suspended), unregister immediately
-		const ENamedThreads::Type UnregistrationThread = IsAudioThreadRunning() ? ENamedThreads::AudioThread : ENamedThreads::GameThread;
-		AsyncTask(UnregistrationThread, [SubmixEffects = MoveTemp(SubmixEffectsToReset)]() mutable
+		// Unregister these source effect instances from their owning USoundEffectInstance on the audio thread.
+		// Have to pass to Game Thread prior to processing on AudioThread to avoid race condition with GC
+		// (RunCommandOnAudioThread is not safe to call from any thread other than the GameThread).
+		if (!SubmixEffectsToReset.IsEmpty())
 		{
-			for (TSoundEffectSubmixPtr& SubmixPtr : SubmixEffects)
+			AsyncTask(ENamedThreads::GameThread, [GTSubmixEffects = MoveTemp(SubmixEffectsToReset)]() mutable
 			{
-				USoundEffectPreset::UnregisterInstance(SubmixPtr);
-			}
-		});
+				FAudioThread::RunCommandOnAudioThread([ATSubmixEffects = MoveTemp(GTSubmixEffects)]() mutable
+				{
+					for (const TSoundEffectSubmixPtr& SubmixPtr : ATSubmixEffects)
+					{
+						USoundEffectPreset::UnregisterInstance(SubmixPtr);
+					}
+				});
+			});
+		}
 
 		NumSubmixEffects = 0;
 		EffectChains.Reset();
