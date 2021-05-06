@@ -431,6 +431,8 @@ struct FCollisionData
 	{
 	}
 
+	bool HasCollisionData() const { return bSimCollision || bQueryCollision; }
+
 	void Serialize(FChaosArchive& Ar)
 	{
 		Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
