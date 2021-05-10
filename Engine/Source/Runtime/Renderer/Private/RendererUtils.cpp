@@ -75,6 +75,7 @@ void FRenderTargetWriteMask::Decode(
 	ETextureCreateFlags RTWriteMaskFastVRamConfig,
 	const TCHAR* RTWriteMaskDebugName)
 {
+	FMemMark MemMark(FMemStack::Get());
 	FRDGBuilder GraphBuilder(RHICmdList);
 
 	TArray<FRDGTextureRef, SceneRenderingAllocator> InputTextures;
