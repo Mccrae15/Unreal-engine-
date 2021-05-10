@@ -364,6 +364,17 @@ void FVulkanDevice::CreateDevice()
 	}
 #endif
 
+#if VULKAN_SUPPORTS_FDM
+	VkPhysicalDeviceFragmentDensityMapFeaturesEXT DeviceFDMFeatures;
+	if (OptionalDeviceExtensions.HasEXTFragmentDensityMap)
+	{
+		ZeroVulkanStruct(DeviceFDMFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_FEATURES_EXT);
+		DeviceFDMFeatures.fragmentDensityMap = GetFDMFeatures().fragmentDensityMap ? VK_TRUE : VK_FALSE;
+		DeviceFDMFeatures.pNext = (void*)DeviceInfo.pNext;
+		DeviceInfo.pNext = &DeviceFDMFeatures;
+	}
+#endif
+
 #if VULKAN_SUPPORTS_FDM2
 	VkPhysicalDeviceFragmentDensityMap2FeaturesEXT DeviceFDM2Features;
 	if (OptionalDeviceExtensions.HasEXTFragmentDensityMap2)
@@ -971,6 +982,15 @@ void FVulkanDevice::InitGPU(int32 DeviceIndex)
 			NextPropsAddr = &AtomicFeatures.pNext;
 			ZeroVulkanStruct(AtomicFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR);
 		}
+
+#if VULKAN_SUPPORTS_FDM
+		if (GetOptionalExtensions().HasEXTFragmentDensityMap)
+		{
+			*NextPropsAddr = &FragmentDensityMapFeatures;
+			NextPropsAddr = &FragmentDensityMapFeatures.pNext;
+			ZeroVulkanStruct(FragmentDensityMapFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_FEATURES_EXT);
+		}
+#endif
 
 #if VULKAN_SUPPORTS_FDM2
 		if (GetOptionalExtensions().HasEXTFragmentDensityMap2)

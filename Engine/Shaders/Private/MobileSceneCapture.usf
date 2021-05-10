@@ -21,8 +21,11 @@ void MainCopyVS(
 	Output.UV = UVs;
 }
 
-
+#if MOBILE_MULTI_VIEW
+Texture2DArray InTexture;
+#else
 Texture2D InTexture;
+#endif
 SamplerState InTextureSampler;
 
 void MainCopyPS(
@@ -30,7 +33,11 @@ void MainCopyPS(
 	out float4 OutColor : SV_Target0
 	)
 {
+#if MOBILE_MULTI_VIEW
+	float4 SceneColor = Texture2DArraySample(InTexture, InTextureSampler, float3(Input.UV, 0));
+#else
     float4 SceneColor = Texture2DSample(InTexture, InTextureSampler, Input.UV);
+#endif
 	OutColor = SceneColor;
 	
 	// FP16 DeviceZ is stored in SceneColor.A

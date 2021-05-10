@@ -22,7 +22,7 @@ limitations under the License.
 #endif
 
 #define OVRP_MAJOR_VERSION 1
-#define OVRP_MINOR_VERSION 59
+#define OVRP_MINOR_VERSION 60
 #define OVRP_PATCH_VERSION 0
 
 #define OVRP_VERSION OVRP_MAJOR_VERSION, OVRP_MINOR_VERSION, OVRP_PATCH_VERSION
@@ -1011,6 +1011,16 @@ typedef enum {
   ovrpLayerSubmitFlag_SpaceWarp = (1 << 11),
 } ovrpLayerSubmitFlags;
 
+/// Factors used for source and dest alpha to make up the blend function.
+typedef enum {
+  ovrpBlendFactorZero = 0,
+  ovrpBlendFactorOne = 1,
+  ovrpBlendFactorSrcAlpha = 2,
+  ovrpBlendFactorOneMinusSrcAlpha = 3,
+  ovrpBlendFactorDstAlpha = 4,
+  ovrpBlendFactorOneMinusDstAlpha = 5
+} ovrpBlendFactor;
+
 /// Layer state to submit to ovrp_EndFrame
 #define OVRP_LAYER_SUBMIT                         \
   struct {                                        \
@@ -1026,6 +1036,16 @@ typedef enum {
     ovrpBool OverrideTextureRectMatrix;           \
     ovrpTextureRectMatrixf TextureRectMatrix;     \
     ovrpBool OverridePerLayerColorScaleAndOffset; \
+    /* Added in 1.60 */                           \
+    /* If blend factors are present (signaled by `HasBlendFactors == true`),*/\
+    /* they override the default blend function and all other influences    */\
+    /* like the layer submit flags `ovrpLayerSubmitFlag_InverseAlpha` and   */\
+    /* `ovrpLayerSubmitFlag_IgnoreSourceAlpha`.                             */\
+    /* Blend factors are not supported by CAPI and are ignored in the CAPI  */\
+    /* implementation.                                                      */\
+    ovrpBool HasBlendFactors;                     \
+    ovrpBlendFactor SrcBlendFactor;               \
+    ovrpBlendFactor DstBlendFactor;               \
   }
 
 typedef OVRP_LAYER_SUBMIT ovrpLayerSubmit;

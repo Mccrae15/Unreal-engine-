@@ -25,6 +25,7 @@ FSettings::FSettings() :
 	, bEnableSpecificColorGamut(false)
 	, ColorSpace(EColorSpace::Unknown)
 	, HandTrackingSupport(EHandTrackingSupport::ControllersOnly)
+	, HandTrackingFrequency(EHandTrackingFrequency::LOW)
 #if WITH_LATE_LATCHING_CODE
 	, bLateLatching(false)
 #endif

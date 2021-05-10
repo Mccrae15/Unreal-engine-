@@ -19,11 +19,11 @@ class OCULUSHMD_API UOculusHMDRuntimeSettings : public UObject
 public:
 	
 	/** Whether the Splash screen is enabled. */
-	UPROPERTY(config, EditAnywhere, Category = SplashScreen)
+	UPROPERTY(config, EditAnywhere, Category = "Engine SplashScreen")
 	bool bAutoEnabled;
 
 	/** An array of splash screen descriptors listing textures to show and their positions. */
-	UPROPERTY(config, EditAnywhere, Category = SplashScreen)
+	UPROPERTY(config, EditAnywhere, Category = "Engine SplashScreen")
 	TArray<FOculusSplashDesc> SplashDescs;
 
 	/** If enabled, the target HMD will perform a color space transformation */
@@ -54,6 +54,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = PC)
 	float PixelDensityMax;
 
+	/** A png for Mobile-OS-driven launch splash screen. It will show up instantly at app launch and disappear upon first engine-driven frame (regardless of said frame being UE4 splashes or 3D scenes) */
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "OS Splash Screen", FilePathFilter = "png", RelativeToGameDir))
+	FFilePath OSSplashScreen;
+
 	/** Default CPU level controlling CPU frequency on the mobile device */
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	int CPULevel;
@@ -81,6 +85,10 @@ public:
 	/** Whether controllers and/or hands can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile)
 	EHandTrackingSupport HandTrackingSupport;
+
+	/** Note that a higher tracking frequency will reserve some performance headroom from the application's budget. */
+	UPROPERTY(config, EditAnywhere, Category = Mobile)
+	EHandTrackingFrequency HandTrackingFrequency;
 
 //#if WITH_LATE_LATCHING_CODE
 	/** [Experimental]Enable Late latching for reducing HMD and controller latency, improve tracking prediction quality, multiview and vulkan has to be enabled for this featuretha */

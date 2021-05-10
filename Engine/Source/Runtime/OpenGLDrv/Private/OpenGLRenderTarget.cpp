@@ -64,7 +64,7 @@ public:
 	}
 
 	/**
-	* Equality is based on render and depth stencil targets 
+	* Equality is based on render and depth stencil targets
 	* @param Other - instance to compare against
 	* @return true if equal
 	*/
@@ -74,7 +74,7 @@ public:
 	}
 
 	/**
-	* Get the hash for this type. 
+	* Get the hash for this type.
 	* @param Key - struct to hash
 	* @return uint32 hash based on type
 	*/
@@ -146,8 +146,7 @@ GLuint FOpenGLDynamicRHI::GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTarge
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, Framebuffer);
 
-		FOpenGLTexture2D* RenderTarget2D = (FOpenGLTexture2D*)RenderTarget;
-		const uint32 NumSamplesTileMem = RenderTarget2D->GetNumSamplesTileMem();
+		uint32 NumSamplesTileMem = RenderTarget->GetNumSamplesTileMem();
 		if (NumSamplesTileMem > 1)
 		{
 			glFramebufferTextureMultisampleMultiviewOVR(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, RenderTarget->Resource, 0, NumSamplesTileMem, 0, 2);
@@ -177,7 +176,7 @@ GLuint FOpenGLDynamicRHI::GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTarge
 		FOpenGL::DrawBuffer(GL_COLOR_ATTACHMENT0);
 
 		GetOpenGLFramebufferCache().Add(FOpenGLFramebufferKey(NumSimultaneousRenderTargets, RenderTargets, ArrayIndices, MipmapLevels, DepthStencilTarget, PlatformOpenGLCurrentContext(PlatformDevice)), Framebuffer + 1);
-		
+
 		return Framebuffer;
 	}
 #endif
@@ -297,7 +296,7 @@ GLuint FOpenGLDynamicRHI::GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTarge
 			FOpenGLTexture2D* DepthStencilTarget2D = (FOpenGLTexture2D*)DepthStencilTarget;
 			const uint32 NumSamplesTileMem = DepthStencilTarget2D->GetNumSamplesTileMem();
 			if (NumSamplesTileMem > 1)
-			{	
+			{
 				glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, DepthStencilTarget->Resource);
 				glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, DepthStencilTarget->Resource);
 				VERIFY_GL(glFramebufferRenderbuffer);
@@ -327,7 +326,7 @@ GLuint FOpenGLDynamicRHI::GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTarge
 		FOpenGL::DrawBuffer(GL_NONE);
 	}
 
-	//  End frame can bind NULL / NULL 
+	//  End frame can bind NULL / NULL
 	//  An FBO with no attachments is framebuffer incomplete (INCOMPLETE_MISSING_ATTACHMENT)
 	//  In this case just delete the FBO and map in the default
 	//  In GL 4.x, NULL/NULL is valid and can be done =by specifying a default width/height
@@ -337,7 +336,7 @@ GLuint FOpenGLDynamicRHI::GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTarge
 		Framebuffer = 0;
 		glBindFramebuffer(GL_FRAMEBUFFER, Framebuffer);
 	}
-	
+
 	FOpenGL::CheckFrameBuffer();
 
 	GetOpenGLFramebufferCache().Add(FOpenGLFramebufferKey(NumSimultaneousRenderTargets, RenderTargets, ArrayIndices, MipmapLevels, DepthStencilTarget, PlatformOpenGLCurrentContext(PlatformDevice)), Framebuffer+1);
@@ -379,7 +378,7 @@ void ReleaseOpenGLFramebuffers(FOpenGLDynamicRHI* Device, FRHITexture* TextureRH
 				GLuint FramebufferToDelete = It.Value()-1;
 				check(FramebufferToDelete > 0);
 
-				RunOnGLRenderContextThread( [=]() 
+				RunOnGLRenderContextThread( [=]()
 					{
 						VERIFY_GL_SCOPE();
 						Device->PurgeFramebufferFromCaches( FramebufferToDelete );
@@ -478,7 +477,7 @@ void FOpenGLDynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FR
 			&& SourceTexture->Target == DestTexture->Target // glCopyImageSubData() doesn't like copying from a texture to a renderbuffer on Android
 #endif
 			;
-		
+
 		if ( !bTrueBlit || !FOpenGL::SupportsCopyImage() )
 		{
 			// Color buffers can be GL_NONE for attachment purposes if they aren't used as render targets
@@ -545,7 +544,7 @@ void FOpenGLDynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FR
 		}
 
 		REPORT_GL_FRAMEBUFFER_BLIT_EVENT( Mask );
-		
+
 		// For CPU readback resolve targets we should issue the resolve to the internal PBO immediately.
 		// This makes any subsequent locking of that texture much cheaper as it won't have to stall on a pixel pack op.
 		bool bLockableTarget = DestTextureRHI->GetTexture2D() && (DestTextureRHI->GetFlags() & TexCreate_CPUReadback) && !(DestTextureRHI->GetFlags() & (TexCreate_RenderTargetable|TexCreate_DepthStencilTargetable)) && !DestTextureRHI->IsMultisampled();
@@ -759,7 +758,7 @@ void FOpenGLDynamicRHI::ReadSurfaceDataRaw(FOpenGLContextState& ContextState, FR
 				}
 			}
 		}
-		else 
+		else
 		{
 			glReadPixels(Rect.Min.X, Rect.Min.Y, SizeX, SizeY, GL_RGBA, GL_FLOAT, FloatBGRAData );
 		}
@@ -780,15 +779,15 @@ void FOpenGLDynamicRHI::ReadSurfaceDataRaw(FOpenGLContextState& ContextState, FR
 		float RescaleFactor[4] = { MaxValue[0] - MinValue[0], MaxValue[1] - MinValue[1], MaxValue[2] - MinValue[2], MaxValue[3] - MinValue[3] };
 		for( int32 PixelIndex = 0; PixelIndex < PixelComponentCount / 4; ++PixelIndex )
 		{
-			float R = (DataPtr[2] - MinValue[2]) / RescaleFactor[2]; 
+			float R = (DataPtr[2] - MinValue[2]) / RescaleFactor[2];
 			float G = (DataPtr[1] - MinValue[1]) / RescaleFactor[1];
-			float B = (DataPtr[0] - MinValue[0]) / RescaleFactor[0]; 
-			float A = (DataPtr[3] - MinValue[3]) / RescaleFactor[3]; 
-			
+			float B = (DataPtr[0] - MinValue[0]) / RescaleFactor[0];
+			float A = (DataPtr[3] - MinValue[3]) / RescaleFactor[3];
+
 			if ( !FOpenGL::SupportsBGRA8888() )
 			{
 				Swap<float>( R,B );
-			}		   
+			}
 			FColor NormalizedColor = FLinearColor( R,G,B,A ).ToFColor(bLinearToGamma);
 			FMemory::Memcpy(TargetPtr,&NormalizedColor,sizeof(FColor));
 			DataPtr += 4;
@@ -874,7 +873,7 @@ void FOpenGLDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI,FIntRect Rect
 	}
 
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-	
+
 	RHITHREAD_GLCOMMAND_PROLOGUE();
 	TArray<uint8> Temp;
 
@@ -901,9 +900,9 @@ void FOpenGLDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rec
 	{
 		return;
 	}
-	
+
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-	
+
 	RHITHREAD_GLCOMMAND_PROLOGUE();
 	VERIFY_GL_SCOPE();
 
@@ -936,7 +935,7 @@ void FOpenGLDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rec
 	glPixelStorei(GL_PACK_ALIGNMENT, 4);
 
 	GetContextStateForCurrentContext().Framebuffer = (GLuint)-1;
-	
+
 	RHITHREAD_GLCOMMAND_EPILOGUE();
 }
 
@@ -947,14 +946,14 @@ void FOpenGLDynamicRHI::RHIMapStagingSurface(FRHITexture* TextureRHI, FRHIGPUFen
 	RHITHREAD_GLCOMMAND_PROLOGUE();
 
 	VERIFY_GL_SCOPE();
-	
+
 	FOpenGLTexture2D* Texture2D = (FOpenGLTexture2D*)TextureRHI->GetTexture2D();
 	check(Texture2D);
 	check(Texture2D->IsStaging());
 
 	OutWidth = Texture2D->GetSizeX();
 	OutHeight = Texture2D->GetSizeY();
-	
+
 	uint32 Stride = 0;
 	OutData = Texture2D->Lock( 0, 0, RLM_ReadOnly, Stride );
 	RHITHREAD_GLCOMMAND_EPILOGUE();
@@ -967,7 +966,7 @@ void FOpenGLDynamicRHI::RHIUnmapStagingSurface(FRHITexture* TextureRHI, uint32 G
 	RHITHREAD_GLCOMMAND_PROLOGUE();
 
 	VERIFY_GL_SCOPE();
-	
+
 	FOpenGLTexture2D* Texture2D = (FOpenGLTexture2D*)TextureRHI->GetTexture2D();
 	check(Texture2D);
 
@@ -981,10 +980,10 @@ void FOpenGLDynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI,FIntRect
 
 	RHITHREAD_GLCOMMAND_PROLOGUE();
 
-	VERIFY_GL_SCOPE();	
+	VERIFY_GL_SCOPE();
 
 	//reading from arrays only supported on SM5 and up.
-	check(FOpenGL::SupportsFloatReadSurface() && (ArrayIndex == 0 || GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5));	
+	check(FOpenGL::SupportsFloatReadSurface() && (ArrayIndex == 0 || GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5));
 	FOpenGLTextureBase* Texture = GetOpenGLTextureFromRHITexture(TextureRHI);
 	check(TextureRHI->GetFormat() == PF_FloatRGBA);
 
@@ -1019,7 +1018,7 @@ void FOpenGLDynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI,FIntRect
 
 	glBindFramebuffer(UGL_READ_FRAMEBUFFER, SourceFramebuffer);
 	FOpenGL::ReadBuffer(SourceFramebuffer == 0 ? GL_BACK : GL_COLOR_ATTACHMENT0);
-	glPixelStorei(GL_PACK_ALIGNMENT, 1);	
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
 
 	if (FOpenGL::GetReadHalfFloatPixelsEnum() == GL_FLOAT)
 	{
@@ -1220,7 +1219,7 @@ void FOpenGLDynamicRHI::RHIEndRenderPass()
 void FOpenGLDynamicRHI::RHINextSubpass()
 {
 	IRHICommandContext::RHINextSubpass();
-	
+
 	if (RenderPassInfo.SubpassHint == ESubpassHint::DepthReadSubpass)
 	{
 		FOpenGL::FrameBufferFetchBarrier();

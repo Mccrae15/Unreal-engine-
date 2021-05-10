@@ -4330,7 +4330,8 @@ void FSceneRenderer::SetStereoViewport(FRHICommandList& RHICmdList, const FViewI
 		}
 		else
 		{
-			RHICmdList.SetViewport(0, 0, 0, InstancedStereoWidth * ViewportScale, View.ViewRect.Max.Y * ViewportScale, 1.0f);
+			RHICmdList.SetViewport(View.ViewRect.Min.X * ViewportScale, View.ViewRect.Min.Y * ViewportScale, 0.0f,
+				(View.ViewRect.Min.X + InstancedStereoWidth) * ViewportScale, View.ViewRect.Max.Y * ViewportScale, 1.0f);
 		}
 	}
 	else

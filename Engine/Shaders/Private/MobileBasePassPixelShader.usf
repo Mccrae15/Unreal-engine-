@@ -519,6 +519,9 @@ void Main(
 	FVertexFactoryInterpolantsVSToPS Interpolants
 	, FMobileBasePassInterpolantsVSToPS BasePassInterpolants
 	, in float4 SvPosition : SV_Position
+#if MOBILE_MULTI_VIEW && !MOBILE_EMULATION
+	, in uint ViewId : SV_ViewID
+#endif
 	OPTIONAL_IsFrontFace
 	, out half4 OutColor	: SV_Target0
 #if DEFERRED_SHADING_PATH
@@ -536,7 +539,11 @@ void Main(
 	)
 {
 #if MOBILE_MULTI_VIEW
-	ResolvedView = ResolveView(uint(BasePassInterpolants.MultiViewId));
+#if MOBILE_EMULATION
+	ResolvedView = ResolveView(BasePassInterpolants.MultiViewId);
+#else
+	ResolvedView = ResolveView(ViewId);
+#endif
 #else
 	ResolvedView = ResolveView();
 #endif

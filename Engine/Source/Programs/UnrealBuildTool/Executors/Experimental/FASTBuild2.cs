@@ -865,6 +865,19 @@ namespace UnrealBuildTool
 			return Action.ActionType == ActionType.Compile && Action.bCanExecuteRemotely;
 		}
 
+		private int SortActionFunc(BffBuildAction a, BffBuildAction b)
+		{
+			if (a.SourceAction.PrerequisiteActions.Contains(b.SourceAction))
+			{
+				return 1;
+			}
+			else if (b.SourceAction.PrerequisiteActions.Contains(a.SourceAction))
+			{
+				return -1;
+			}
+			return Action.Compare(a.SourceAction, b.SourceAction);
+		}
+
 		private bool CreateBffFile(List<Action> InActions, string BffFilePath)
 		{
 			try
@@ -898,6 +911,9 @@ namespace UnrealBuildTool
 						}
 					}
 				}
+
+				// Sort list so actions are in correct order for fastbuild
+				bffFile.BuildActions.Sort((a, b) => SortActionFunc(a, b));
 
 				using (var bffOutputFileStream = new FileStream(BffFilePath, FileMode.Create, FileAccess.Write))
 				{

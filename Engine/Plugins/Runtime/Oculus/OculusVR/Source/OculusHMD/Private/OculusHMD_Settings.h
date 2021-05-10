@@ -101,6 +101,7 @@ public:
 	EColorSpace ColorSpace;
 
 	EHandTrackingSupport HandTrackingSupport;
+	EHandTrackingFrequency HandTrackingFrequency;
 
 	EShaderPlatform CurrentShaderPlatform;
 

@@ -248,6 +248,14 @@
 	#endif
 #endif
 
+#ifndef VULKAN_SUPPORTS_FDM
+	#ifdef VK_EXT_fragment_density_map
+		#define VULKAN_SUPPORTS_FDM								1
+	#else
+		#define VULKAN_SUPPORTS_FDM								0
+	#endif
+#endif
+
 #ifndef VULKAN_SUPPORTS_FDM2
 	#ifdef VK_EXT_fragment_density_map2
 		#define VULKAN_SUPPORTS_FDM2							1

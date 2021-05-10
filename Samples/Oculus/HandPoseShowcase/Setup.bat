@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd %~dp0
 
-set archive=sho_20210330_165101.tar
+set archive=sho_20210420_190740.tar
 set remote_archive=https://www.oculus.com/x2asset/%archive%
 set local_archive=%TMP%\%archive%
 
@@ -15,7 +15,7 @@ if errorlevel 1 (
 )
 
 echo Downloading Content...
-curl %remote_archive% --output %local_archive%
+curl -L %remote_archive% --output %local_archive%
 if errorlevel 1 (
   echo Failed to download content!
   exit /b 1

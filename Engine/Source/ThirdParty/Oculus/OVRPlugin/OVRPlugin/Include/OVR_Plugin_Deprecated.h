@@ -279,6 +279,26 @@ OVRP_EXPORT ovrpResult ovrp_EnqueueSubmitLayer2(
   OVRP_CONSTREF(ovrpVector4f) colorScale,
   OVRP_CONSTREF(ovrpVector4f) colorOffset);
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // Previously deprecated
 OVRP_EXPORT ovrpBool ovrp_Initialize(ovrpRenderAPIType apiType, void* platformArgs);
 OVRP_EXPORT ovrpBoundaryGeometry ovrp_GetBoundaryGeometry(ovrpBoundaryType boundaryType);

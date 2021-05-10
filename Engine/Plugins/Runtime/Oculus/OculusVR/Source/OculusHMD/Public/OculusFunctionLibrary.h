@@ -129,6 +129,14 @@ enum class EHandTrackingSupport : uint8
 };
 
 UENUM(BlueprintType)
+enum class EHandTrackingFrequency : uint8
+{
+	LOW,
+	HIGH,
+	MAX,
+};
+
+UENUM(BlueprintType)
 enum class EOculusDeviceType : uint8
 {
 	//mobile HMDs 

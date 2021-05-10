@@ -75,6 +75,7 @@ public:
 	static void EmptyCache();
 };
 
+struct FGfxPipelineDesc;
 
 class FVulkanShader : public IRefCountedObject
 {
@@ -83,6 +84,7 @@ public:
 		: ShaderKey(0)
 		, StageFlag(InStageFlag)
 		, Frequency(InFrequency)
+		, SpirvSize(0)
 		, Device(InDevice)
 	{
 	}
@@ -103,6 +105,22 @@ public:
 
 		return CreateHandle(Layout, LayoutHash);
 	}
+	
+	VkShaderModule GetOrCreateHandle(const FGfxPipelineDesc& Desc, const FVulkanLayout* Layout, uint32 LayoutHash)
+	{
+		if (NeedsSpirvInputAttachmentPatching(Desc))
+		{
+			LayoutHash = HashCombine(LayoutHash, 1);
+		}
+		
+		VkShaderModule* Found = ShaderModules.Find(LayoutHash);
+		if (Found)
+		{
+			return *Found;
+		}
+
+		return CreateHandle(Desc, Layout, LayoutHash);
+	}
 
 	inline const FString& GetDebugName() const
 	{
@@ -112,7 +130,7 @@ public:
 	// Name should be pointing to "main_"
 	void GetEntryPoint(ANSICHAR* Name, int32 NameLength)
 	{
-		FCStringAnsi::Snprintf(Name, NameLength, "main_%0.8x_%0.8x", Spirv.Num() * sizeof(uint32), CodeHeader.SpirvCRC);
+		FCStringAnsi::Snprintf(Name, NameLength, "main_%0.8x_%0.8x", SpirvSize, CodeHeader.SpirvCRC);
 	}
 
 	FORCEINLINE const FVulkanShaderHeader& GetCodeHeader() const
@@ -140,10 +158,15 @@ protected:
 	TArray<FUniformBufferStaticSlot> StaticSlots;
 
 	TArray<uint32>					Spirv;
+	// this is size of unmodified spriv code
+	uint32							SpirvSize;
 
 	FVulkanDevice*					Device;
 
 	VkShaderModule CreateHandle(const FVulkanLayout* Layout, uint32 LayoutHash);
+	VkShaderModule CreateHandle(const FGfxPipelineDesc& Desc, const FVulkanLayout* Layout, uint32 LayoutHash);
+	
+	bool NeedsSpirvInputAttachmentPatching(const FGfxPipelineDesc& Desc) const;
 
 	friend class FVulkanCommandListContext;
 	friend class FVulkanPipelineStateCacheManager;
@@ -273,7 +296,7 @@ struct FVulkanCpuReadbackBuffer
 class FVulkanSurface : public FVulkanEvictable
 {
 	virtual void Evict(FVulkanDevice& Device);
-	virtual void Move(FVulkanDevice& Device, VulkanRHI::FVulkanAllocation& NewAllocation);
+	virtual void Move(FVulkanDevice& Device, FVulkanCommandListContext& Context, VulkanRHI::FVulkanAllocation& NewAllocation);
 	virtual bool CanEvict();
 	virtual bool CanMove();
 public:
@@ -315,8 +338,8 @@ public:
 	void InvalidateMappedMemory();
 	void* GetMappedPointer();
 
-	void MoveSurface(FVulkanDevice& InDevice, VulkanRHI::FVulkanAllocation& NewAllocation);
-	void OnFullDefrag(FVulkanDevice& InDevice, uint32 NewOffset);
+	void MoveSurface(FVulkanDevice& InDevice, FVulkanCommandListContext& Context, VulkanRHI::FVulkanAllocation& NewAllocation);
+	void OnFullDefrag(FVulkanDevice& InDevice, FVulkanCommandListContext& Context, uint32 NewOffset);
 	void EvictSurface(FVulkanDevice& InDevice);
 
 
@@ -517,8 +540,8 @@ struct FVulkanTextureBase : public FVulkanEvictable, public IRefCountedObject
 	}
 
 	void Evict(FVulkanDevice& Device); ///evict to system memory
-	void Move(FVulkanDevice& Device, VulkanRHI::FVulkanAllocation& NewAllocation); //move to a full new allocation
-	void OnFullDefrag(FVulkanDevice& Device, uint32 NewOffset); //called when compacting an allocation. Old image can still be used as a copy source.
+	void Move(FVulkanDevice& Device, FVulkanCommandListContext& Context, VulkanRHI::FVulkanAllocation& NewAllocation); //move to a full new allocation
+	void OnFullDefrag(FVulkanDevice& Device, FVulkanCommandListContext& Context, uint32 NewOffset); //called when compacting an allocation. Old image can still be used as a copy source.
 	FVulkanTextureBase* GetTextureBase() { return this; }
 
 	void AttachView(VulkanRHI::FVulkanViewBase* View);
@@ -753,7 +776,7 @@ public:
 class FVulkanQueryPool : public VulkanRHI::FDeviceChild
 {
 public:
-	FVulkanQueryPool(FVulkanDevice* InDevice, FVulkanCommandBufferManager* CommandBufferManager, uint32 InMaxQueries, VkQueryType InQueryType);
+	FVulkanQueryPool(FVulkanDevice* InDevice, FVulkanCommandBufferManager* CommandBufferManager, uint32 InMaxQueries, VkQueryType InQueryType, bool bInShouldAddReset = true);
 	virtual ~FVulkanQueryPool();
 
 	inline uint32 GetMaxQueries() const
@@ -873,7 +896,7 @@ class FVulkanTimingQueryPool : public FVulkanQueryPool
 {
 public:
 	FVulkanTimingQueryPool(FVulkanDevice* InDevice, FVulkanCommandBufferManager* CommandBufferManager, uint32 InBufferSize)
-		: FVulkanQueryPool(InDevice, CommandBufferManager, InBufferSize * 2, VK_QUERY_TYPE_TIMESTAMP)
+		: FVulkanQueryPool(InDevice, CommandBufferManager, InBufferSize * 2, VK_QUERY_TYPE_TIMESTAMP, false)
 		, BufferSize(InBufferSize)
 	{
 		TimestampListHandles.AddZeroed(InBufferSize * 2);
@@ -1002,7 +1025,7 @@ private:
 struct FVulkanRingBuffer : public FVulkanEvictable, public VulkanRHI::FDeviceChild
 {
 	virtual void Evict(FVulkanDevice& Device);
-	virtual void Move(FVulkanDevice& Device, VulkanRHI::FVulkanAllocation& NewAllocation);
+	virtual void Move(FVulkanDevice& Device, FVulkanCommandListContext& Context, VulkanRHI::FVulkanAllocation& NewAllocation);
 
 public:
 	FVulkanRingBuffer(FVulkanDevice* InDevice, uint64 TotalSize, VkFlags Usage, VkMemoryPropertyFlags MemPropertyFlags);
@@ -1125,7 +1148,7 @@ protected:
 class FVulkanResourceMultiBuffer : public FVulkanEvictable, public VulkanRHI::FDeviceChild
 {
 	virtual void Evict(FVulkanDevice& Device);
-	virtual void Move(FVulkanDevice& Device, VulkanRHI::FVulkanAllocation& NewAllocation);
+	virtual void Move(FVulkanDevice& Device, FVulkanCommandListContext& Context, VulkanRHI::FVulkanAllocation& NewAllocation);
 
 public:
 	FVulkanResourceMultiBuffer(FVulkanDevice* InDevice, VkBufferUsageFlags InBufferUsageFlags, uint32 InSize, uint32 InUEUsage, FRHIResourceCreateInfo& CreateInfo, class FRHICommandListImmediate* InRHICmdList = nullptr);

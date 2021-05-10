@@ -86,8 +86,8 @@ bool FOculusHMDModule::PreInit()
 		}
 #endif
 
-		// Init module if app can render and Oculus service is running
-		if (FApp::CanEverRender() && OculusHMD::IsOculusServiceRunning())
+		// Init module if app can render
+		if (FApp::CanEverRender())
 		{
 			// Load OVRPlugin
 			OVRPluginHandle = GetOVRPluginHandle();

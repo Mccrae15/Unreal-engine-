@@ -28,6 +28,7 @@ UOculusHMDRuntimeSettings::UOculusHMDRuntimeSettings(const FObjectInitializer& O
 	ColorSpace = DefaultSettings.ColorSpace;
 	bRequiresSystemKeyboard = DefaultSettings.Flags.bRequiresSystemKeyboard;
 	HandTrackingSupport = DefaultSettings.HandTrackingSupport;
+	HandTrackingFrequency = DefaultSettings.HandTrackingFrequency;
 #if WITH_LATE_LATCHING_CODE
 	bLateLatching = DefaultSettings.bLateLatching;
 #endif
@@ -49,6 +50,7 @@ UOculusHMDRuntimeSettings::UOculusHMDRuntimeSettings(const FObjectInitializer& O
 	ColorSpace = EColorSpace::Unknown;
 	bRequiresSystemKeyboard = false;
 	HandTrackingSupport = EHandTrackingSupport::ControllersOnly;
+	HandTrackingFrequency = EHandTrackingFrequency::Low;
 #if WITH_LATE_LATCHING_CODE
 	bLateLatching = false;
 #endif

@@ -214,6 +214,13 @@ public:
 		return GpuProps;
 	}
 
+#if VULKAN_SUPPORTS_FDM
+	inline const VkPhysicalDeviceFragmentDensityMapFeaturesEXT& GetFDMFeatures() const
+	{
+		return FragmentDensityMapFeatures;
+	}
+#endif
+
 #if VULKAN_SUPPORTS_FDM2
 	inline const VkPhysicalDeviceFragmentDensityMap2FeaturesEXT& GetFDM2Features() const
 	{
@@ -472,6 +479,9 @@ private:
 	VkPhysicalDeviceProperties GpuProps;
 #if VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
 	VkPhysicalDeviceIDPropertiesKHR GpuIdProps;
+#endif
+#if VULKAN_SUPPORTS_FDM
+	VkPhysicalDeviceFragmentDensityMapFeaturesEXT FragmentDensityMapFeatures;
 #endif
 #if VULKAN_SUPPORTS_FDM2
 	VkPhysicalDeviceFragmentDensityMap2FeaturesEXT FragmentDensityMap2Features;
