@@ -57,6 +57,8 @@ public:
 	bool IsInitialized() const { return bInitialized; }
 	void SetInitialized() { bInitialized = true; }
 
+	static Chaos::TGeometryParticleHandle<Chaos::FReal, 3>* GetParticleHandleFromProxy(IPhysicsProxyBase* ProxyBase);
+
 	//
 	//  Lifespan Management
 	//
@@ -144,7 +146,7 @@ private:
 	// Output Buffer
 	TUniquePtr<Chaos::IBufferResource<FOutputData>> OutputBuffer;
 
-	CONSTRAINT_TYPE* Constraint;
+	CONSTRAINT_TYPE* Constraint; 	// This proxy assumes ownership of the Constraint, and will free it during DestroyOnPhysicsThread
 	FConstraintHandle* Handle;
 	bool bInitialized;
 
