@@ -149,6 +149,7 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Serialization/LoadTimeTrace.h"
 #include "Async/ParallelFor.h"
+#include "IO/IoDispatcher.h"
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
@@ -9418,6 +9419,11 @@ void UEngine::AddTextureStreamingSlaveLoc(FVector InLoc, float BoostFactor, bool
 FGuid UEngine::GetPackageGuid(FName PackageName, bool bForPIE)
 {
 	FGuid Result(0,0,0,0);
+	// There is no package guid support when using the I/O dispatcher
+	if (FIoDispatcher::IsInitialized())
+	{
+		return Result;
+	}
 	FPackagePath PackagePath;
 	if (!FPackagePath::TryFromMountedName(PackageName.ToString(), PackagePath))
 	{
