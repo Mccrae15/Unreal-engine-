@@ -948,11 +948,6 @@ void FSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGatheringCont
 		{
 			for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 			{
-				if (LODModel.Sections[SectionIndex].NumTriangles == 0)
-				{
-					continue;
-				}
-
 				FMaterialSection& Section = MaterialSections[LODModel.Sections[SectionIndex].MaterialIndex];
 
 				FMeshBatch& MeshBatch = RayTracingInstanceTemplate.Materials.AddDefaulted_GetRef();
