@@ -691,7 +691,6 @@ namespace Chaos
 		FJointConstraintPhysicsProxy* JointProxy = GTConstraint->GetProxy<FJointConstraintPhysicsProxy>();
 		check(JointProxy);
 
-		JointProxy->SetSolver(static_cast<TPBDRigidsSolver<Traits>*>(nullptr));
 		RemoveDirtyProxy(JointProxy);
 
 		int32 NumRemoved = JointConstraintPhysicsProxies_External.Remove(JointProxy);
@@ -728,7 +727,6 @@ namespace Chaos
 		FSuspensionConstraintPhysicsProxy* SuspensionProxy = GTConstraint->GetProxy<FSuspensionConstraintPhysicsProxy>();
 		check(SuspensionProxy);
 
-		SuspensionProxy->SetSolver(static_cast<TPBDRigidsSolver<Traits>*>(nullptr));
 		RemoveDirtyProxy(SuspensionProxy);
 
 		int32 NumRemoved = SuspensionConstraintPhysicsProxies.Remove(SuspensionProxy);
