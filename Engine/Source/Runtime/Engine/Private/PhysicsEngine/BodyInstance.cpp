@@ -1212,7 +1212,9 @@ void FInitBodiesHelperBase::CreateActor_AssumesLocked(FBodyInstance* Instance, c
 		FPhysicsInterface::CreateActor(ActorParams, Instance->ActorHandle);
 		FPhysicsInterface::SetCcdEnabled_AssumesLocked(Instance->ActorHandle, Instance->bUseCCD);
 		FPhysicsInterface::SetIsKinematic_AssumesLocked(Instance->ActorHandle, !Instance->ShouldInstanceSimulatingPhysics());
+#if WITH_CHAOS
 		FPhysicsInterface::SetMaxLinearVelocity_AssumesLocked(Instance->ActorHandle, TNumericLimits<float>::Max());
+#endif
 
 		// Set sleep even notification
 		FPhysicsInterface::SetSendsSleepNotifies_AssumesLocked(Instance->ActorHandle, Instance->bGenerateWakeEvents);
@@ -3187,8 +3189,10 @@ void FBodyInstance::UpdateMassProperties()
 						FTransform MassModifierTransform(FQuat::Identity, FVector(0.f, 0.f, 0.f), Scale3D);
 						TotalMassProperties = BodyUtils::ComputeMassProperties(this, Shapes, MassModifierTransform);
 
+#if WITH_CHAOS
 						// Make the inertia diagonal and calculate the rotation of mass
 						TotalMassProperties.RotationOfMass = Chaos::TransformToLocalSpace(TotalMassProperties.InertiaTensor);
+#endif
 					}
 				}
 

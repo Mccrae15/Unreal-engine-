@@ -8,6 +8,7 @@
 #include "NiagaraResourceArrayWriter.h"
 #include "NiagaraSettings.h"
 #include "NiagaraStats.h"
+#include <limits>
 
 FSkeletalMeshConnectivityHandle::FSkeletalMeshConnectivityHandle()
 	: ConnectivityData(nullptr)
