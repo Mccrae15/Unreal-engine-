@@ -456,13 +456,7 @@ struct FControlRigParameterPreAnimatedTokenProducer : IMovieScenePreAnimatedToke
 				{
 					if (ControlRig->GetObjectBinding())
 					{
-						if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(ControlRig->GetObjectBinding()->GetBoundObject()))
-						{
-							SkeletalMeshRestoreState.RestoreState(SkeletalMeshComponent);
-						}
-
-						FControlRigBindingHelper::UnBindFromSequencerInstance(ControlRig);
-						
+						//Restore control rig first
 						for (TNameAndValue<float>& Value : ScalarValues)
 						{
 							if (ControlRig->FindControl(Value.Name))
@@ -530,11 +524,20 @@ struct FControlRigParameterPreAnimatedTokenProducer : IMovieScenePreAnimatedToke
 								}
 							}
 						}
-						//only unbind if not a component
+						//unbind instances and reset animbp
+						FControlRigBindingHelper::UnBindFromSequencerInstance(ControlRig);
+
+						//restore skel mesh and due a tick
+						if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(ControlRig->GetObjectBinding()->GetBoundObject()))
+						{
+							SkeletalMeshRestoreState.RestoreState(SkeletalMeshComponent);
+						}
+						//only unbind controlrig object binding if not a component
 						if (Cast<UControlRigComponent>(ControlRig->GetObjectBinding()->GetBoundObject()) == nullptr)
 						{
 							ControlRig->GetObjectBinding()->UnbindFromObject();
 						}
+
 					}
 				}
 			}
@@ -1480,4 +1483,3 @@ void FMovieSceneControlRigParameterTemplate::Interrogate(const FMovieSceneContex
 
 	}
 }
-
