@@ -425,7 +425,7 @@ public:
 		Particle->SetObjectStateLowLevel(ObjectState);
 		Particles.SetDynamicParticleSOA(Particle);
 
-		if (InitialState == EObjectStateType::Sleeping && InitialState != ObjectState)
+		if (InitialState == EObjectStateType::Sleeping && InitialState != ObjectState && Particle->Island() != INDEX_NONE)
 		{
 			// GT has forced a wake so have to wake everything in the island
 			IslandsToWake.Enqueue(Particle->Island());
