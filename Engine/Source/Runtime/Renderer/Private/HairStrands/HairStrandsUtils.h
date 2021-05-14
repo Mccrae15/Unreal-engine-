@@ -67,6 +67,7 @@ enum class  EHairStrandsCompositionType : uint8
 	BeforeTranslucent,
 	AfterTranslucent,
 	AfterSeparateTranslucent,
+	AfterTranslucentTranslucentBeforeAfterDOF
 };
 
 EHairStrandsCompositionType GetHairStrandsComposition();
