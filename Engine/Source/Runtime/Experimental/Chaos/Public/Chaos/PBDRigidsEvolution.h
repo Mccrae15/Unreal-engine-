@@ -311,9 +311,19 @@ public:
 		NumIterations = InNumIterations;
 	}
 
+	CHAOS_API int32 GetNumIterations() const
+	{
+		return NumIterations;
+	}
+
 	CHAOS_API void SetNumPushOutIterations(int32 InNumIterations)
 	{
 		NumPushOutIterations = InNumIterations;
+	}
+
+	CHAOS_API int32 GetNumPushOutIterations() const
+	{
+		return NumPushOutIterations;
 	}
 
 	CHAOS_API void EnableParticle(TGeometryParticleHandle<FReal, 3>* Particle, const TGeometryParticleHandle<FReal, 3>* ParentParticle)
