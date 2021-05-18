@@ -3161,10 +3161,11 @@ bool UStaticMesh::HasValidRenderData(bool bCheckLODForVerts, int32 LODIndex) con
 	{
 		if (bCheckLODForVerts)
 		{
-		    if (LODIndex == INDEX_NONE)
-		    {
-			    LODIndex = FMath::Clamp<int32>(GetMinLOD().GetValue(), 0, GetRenderData()->LODResources.Num() - 1);
-		    }
+			if (LODIndex == INDEX_NONE)
+			{
+				LODIndex = FMath::Clamp<int32>(GetMinLOD().GetValue(), 0, GetRenderData()->LODResources.Num() - 1);
+			}
+
 			return (GetRenderData()->LODResources[LODIndex].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0);
 		}
 		else
@@ -3172,6 +3173,16 @@ bool UStaticMesh::HasValidRenderData(bool bCheckLODForVerts, int32 LODIndex) con
 			return true;
 		}
 	}
+	return false;
+}
+
+bool UStaticMesh::HasValidNaniteData() const
+{
+	if (const FStaticMeshRenderData* SMRenderData = GetRenderData())
+	{
+		return SMRenderData->NaniteResources.PageStreamingStates.Num() > 0;
+	}
+
 	return false;
 }
 

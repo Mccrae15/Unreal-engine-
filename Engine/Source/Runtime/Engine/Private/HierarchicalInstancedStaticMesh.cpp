@@ -153,8 +153,6 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("Occlusion Culled Instances"), STAT_OcclusionCul
 DECLARE_DWORD_COUNTER_STAT(TEXT("Traversals"),STAT_FoliageTraversals,STATGROUP_Foliage);
 DECLARE_MEMORY_STAT(TEXT("Instance Buffers"),STAT_FoliageInstanceBuffers,STATGROUP_Foliage);
 
-extern int32 GRenderNaniteMeshes;
-
 static void FoliageCVarSinkFunction()
 {
 	static float CachedFoliageDensityScale = 1.0f;
@@ -3136,6 +3134,9 @@ void UHierarchicalInstancedStaticMeshComponent::SetPerInstanceLightMapAndEditorD
 
 FPrimitiveSceneProxy* UHierarchicalInstancedStaticMeshComponent::CreateSceneProxy()
 {
+	static const auto NaniteProxyRenderModeVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.ProxyRenderMode"));
+	const int32 NaniteProxyRenderMode = (NaniteProxyRenderModeVar != nullptr) ? (NaniteProxyRenderModeVar->GetInt() != 0) : 0;
+
 	LLM_SCOPE(ELLMTag::InstancedMesh);
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_HierarchicalInstancedStaticMeshComponent_CreateSceneProxy);
 	SCOPE_CYCLE_COUNTER(STAT_FoliageCreateProxy);
@@ -3148,9 +3149,9 @@ FPrimitiveSceneProxy* UHierarchicalInstancedStaticMeshComponent::CreateSceneProx
 
 	// Verify that the mesh is valid before using it.
 	const bool bMeshIsValid =
-		// make sure we have instances		
+		// Make sure we have instances.
 		(PerInstanceRenderData.IsValid()) &&
-		// make sure we have an actual static mesh
+		// Make sure we have an actual static mesh.
 		GetStaticMesh() &&
 		!GetStaticMesh()->IsCompiling() &&
 		GetStaticMesh()->HasValidRenderData(false);
@@ -3159,8 +3160,8 @@ FPrimitiveSceneProxy* UHierarchicalInstancedStaticMeshComponent::CreateSceneProx
 	{
 		check(InstancingRandomSeed != 0);
 
-		// if instance data was modified, update GPU copy
-		// if InstanceBuffer was initialized with RequireCPUAccess (always true in editor))
+		// If instance data was modified, update GPU copy.
+		// If InstanceBuffer was initialized with RequireCPUAccess (always true in editor).
 		if (InstanceUpdateCmdBuffer.NumInlineCommands() > 0 && PerInstanceRenderData->InstanceBuffer.RequireCPUAccess)
 		{
 			PerInstanceRenderData->UpdateFromCommandBuffer(InstanceUpdateCmdBuffer);
@@ -3169,10 +3170,16 @@ FPrimitiveSceneProxy* UHierarchicalInstancedStaticMeshComponent::CreateSceneProx
 		ProxySize = PerInstanceRenderData->ResourceSize;
 		INC_DWORD_STAT_BY(STAT_FoliageInstanceBuffers, ProxySize);
 
-		// TODO: Abstract with a common helper
-		if (UseNanite(GetScene()->GetShaderPlatform()) && GetStaticMesh()->GetRenderData()->NaniteResources.PageStreamingStates.Num())
+		// Is Nanite supported, and is there built Nanite data for this static mesh?
+		if (UseNanite(GetScene()->GetShaderPlatform()) && GetStaticMesh()->HasValidNaniteData())
 		{
 			return ::new Nanite::FSceneProxy(this);
+		}
+		// If we didn't get a proxy, but Nanite was enabled on the asset when it was built, evaluate proxy creation
+		else if (GetStaticMesh()->HasValidNaniteData() && NaniteProxyRenderMode != 0)
+		{
+			// Do not render Nanite proxy
+			return nullptr;
 		}
 		else
 		{
