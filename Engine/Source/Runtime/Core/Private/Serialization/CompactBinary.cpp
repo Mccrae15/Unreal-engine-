@@ -606,7 +606,7 @@ FCbFieldIterator FCbObject::CreateIterator() const
 
 FCbField FCbObject::Find(const FAnsiStringView Name) const
 {
-	for (const FCbField Field : *this)
+	for (const FCbField& Field : *this)
 	{
 		if (Name.Equals(Field.GetName(), ESearchCase::CaseSensitive))
 		{
@@ -618,7 +618,7 @@ FCbField FCbObject::Find(const FAnsiStringView Name) const
 
 FCbField FCbObject::FindIgnoreCase(const FAnsiStringView Name) const
 {
-	for (const FCbField Field : *this)
+	for (const FCbField& Field : *this)
 	{
 		if (Name.Equals(Field.GetName(), ESearchCase::IgnoreCase))
 		{
