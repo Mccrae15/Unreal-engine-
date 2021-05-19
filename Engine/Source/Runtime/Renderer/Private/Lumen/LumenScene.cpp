@@ -96,22 +96,11 @@ void FLumenSceneData::UpdatePrimitive(FPrimitiveSceneInfo* InPrimitive)
 
 	if (bTrackAllPrimitives
 		&& TrackPrimitiveForLumenScene(Proxy)
-		&& !PendingUpdateOperations.Contains(InPrimitive))
+		&& InPrimitive->LumenPrimitiveIndex >= 0
+		&& !PendingUpdateOperations.Contains(InPrimitive)
+		&& !PendingAddOperations.Contains(InPrimitive))
 	{
-		bool bPendingAdd = false;
-		for (FPrimitiveSceneInfo* AddPrimitive : PendingAddOperations)
-		{
-			if (AddPrimitive == InPrimitive)
-			{
-				bPendingAdd = true;
-				break;
-			}
-		}
-
-		if (!bPendingAdd)
-		{
-			PendingUpdateOperations.Add(InPrimitive);
-		}
+		PendingUpdateOperations.Add(InPrimitive);
 	}
 }
 
