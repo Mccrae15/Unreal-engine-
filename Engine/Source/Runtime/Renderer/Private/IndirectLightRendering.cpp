@@ -862,10 +862,12 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 			}
 		}
 
+		bool bWritableAmbientOcclusionMask = true;
 		if (ViewPipelineState.AmbientOcclusionMethod == EAmbientOcclusionMethod::Disabled)
 		{
 			ensure(!HasBeenProduced(SceneTextures.ScreenSpaceAO));
 			AmbientOcclusionMask = nullptr;
+			bWritableAmbientOcclusionMask = false;
 		}
 		else if (ViewPipelineState.AmbientOcclusionMethod == EAmbientOcclusionMethod::RTAO)
 		{
@@ -889,11 +891,13 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 			else
 			{
 				AmbientOcclusionMask = GetScreenSpaceAOFallback(SystemTextures);
+				bWritableAmbientOcclusionMask = false;
 			}
 		}
 		else
 		{
 			unimplemented();
+			bWritableAmbientOcclusionMask = false;
 		}
 
 		// Extract the dynamic AO for application of AO beyond RenderDiffuseIndirectAndAmbientOcclusion()
@@ -904,7 +908,7 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 			SceneTextures.ScreenSpaceAO = AmbientOcclusionMask;
 		}
 
-		if (HairStrands::HasViewHairStrandsData(View) && (ViewPipelineState.AmbientOcclusionMethod == EAmbientOcclusionMethod::SSGI || ViewPipelineState.AmbientOcclusionMethod == EAmbientOcclusionMethod::SSAO))
+		if (HairStrands::HasViewHairStrandsData(View) && (ViewPipelineState.AmbientOcclusionMethod == EAmbientOcclusionMethod::SSGI || ViewPipelineState.AmbientOcclusionMethod == EAmbientOcclusionMethod::SSAO) && bWritableAmbientOcclusionMask)
 		{
 			RenderHairStrandsAmbientOcclusion(
 				GraphBuilder,
