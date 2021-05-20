@@ -270,8 +270,8 @@ void FVirtualShadowMapArray::Initialize(FRDGBuilder& GraphBuilder, FVirtualShado
 	ProjectionData.AddDefaulted(1);
 	UniformParameters.ProjectionData = GraphBuilder.CreateSRV(CreateProjectionDataBuffer(GraphBuilder, TEXT("Shadow.Virtual.DummyProjectionData"), ProjectionData));
 
-	UniformParameters.PhysicalPagePool = GraphBuilder.RegisterExternalTexture(GSystemTextures.BlackDummy);
-	UniformParameters.PhysicalPagePoolHw = GraphBuilder.RegisterExternalTexture(GSystemTextures.BlackDummy);
+	UniformParameters.PhysicalPagePool = GSystemTextures.GetZeroUIntDummy(GraphBuilder);
+	UniformParameters.PhysicalPagePoolHw = GSystemTextures.GetBlackDummy(GraphBuilder);
 }
 
 FVirtualShadowMapArray::~FVirtualShadowMapArray()
@@ -590,7 +590,7 @@ void FVirtualShadowMapArray::ClearPhysicalMemory(FRDGBuilder& GraphBuilder, FRDG
 			bool bCacheDataAvailable = CacheManager && CacheManager->PrevBuffers.PhysicalPageMetaData;
 			if (bCacheDataAvailable)
 			{
-				PassParameters->CachedPhysicalPagesTexture = RegisterExternalTextureWithFallback(GraphBuilder, CacheManager->PrevBuffers.PhysicalPagePool, GSystemTextures.BlackDummy);
+				PassParameters->CachedPhysicalPagesTexture = RegisterExternalTextureWithFallback(GraphBuilder, CacheManager->PrevBuffers.PhysicalPagePool, GSystemTextures.ZeroUIntDummy);
 				PassParameters->CachedPageInfos = GraphBuilder.CreateSRV(CachedPageInfosRDG);
 				PassParameters->PrevPhysicalPageMetaData = GraphBuilder.CreateSRV(GraphBuilder.RegisterExternalBuffer(CacheManager->PrevBuffers.PhysicalPageMetaData));
 			}
@@ -1138,8 +1138,8 @@ void FVirtualShadowMapArray::BuildPageAllocations(
 
 void FVirtualShadowMapArray::SetupProjectionParameters(FRDGBuilder& GraphBuilder)
 {
-	UniformParameters.PhysicalPagePool = PhysicalPagePoolRDG ? PhysicalPagePoolRDG : GraphBuilder.RegisterExternalTexture(GSystemTextures.BlackDummy);
-	UniformParameters.PhysicalPagePoolHw = PhysicalPagePoolHw ? PhysicalPagePoolHw : GraphBuilder.RegisterExternalTexture(GSystemTextures.BlackDummy);
+	UniformParameters.PhysicalPagePool = PhysicalPagePoolRDG ? PhysicalPagePoolRDG : GSystemTextures.GetZeroUIntDummy(GraphBuilder);
+	UniformParameters.PhysicalPagePoolHw = PhysicalPagePoolHw ? PhysicalPagePoolHw : GSystemTextures.GetBlackDummy(GraphBuilder);
 }
 
 class FDebugVisualizeVirtualSmCS : public FVirtualPageManagementShader
