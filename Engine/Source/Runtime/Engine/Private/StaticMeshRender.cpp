@@ -2336,7 +2336,11 @@ FPrimitiveSceneProxy* UStaticMeshComponent::CreateSceneProxy()
 	}
 
 	// Is Nanite supported, and is there built Nanite data for this static mesh?
-	if (UseNanite(GetScene()->GetShaderPlatform()) && GetStaticMesh()->HasValidNaniteData())
+	if (UseNanite(GetScene()->GetShaderPlatform()) && GetStaticMesh()->HasValidNaniteData() 
+	#if WITH_EDITORONLY_DATA
+		&& !bDisplayNaniteProxyMesh
+	#endif
+	)
 	{
 		LLM_SCOPE(ELLMTag::StaticMesh);
 
