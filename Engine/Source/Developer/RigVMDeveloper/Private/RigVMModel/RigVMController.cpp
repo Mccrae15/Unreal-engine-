@@ -7921,7 +7921,7 @@ void URigVMController::ApplyPinState(URigVMPin* InPin, const FPinState& InPinSta
 {
 	for (URigVMInjectionInfo* InjectionInfo : InPinState.InjectionInfos)
 	{
-		InjectionInfo->Rename(nullptr, InPin);
+		InjectionInfo->Rename(nullptr, InPin, REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
 		InjectionInfo->InputPin = InjectionInfo->UnitNode->FindPin(InjectionInfo->InputPin->GetName());
 		InjectionInfo->OutputPin = InjectionInfo->UnitNode->FindPin(InjectionInfo->OutputPin->GetName());
 		InPin->InjectionInfos.Add(InjectionInfo);
@@ -7956,7 +7956,7 @@ void URigVMController::ApplyPinStates(URigVMNode* InNode, const TMap<FString, UR
 		{
 			for (URigVMInjectionInfo* InjectionInfo : PinState.InjectionInfos)
 			{
-				InjectionInfo->UnitNode->Rename(nullptr, InNode->GetGraph());
+				InjectionInfo->UnitNode->Rename(nullptr, InNode->GetGraph(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
 				DestroyObject(InjectionInfo);
 			}
 		}
