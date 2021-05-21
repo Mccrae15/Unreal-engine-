@@ -504,6 +504,12 @@ void FPBDConstraintGraph::ComputeIslands(const TParticleView<TPBDRigidParticles<
 				{
 					TPBDRigidParticleHandle<FReal, 3>* PBDRigid = Particle->CastToRigidParticle();
 
+					if (PBDRigid && PBDRigid->ObjectState() == EObjectStateType::Kinematic && PBDRigid->V().SizeSquared() > 0)
+					{
+						bIsSameIsland = false;
+						break;
+					}
+
 					const bool bIsDynamic = PBDRigid && PBDRigid->ObjectState() != EObjectStateType::Kinematic;
 					int32 TmpIsland = bIsDynamic ? PBDRigid->Island() : INDEX_NONE; //question: should we even store non dynamics in this array?
 
