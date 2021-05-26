@@ -1265,9 +1265,6 @@ namespace Chaos
 		TGenericParticleHandle<FReal, 3> Particle0 = TGenericParticleHandle<FReal, 3>(ConstraintParticles[ConstraintIndex][Index0]);
 		TGenericParticleHandle<FReal, 3> Particle1 = TGenericParticleHandle<FReal, 3>(ConstraintParticles[ConstraintIndex][Index1]);
 
-		// zhenglin
-		UE_LOG(LogChaosJoint, Error, TEXT("ConstraintIndex:%d (%d-%d), kinematic:%d,%d"), ConstraintIndex, Particle1->UniqueIdx().Idx, Particle0->UniqueIdx().Idx, Particle1->IsKinematic(), Particle0->IsKinematic());
-
 		if ((Particle0->Sleeping() && Particle1->Sleeping())
 			|| (Particle0->IsKinematic() && Particle1->Sleeping()) 
 			|| (Particle0->Sleeping() && Particle1->IsKinematic())
