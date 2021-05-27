@@ -53,17 +53,18 @@
 
 	<!-- List of projects to build DDC for -->
 	<Property Name="ProjectsToBuildDDC">
-		Templates/TP_HandheldARBP/TP_HandheldARBP.uproject
-		Templates/TP_ThirdPersonBP/TP_ThirdPersonBP.uproject
+		Templates/TP_AEC_ArchvisBP/TP_AEC_ArchvisBP.uproject
+		Templates/TP_AEC_BlankBP/TP_AEC_BlankBP.uproject
+		Templates/TP_CollaborativeBP/TP_CollaborativeBP.uproject
 		Templates/TP_FirstPersonBP/TP_FirstPersonBP.uproject
-		Templates/TP_TopDownBP/TP_TopDownBP.uproject
+		Templates/TP_HandheldARBP/TP_HandheldARBP.uproject
+		Templates/TP_PhotoStudioBP/TP_PhotoStudioBP.uproject
 		Templates/TP_ProductConfigBP/TP_ProductConfigBP.uproject
 		Templates/TP_PuzzleBP/TP_PuzzleBP.uproject
+		Templates/TP_ThirdPersonBP/TP_ThirdPersonBP.uproject
+		Templates/TP_TopDownBP/TP_TopDownBP.uproject
 		Templates/TP_VehicleAdvBP/TP_VehicleAdvBP.uproject
-		Templates/TP_AEC_BlankBP/TP_AEC_BlankBP.uproject
-		Templates/TP_AEC_ArchvisBP/TP_AEC_ArchvisBP.uproject
-		Templates/TP_PhotoStudioBP/TP_PhotoStudioBP.uproject
-		Templates/TP_CollaborativeBP/TP_CollaborativeBP.uproject
+		Templates/TP_VirtualRealityBP/TP_VirtualRealityBP.uproject
 		Samples/StarterContent/StarterContent.uproject
 	</Property>
 	<!-- Win64 specific DDC -->
