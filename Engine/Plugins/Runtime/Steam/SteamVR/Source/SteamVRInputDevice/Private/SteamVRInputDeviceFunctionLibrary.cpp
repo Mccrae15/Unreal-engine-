@@ -721,6 +721,16 @@ float USteamVRInputDeviceFunctionLibrary::GetUserIPD()
 	return 0.f;
 }
 
+float USteamVRInputDeviceFunctionLibrary::GetHmdRefreshrate()
+{
+	if (VRSystem())
+	{
+		return VRSystem()->GetFloatTrackedDeviceProperty(k_unTrackedDeviceIndex_Hmd, ETrackedDeviceProperty::Prop_DisplayFrequency_Float); // Return refreshrate in ???
+	}
+
+	return -1.0f;
+}
+
 FTransform USteamVRInputDeviceFunctionLibrary::GetUETransform(VRBoneTransform_t SteamBoneTransform)
 {
 	FTransform RetTransform;

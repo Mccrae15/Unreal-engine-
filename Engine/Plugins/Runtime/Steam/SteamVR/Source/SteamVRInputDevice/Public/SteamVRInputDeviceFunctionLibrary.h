@@ -621,6 +621,13 @@ public:
 	static float GetUserIPD();
 
 	/**
+	* Returns the user's HMD's current refreshrate in Hz.
+	* @return float - the user's HMD's current refreshrate in Hz
+	*/
+	UFUNCTION(BlueprintCallable, Category = "SteamVR Input")
+	static float GetHmdRefreshrate();
+
+	/**
 	* Get the SteamVR Bone Transform value in UE coordinates
 	* @param SteamBoneTransform - The SteamVR Bone Transform value to get the UE coordinates for
 	*/
