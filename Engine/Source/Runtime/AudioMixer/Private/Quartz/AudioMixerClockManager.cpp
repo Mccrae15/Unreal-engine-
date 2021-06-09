@@ -13,6 +13,7 @@ namespace Audio
 
 	FQuartzClockManager::~FQuartzClockManager()
 	{
+		check(ActiveClocks.Num() == 0);
 	}
 
 	void FQuartzClockManager::Update(int32 NumFramesUntilNextUpdate)
@@ -227,10 +228,7 @@ namespace Audio
 		check(MixerDevice->IsAudioRenderingThread());
 
 		FScopeLock Lock(&ActiveClockCritSec);
-		for (auto& Clock : ActiveClocks)
-		{
-			Clock->Shutdown();
-		}
+		ActiveClocks.Reset();
 	}
 
 	FQuartzQuantizedCommandHandle FQuartzClockManager::AddCommandToClock(FQuartzQuantizedCommandInitInfo& InQuantizationCommandInitInfo)
