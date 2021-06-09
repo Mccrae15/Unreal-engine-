@@ -1822,6 +1822,11 @@ int32 FDynamicMeshCollection::CutWithCellMeshes(const FInternalSurfaceMaterials&
 								*BooleanResults[CellIdx] = Island;
 								GeometryToResultMesh.Add(CreatedGeometryIdx, CellIdx);
 							}
+
+							if(FirstIdx == -1)
+							{
+								FirstIdx = CreatedGeometryIdx;
+							}
 						}
 					}
 					else
@@ -1830,10 +1835,11 @@ int32 FDynamicMeshCollection::CutWithCellMeshes(const FInternalSurfaceMaterials&
 						CreatedGeometryIdx = AppendToCollection(Surface.ToCollection, AugBoolResult, CollisionSampleSpacing, Surface.TransformIndex, BoneName, *Collection, InternalMaterialID);
 						CellToGeometry.Add(CellIdx, CreatedGeometryIdx);
 						GeometryToResultMesh.Add(CreatedGeometryIdx, CellIdx);
-					}
-					if (FirstIdx == -1)
-					{
-						FirstIdx = CreatedGeometryIdx;
+
+						if(FirstIdx == -1)
+						{
+							FirstIdx = CreatedGeometryIdx;
+						}
 					}
 				}
 			}
