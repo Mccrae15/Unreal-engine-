@@ -69,11 +69,12 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, TParti
 		auto NewKinematicTargetGT = bHasKinematicData ? ParticleData.FindKinematicTarget(Manager, DataIdx) : nullptr;
 		if (NewKinematicTargetGT)
 		{
-			const TRigidTransform<float,3> PreviousTransform(KinematicHandle->X(), KinematicHandle->R());
-			const TRigidTransform<float,3> &TargetTransform = NewKinematicTargetGT->GetTarget();
-			TKinematicTarget<float,3> NewKinematicTargetPT;
+			const FRigidTransform3 PreviousTransform(KinematicHandle->X(), KinematicHandle->R());
+			const FRigidTransform3&TargetTransform = NewKinematicTargetGT->GetTarget();
+			FKinematicTarget NewKinematicTargetPT;
 			NewKinematicTargetPT.SetTargetMode(TargetTransform, PreviousTransform);
-			KinematicHandle->SetKinematicTarget(NewKinematicTargetPT);
+
+			Evolution.SetParticleKinematicTarget(RigidHandle, NewKinematicTargetPT);
 		}
 
 		if(NewXR || NewNonFrequentData || NewVelocities || NewKinematicTargetGT)

@@ -222,6 +222,7 @@ public:
 		{
 			RemoveFromMapAndArray(PBDRigid, ActiveParticlesToIndex, ActiveParticlesArray);
 			RemoveFromMapAndArray(PBDRigid, TransientDirtyToIndex, TransientDirtyArray);
+			RemoveFromMapAndArray(PBDRigid->CastToKinematicParticle(), MovingKinematicsToIndex, MovingKinematicsArray);
 
 			if (auto PBDRigidClustered = Particle->CastToClustered())
 			{
@@ -530,6 +531,17 @@ public:
 		UpdateViews();
 	}
 
+	void MarkMovingKinematic(TKinematicGeometryParticleHandle<T, d>* Particle)
+	{
+		InsertToMapAndArray(Particle, MovingKinematicsToIndex, MovingKinematicsArray);
+	}
+
+	void ClearAllMovingKinematic()
+	{
+		MovingKinematicsArray.Empty();
+		MovingKinematicsToIndex.Empty();
+	}
+
 	void Serialize(FChaosArchive& Ar)
 	{
 		static const FName SOAsName = TEXT("PBDRigidsSOAs");
@@ -607,6 +619,9 @@ public:
 
 	const TParticleView<TKinematicGeometryParticles<T, d>>& GetActiveKinematicParticlesView() const { return ActiveKinematicParticlesView; }
 	TParticleView<TKinematicGeometryParticles<T, d>>& GetActiveKinematicParticlesView() { return ActiveKinematicParticlesView; }
+
+	const TParticleView<TKinematicGeometryParticles<T, d>>& GetActiveMovingKinematicParticlesView() const { return ActiveMovingKinematicParticlesView; }
+	TParticleView<TKinematicGeometryParticles<T, d>>& GetActiveMovingKinematicParticlesView() { return ActiveMovingKinematicParticlesView; }
 
 	const TParticleView<TGeometryParticles<T, d>>& GetActiveStaticParticlesView() const { return ActiveStaticParticlesView; }
 	TParticleView<TGeometryParticles<T, d>>& GetActiveStaticParticlesView() { return ActiveStaticParticlesView; }
@@ -934,6 +949,13 @@ private:
 			ActiveKinematicParticlesView = MakeParticleView(MoveTemp(TmpArray));
 		}
 		{
+			TArray<TSOAView<TKinematicGeometryParticles<T, d>>> TmpArray =
+			{
+				{&MovingKinematicsArray},
+			};
+			ActiveMovingKinematicParticlesView = MakeParticleView(MoveTemp(TmpArray));
+		}
+		{
 			TArray<TSOAView<TGeometryParticles<T, d>>> TmpArray =
 			{
 				StaticParticles.Get(),
@@ -982,6 +1004,10 @@ private:
 	TArray<TPBDRigidParticleHandle<T,d>*> TransientDirtyArray;
 	TMap<TPBDRigidParticleHandle<T,d>*,int32> TransientDirtyToIndex;
 
+	// keep track of kinematic that have their kinematic target set for this current frame
+	TArray<TKinematicGeometryParticleHandle<T, d>*> MovingKinematicsArray;
+	TMap<TKinematicGeometryParticleHandle<T, d>*, int32> MovingKinematicsToIndex;
+
 	//Utility structures for maintaining a NonDisabled particle view
 	TMap<TPBDRigidClusteredParticleHandle<T, d>*, int32> NonDisabledClusteredToIndex;
 	TArray<TPBDRigidClusteredParticleHandle<T, d>*> NonDisabledClusteredArray;
@@ -993,6 +1019,7 @@ private:
 	TParticleView<TPBDRigidParticles<T, d>> DirtyParticlesView;							//all particles that are active + any that were put to sleep this frame
 	TParticleView<TGeometryParticles<T, d>> AllParticlesView;							//all particles
 	TParticleView<TKinematicGeometryParticles<T, d>> ActiveKinematicParticlesView;		//all kinematic particles that are not disabled
+	TParticleView<TKinematicGeometryParticles<T, d>> ActiveMovingKinematicParticlesView;//all moving kinematic particles that are not disabled	
 	TParticleView<TGeometryParticles<T, d>> ActiveStaticParticlesView;					//all static particles that are not disabled
 	TParticleView<TPBDGeometryCollectionParticles<T, d>> ActiveGeometryCollectionParticlesView; // all geom collection particles that are not disabled
 
