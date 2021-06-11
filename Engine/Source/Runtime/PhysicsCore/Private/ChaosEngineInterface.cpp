@@ -1008,6 +1008,16 @@ FPhysicsConstraintHandle FChaosEngineInterface::CreateConstraint(const FPhysicsA
 			// Chaos requires our particles have geometry.
 			auto Sphere = MakeUnique<Chaos::FImplicitSphere3>(FVector(0, 0, 0), 0);
 			KinematicEndPoint->SetGeometry(MoveTemp(Sphere));
+
+			// Disable collision on shape to ensure it is not added to acceleration structure.
+			for (const TUniquePtr<Chaos::FPerShapeData>& Shape : KinematicEndPoint->ShapesArray())
+			{
+				Chaos::FCollisionData CollisionData = Shape->GetCollisionData();
+				CollisionData.bQueryCollision = false;
+				CollisionData.bSimCollision = false;
+				Shape->SetCollisionData(CollisionData);
+			}
+
 			KinematicEndPoint->SetUserData(nullptr);
 
 			auto* JointConstraint = new Chaos::FJointConstraint();
