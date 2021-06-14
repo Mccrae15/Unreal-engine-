@@ -9,6 +9,7 @@
 #include "Chaos/Vector.h"
 
 #include "Chaos/ConstraintHandle.h"
+#include "Chaos/Collision/CollisionApplyType.h"
 #include "Chaos/Joint/JointSolverConstraints.h"
 #include "Chaos/Joint/PBDJointSolverGaussSeidel.h"
 #include "Chaos/ParticleHandleFwd.h"
@@ -217,6 +218,13 @@ namespace Chaos
 		bool Apply(const FReal Dt, const TArray<FConstraintContainerHandle*>& InConstraintHandles, const int32 It, const int32 NumIts);
 		bool ApplyPushOut(const FReal Dt, const TArray<FConstraintContainerHandle*>& InConstraintHandles, const int32 It, const int32 NumIts);
 
+		/**
+		 * Set the solver method to use
+		 */
+		void SetSolverType(EConstraintSolverType InSolverType)
+		{
+			SolverType = InSolverType;
+		}
 
 	protected:
 		using Base::GetConstraintIndex;
@@ -274,6 +282,8 @@ namespace Chaos
 		TArray< FJointSolverJointState> SolverConstraintStates;
 		TArray<FJointSolverConstraintRowData> SolverConstraintRowDatas;
 		TArray<FJointSolverConstraintRowState> SolverConstraintRowStates;
+
+		EConstraintSolverType SolverType;
 	};
 
 }
