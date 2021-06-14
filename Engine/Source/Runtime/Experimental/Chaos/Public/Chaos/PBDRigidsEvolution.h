@@ -560,6 +560,8 @@ public:
 
 	void PrepareTick()
 	{
+		Collisions::ResetChaosCollisionCounters();
+
 		for (FPBDConstraintGraphRule* ConstraintRule : ConstraintRules)
 		{
 			ConstraintRule->PrepareTick();
