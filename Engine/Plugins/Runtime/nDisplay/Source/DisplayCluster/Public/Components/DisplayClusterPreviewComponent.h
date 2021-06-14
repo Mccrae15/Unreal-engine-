@@ -54,7 +54,7 @@ public:
 	}
 
 	void UpdatePreviewResources();
-	void HandleRenderTargetTextureUpdate_RenderThread();
+	void HandleRenderTargetTextureDeferredUpdate();
 
 	UMeshComponent* GetPreviewMesh() const
 	{
@@ -78,8 +78,12 @@ protected:
 
 protected:
 	// Set to true, when RTT surface updated
-	bool bIsRenderTargetSurfaceChanged = false;
+	int32 RenderTargetSurfaceChangedCnt = 0;
 	bool bIsEditingProperty = false;
+
+private:
+	// The maximum dimension that the preview render target can be, which helps ensure good performance even if viewports are very large
+	static const uint32 MaxRenderTargetDimension;
 
 #endif /* WITH_EDITOR */
 

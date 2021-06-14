@@ -237,7 +237,7 @@ FRDGTextureRef AddSeparateTranslucencyCompositionPass(FRDGBuilder& GraphBuilder,
 	return NewSceneColor;
 }
 
-void AddPostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FPostProcessingInputs& Inputs)
+void AddPostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, int32 ViewIndex, const FPostProcessingInputs& Inputs)
 {
 	RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, RenderPostProcessing);
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_PostProcessing_Process);
@@ -497,6 +497,11 @@ void AddPostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, c
 			}
 
 			SceneColor.Texture = LocalSceneColorTexture;
+
+			if (GetHairStrandsComposition() == EHairStrandsCompositionType::AfterSeparateTranslucent)
+			{
+				RenderHairComposition(GraphBuilder, View, ViewIndex, Inputs.HairDatas, SceneColor.Texture, SceneDepth.Texture);
+			}
 		}
 
 		// Post Process Material Chain - Before Tonemapping
@@ -1361,6 +1366,8 @@ void AddMobilePostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& V
 	// Default the new eye adaptation to the last one in case it's not generated this frame.
 	const FEyeAdaptationParameters EyeAdaptationParameters = GetEyeAdaptationParameters(View, ERHIFeatureLevel::ES3_1);
 
+	const FPaniniProjectionConfig PaniniConfig(View);
+
 	enum class EPass : uint32
 	{
 		Distortion,
@@ -1467,7 +1474,7 @@ void AddMobilePostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& V
 	PassSequence.SetEnabled(EPass::SelectionOutline, false);
 	PassSequence.SetEnabled(EPass::EditorPrimitive, false);
 #endif
-	PassSequence.SetEnabled(EPass::PrimaryUpscale, bShouldPrimaryUpscale && bDisableUpscaleInTonemapper);
+	PassSequence.SetEnabled(EPass::PrimaryUpscale, PaniniConfig.IsEnabled() || (bShouldPrimaryUpscale && bDisableUpscaleInTonemapper));
 
 	PassSequence.SetEnabled(EPass::Visualize, View.Family->EngineShowFlags.ShaderComplexity);
 
@@ -1524,7 +1531,7 @@ void AddMobilePostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& V
 
 		bool bUseTAA = View.AntiAliasingMethod == AAM_TemporalAA;
 
-		bool bUseDesktopTAA = bUseTAA && SupportsDesktopTemporalAA(View.GetShaderPlatform());
+		bool bUseDesktopTAA = bUseTAA && SupportsGen4TAA(View.GetShaderPlatform());
 
 		bool bUseMobileTAA = bUseTAA && !bUseDesktopTAA;
 
@@ -2124,6 +2131,7 @@ void AddMobilePostProcessingPasses(FRDGBuilder& GraphBuilder, const FViewInfo& V
 		PassInputs.Method = EUpscaleMethod::Bilinear;
 		PassInputs.Stage = EUpscaleStage::PrimaryToOutput;
 		PassInputs.SceneColor = SceneColor;
+		PassInputs.PaniniConfig = PaniniConfig;
 		PassInputs.OverrideOutput.LoadAction = View.IsFirstInFamily() ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ELoad;
 
 		SceneColor = AddUpscalePass(GraphBuilder, View, PassInputs);

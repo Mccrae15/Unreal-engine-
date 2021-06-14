@@ -3,6 +3,7 @@
 #pragma once
 
 #include "OpenXRHMD_Layer.h"
+#include "OpenXRAssetManager.h"
 #include "CoreMinimal.h"
 #include "HeadMountedDisplayBase.h"
 #include "XRTrackingSystemBase.h"
@@ -29,13 +30,14 @@ class FOpenXRHMD
 	: public FHeadMountedDisplayBase
 	, public FXRRenderTargetManager
 	, public FSceneViewExtensionBase
+	, public FOpenXRAssetManager
 	, public TStereoLayerManager<FOpenXRLayer>
 {
 public:
 	class FDeviceSpace
 	{
 	public:
-		FDeviceSpace(XrAction InAction);
+		FDeviceSpace(XrAction InAction, XrPath InPath);
 		~FDeviceSpace();
 
 		bool CreateSpace(XrSession InSession);
@@ -43,6 +45,7 @@ public:
 
 		XrAction Action;
 		XrSpace Space;
+		XrPath Path;
 	};
 
 	// The game and render threads each have a separate copy of these structures so that they don't stomp on each other or cause tearing
@@ -95,6 +98,8 @@ public:
 	/** IXRTrackingSystem interface */
 	virtual FName GetSystemName() const override
 	{
+		// This identifier is relied upon for plugin identification,
+		// see GetHMDName() to query the true XR system name.
 		static FName DefaultName(TEXT("OpenXR"));
 		return DefaultName;
 	}
@@ -153,14 +158,19 @@ public:
 	{
 		return SharedThis(this);
 	}
+#if !PLATFORM_HOLOLENS
+	// Native stereo layers severely impact performance on Hololens
 	virtual class IStereoLayers* GetStereoLayers() override
 	{
 		return this;
 	}
+#endif
 
 	virtual void GetMotionControllerData(UObject* WorldContext, const EControllerHand Hand, FXRMotionControllerData& MotionControllerData) override;
 
 	virtual float GetWorldToMetersScale() const override;
+
+	virtual FVector2D GetPlayAreaBounds(EHMDTrackingOrigin::Type Origin) const override;
 
 protected:
 
@@ -179,15 +189,21 @@ protected:
 
 	void UpdateDeviceLocations(bool bUpdateOpenXRExtensionPlugins);
 	void EnumerateViews(FPipelinedFrameState& PipelineState);
+	void LocateViews(FPipelinedFrameState& PipelinedState, bool ResizeViewsArray = false);
 
+	void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, FRHITexture2D* DstTexture, FIntRect DstRect, bool bClearBlack, bool bNoAlpha, ERenderTargetActions RTAction) const;
 	void CopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture2D* SrcTexture, FIntRect SrcRect, const FXRSwapChainPtr& DstSwapChain, FIntRect DstRect, bool bClearBlack, bool bNoAlpha) const;
 
 public:
+	/** IXRTrackingSystem interface */
+	virtual bool DoesSupportLateProjectionUpdate() const override { return true; }
+
 	/** IHeadMountedDisplay interface */
 	virtual bool IsHMDConnected() override { return true; }
 	virtual bool DoesSupportPositionalTracking() const override { return true; }
 	virtual bool IsHMDEnabled() const override;
 	virtual void EnableHMD(bool allow = true) override;
+	virtual FName GetHMDName() const override;
 	virtual bool GetHMDMonitorInfo(MonitorInfo&) override;
 	virtual void GetFieldOfView(float& OutHFOVInDegrees, float& OutVFOVInDegrees) const override;
 	virtual bool IsChromaAbCorrectionEnabled() const override;
@@ -208,7 +224,7 @@ public:
 	virtual bool IsStereoEnabled() const override;
 	virtual bool EnableStereo(bool stereo = true) override;
 	virtual void AdjustViewRect(EStereoscopicPass StereoPass, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const override;
-	virtual void SetFinalViewRect(const enum EStereoscopicPass StereoPass, const FIntRect& FinalViewRect) override;
+	virtual void SetFinalViewRect(FRHICommandListImmediate& RHICmdList, const enum EStereoscopicPass StereoPass, const FIntRect& FinalViewRect) override;
 	virtual int32 GetDesiredNumberOfViews(bool bStereoRequested) const override;
 	virtual EStereoscopicPass GetViewPassForIndex(bool bStereoRequested, uint32 ViewIndex) const override;
 	virtual uint32 GetViewIndexForPass(EStereoscopicPass StereoPassType) const override;
@@ -251,7 +267,7 @@ public:
 	/** Destructor */
 	virtual ~FOpenXRHMD();
 
-	void OnBeginRendering_RHIThread();
+	void OnBeginRendering_RHIThread(const FPipelinedFrameState& InFrameState, FXRSwapChainPtr ColorSwapchain, FXRSwapChainPtr DepthSwapchain);
 	void OnFinishRendering_RHIThread();
 
 	/** @return	True if the HMD was initialized OK */
@@ -259,11 +275,10 @@ public:
 	OPENXRHMD_API bool IsRunning() const;
 	OPENXRHMD_API bool IsFocused() const;
 
-	OPENXRHMD_API int32 AddActionDevice(XrAction Action);
+	OPENXRHMD_API int32 AddActionDevice(XrAction Action, XrPath Path);
 	OPENXRHMD_API void ResetActionDevices();
+	OPENXRHMD_API XrPath GetTrackedDevicePath(const int32 DeviceId);
 
-	OPENXRHMD_API FXRSwapChain* GetSwapchain() { return Swapchain.Get(); }
-	OPENXRHMD_API FXRSwapChain* GetDepthSwapchain() { return DepthSwapchain.Get(); }
 	OPENXRHMD_API bool IsExtensionEnabled(const FString& Name) const { return EnabledExtensions.Contains(Name); }
 	OPENXRHMD_API XrInstance GetInstance() { return Instance; }
 	OPENXRHMD_API XrSystemId GetSystem() { return System; }
@@ -291,7 +306,6 @@ private:
 	bool					bIsMobileMultiViewEnabled;
 	bool					bSupportsHandTracking;
 	bool					bProjectionLayerAlphaEnabled;
-	bool					bNeedsAcquireOnRHI;
 	bool					bIsStandaloneStereoOnlyDevice;
 	float					WorldToMetersScale = 100.0f;
 
@@ -308,6 +322,7 @@ private:
 	XrReferenceSpaceType	TrackingSpaceType;
 	XrViewConfigurationType SelectedViewConfigurationType;
 	XrEnvironmentBlendMode  SelectedEnvironmentBlendMode;
+	XrSystemProperties      SystemProperties;
 
 	FPipelinedFrameState	PipelinedFrameStateGame;
 	FPipelinedFrameState	PipelinedFrameStateRendering;
@@ -322,8 +337,6 @@ private:
 	TRefCountPtr<FOpenXRRenderBridge> RenderBridge;
 	IRendererModule*		RendererModule;
 
-	FXRSwapChainPtr			Swapchain;
-	FXRSwapChainPtr			DepthSwapchain;
 	uint8					LastRequestedSwapchainFormat;
 	uint8					LastRequestedDepthSwapchainFormat;
 

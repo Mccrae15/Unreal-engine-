@@ -9,6 +9,7 @@
 #include "Widgets/SWidget.h"
 
 class ULevelSnapshotsEditorProjectSettings;
+class ULevelSnapshotsEditorDataManagementSettings;
 class FToolBarBuilder;
 class FLevelSnapshotsEditorToolkit;
 class ULevelSnapshotsEditorData;
@@ -24,30 +25,43 @@ public:
 	virtual void ShutdownModule() override;
 	//~ End IModuleInterface Interface
 
-	bool GetUseCreationForm() const
-	{
-		return bUseCreationForm;
-	}
+	bool GetUseCreationForm() const;
 
-	void SetUseCreationForm(bool bInUseCreationForm)
-	{
-		bUseCreationForm = bInUseCreationForm;
-	}
+	void SetUseCreationForm(bool bInUseCreationForm);
 
 	void ToggleUseCreationForm()
 	{
 		SetUseCreationForm(!GetUseCreationForm());
 	}
 
-	static void CallTakeSnapshot();
+	void BuildPathsToSaveSnapshotWithOptionalForm() const;
+
+	void HandleFormReply(bool bWasCreateSnapshotPressed, FText InDescription) const;
+
+	void TakeAndSaveSnapshot(const FText& InDescription, const bool bShouldUseOverrides = false) const;
+
+	void OpenLevelSnapshotsDialogWithAssetSelected(const FAssetData& InAssetData);
 	
 	static void OpenLevelSnapshotsSettings();
 
+	TWeakObjectPtr<ULevelSnapshotsEditorProjectSettings> GetLevelSnapshotsUserSettings() const
+	{
+		return ProjectSettingsObjectPtr;
+	}
+	
+	TWeakObjectPtr<ULevelSnapshotsEditorDataManagementSettings> GetLevelSnapshotsDataManagementSettings() const
+	{
+		return DataMangementSettingsObjectPtr;
+	}
+
 private:
 	
-	void RegisterMenus();
+	void PostEngineInit();
 
+	void RegisterMenuItem();
 	bool RegisterProjectSettings();
+	bool HandleModifiedProjectSettings();
+	
 	void RegisterEditorToolbar();
 	void MapEditorToolbarActions();
 	void CreateEditorToolbarButton(FToolBarBuilder& Builder);
@@ -63,8 +77,9 @@ private:
 	/* Lives for as long as the UI is open. */
 	TWeakPtr<FLevelSnapshotsEditorToolkit> SnapshotEditorToolkit;
 
-	TSharedPtr<ISettingsSection> LevelSnapshotsProjectSettingsPtr;
-	TWeakObjectPtr<ULevelSnapshotsEditorProjectSettings> ProjectSettingObjectPtr;
-
-	bool bUseCreationForm = false;
+	TSharedPtr<ISettingsSection> ProjectSettingsSectionPtr;
+	TWeakObjectPtr<ULevelSnapshotsEditorProjectSettings> ProjectSettingsObjectPtr;
+	
+	TSharedPtr<ISettingsSection> DataMangementSettingsSectionPtr;
+	TWeakObjectPtr<ULevelSnapshotsEditorDataManagementSettings> DataMangementSettingsObjectPtr;
 };

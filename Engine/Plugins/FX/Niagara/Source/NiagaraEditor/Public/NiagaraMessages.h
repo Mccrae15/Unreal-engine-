@@ -25,7 +25,8 @@ enum class ENiagaraMessageSeverity : uint8
 	Error = 1,
 	PerformanceWarning = 2,
 	Warning = 3,
-	Info = 4,	// Should be last
+	Info = 4,
+	CustomNote = 5 // Should be last
 };
 
 //Struct for passing around script asset info from compile event message job to message types
@@ -71,6 +72,12 @@ public:
 
 	virtual FText GenerateMessageText() const = 0;
 
+	/** Can optionally be overriden to give the message a title/short description. */
+	virtual FText GenerateMessageTitle() const;
+
+	/** Can optionally be overriden to allow for dismissal of a message (where applicable (the stack for example) */
+	virtual bool AllowDismissal() const;
+	
 	virtual TSharedRef<FTokenizedMessage> GenerateTokenizedMessage() const = 0;
 
 	virtual void GenerateLinks(TArray<FText>& OutLinkDisplayNames, TArray<FSimpleDelegate>& OutLinkNavigationActions) const = 0;
@@ -99,6 +106,10 @@ public:
 
 	virtual FText GenerateMessageText() const override;
 
+	virtual FText GenerateMessageTitle() const override;
+
+	virtual bool AllowDismissal() const override;
+	
 	virtual TSharedRef<FTokenizedMessage> GenerateTokenizedMessage() const override;
 
 	virtual void GenerateLinks(TArray<FText>& OutLinkDisplayNames, TArray<FSimpleDelegate>& OutLinkNavigationActions) const override;
@@ -117,16 +128,31 @@ private:
 class FNiagaraMessageText : public INiagaraMessage
 {
 public:
-	FNiagaraMessageText(const FText& InMessageText, const EMessageSeverity::Type& InMessageSeverity, const FName& InTopicName, const TArray<FObjectKey>& InAssociatedObjectKeys = TArray<FObjectKey>())
+	FNiagaraMessageText(const FText& InMessageText, const FText& InShortDescription, const EMessageSeverity::Type& InMessageSeverity, const FName& InTopicName, bool bInAllowDismissal = false, const TArray<FObjectKey>& InAssociatedObjectKeys = TArray<FObjectKey>())
+		: INiagaraMessage(InAssociatedObjectKeys)
+		, MessageText(InMessageText)
+		, ShortDescription(InShortDescription)
+		, MessageSeverity(InMessageSeverity)
+		, TopicName(InTopicName)
+		, bAllowDismissal(bInAllowDismissal)
+	{
+	};
+
+	FNiagaraMessageText(const FText& InMessageText, const EMessageSeverity::Type& InMessageSeverity, const FName& InTopicName, bool bInAllowDismissal = false, const TArray<FObjectKey>& InAssociatedObjectKeys = TArray<FObjectKey>())
 		: INiagaraMessage(InAssociatedObjectKeys)
 		, MessageText(InMessageText)
 		, MessageSeverity(InMessageSeverity)
 		, TopicName(InTopicName)
+		, bAllowDismissal(bInAllowDismissal)
 	{
 	};
 
 	virtual FText GenerateMessageText() const override;
 
+	virtual FText GenerateMessageTitle() const override;
+
+	virtual bool AllowDismissal() const override;
+	
 	virtual TSharedRef<FTokenizedMessage> GenerateTokenizedMessage() const override;
 
 	virtual void GenerateLinks(TArray<FText>& OutLinkDisplayNames, TArray<FSimpleDelegate>& OutLinkNavigationActions) const override { }
@@ -135,8 +161,10 @@ public:
 
 private:
 	const FText MessageText;
+	const FText ShortDescription;
 	const EMessageSeverity::Type MessageSeverity;
 	const FName TopicName;
+	const bool bAllowDismissal;
 };
 
 class FNiagaraMessageTextWithLinks : public FNiagaraMessageText
@@ -144,11 +172,13 @@ class FNiagaraMessageTextWithLinks : public FNiagaraMessageText
 public:
 	FNiagaraMessageTextWithLinks(
 	  const FText& InMessageText
+	, const FText& InShortDescription  
 	, const EMessageSeverity::Type& InMessageSeverity
 	, const FName& InTopicName
+	, const bool bInAllowDismissal
 	, const TArray<FLinkNameAndDelegate>& InLinks
 	, const TArray<FObjectKey>& InAssociatedObjectKeys = TArray<FObjectKey>())
-		: FNiagaraMessageText(InMessageText, InMessageSeverity, InTopicName, InAssociatedObjectKeys)
+		: FNiagaraMessageText(InMessageText, InShortDescription, InMessageSeverity, InTopicName, bInAllowDismissal, InAssociatedObjectKeys)
 		, Links(InLinks)
 	{
 	};
@@ -204,6 +234,30 @@ private:
 	TOptional<const FString> SourceScriptAssetPath;
 };
 
+USTRUCT()
+struct NIAGARAEDITOR_API FNiagaraStackMessage
+{
+	GENERATED_BODY()
+
+	FNiagaraStackMessage();
+
+	FNiagaraStackMessage(const FText& MessageText, const FText& ShortDescription, ENiagaraMessageSeverity Severity, bool bAllowDismissal, FGuid Guid = FGuid::NewGuid());
+	
+	UPROPERTY()
+	FText MessageText;
+
+	UPROPERTY()
+	FText ShortDescription;
+
+	UPROPERTY()
+	ENiagaraMessageSeverity MessageSeverity = ENiagaraMessageSeverity::CustomNote;
+
+	UPROPERTY()
+	bool bAllowDismissal = true;
+
+	UPROPERTY()
+	FGuid Guid;
+};
 
 struct NIAGARAEDITOR_API FGenerateNiagaraMessageInfo
 {
@@ -236,16 +290,26 @@ class NIAGARAEDITOR_API UNiagaraMessageDataText : public UNiagaraMessageData
 
 public:
 	void Init(const FText& InMessageText, const ENiagaraMessageSeverity InMessageSeverity, const FName& InTopicName);
+	
+	void Init(const FText& InMessageText, const FText& InShortDescription, const ENiagaraMessageSeverity InMessageSeverity, const FName& InTopicName);
 
 	virtual TSharedRef<const INiagaraMessage> GenerateNiagaraMessage(const FGenerateNiagaraMessageInfo& InGenerateInfo = FGenerateNiagaraMessageInfo()) const override;
 
+	void SetAllowDismissal(bool bInAllowDismissal) { bAllowDismissal = bInAllowDismissal; }
+	
 private:
 	UPROPERTY()
 	FText MessageText;
 
 	UPROPERTY()
+	FText ShortDescription;
+
+	UPROPERTY()
 	ENiagaraMessageSeverity MessageSeverity;
 
+	UPROPERTY()
+	bool bAllowDismissal;
+	
 	UPROPERTY()
 	FName TopicName;
 };

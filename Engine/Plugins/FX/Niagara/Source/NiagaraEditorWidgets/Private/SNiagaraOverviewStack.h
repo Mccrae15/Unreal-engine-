@@ -38,11 +38,21 @@ private:
 
 	void RefreshEntryList();
 
-	void EntryStructureChanged();
+	void EntryExpansionChanged();
+
+	void EntryStructureChanged(ENiagaraStructureChangedFlags Flags);
 
 	TSharedRef<ITableRow> OnGenerateRowForEntry(UNiagaraStackEntry* Item, const TSharedRef<STableViewBase>& OwnerTable);
 
 	EVisibility GetEnabledCheckBoxVisibility(UNiagaraStackItem* Item) const;
+
+	EVisibility GetShouldDebugDrawStatusVisibility(UNiagaraStackItem* Item) const;
+
+	bool IsModuleDebugDrawEnabled(UNiagaraStackItem* Item) const;
+
+	const FSlateBrush* GetDebugIconBrush(UNiagaraStackItem* Item) const;
+
+	FReply ToggleModuleDebugDraw(UNiagaraStackItem* Item);
 
 	void OnSelectionChanged(UNiagaraStackEntry* InNewSelection, ESelectInfo::Type SelectInfo);
 

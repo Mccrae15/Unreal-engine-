@@ -48,9 +48,10 @@ public:
 
 void FOnlineSubsystemEOSModule::StartupModule()
 {
-	// Force loading of the OSS module before we register the factory in case the
-	// plugin manager failed to get the dependencies right
-	FModuleManager::LoadModuleChecked<FOnlineSubsystemModule>(TEXT("OnlineSubsystem"));
+	if (IsRunningCommandlet())
+	{
+		return;
+	}
 
 	EOSFactory = new FOnlineFactoryEOS();
 
@@ -72,12 +73,11 @@ void FOnlineSubsystemEOSModule::StartupModule()
 #if WITH_EDITOR
 void FOnlineSubsystemEOSModule::OnPostEngineInit()
 {
-	ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
-	if (SettingsModule != nullptr)
+	if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
 	{
-		SettingsModule->RegisterSettings("Project", "Plugins", "Epic Online Services",
-			LOCTEXT("EOSSettingsName", "Epic Online Services"),
-			LOCTEXT("EOSSettingsDescription", "Configure the Epic Online Services"),
+		SettingsModule->RegisterSettings("Project", "Plugins", "Online Subsystem EOS",
+			LOCTEXT("OSSEOSSettingsName", "Online Subsystem EOS"),
+			LOCTEXT("OSSEOSSettingsDescription", "Configure Online Subsystem EOS"),
 			GetMutableDefault<UEOSSettings>());
 	}
 }
@@ -86,19 +86,28 @@ void FOnlineSubsystemEOSModule::OnPostEngineInit()
 #if WITH_EDITOR
 void FOnlineSubsystemEOSModule::OnPreExit()
 {
-	ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
-	if (SettingsModule)
+	if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
 	{
-		SettingsModule->UnregisterSettings("Project", "Plugins", "Epic Online Services");
+		SettingsModule->UnregisterSettings("Project", "Plugins", "Online Subsystem EOS");
 	}
 }
 #endif
 
 void FOnlineSubsystemEOSModule::ShutdownModule()
 {
-	FCoreDelegates::OnInit.RemoveAll(this);
+	if (IsRunningCommandlet())
+	{
+		return;
+	}
+
+#if WITH_EDITOR
 	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
 	FCoreDelegates::OnPreExit.RemoveAll(this);
+#endif
+
+#if WITH_EOS_SDK
+	FOnlineSubsystemEOS::ModuleShutdown();
+#endif
 
 	FOnlineSubsystemModule& OSS = FModuleManager::GetModuleChecked<FOnlineSubsystemModule>("OnlineSubsystem");
 	OSS.UnregisterPlatformService(EOS_SUBSYSTEM);

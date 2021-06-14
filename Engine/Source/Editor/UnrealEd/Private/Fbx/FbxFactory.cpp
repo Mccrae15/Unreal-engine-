@@ -34,7 +34,6 @@
 #include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
 #include "ObjectTools.h"
-#include "SkelImport.h"
 #include "UObject/UnrealType.h"
 
 #define LOCTEXT_NAMESPACE "FBXFactory"
@@ -565,10 +564,18 @@ UObject* UFbxFactory::FactoryCreateFile
 							}
 							else
 							{
-								FbxImporter->ImportStaticMeshAsSingle(InParent, LODMeshesArray, Name, Flags, ImportUI->StaticMeshImportData, NewStaticMesh, LODIndex);
-								if (NewStaticMesh && NewStaticMesh->IsSourceModelValid(LODIndex))
+								UStaticMesh* ImportedStaticMesh = FbxImporter->ImportStaticMeshAsSingle(InParent, LODMeshesArray, Name, Flags, ImportUI->StaticMeshImportData, NewStaticMesh, LODIndex);
+								if (ImportedStaticMesh)
 								{
-									NewStaticMesh->GetSourceModel(LODIndex).bImportWithBaseMesh = true;
+									check(ImportedStaticMesh == NewStaticMesh);
+									if (NewStaticMesh && NewStaticMesh->IsSourceModelValid(LODIndex))
+									{
+										NewStaticMesh->GetSourceModel(LODIndex).bImportWithBaseMesh = true;
+									}
+								}
+								else
+								{
+									FbxImporter->AddStaticMeshSourceModelGeneratedLOD(NewStaticMesh, LODIndex);
 								}
 							}
 							bOperationCanceled |= FbxImporter->GetImportOperationCancelled() || SlowTask.ShouldCancel();

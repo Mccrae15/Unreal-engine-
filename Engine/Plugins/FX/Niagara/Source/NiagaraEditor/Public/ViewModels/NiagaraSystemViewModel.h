@@ -9,6 +9,7 @@
 #include "EditorUndoClient.h"
 #include "UObject/GCObject.h"
 #include "ViewModels/TNiagaraViewModelManager.h"
+#include "ViewModels/NiagaraParameterDefinitionsSubscriberViewModel.h"
 #include "NiagaraOverviewNode.h"
 #include "ISequencer.h"
 
@@ -41,6 +42,11 @@ class FNiagaraOverviewGraphViewModel;
 class UNiagaraScratchPadViewModel;
 class UNiagaraCurveSelectionViewModel;
 class UNiagaraMessageData;
+class UNiagaraEditorParametersAdapter;
+
+class INiagaraParameterDefinitionsSubscriber;
+
+class FNiagaraPlaceholderDataInterfaceManager;
 
 /** Defines different editing modes for this system view model. */
 enum class NIAGARAEDITOR_API ENiagaraSystemViewModelEditMode
@@ -49,6 +55,8 @@ enum class NIAGARAEDITOR_API ENiagaraSystemViewModelEditMode
 	SystemAsset,
 	/** An emitter asset is being edited.  In this mode the system scripts will not be editable and all emitter editing options are available. */
 	EmitterAsset,
+	/** Special case where an emitter asset is being edited during a merge. In this mode changes made to the emitter being edited don't have to be applied, but directly affect the source. */
+	EmitterDuringMerge,
 };
 
 /** Defines options for the niagara System view model */
@@ -73,6 +81,9 @@ struct NIAGARAEDITOR_API FNiagaraSystemViewModelOptions
 
 	/** Gets the current editing mode for this system. */
 	ENiagaraSystemViewModelEditMode EditMode;
+
+	/** Specifies that the view model is being constructed for data processing only and will not be displayed in the UI. */
+	bool bIsForDataProcessingOnly;
 };
 
 struct FNiagaraStackModuleData
@@ -91,6 +102,7 @@ class FNiagaraSystemViewModel
 	, public FEditorUndoClient
 	, public FTickableEditorObject
 	, public TNiagaraViewModelManager<UNiagaraSystem, FNiagaraSystemViewModel>
+	, public INiagaraParameterDefinitionsSubscriberViewModel
 {
 public:
 	DECLARE_MULTICAST_DELEGATE(FOnEmitterHandleViewModelsChanged);
@@ -153,12 +165,21 @@ public:
 	/** Initializes this system view model with the supplied system and options. */
 	NIAGARAEDITOR_API void Initialize(UNiagaraSystem& InSystem, FNiagaraSystemViewModelOptions InOptions);
 
+	/** Returns whether or not this view model is initialized and safe to use. */
+	bool IsValid() const;
+
 	NIAGARAEDITOR_API ~FNiagaraSystemViewModel();
 
+	//~ Begin NiagaraParameterDefinitionsSubscriberViewModel Interface
+protected:
+	virtual INiagaraParameterDefinitionsSubscriber* GetParameterDefinitionsSubscriber() override;
+	//~ End NiagaraParameterDefinitionsSubscriberViewModel Interface
+
+public:
 	NIAGARAEDITOR_API FText GetDisplayName() const;
 
 	/** Gets an array of the view models for the emitter handles owned by this System. */
-	NIAGARAEDITOR_API const TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& GetEmitterHandleViewModels();
+	NIAGARAEDITOR_API const TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& GetEmitterHandleViewModels() const;
 
 	/** Gets an emitter handle view model by ID. Returns an invalid shared ptr if it can't be found. */
 	NIAGARAEDITOR_API TSharedPtr<FNiagaraEmitterHandleViewModel> GetEmitterHandleViewModelById(FGuid InEmitterHandleId);
@@ -254,6 +275,9 @@ public:
 	/** Updates all selected emitter's fixed bounds with their current dynamic bounds. */
 	void UpdateEmitterFixedBounds();
 
+	/** Updates the current system's fixed bounds with its current dynamic bounds. */
+	void UpdateSystemFixedBounds();
+
 	/** Clear the captures stats for all the emitters in the current system. */
 	void ClearEmitterStats();
 
@@ -345,6 +369,9 @@ public:
 	/** Wrapper to set bPendingMessagesChanged after calling a delegate off of a message link. */
 	void ExecuteMessageDelegateAndRefreshMessages(FSimpleDelegate MessageDelegate);
 
+	/** Helper to get the current System or Emitter's EditorParameters. */
+	UNiagaraEditorParametersAdapter* GetEditorOnlyParametersAdapter() const;
+
 	ENiagaraStatEvaluationType StatEvaluationType = ENiagaraStatEvaluationType::Average;
 	ENiagaraStatDisplayMode StatDisplayMode = ENiagaraStatDisplayMode::Percent;
 
@@ -353,6 +380,12 @@ public:
 
 	FOnExternalRenameParameter& OnParameterRenamedExternally() { return OnExternalRenameDelegate; }
 	FOnExternalRemoveParameter& OnParameterRemovedExternally() { return OnExternalRemoveDelegate; }
+
+	TSharedRef<FNiagaraPlaceholderDataInterfaceManager> GetPlaceholderDataInterfaceManager();
+
+	/** Gets whether or not this view model is for data processing only and will not be displayed in the UI. */
+	bool GetIsForDataProcessingOnly() const;
+
 private:
 	/** Sends message jobs to FNiagaraMessageManager for all compile events from the last compile. */
 	void SendLastCompileMessageJobs() const;
@@ -472,7 +505,7 @@ private:
 	void SystemChanged(UNiagaraSystem* ChangedSystem);
 
 	/** Called whenever one of the owned stack viewmodels structure changes. */
-	void StackViewModelStructureChanged();
+	void StackViewModelStructureChanged(ENiagaraStructureChangedFlags Flags);
 
 	/** Called whenever one of the scripts in the scratch pad changes. */
 	void ScratchPadScriptsChanged();
@@ -612,6 +645,8 @@ private:
 
 	UNiagaraCurveSelectionViewModel* CurveSelectionViewModel;
 
+	TSharedPtr<FNiagaraPlaceholderDataInterfaceManager> PlaceholderDataInterfaceManager;
+
 	TArray<UNiagaraScript*> ScriptsToCheckForStatus;
 	TArray<ENiagaraScriptCompileStatus> ScriptCompileStatuses;
 
@@ -624,4 +659,7 @@ private:
 
 	/** Flag for when messages have been added/removed through the viewmodel to signal that the message manager needs to be refreshed. */
 	mutable bool bPendingAssetMessagesChanged;
+
+	/** Specifies that this view model is for data processing only and will not be displayed in the UI. */
+	bool bIsForDataProcessingOnly;
 };

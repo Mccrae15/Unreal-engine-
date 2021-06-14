@@ -2,6 +2,11 @@
 
 #include "ElementID.h"
 
+#include "GSProcessControl.hpp"
+#include "Transformation.hpp"
+
+#include <stdexcept>
+
 BEGIN_NAMESPACE_UE_AC
 
 template <>
@@ -64,16 +69,197 @@ FAssValueName::SAssValueName TAssEnumName< ModelerAPI::Element::Type >::AssEnumN
 	EnumName(ModelerAPI::Element, OtherElement),
 	EnumEnd(-1)};
 
+// Contructor
+FElementID::FElementID(const FSyncContext& InSyncContext)
+	: SyncContext(InSyncContext)
+	, Index3D(0)
+	, SyncData(nullptr)
+	, Instance(nullptr)
+	, LibPartInfo(nullptr)
+	, bFullElementFetched(false)
+	, bLibPartInfoFetched(false)
+{
+}
+
+// Initialize with 3D element
+void FElementID::InitElement(GS::Int32 InIndex3d)
+{
+	Index3D = InIndex3d;
+	SyncContext.GetModel().GetElement(Index3D, &Element3D);
+	APIElement.header.guid = APINULLGuid;
+	bFullElementFetched = false;
+	Instance = nullptr;
+	LibPartInfo = nullptr;
+	bLibPartInfoFetched = false;
+	ElementName.clear();
+}
+
+// Initialize with sync data
+void FElementID::InitElement(FSyncData* IOSyncdata)
+{
+	UE_AC_TestPtr(IOSyncdata);
+	SyncData = IOSyncdata;
+	Index3D = IOSyncdata->GetIndex3D();
+	if (Index3D > 0)
+	{
+		SyncContext.GetModel().GetElement(Index3D, &Element3D);
+	}
+	bFullElementFetched = false;
+	Instance = nullptr;
+	LibPartInfo = nullptr;
+	bLibPartInfoFetched = false;
+}
+
+// Initialize element header from 3D element
+bool FElementID::InitHeader()
+{
+	if (IsInvalid())
+	{
+		throw std::runtime_error(
+			Utf8StringFormat("FElementID::InitHeader - Invalid element for index=%d\n", Index3D).c_str());
+	}
+	bFullElementFetched = false;
+	Zap(&APIElement.header);
+	APIElement.header.guid = GSGuid2APIGuid(Element3D.GetElemGuid());
+	GSErrCode GSErr = ACAPI_Element_GetHeader(&APIElement.header, 0);
+	if (GSErr != NoError)
+	{
+		utf8_string ErrorName(GetErrorName(GSErr));
+		utf8_string TypeName(GetTypeName());
+		UE_AC_DebugF("Error \"%s\" with element %d {%s} Type=%s\n", ErrorName.c_str(), Index3D,
+					 Element3D.GetElemGuid().ToUniString().ToUtf8(), TypeName.c_str());
+		if (GSErr != APIERR_BADID)
+		{
+			UE_AC::ThrowGSError(GSErr, __FILE__, __LINE__);
+		}
+		return false;
+	}
+	return true;
+}
+
+const API_Element& FElementID::GetAPIElement()
+{
+	if (bFullElementFetched == false)
+	{
+		API_Guid guid = APIElement.header.guid;
+		Zap(&APIElement);
+		APIElement.header.guid = guid;
+		UE_AC_TestGSError(ACAPI_Element_Get(&APIElement, 0));
+		bFullElementFetched = true;
+	}
+
+	return APIElement;
+}
+
+FMeshClass* FElementID::GetMeshClass()
+{
+	if (Instance == nullptr && Index3D != 0)
+	{
+		ModelerAPI::BaseElemId			   BaseElemId;
+		GS::NonInterruptibleProcessControl processControl;
+		Element3D.GetBaseElemId(&BaseElemId, processControl, ModelerAPI::Element::EdgeColorInBaseElemId::NotIncluded,
+								ModelerAPI::Element::PolygonAndFaceTextureMappingInBaseElemId::NotIncluded,
+								ModelerAPI::Element::BodyTextureMappingInBaseElemId::NotIncluded,
+								ModelerAPI::Element::EliminationInfoInBaseElemId::NotIncluded);
+#if AC_VERSION < 24
+		GS::HashValue OldHashValue = BaseElemId;
+		GS::ULong	  HashValue = OldHashValue.hashValue;
+#else
+		GS::ULong HashValue = BaseElemId.GenerateHashValue();
+#endif
+		Instance = SyncContext.GetSyncDatabase().GetMeshClass(HashValue);
+		bool bTransformed = (Element3D.GetElemLocalToWorldTransformation().status & TR_IDENT) != 0;
+		if (Instance == nullptr)
+		{
+			TUniquePtr< FMeshClass > NewInstance = MakeUnique< FMeshClass >();
+			Instance = NewInstance.Get();
+			Instance->Hash = HashValue;
+			Instance->ElementType = Element3D.GetType();
+			Instance->TransformCount = bTransformed ? 0 : 1;
+			SyncContext.GetSyncDatabase().AddInstance(HashValue, std::move(NewInstance));
+			UE_AC_VerboseF("FSynchronizer::ScanElements - First instance %u {%s}\n", Instance->Hash,
+						   APIGuidToString(ElementGuid).ToUtf8());
+		}
+		else
+		{
+			if (Instance->ElementType != Element3D.GetType())
+			{
+				if (Instance->ElementType == ModelerAPI::Element::Type::UndefinedElement)
+				{
+					Instance->ElementType = Element3D.GetType();
+				}
+				else
+				{
+					UE_AC_DebugF("FSynchronizer::ScanElements - Instance Hash %u collision Type %s != %s\n",
+								 Instance->Hash, GetTypeName(Instance->ElementType), GetTypeName());
+					Instance->ElementType = Element3D.GetType();
+					Instance->MeshElement.Reset();
+					Instance->bMeshElementInitialized = false;
+				}
+			}
+			++Instance->InstancesCount;
+			Instance->TransformCount += bTransformed ? 0 : 1;
+			UE_AC_VerboseF("FSynchronizer::ScanElements - Reuse instance %u {%s}\n", Instance->Hash,
+						   APIGuidToString(ElementGuid).ToUtf8());
+		}
+	}
+	return Instance;
+}
+
+// If this element is related to a lib part ?
+const FLibPartInfo* FElementID::GetLibPartInfo()
+{
+	if (bLibPartInfoFetched == false)
+	{
+		// Get the lib part from it's UnId
+		FGSUnID::Buffer lpfUnID = {0};
+		GSErrCode		GSErr = ACAPI_Goodies(APIAny_GetElemLibPartUnIdID, &APIElement.header, lpfUnID);
+		if (GSErr == NoError)
+		{
+			LibPartInfo = SyncContext.GetSyncDatabase().GetLibPartInfo(lpfUnID);
+		}
+		else if (GSErr != APIERR_BADID)
+		{
+			UE_AC_DebugF("FElementID::InitLibPartInfo - APIAny_GetElemLibPartUnIdID return error %s\n",
+						 GetErrorName(GSErr));
+		}
+		bLibPartInfoFetched = true;
+	}
+
+	return LibPartInfo;
+}
+
+// Get the name of the element (For debugging trace)
+const utf8_t* FElementID::GetElementName()
+{
+	if (ElementName.size() == 0)
+	{
+		GS::UniString InfoStringID;
+		GSErrCode GSErr = ACAPI_Database(APIDb_GetElementInfoStringID, (void*)&APIElement.header.guid, &InfoStringID);
+		if (GSErr == NoError)
+		{
+			ElementName = Utf8StringFormat("{%s}:\"%s\"", APIGuidToString(APIElement.header.guid).ToUtf8(),
+										   InfoStringID.ToUtf8());
+		}
+		else
+		{
+			ElementName = Utf8StringFormat("{%s}:Error=%s", APIGuidToString(APIElement.header.guid).ToUtf8(),
+										   GetErrorName(GSErr));
+		}
+	}
+	return ElementName.c_str();
+}
+
 void FElementID::CollectDependantElementsType(API_ElemTypeID TypeID) const
 {
 	GS::Array< API_Guid > ConnectedElements;
-	UE_AC_TestGSError(ACAPI_Element_GetConnectedElements(ElementHeader.guid, TypeID, &ConnectedElements));
+	UE_AC_TestGSError(ACAPI_Element_GetConnectedElements(APIElement.header.guid, TypeID, &ConnectedElements));
 	for (USize i = 0; i < ConnectedElements.GetSize(); ++i)
 	{
 		FSyncData*& ChildSyncData = SyncContext.GetSyncDatabase().GetSyncData(APIGuid2GSGuid(ConnectedElements[i]));
 		if (ChildSyncData == nullptr)
 		{
-			ChildSyncData = new FSyncData::FElement(APIGuid2GSGuid(ConnectedElements[i]));
+			ChildSyncData = new FSyncData::FElement(APIGuid2GSGuid(ConnectedElements[i]), SyncContext);
 		}
 		ChildSyncData->SetParent(SyncData);
 		UE_AC_VerboseF("FElementID::ConnectedElements %u %s -> %s\n", i, APIGuidToString(ConnectedElements[i]).ToUtf8(),
@@ -83,24 +269,24 @@ void FElementID::CollectDependantElementsType(API_ElemTypeID TypeID) const
 
 void FElementID::HandleDepedencies() const
 {
-	if (ElementHeader.typeID == API_WallID)
+	if (APIElement.header.typeID == API_WallID)
 	{
 		CollectDependantElementsType(API_WindowID);
 		CollectDependantElementsType(API_DoorID);
 	}
-	else if (ElementHeader.typeID == API_RoofID || ElementHeader.typeID == API_ShellID)
+	else if (APIElement.header.typeID == API_RoofID || APIElement.header.typeID == API_ShellID)
 	{
 		CollectDependantElementsType(API_SkylightID);
 	}
-	else if (ElementHeader.typeID == API_WindowID || ElementHeader.typeID == API_DoorID ||
-			 ElementHeader.typeID == API_SkylightID)
+	else if (APIElement.header.typeID == API_WindowID || APIElement.header.typeID == API_DoorID ||
+			 APIElement.header.typeID == API_SkylightID)
 	{
 		// Do nothing
 	}
 	else
 	{
-		GS::Guid				  OwnerElemGuid = APIGuid2GSGuid(ElementHeader.guid);
-		API_Guid				  OwnerElemApiGuid = ElementHeader.guid;
+		GS::Guid				  OwnerElemGuid = APIGuid2GSGuid(APIElement.header.guid);
+		API_Guid				  OwnerElemApiGuid = APIElement.header.guid;
 		API_HierarchicalElemType  HierarchicalElemType = API_SingleElem;
 		API_HierarchicalOwnerType HierarchicalOwnerType = API_RootHierarchicalOwner;
 		GSErrCode GSErr = ACAPI_Goodies(APIAny_GetHierarchicalElementOwnerID, &OwnerElemGuid, &HierarchicalOwnerType,
@@ -115,7 +301,7 @@ void FElementID::HandleDepedencies() const
 			FSyncData*& Parent = SyncContext.GetSyncDatabase().GetSyncData(APIGuid2GSGuid(OwnerElemApiGuid));
 			if (Parent == nullptr)
 			{
-				Parent = new FSyncData::FElement(APIGuid2GSGuid(OwnerElemApiGuid));
+				Parent = new FSyncData::FElement(APIGuid2GSGuid(OwnerElemApiGuid), SyncContext);
 			}
 			SyncData->SetParent(Parent);
 			SyncData->SetIsAComponent();

@@ -4,15 +4,21 @@
 
 #include "Amf_Common.h"
 
+#if PLATFORM_DESKTOP && !PLATFORM_APPLE
+
 #include "VideoEncoderFactory.h"
 #include "VideoEncoderInputImpl.h"
 
+#define AVENCODER_VIDEO_ENCODER_AVAILABLE_AMF_H264
+
 namespace AVEncoder
 {
+	using namespace amf;
+
     class FVideoEncoderAmf_H264 : public FVideoEncoder
     {
     public:
-        ~FVideoEncoderAmf_H264();
+        virtual ~FVideoEncoderAmf_H264() override;
 
         // query whether or not encoder is supported and available
         static bool GetIsAvailable(FVideoEncoderInputImpl &InInput, FVideoEncoderInfo &OutEncoderInfo);
@@ -20,106 +26,103 @@ namespace AVEncoder
         // register encoder with video encoder factory
         static void Register(FVideoEncoderFactory &InFactory);
 
-        // create instance of video encoder
-        static TUniquePtr<FVideoEncoderAmf_H264> Create(FVideoEncoderInputImpl &InInput);
-
-        bool Setup(TSharedRef<FVideoEncoderInput> InInput, const FInit &InInit) override;
-        void Encode(const FVideoEncoderInputFrame *InFrame, const FEncodeOptions &InOptions) override;
+        bool Setup(TSharedRef<FVideoEncoderInput> input, FLayerConfig const& config) override;
+        void Encode(FVideoEncoderInputFrame const* frame, FEncodeOptions const& options) override;
         void Flush();
         void Shutdown() override;
 
-        void UpdateFrameRate(uint32 InMaxFramerate) override;
-        void UpdateLayerBitrate(uint32 InLayerIndex, uint32 InMaxBitRate, uint32 InTargetBitRate) override;
-        void UpdateLayerResolution(uint32 InLayerIndex, uint32 InWidth, uint32 InHeight) override;
-
     protected:
-        FLayerInfo *CreateLayer(uint32 InLayerIndex, const FLayerInfo &InLayerInfo) override;
-        void DestroyLayer(FLayerInfo *InLayerInfo) override;
+        FLayer* CreateLayer(uint32 layerIdx, FLayerConfig const& config) override;
+        void DestroyLayer(FLayer *layer) override;
 
     private:
         FVideoEncoderAmf_H264();
 
-        class FLayer : public FLayerInfo
+		class FAMFLayer : public FLayer
 		{
 		public:
-			FLayer(uint32 InLayerIndex, const FLayerInfo &InLayerInfo, FVideoEncoderNVENC_H264 &InEncoder);
-			~FLayer();
+			FAMFLayer(uint32 layerIdx, FLayerConfig const& config, FVideoEncoderAmf_H264& encoder);
+			~FAMFLayer();
 
 			bool Setup();
 			bool CreateSession();
 			bool CreateInitialConfig();
-			int GetCapability(NV_ENC_CAPS CapsToQuery) const;
-			FString GetError(NVENCSTATUS ForStatus) const;
-			void Encode(const FVideoEncoderInputFrameImpl *InFrame, const FEncodeOptions &InOptions);
+
+			template<class T> 
+			bool GetProperty(const TCHAR* PropertyToQuery, T& outProperty, const T& (*func)(const AMFVariantStruct*)) const;
+
+			template<class T>
+			bool GetCapability(const TCHAR* CapToQuery, T& OutCap) const;
+
+			void Encode(FVideoEncoderInputFrameImpl const* frame, FEncodeOptions const& options);
 			void Flush();
 			void Shutdown();
 			void UpdateBitrate(uint32 InMaxBitRate, uint32 InTargetBitRate);
 			void UpdateResolution(uint32 InMaxBitRate, uint32 InTargetBitRate);
 
-			FVideoEncoderAmf_H264 &Encoder;
-			FAmfCommon &Amf;
-			GUID CodecGUID;
+			FVideoEncoderAmf_H264& Encoder;
+			FAmfCommon& Amf;
 			uint32 LayerIndex;
-			void *NVEncoder = nullptr;
-
-            // TODO Amf equivalents
-			// NV_ENC_INITIALIZE_PARAMS EncoderInitParams;
-			// NV_ENC_CONFIG EncoderConfig;
-			
-            bool bAsyncMode = false;
-			uint32 MaxFramerate = -1;
+			AMFComponentPtr AmfEncoder;
+			bool bAsyncMode = true;
 			FDateTime LastKeyFrameTime = 0;
+			bool bForceNextKeyframe = false;
 
-			struct FInputOutput
+			class FInputOutput : public AMFSurfaceObserver
 			{
-				const FVideoEncoderInputFrameImpl *SourceFrame = nullptr;
+			public:
+				virtual void AMF_STD_CALL OnSurfaceDataRelease(AMFSurface* pSurface) override
+				{
+					SourceFrame->Release();
+				}
 
-				// HACK (M84FIX)
-				void *InputTexture = nullptr;
+				virtual ~FInputOutput()
+				{
+					SourceFrame->Release();
+					Surface->Release();
+				}
 
-				uint32 Width = 0;
-				uint32 Height = 0;
-				uint32 Pitch = 0;
-                // TODO Amf equivalents 
-				// NV_ENC_BUFFER_FORMAT BufferFormat = NV_ENC_BUFFER_FORMAT_UNDEFINED;
-				// NV_ENC_REGISTERED_PTR RegisteredInput = nullptr;
-				// NV_ENC_INPUT_PTR MappedInput = nullptr;
-				// NV_ENC_OUTPUT_PTR OutputBitstream = nullptr;
-
-				const void *BitstreamData = nullptr;
-				uint32 BitstreamDataSize = 0;
-				void *CompletionEvent = nullptr;
-                
-                // TODO Amf equivalents 
-				// NV_ENC_PIC_TYPE PictureType = NV_ENC_PIC_TYPE_UNKNOWN;
-				uint32 FrameAvgQP = 0;
-				uint64 TimeStamp;
-				FEvent *TriggerOnCompletion;
-
-				FTimespan EncodeStartTs;
+				const FVideoEncoderInputFrameImpl* SourceFrame;
+				void* TextureToCompress;
+				AMFSurfacePtr Surface;
 			};
 
-			FInputOutput *GetOrCreateBuffer(const FVideoEncoderInputFrameImpl *InFrame);
-			FInputOutput *CreateBuffer();
-			void DestroyBuffer(FInputOutput *InBuffer);
-			bool RegisterInputTexture(FInputOutput &InBuffer, void *InTexture, FIntPoint TextureSize);
-			bool UnregisterInputTexture(FInputOutput &InBuffer);
-			bool MapInputTexture(FInputOutput &InBuffer);
-			bool UnmapInputTexture(FInputOutput &InBuffer);
-			bool LockOutputBuffer(FInputOutput &InBuffer);
-			bool UnlockOutputBuffer(FInputOutput &InBuffer);
+			void MaybeReconfigure(TSharedPtr<FInputOutput> buffer);
+
+			TSharedPtr<FInputOutput> GetOrCreateSurface(const FVideoEncoderInputFrameImpl* InFrame);
+			bool CreateSurface(TSharedPtr<FInputOutput>& OutBuffer, const FVideoEncoderInputFrameImpl* SourceFrame, void* TextureToCompress);
 
 			void ProcessNextPendingFrame();
-			void WaitForNextPendingFrame();
 
-			void CreateResourceDIRECTX(FInputOutput &InBuffer, /* NV_ENC_REGISTER_RESOURCE &RegisterParam, */ FIntPoint TextureSize);
-			void CreateResourceVulkan(FInputOutput &InBuffer, /* NV_ENC_REGISTER_RESOURCE &RegisterParam, */ FIntPoint TextureSize);
-
-			TArray<FInputOutput *> CreatedBuffers;
-			TQueue<FInputOutput *> PendingEncodes;
+			TArray<TSharedPtr<FInputOutput>> CreatedSurfaces;
 			FCriticalSection ProtectedWaitingForPending;
 			bool WaitingForPendingActive = false;
 			FThreadSafeBool bUpdateConfig = false;
 		};
+
+		FAmfCommon& Amf;
+		EVideoFrameFormat FrameFormat = EVideoFrameFormat::Undefined;
+		void* EncoderDevice;
+
+		uint32 MaxFramerate = 0;
+		int32 MinQP = -1;
+		RateControlMode RateMode = RateControlMode::CBR;
+		bool FillData = false;
+
+		// event thread for amf async (supported on all platforms)
+		void OnEvent(void* InEvent, TUniqueFunction<void()>&& InCallback);
+		void StartEventThread();
+		void StopEventThread();
+		void EventLoop();
+
+		TUniquePtr<FThread> EventThread;
+		FCriticalSection ProtectEventThread;
+		bool bExitEventThread = false;
+
+		void* EventThreadCheckEvent = nullptr;
+
+		using FWaitForEvent = TPair<void*, TUniqueFunction<void()>>;
+		TArray<FWaitForEvent> EventThreadWaitingFor;
     };
 }
+#endif // PLATFORM_DESKTOP && !PLATFORM_APPLE

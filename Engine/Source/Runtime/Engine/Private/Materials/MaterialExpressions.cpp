@@ -14,6 +14,7 @@
 #include "UObject/Class.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectAnnotation.h"
+#include "UObject/UObjectIterator.h"
 #include "UObject/ConstructorHelpers.h"
 #include "EngineGlobals.h"
 #include "Materials/MaterialInterface.h"
@@ -610,6 +611,16 @@ UMaterialExpression::UMaterialExpression(const FObjectInitializer& ObjectInitial
 #endif // WITH_EDITORONLY_DATA
 }
 
+UObject* UMaterialExpression::GetAssetOwner() const
+{
+	return Function ? (UObject*)Function : (UObject*)Material;
+}
+
+FString UMaterialExpression::GetAssetPathName() const
+{
+	UObject* Asset = GetAssetOwner();
+	return Asset ? Asset->GetPathName() : FString();
+}
 
 #if WITH_EDITOR
 void UMaterialExpression::CopyMaterialExpressions(const TArray<UMaterialExpression*>& SrcExpressions, const TArray<UMaterialExpressionComment*>& SrcExpressionComments, 
@@ -727,7 +738,7 @@ void UMaterialExpression::CopyMaterialExpressions(const TArray<UMaterialExpressi
 
 void UMaterialExpression::Serialize(FStructuredArchive::FRecord Record)
 {
-	SCOPED_LOADTIMER(UMaterialExpression::Serialize);
+	SCOPED_LOADTIMER(UMaterialExpression_Serialize);
 	Super::Serialize(Record);
 
 	Record.GetUnderlyingArchive().UsingCustomVersion(FRenderingObjectVersion::GUID);
@@ -753,7 +764,7 @@ void UMaterialExpression::PostInitProperties()
 
 void UMaterialExpression::PostLoad()
 {
-	SCOPED_LOADTIMER(UMaterialExpression::PostLoad);
+	SCOPED_LOADTIMER(UMaterialExpression_PostLoad);
 	Super::PostLoad();
 
 	if (!Material && GetOuter()->IsA(UMaterial::StaticClass()))
@@ -2501,11 +2512,6 @@ void UMaterialExpressionRuntimeVirtualTextureSampleParameter::GetAllParameterInf
 	int32 CurrentSize = OutParameterInfo.Num();
 	FMaterialParameterInfo NewParameter(ParameterName, InBaseParameterInfo.Association, InBaseParameterInfo.Index);
 #if WITH_EDITOR
-	NewParameter.ParameterLocation = Material;
-	if (Function != nullptr)
-	{
-		NewParameter.ParameterLocation = Function;
-	}
 	if (HasConnectedOutputs())
 #endif
 	{
@@ -2869,12 +2875,6 @@ void UMaterialExpressionTextureSampleParameter::GetAllParameterInfo(TArray<FMate
 	FMaterialParameterInfo NewParameter(ParameterName, InBaseParameterInfo.Association, InBaseParameterInfo.Index);
 
 #if WITH_EDITOR
-	NewParameter.ParameterLocation = Material;
-	if (Function != nullptr)
-	{
-		NewParameter.ParameterLocation = Function;
-	}
-
 	if (HasConnectedOutputs())
 #endif
 	{
@@ -7412,14 +7412,6 @@ void UMaterialExpressionParameter::GetAllParameterInfo(TArray<FMaterialParameter
 	FMaterialParameterInfo NewParameter(ParameterName, InBaseParameterInfo.Association, InBaseParameterInfo.Index);
 
 #if WITH_EDITOR
-	if (Function != nullptr)
-	{
-		NewParameter.ParameterLocation = Function;
-	}
-	else
-	{
-		NewParameter.ParameterLocation = Material;
-	}
 	if (HasConnectedOutputs())
 #endif
 	{
@@ -10610,11 +10602,6 @@ void UMaterialExpressionFontSampleParameter::GetAllParameterInfo(TArray<FMateria
 	int32 CurrentSize = OutParameterInfo.Num();
 	FMaterialParameterInfo NewParameter(ParameterName, InBaseParameterInfo.Association, InBaseParameterInfo.Index);
 #if WITH_EDITOR
-	NewParameter.ParameterLocation = Material;
-	if (Function != nullptr)
-	{
-		NewParameter.ParameterLocation = Function;
-	}
 	if (HasConnectedOutputs())
 #endif
 	{
@@ -11471,6 +11458,40 @@ void UMaterialFunctionInterface::GetAssetRegistryTags(TArray<FAssetRegistryTag>&
 	}
 #endif
 }
+
+#if WITH_EDITOR
+void UMaterialFunctionInterface::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	// Go through all materials in memory and recompile them if they use this function
+	FMaterialUpdateContext UpdateContext;
+	for (TObjectIterator<UMaterial> It; It; ++It)
+	{
+		UMaterial* CurrentMaterial = *It;
+
+		bool bRecompile = false;
+		for (const FMaterialFunctionInfo& FunctionInfo : CurrentMaterial->GetCachedExpressionData().FunctionInfos)
+		{
+			if (FunctionInfo.Function == this)
+			{
+				bRecompile = true;
+				break;
+			}
+		}
+
+		if (bRecompile)
+		{
+			UpdateContext.AddMaterial(CurrentMaterial);
+
+			// Propagate the change to this material
+			CurrentMaterial->PreEditChange(nullptr);
+			CurrentMaterial->PostEditChange();
+			CurrentMaterial->MarkPackageDirty();
+		}
+	}
+
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+#endif // WITH_EDITOR
 
 ///////////////////////////////////////////////////////////////////////////////
 // UMaterialFunctionMaterialLayer
@@ -13005,7 +13026,7 @@ void FMaterialLayersFunctions::RemoveBlendedLayerAt(int32 Index)
 #if WITH_EDITOR
 		check(LayerNames.IsValidIndex(Index) && RestrictToLayerRelatives.IsValidIndex(Index) && RestrictToBlendRelatives.IsValidIndex(Index - 1));
 
-		if (LayerLinkStates[Index] == EMaterialLayerLinkState::LinkedToParent)
+		if (LayerLinkStates[Index] != EMaterialLayerLinkState::NotFromParent)
 		{
 			// Save the parent guid as explicitly deleted, so it's not added back
 			const FGuid& LayerGuid = LayerGuids[Index];
@@ -13189,8 +13210,11 @@ bool FMaterialLayersFunctions::ResolveParent(const FMaterialLayersFunctions& Par
 			check(LayerGuid.IsValid());
 			check(LinkState == EMaterialLayerLinkState::UnlinkedFromParent || LinkState == EMaterialLayerLinkState::NotFromParent);
 
-			// If we are unlinked from parent, track the layer index we were previously linked to
-			ParentLayerIndex = Parent.LayerGuids.Find(LayerGuid);
+			if (LinkState == EMaterialLayerLinkState::UnlinkedFromParent)
+			{
+				// If we are unlinked from parent, track the layer index we were previously linked to
+				ParentLayerIndex = Parent.LayerGuids.Find(LayerGuid);
+			}
 			check(ParentLayerIndex == INDEX_NONE || !ParentLayerIndices.Contains(ParentLayerIndex));
 
 			// Update the link state, depending on if we can find this layer in the parent

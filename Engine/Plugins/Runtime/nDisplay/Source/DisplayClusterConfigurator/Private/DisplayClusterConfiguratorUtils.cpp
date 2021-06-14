@@ -1,13 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayClusterConfiguratorUtils.h"
-#include "DisplayClusterConfigurationTypes.h"
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
+#include "DisplayClusterConfiguratorFactory.h"
+
 #include "DisplayClusterRootActor.h"
 #include "Blueprints/DisplayClusterBlueprint.h"
 #include "Blueprints/DisplayClusterBlueprintGeneratedClass.h"
+
 #include "IDisplayClusterConfiguration.h"
-#include "Components/DisplayClusterOriginComponent.h"
+#include "DisplayClusterConfigurationTypes.h"
+
 #include "Components/DisplayClusterSyncTickComponent.h"
 
 #include "Engine/SCS_Node.h"
@@ -18,13 +21,6 @@
 
 #define LOCTEXT_NAMESPACE "DisplayClusterConfiguratorUtils"
 
-
-UDisplayClusterConfigurationData* FDisplayClusterConfiguratorUtils::GenerateNewConfigData()
-{
-	UDisplayClusterConfigurationData* NewConfigData = NewObject<UDisplayClusterConfigurationData>();
-	// TODO: Add in specific configuration data for new blueprints here.
-	return NewConfigData;
-}
 
 ADisplayClusterRootActor* FDisplayClusterConfiguratorUtils::GenerateRootActorFromConfigFile(const FString& InFilename)
 {
@@ -61,7 +57,8 @@ UDisplayClusterBlueprint* FDisplayClusterConfiguratorUtils::CreateBlueprintFromR
 		FName("CreateBlueprintFromRootActor")));
 
 	AddRootActorComponentsToBlueprint(Blueprint, RootActor, false);
-
+	UDisplayClusterConfiguratorFactory::SetupInitialBlueprintDocuments(Blueprint);
+	
 	return Cast<UDisplayClusterBlueprint>(Blueprint);
 }
 
@@ -145,6 +142,10 @@ UDisplayClusterBlueprint* FDisplayClusterConfiguratorUtils::FindBlueprintFromObj
 				return Cast<UDisplayClusterBlueprint>(Blueprint);
 			}
 		}
+		else if (UBlueprint* Blueprint = UBlueprint::GetBlueprintFromClass(Owner->GetClass()))
+		{
+			return Cast<UDisplayClusterBlueprint>(Blueprint);
+		}
 	}
 
 	return nullptr;
@@ -179,11 +180,6 @@ void FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(UOb
 		{
 			FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 		}
-
-		if (FDisplayClusterConfiguratorBlueprintEditor* BPEditor = GetBlueprintEditorForObject(Blueprint))
-		{
-			BPEditor->ReselectObjects();
-		}
 	}
 }
 
@@ -217,6 +213,12 @@ FName FDisplayClusterConfiguratorUtils::CreateUniqueName(const FName& TargetName
 		UniqueCandidateName = FString::Printf(TEXT("%s_%02i"), *BaseCandidateName, NameIndex);
 	}
 	return *UniqueCandidateName;
+}
+
+FString FDisplayClusterConfiguratorUtils::FormatNDisplayComponentName(UClass* ComponentClass)
+{
+	check(ComponentClass);
+	return ComponentClass->GetDisplayNameText().ToString().Replace(TEXT(" "), TEXT("")).Replace(TEXT("NDisplay"), TEXT("nDisplay"));
 }
 
 #undef LOCTEXT_NAMESPACE

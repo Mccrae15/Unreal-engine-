@@ -179,11 +179,11 @@ FControlRigParameterTrackEditor::FControlRigParameterTrackEditor(TSharedRef<ISeq
 
 	SelectionChangedHandle = InSequencer->GetSelectionChangedTracks().AddRaw(this, &FControlRigParameterTrackEditor::OnSelectionChanged);
 	SequencerChangedHandle = InSequencer->OnMovieSceneDataChanged().AddRaw(this, &FControlRigParameterTrackEditor::OnSequencerDataChanged);
+	OnActivateSequenceChangedHandle = InSequencer->OnActivateSequence().AddRaw(this, &FControlRigParameterTrackEditor::OnActivateSequenceChanged);
 	CurveChangedHandle = InSequencer->GetCurveDisplayChanged().AddRaw(this, &FControlRigParameterTrackEditor::OnCurveDisplayChanged);
 	OnChannelChangedHandle = InSequencer->OnChannelChanged().AddRaw(this, &FControlRigParameterTrackEditor::OnChannelChanged);
 	OnMovieSceneChannelChangedHandle = MovieScene->OnChannelChanged().AddRaw(this, &FControlRigParameterTrackEditor::OnChannelChanged);
 	OnActorAddedToSequencerHandle = InSequencer->OnActorAddedToSequencer().AddRaw(this, &FControlRigParameterTrackEditor::HandleActorAdded);
-	OnTreeViewChangedHandle = InSequencer->OnTreeViewChanged().AddRaw(this, &FControlRigParameterTrackEditor::OnTreeViewChanged);
 
 	//REMOVE ME IN UE5
 	//InSequencer->GetObjectChangeListener().GetOnPropagateObjectChanges().AddRaw(this, &FControlRigParameterTrackEditor::OnPropagateObjectChanges);
@@ -355,6 +355,10 @@ void FControlRigParameterTrackEditor::OnRelease()
 		if (SequencerChangedHandle.IsValid())
 		{
 			GetSequencer()->OnMovieSceneDataChanged().Remove(SequencerChangedHandle);
+		}
+		if (OnActivateSequenceChangedHandle.IsValid())
+		{
+			GetSequencer()->OnActivateSequence().Remove(OnActivateSequenceChangedHandle);
 		}
 		if (CurveChangedHandle.IsValid())
 		{
@@ -1368,7 +1372,7 @@ void FControlRigParameterTrackEditor::OnAddTransformKeysForSelectedObjects(EMovi
 void FControlRigParameterTrackEditor::OnChannelChanged(const FMovieSceneChannelMetaData* MetaData, UMovieSceneSection* InSection)
 {
 	UMovieSceneControlRigParameterSection* Section = Cast<UMovieSceneControlRigParameterSection>(InSection);
-	if (Section && Section->ControlRig && MetaData)
+	if (Section && Section->GetControlRig() && MetaData)
 	{
 		Section->ControlsToSet.Empty();
 		TArray<FString> StringArray;
@@ -1378,9 +1382,9 @@ void FControlRigParameterTrackEditor::OnChannelChanged(const FMovieSceneChannelM
 		{
 			FName ControlName(*StringArray[0]);
 			Section->ControlsToSet.Add(ControlName);
-			FControlRigInteractionScope InteractionScope(Section->ControlRig);
+			FControlRigInteractionScope InteractionScope(Section->GetControlRig());
 			GetSequencer()->ForceEvaluate(); //now run sequencer...
-			Section->ControlRig->Evaluate_AnyThread();
+			Section->GetControlRig()->Evaluate_AnyThread();
 			Section->ControlsToSet.Empty();
 		}
 	}
@@ -1445,6 +1449,22 @@ void FControlRigParameterTrackEditor::HandleActorAdded(AActor* Actor, FGuid Targ
 	}
 }
 
+void FControlRigParameterTrackEditor::OnActivateSequenceChanged(FMovieSceneSequenceIDRef ID)
+{
+	UMovieScene* MovieScene = GetSequencer()->GetFocusedMovieSceneSequence()->GetMovieScene();
+	//register all modified/selections for control rigs
+	const TArray<FMovieSceneBinding>& Bindings = MovieScene->GetBindings();
+	for (const FMovieSceneBinding& Binding : Bindings)
+	{
+		UMovieSceneControlRigParameterTrack* Track = Cast<UMovieSceneControlRigParameterTrack>(MovieScene->FindTrack(UMovieSceneControlRigParameterTrack::StaticClass(), Binding.GetObjectGuid(), NAME_None));
+		if (Track && Track->GetControlRig())
+		{
+			BindControlRig(Track->GetControlRig());
+		}
+	}
+}
+
+
 void FControlRigParameterTrackEditor::OnSequencerDataChanged(EMovieSceneDataChangeType DataChangeType)
 {
 	UMovieScene* MovieScene = GetSequencer()->GetFocusedMovieSceneSequence()->GetMovieScene();
@@ -1494,7 +1514,7 @@ void FControlRigParameterTrackEditor::OnCurveDisplayChanged(FCurveModel* CurveMo
 		UMovieSceneControlRigParameterSection* MovieSection = Cast<UMovieSceneControlRigParameterSection>(CurveModel->GetOwningObject());
 		if (MovieSection)
 		{
-			ControlRig = MovieSection->ControlRig;
+			ControlRig = MovieSection->GetControlRig();
 			//Only create the edit mode if we have a  curve selected and it's not set and we have some boundobjects.
 			if (!ControlRigEditMode)
 			{
@@ -1521,79 +1541,66 @@ void FControlRigParameterTrackEditor::OnCurveDisplayChanged(FCurveModel* CurveMo
 			FString String = CurveModel->GetLongDisplayName().ToString();
 			StringArray.SetNum(0);
 			String.ParseIntoArray(StringArray, TEXT("."));
-			if (StringArray.Num()  > 2)
+			if (StringArray.Num() > 2)
 			{
 				//Not great but it should always be the third name
 				FName ControlName(*StringArray[2]);
 				ControlRig->SelectControl(ControlName, bDisplayed);
 				if (bDisplayed)
 				{
-					DisplayedChannels.Add(FCurveModel->GetChannelHandle());
+					DisplayedControls.Add(ControlName);
 				}
 				else
 				{
-					UnDisplayedChannels.Add(FCurveModel->GetChannelHandle());
+					UnDisplayedControls.Add(ControlName);
 				}
-
 			}
 			else
 			{
 				UE_LOG(LogControlRigEditor, Display, TEXT("Could not find Rig Control From FCurveModel::LongName"));
 			}
-		}
-		if(bCurveDisplayTickIsPending == false)
-		{
-			bCurveDisplayTickIsPending = true;
-			GEditor->GetTimerManager()->SetTimerForNextTick([MovieSection, this]()
-			{
-				if (DisplayedChannels.Num() > 0 || UnDisplayedChannels.Num() > 0)
-				{
-					TGuardValue<bool> Guard(bIsDoingSelection, true);
 
-					bool bSync = GetSequencer()->GetSequencerSettings()->ShouldSyncCurveEditorSelection();
-					GetSequencer()->GetSequencerSettings()->SyncCurveEditorSelection(false);
-					if (UnDisplayedChannels.Num() > 0)
-					{
-						GetSequencer()->SelectByChannels(MovieSection, UnDisplayedChannels, false, false);
-					}
-					if (DisplayedChannels.Num() > 0)
-					{
-						GetSequencer()->SelectByChannels(MovieSection, DisplayedChannels, false, true);
-					}
-					GetSequencer()->RefreshTree();
-					GetSequencer()->GetSequencerSettings()->SyncCurveEditorSelection(bSync);
-				}
-				UnDisplayedChannels.SetNum(0);
-				DisplayedChannels.SetNum(0);
-				bCurveDisplayTickIsPending = false;
-			});
-			
-		}
-		
-	}
-}
-
-void FControlRigParameterTrackEditor::OnTreeViewChanged()
-{
-	if (!bIsDoingSelection)
-	{
-		FControlRigEditMode* ControlRigEditMode = static_cast<FControlRigEditMode*>(GLevelEditorModeTools().GetActiveMode(FControlRigEditMode::ModeName));
-		if (ControlRigEditMode)
-		{
-			if (UControlRig* ControlRig = ControlRigEditMode->GetControlRig(true))
+			if (bCurveDisplayTickIsPending == false)
 			{
-				const TArray<FName>SelectedControls = ControlRig->CurrentControlSelection();
-				for (const FName  ControlName: SelectedControls)
+				bCurveDisplayTickIsPending = true;
+				GEditor->GetTimerManager()->SetTimerForNextTick([MovieSection, bDisplayed, this]()
 				{
-					int32 Index = ControlRig->GetControlHierarchy().GetIndex(ControlName);
-					if (Index != INDEX_NONE)
+
+					if (DisplayedControls.Num() > 0 || UnDisplayedControls.Num() > 0)
 					{
-						const FRigControl& RigControl = ControlRig->GetControlHierarchy().GetControls()[Index];
-					    HandleControlSelected(ControlRig, RigControl, true);
-					}
-				}
+						TGuardValue<bool> Guard(bIsDoingSelection, true);
+						UMovieSceneControlRigParameterSection* ParamSection = Cast<UMovieSceneControlRigParameterSection>(MovieSection);
+						bool bSync = GetSequencer()->GetSequencerSettings()->ShouldSyncCurveEditorSelection();
+						GetSequencer()->SuspendSelectionBroadcast();
+						GetSequencer()->GetSequencerSettings()->SyncCurveEditorSelection(false);
+						if (UnDisplayedControls.Num() > 0)
+						{
+							for (const FName& ControlName : UnDisplayedControls)
+							{
+								SelectSequencerNodeInSection(ParamSection, ControlName, false);
+							}
+							UnDisplayedControls.Empty();
+						}
+						if (DisplayedControls.Num() > 0)
+						{
+							for (const FName& ControlName : DisplayedControls)
+							{
+								SelectSequencerNodeInSection(ParamSection, ControlName, true);
+							}
+							DisplayedControls.Empty();
+						}
+						GetSequencer()->ResumeSelectionBroadcast(); //need to resume first so when we refreh the tree we do the Selection.Tick, which since syncing is off won't 
+																	//mess up the curve editor.
+						GetSequencer()->RefreshTree();
+						GetSequencer()->GetSequencerSettings()->SyncCurveEditorSelection(bSync);
+					};
+					bCurveDisplayTickIsPending = false;
+	
+				});
+
 			}
 		}
+		
 	}
 }
 
@@ -1689,7 +1696,7 @@ void FControlRigParameterTrackEditor::OnSelectionChanged(TArray<UMovieSceneTrack
 		UMovieSceneControlRigParameterSection* MovieSection = Cast<UMovieSceneControlRigParameterSection>(KeyArea->GetOwningSection());
 		if (MovieSection)
 		{
-			ControlRig = MovieSection->ControlRig;
+			ControlRig = MovieSection->GetControlRig();
 			//Only create the edit mode if we have a KeyAra selected and it's not set and we have some boundobjects.
 			if (!ControlRigEditMode)
 			{
@@ -1761,27 +1768,81 @@ void FControlRigParameterTrackEditor::OnSelectionChanged(TArray<UMovieSceneTrack
 
 FMovieSceneTrackEditor::FFindOrCreateHandleResult FControlRigParameterTrackEditor::FindOrCreateHandleToSceneCompOrOwner(USceneComponent* InComp)
 {
-
-	bool bCreateHandleIfMissing = false;
+	const bool bCreateHandleIfMissing = false;
 	FName CreatedFolderName = NAME_None;
 
 	FFindOrCreateHandleResult Result;
-	bool bHandleWasValid = GetSequencer()->GetHandleToObject(InComp, false).IsValid();
-
+	bool bHandleWasValid = GetSequencer()->GetHandleToObject(InComp, bCreateHandleIfMissing).IsValid();
 
 	Result.Handle = GetSequencer()->GetHandleToObject(InComp, bCreateHandleIfMissing, CreatedFolderName);
 	Result.bWasCreated = bHandleWasValid == false && Result.Handle.IsValid();
 
+	UMovieScene* MovieScene = GetSequencer()->GetFocusedMovieSceneSequence()->GetMovieScene();
+
+	// Prioritize a control rig parameter track on this component
+	if (Result.Handle.IsValid())
+	{
+		if (MovieScene->FindTrack(UMovieSceneControlRigParameterTrack::StaticClass(), Result.Handle, NAME_None))
+		{
+			return Result;
+		}
+	}
+
+	// If the owner has a control rig parameter track, let's use it
+	UObject* OwnerObject = InComp->GetOwner();
+	FGuid OwnerHandle = GetSequencer()->GetHandleToObject(OwnerObject, bCreateHandleIfMissing);
+	bHandleWasValid = OwnerHandle.IsValid();
+	if (OwnerHandle.IsValid())
+	{
+		if (MovieScene->FindTrack(UMovieSceneControlRigParameterTrack::StaticClass(), OwnerHandle, NAME_None))
+		{
+			Result.Handle = OwnerHandle;
+			Result.bWasCreated = bHandleWasValid == false && Result.Handle.IsValid();
+			return Result;
+		}
+	}
+
+	// If the component handle doesn't exist, let's use the owner handle
 	if (Result.Handle.IsValid() == false)
 	{
-		UObject* OwnerObject = InComp->GetOwner();
-		bHandleWasValid = GetSequencer()->GetHandleToObject(OwnerObject, false).IsValid();
-
-		Result.Handle = GetSequencer()->GetHandleToObject(OwnerObject, bCreateHandleIfMissing, CreatedFolderName);
+		Result.Handle = OwnerHandle;
 		Result.bWasCreated = bHandleWasValid == false && Result.Handle.IsValid();
 
 	}
 	return Result;
+}
+
+void FControlRigParameterTrackEditor::SelectSequencerNodeInSection(UMovieSceneControlRigParameterSection* ParamSection, const FName& ControlName, bool bSelected)
+{
+	if (ParamSection)
+	{
+		FChannelMapInfo* pChannelIndex = ParamSection->ControlChannelMap.Find(ControlName);
+		if (pChannelIndex != nullptr)
+		{
+			if (pChannelIndex->ParentControlIndex == INDEX_NONE)
+			{
+				GetSequencer()->SelectByNthCategoryNode(ParamSection, pChannelIndex->ControlIndex, bSelected);
+			}
+			else
+			{
+				const FName FloatChannelTypeName = FMovieSceneFloatChannel::StaticStruct()->GetFName();
+
+				FMovieSceneChannelProxy& ChannelProxy = ParamSection->GetChannelProxy();
+				for (const FMovieSceneChannelEntry& Entry : ParamSection->GetChannelProxy().GetAllEntries())
+				{
+					const FName ChannelTypeName = Entry.GetChannelTypeName();
+					if (pChannelIndex->ChannelTypeName == ChannelTypeName || (ChannelTypeName == FloatChannelTypeName && pChannelIndex->ChannelTypeName == NAME_None))
+					{
+						FMovieSceneChannelHandle Channel = ChannelProxy.MakeHandle(ChannelTypeName, pChannelIndex->ChannelIndex);
+						TArray<FMovieSceneChannelHandle> Channels;
+						Channels.Add(Channel);
+						GetSequencer()->SelectByChannels(ParamSection, Channels, false, bSelected);
+						break;
+					}
+				}
+			}
+		}
+	}
 }
 
 
@@ -1829,43 +1890,11 @@ void FControlRigParameterTrackEditor::HandleControlSelected(UControlRig* Subject
 		UMovieSceneControlRigParameterTrack* Track = CastChecked<UMovieSceneControlRigParameterTrack>(TrackResult.Track, ECastCheckedType::NullAllowed);
 		if (Track)
 		{
-			float Weight = 1.0f;
-			TArray<IKeyArea> KeyAreas;
-			TArray<FString> StringArray;
 			GetSequencer()->SuspendSelectionBroadcast();
-
 			for (UMovieSceneSection* Section : Track->GetAllSections())
 			{
 				UMovieSceneControlRigParameterSection* ParamSection = Cast<UMovieSceneControlRigParameterSection>(Section);
-				if (ParamSection)
-				{
-					FChannelMapInfo* pChannelIndex = ParamSection->ControlChannelMap.Find(Control.Name);
-					if (pChannelIndex != nullptr)
-					{
-						if (pChannelIndex->ParentControlIndex == INDEX_NONE)
-						{
-							GetSequencer()->SelectByNthCategoryNode(Section, pChannelIndex->ControlIndex, bSelected);
-						}
-						else
-						{
-							const FName FloatChannelTypeName = FMovieSceneFloatChannel::StaticStruct()->GetFName();
-
-							FMovieSceneChannelProxy& ChannelProxy = Section->GetChannelProxy();
-							for (const FMovieSceneChannelEntry& Entry : Section->GetChannelProxy().GetAllEntries())
-							{
-								const FName ChannelTypeName = Entry.GetChannelTypeName();
-								if (pChannelIndex->ChannelTypeName == ChannelTypeName || (ChannelTypeName == FloatChannelTypeName && pChannelIndex->ChannelTypeName == NAME_None))
-								{
-									FMovieSceneChannelHandle Channel = ChannelProxy.MakeHandle(ChannelTypeName, pChannelIndex->ChannelIndex);
-									TArray<FMovieSceneChannelHandle> Channels;
-									Channels.Add(Channel);
-									GetSequencer()->SelectByChannels(Section, Channels, false, bSelected);
-									break;
-								}
-							}
-						}
-					}
-				}
+				SelectSequencerNodeInSection(ParamSection,Control.Name, bSelected);
 			}
 			GetSequencer()->ResumeSelectionBroadcast();
 
@@ -1961,8 +1990,11 @@ void FControlRigParameterTrackEditor::HandleControlModified(UControlRig* Control
 	}
 }
 
-void FControlRigParameterTrackEditor::GetControlRigKeys(UControlRig* InControlRig, FName ParameterName, EMovieSceneTransformChannel ChannelsToKey, FGeneratedTrackKeys& OutGeneratedKeys)
+void FControlRigParameterTrackEditor::GetControlRigKeys(UControlRig* InControlRig, FName ParameterName, EMovieSceneTransformChannel ChannelsToKey, UMovieSceneControlRigParameterSection* SectionToKey, FGeneratedTrackKeys& OutGeneratedKeys)
 {
+	const TArray<bool>& ControlsMask = SectionToKey->GetControlsMask();
+	EMovieSceneTransformChannel TransformMask = SectionToKey->GetTransformMask().GetChannels();
+
 	TArray<FRigControl> Controls;
 	InControlRig->GetControlsInOrder(Controls);
 	// If key all is enabled, for a key on all the channels
@@ -1976,13 +2008,19 @@ void FControlRigParameterTrackEditor::GetControlRigKeys(UControlRig* InControlRi
 	int32 BoolChannelIndex = 0;
 	int32 EnumChannelIndex = 0;
 	int32 IntChannelIndex = 0;
-	for (const FRigControl& RigControl : Controls)
+	for (int32 ControlIndex = 0; ControlIndex < Controls.Num(); ++ControlIndex)
 	{
+		const FRigControl& RigControl = Controls[ControlIndex];
+
 		if (!RigControl.bAnimatable)
 		{
 			continue;
 		}
-		bool bSetKey = RigControl.Name == ParameterName;
+
+		bool bMaskKeyOut = (ControlIndex >= ControlsMask.Num() || ControlsMask[ControlIndex] == false);
+
+		bool bSetKey = RigControl.Name == ParameterName && !bMaskKeyOut;
+
 		switch (RigControl.ControlType)
 		{
 		case ERigControlType::Bool:
@@ -2064,6 +2102,18 @@ void FControlRigParameterTrackEditor::GetControlRigKeys(UControlRig* InControlRi
 			{
 				bKeyX = bKeyY = bKeyZ = true;
 			}
+			if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::TranslationX))
+			{
+				bKeyX = false;
+			}
+			if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::TranslationY))
+			{
+				bKeyY = false;
+			}
+			if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::TranslationZ))
+			{
+				bKeyZ = false;
+			}
 			OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(ChannelIndex++, CurrentVector.X, bKeyX));
 			OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(ChannelIndex++, CurrentVector.Y, bKeyY));
 			OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(ChannelIndex++, CurrentVector.Z, bKeyZ));
@@ -2075,6 +2125,18 @@ void FControlRigParameterTrackEditor::GetControlRigKeys(UControlRig* InControlRi
 			if (GetSequencer()->GetKeyGroupMode() == EKeyGroupMode::KeyGroup && (bKeyX || bKeyY || bKeyZ))
 			{
 				bKeyX = bKeyY = bKeyZ = true;
+			}
+			if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::RotationX))
+			{
+				bKeyX = false;
+			}
+			if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::RotationY))
+			{
+				bKeyY = false;
+			}
+			if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::RotationZ))
+			{
+				bKeyZ = false;
 			}
 
 			/* @Mike.Zyracki this is my gut feeling - we should run SetClosestToMe on the rotator SOMEWHERE....
@@ -2103,6 +2165,18 @@ void FControlRigParameterTrackEditor::GetControlRigKeys(UControlRig* InControlRi
 				if (GetSequencer()->GetKeyGroupMode() == EKeyGroupMode::KeyGroup && (bKeyX || bKeyY || bKeyZ))
 				{
 					bKeyX = bKeyY = bKeyZ = true;
+				}
+				if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::ScaleX))
+				{
+					bKeyX = false;
+				}
+				if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::ScaleY))
+				{
+					bKeyY = false;
+				}
+				if (!EnumHasAnyFlags(TransformMask, EMovieSceneTransformChannel::ScaleZ))
+				{
+					bKeyZ = false;
 				}
 				OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(ChannelIndex++, CurrentVector.X, bKeyX));
 				OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(ChannelIndex++, CurrentVector.Y, bKeyY));
@@ -2217,11 +2291,12 @@ void FControlRigParameterTrackEditor::AddControlKeys(USceneComponent *InSceneCom
 	}
 	FFindOrCreateTrackResult TrackResult = FindOrCreateTrackForObject(ObjectHandle, UMovieSceneControlRigParameterTrack::StaticClass(), ControlRigName, bCreateTrack);
 	UMovieSceneControlRigParameterTrack* Track = CastChecked<UMovieSceneControlRigParameterTrack>(TrackResult.Track, ECastCheckedType::NullAllowed);
+	UMovieSceneControlRigParameterSection* ParamSection = nullptr;
 	if (Track)
 	{
 		FFrameNumber  FrameTime = GetTimeForKey();
 		UMovieSceneSection* Section = Track->FindSection(FrameTime);
-		UMovieSceneControlRigParameterSection* ParamSection = Cast<UMovieSceneControlRigParameterSection>(Section);
+		ParamSection = Cast<UMovieSceneControlRigParameterSection>(Section);
 
 		if (ParamSection && ParamSection->GetDoNotKey())
 		{
@@ -2229,9 +2304,14 @@ void FControlRigParameterTrackEditor::AddControlKeys(USceneComponent *InSceneCom
 		}
 	}
 
+	if (!ParamSection)
+	{
+		return;
+	}
+
 	TSharedRef<FGeneratedTrackKeys> GeneratedKeys = MakeShared<FGeneratedTrackKeys>();
 
-	GetControlRigKeys(InControlRig, RigControlName, ChannelsToKey, *GeneratedKeys);
+	GetControlRigKeys(InControlRig, RigControlName, ChannelsToKey, ParamSection, *GeneratedKeys);
 	TGuardValue<bool> Guard(bIsDoingSelection, true);
 
 	auto OnKeyProperty = [=](FFrameNumber Time) -> FKeyPropertyResult
@@ -2461,7 +2541,7 @@ void FControlRigParameterTrackEditor::ToggleFKControlRig(UMovieSceneControlRigPa
 			{
 				Section->Modify();
 				CRSection->ClearAllParameters();
-				CRSection->RecreateWithThisControlRig(CRSection->ControlRig, true);
+				CRSection->RecreateWithThisControlRig(CRSection->GetControlRig(), true);
 			}
 		}
 	}
@@ -2778,7 +2858,7 @@ void FControlRigParameterSection::BuildSectionContextMenu(FMenuBuilder& MenuBuil
 	UMovieSceneControlRigParameterSection* ParameterSection = CastChecked<UMovieSceneControlRigParameterSection>(WeakSection.Get());
 	TSharedPtr<ISequencer> SequencerPtr = WeakSequencer.Pin();
 
-	UControlRig* ControlRig = ParameterSection->ControlRig;
+	UControlRig* ControlRig = ParameterSection->GetControlRig();
 
 	if (ControlRig)
 	{
@@ -2914,10 +2994,10 @@ void FControlRigParameterSection::BuildSectionContextMenu(FMenuBuilder& MenuBuil
 			})
 				);
 		};
-		MenuBuilder.BeginSection(NAME_None, LOCTEXT("RigSectionFilterControls", "Filter Controls"));
+		MenuBuilder.BeginSection(NAME_None, LOCTEXT("RigSectionActiveChannels", "Active Channels"));
 		{
 			MenuBuilder.AddSubMenu(
-				LOCTEXT("ToggleRigControlsText", "Toggle Rig Controls"), LOCTEXT("ToggleRigControlsText_Tooltip", "Toggle Rig Controls"),
+				LOCTEXT("ToggleRigControlsText", "Rig Controls"), LOCTEXT("ToggleRigControlsText_Tooltip", "Causes this section to affect all rig controls"),
 				FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder) {
 				int32 Index = 0;
 				for (const FRigControl& RigControl : Controls)
@@ -2925,7 +3005,7 @@ void FControlRigParameterSection::BuildSectionContextMenu(FMenuBuilder& MenuBuil
 					const FName RigName = RigControl.Name;
 					FText Name = FText::FromName(RigName);
 					FText Text = FText::Format(LOCTEXT("RigControlToggle", "{0}"), Name);
-					FText TooltipText = FText::Format(LOCTEXT("RigControlToggleTooltip", "Toggle Rig Control {0}"), Name);
+					FText TooltipText = FText::Format(LOCTEXT("RigControlToggleTooltip", "Causes this section to affect rig control {0}"), Name);
 					SubMenuBuilder.AddMenuEntry(
 						Text, TooltipText,
 						FSlateIcon(), ToggleControls(Index++), NAME_None, EUserInterfaceActionType::ToggleButton);

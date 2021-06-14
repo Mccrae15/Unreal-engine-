@@ -7,6 +7,7 @@
 
 #include "RemoteControlProtocolOSC.generated.h"
 
+struct FOSCAddress;
 struct FOSCMessage;
 
 /**
@@ -22,7 +23,6 @@ public:
 	virtual FName GetRangePropertyName() const override { return NAME_FloatProperty; }
 	//~ End FRemoteControlProtocolEntity interface
 
-public:
 	/** OSC address in the form '/Container1/Container2/Method' */
 	UPROPERTY(EditAnywhere, Category = Mapping)
 	FName PathName;
@@ -30,6 +30,12 @@ public:
 	/** OSC range input property template, used for binding. */
 	UPROPERTY(Transient, meta = (ClampMin = 0.0, ClampMax = 1.0))
 	float RangeInputTemplate = 0.0f;
+
+	/**
+	* Checks if this entity has the same values as the Other.
+	* Used to check for duplicate inputs.
+	*/
+	virtual bool IsSame(const FRemoteControlProtocolEntity* InOther) override;
 };
 
 /**
@@ -38,6 +44,10 @@ public:
 class FRemoteControlProtocolOSC : public FRemoteControlProtocol
 {
 public:
+	FRemoteControlProtocolOSC()
+		: FRemoteControlProtocol(ProtocolName)
+	{}
+	
 	//~ Begin IRemoteControlProtocol interface
 	virtual void Bind(FRemoteControlProtocolEntityPtr InRemoteControlProtocolEntityPtr) override;
 	virtual void Unbind(FRemoteControlProtocolEntityPtr InRemoteControlProtocolEntityPtr) override;
@@ -45,8 +55,16 @@ public:
 	virtual UScriptStruct* GetProtocolScriptStruct() const override { return FRemoteControlOSCProtocolEntity::StaticStruct(); }
 	//~ End IRemoteControlProtocol interface
 
-	/** Recieve OSC server message handler */
+	/** Receive OSC server message handler */
 	void OSCReceivedMessageEvent(const FOSCMessage& Message, const FString& IPAddress, uint16 Port);
+
+#if WITH_EDITOR
+	/**
+	 * Process the AutoBinding to the Remote Control Entity
+	 * @param InAddress	OSC address structure
+	 */
+	void ProcessAutoBinding(const FOSCAddress& InAddress);
+#endif
 
 private:
 	/** Map of the OSC bindings */

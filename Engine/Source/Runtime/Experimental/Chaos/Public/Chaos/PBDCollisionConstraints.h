@@ -58,7 +58,6 @@ public:
 		const TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>>& PerParticlePhysicsMaterials, 
 		const int32 ApplyPairIterations = 1, 
 		const int32 ApplyPushOutPairIterations = 1, 
-		const FReal CullDistance = (FReal)0, 
 		const FReal RestitutionThreshold = 2000.0f);
 
 	virtual ~FPBDCollisionConstraints() {}
@@ -76,9 +75,9 @@ public:
 	/**
 	 * Set the solver method to use in the Apply step
 	 */
-	void SetApplyType(ECollisionApplyType InApplyType)
+	void SetSolverType(EConstraintSolverType InSolverType)
 	{
-		ApplyType = InApplyType;
+		SolverType = InSolverType;
 	}
 
 	/**
@@ -254,16 +253,6 @@ public:
 #endif
 	}
 
-	void SetCullDistance(FReal InCullDistance)
-	{
-		MCullDistance = InCullDistance;
-	}
-
-	FReal GetCullDistance() const
-	{
-		return MCullDistance;
-	}
-
 	void SetCanDisableContacts(bool bInCanDisableContacts)
 	{
 		bCanDisableContacts = bInCanDisableContacts;
@@ -289,9 +278,19 @@ public:
 		MApplyPairIterations = InPairIterations;
 	}
 
+	int32 GetPairIterations() const
+	{
+		return MApplyPairIterations;
+	}
+
 	void SetPushOutPairIterations(int32 InPairIterations)
 	{
 		MApplyPushOutPairIterations = InPairIterations;
+	}
+
+	int32 GetPushOutPairIterations() const
+	{
+		return MApplyPushOutPairIterations;
 	}
 
 	void SetCollisionsEnabled(bool bInEnableCollisions)
@@ -370,7 +369,6 @@ private:
 	const TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>>& MPerParticlePhysicsMaterials;
 	int32 MApplyPairIterations;
 	int32 MApplyPushOutPairIterations;
-	FReal MCullDistance;
 	FReal RestitutionThreshold;
 	bool bUseCCD;
 	bool bEnableCollisions;
@@ -385,7 +383,7 @@ private:
 	// Used by PushOut to decide on priority when two bodies are at same shock propagation level
 	FVec3 GravityDir;
 
-	ECollisionApplyType ApplyType;
+	EConstraintSolverType SolverType;
 
 	int32 LifespanCounter;
 

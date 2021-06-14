@@ -2,9 +2,12 @@
 
 #include "CompositingCaptureBase.h"
 
+#include "CameraCalibrationSubsystem.h"
 #include "CineCameraComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
-#include "LensDistortionSubsystem.h"
+#include "Engine/Engine.h"
+#include "LensDistortionModelHandlerBase.h"
+
 
 ACompositingCaptureBase::ACompositingCaptureBase()
 {
@@ -24,21 +27,28 @@ void ACompositingCaptureBase::UpdateDistortion()
 	{
 		return;
 	}
-
+	
  	if (UCineCameraComponent* const CineCameraComponent = Cast<UCineCameraComponent>(TargetCamera->GetCameraComponent()))
 	{
-		// Get the CineCameraComponent's LensDistortionDataHandler, if it exists, or create a new one if it does not
-		ULensDistortionSubsystem* SubSystem = GEngine->GetEngineSubsystem<ULensDistortionSubsystem>();
+		DistortionSource.TargetCameraComponent = CineCameraComponent;
+
+		// Query the camera calibration subsystem for a handler associated with the TargetCamera and matching the user selection
+		ULensDistortionModelHandlerBase* LensDistortionHandler = nullptr;
+		UCameraCalibrationSubsystem* SubSystem = GEngine->GetEngineSubsystem<UCameraCalibrationSubsystem>();
 		if (SubSystem)
 		{
-			LensDistortionHandler = SubSystem->GetDistortionModelHandler(CineCameraComponent);
+			LensDistortionHandler = SubSystem->FindDistortionModelHandler(DistortionSource);
+
+			// Get the focal length of the target camera (before any overscan could have been applied) to prevent double overscan
+			const bool bCouldBeDistorted = SubSystem->GetOriginalFocalLength(CineCameraComponent, OriginalFocalLength);
+			if (!bCouldBeDistorted)
+			{
+				OriginalFocalLength = CineCameraComponent->CurrentFocalLength;
+			}
 		}
 
 		if (LensDistortionHandler)
 		{
-			// Update the lens distortion state based on the current sensor dimensions and focal length of the target camera
-			LensDistortionHandler->UpdateCameraSettings(FVector2D(CineCameraComponent->Filmback.SensorWidth, CineCameraComponent->Filmback.SensorHeight), CineCameraComponent->CurrentFocalLength);
-
 			// Get the current distortion MID from the lens distortion handler, and if it has changed, remove the old MID from the scene capture's post process materials
 			UMaterialInstanceDynamic* NewDistortionMID = LensDistortionHandler->GetDistortionMID();
 			if (LastDistortionMID != NewDistortionMID)
@@ -57,13 +67,25 @@ void ACompositingCaptureBase::UpdateDistortion()
 			{
 				if (bApplyDistortion)
 				{
+					OverscanFactor = LensDistortionHandler->GetOverscanFactor();
 					SceneCaptureComponent2D->AddOrUpdateBlendable(NewDistortionMID);
 				}
 				else
 				{
+					OverscanFactor = 1.0f;
 					SceneCaptureComponent2D->RemoveBlendable(NewDistortionMID);
 				}
 			}
+		}
+		else
+		{
+			OverscanFactor = 1.0f;
+
+			if (SceneCaptureComponent2D)
+			{
+				SceneCaptureComponent2D->RemoveBlendable(LastDistortionMID);
+			}
+			LastDistortionMID = nullptr;
 		}
 	}
 }
@@ -75,6 +97,27 @@ void ACompositingCaptureBase::PostEditChangeProperty(struct FPropertyChangedEven
 
 	if ((PropertyName == GET_MEMBER_NAME_CHECKED(ACompositingCaptureBase, TargetCameraActor)))
 	{
+		if (TargetCameraActor)
+		{
+			if (UCineCameraComponent* const CineCameraComponent = Cast<UCineCameraComponent>(TargetCameraActor->GetCameraComponent()))
+			{
+				DistortionSource.TargetCameraComponent = CineCameraComponent;
+
+				ULensDistortionModelHandlerBase* LensDistortionHandler = nullptr;
+				UCameraCalibrationSubsystem* SubSystem = GEngine->GetEngineSubsystem<UCameraCalibrationSubsystem>();
+				if (SubSystem)
+				{
+					LensDistortionHandler = SubSystem->FindDistortionModelHandler(DistortionSource);
+				}
+
+				if (LensDistortionHandler == nullptr)
+				{
+					DistortionSource.DistortionProducerID.Invalidate();
+					DistortionSource.HandlerDisplayName.Empty();
+				}
+			}
+		}
+
 		// If there is no target camera, remove the last distortion post-process MID from the scene capture
 		if (TargetCameraActor == nullptr)
 		{
@@ -92,3 +135,37 @@ void ACompositingCaptureBase::PostEditChangeProperty(struct FPropertyChangedEven
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 #endif
+
+void ACompositingCaptureBase::SetApplyDistortion(bool bInApplyDistortion)
+{
+	bApplyDistortion = bInApplyDistortion;
+	UpdateDistortion();
+}
+
+void ACompositingCaptureBase::SetDistortionHandler(ULensDistortionModelHandlerBase* InDistortionHandler)
+{
+	if (InDistortionHandler)
+	{
+		DistortionSource.DistortionProducerID = InDistortionHandler->GetDistortionProducerID();
+		DistortionSource.HandlerDisplayName = InDistortionHandler->GetDisplayName();
+	}
+	else
+	{
+		DistortionSource.DistortionProducerID = FGuid();
+		DistortionSource.HandlerDisplayName = FString();
+	}
+
+	UpdateDistortion();
+}
+
+ULensDistortionModelHandlerBase* ACompositingCaptureBase::GetDistortionHandler()
+{
+	UCameraCalibrationSubsystem* SubSystem = GEngine->GetEngineSubsystem<UCameraCalibrationSubsystem>();
+
+	if (!SubSystem)
+	{
+		return nullptr;
+	}
+
+	return SubSystem->FindDistortionModelHandler(DistortionSource);
+}

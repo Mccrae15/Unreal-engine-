@@ -27,6 +27,7 @@ public class NiagaraEditor : ModuleRules
 				"RenderCore",
 				"Slate", 
 				"SlateCore",
+				"SlateNullRenderer",
 				"Kismet",
                 "EditorStyle",
 				"UnrealEd", 
@@ -53,7 +54,8 @@ public class NiagaraEditor : ModuleRules
 				"EditorWidgets",
 				"DeveloperSettings",
 				"SessionServices",
-				"SessionFrontend"
+				"SessionFrontend",
+				"PythonScriptPlugin"
 			}
         );
 

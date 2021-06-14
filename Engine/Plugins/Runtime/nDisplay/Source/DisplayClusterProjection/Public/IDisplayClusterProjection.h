@@ -17,8 +17,7 @@ public:
 	static constexpr auto ModuleName = TEXT("DisplayClusterProjection");
 
 public:
-	virtual ~IDisplayClusterProjection()
-	{ }
+	virtual ~IDisplayClusterProjection() = default;
 
 public:
 	/**
@@ -75,5 +74,5 @@ public:
 	* Set camera policy camera
 	*
 	*/
-	virtual bool CameraPolicySetCamera(const TSharedPtr<class IDisplayClusterProjectionPolicy>& InPolicy, class UCameraComponent* const NewCamera, const struct FDisplayClusterProjectionCameraPolicySettings& CamersSettings) = 0;
+	virtual bool CameraPolicySetCamera(const TSharedPtr<class IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& InPolicy, class UCameraComponent* const NewCamera, const struct FDisplayClusterProjectionCameraPolicySettings& CamersSettings) = 0;
 };

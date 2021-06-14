@@ -9,9 +9,11 @@
 #include "RHIDefinitions.h"
 #include "RenderTargetPool.h"
 #include "SystemTextures.h"
+#include "SceneView.h"
 #include "IEyeTracker.h"
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
+#include "Engine/Engine.h"
 
 const int32 kComputeGroupSize = FComputeShaderUtils::kGolden2DGroupSize;
 
@@ -28,20 +30,8 @@ ENUM_CLASS_FLAGS(EVRSGenerationFlags);
 
 const int32 kMaxCombinedSources = 4;
 
-static TAutoConsoleVariable<bool> CVarEnableVariableRateShading(
-	TEXT("r.VRS.Enable"),
-	true,
-	TEXT("Toggle to enable Variable Rate Shading."),
-	ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<bool> CVarEnableAttachmentVariableRateShading(
-	TEXT("r.VRS.EnableImage"),
-	false,
-	TEXT("Toggle to enable image-based Variable Rate Shading."),
-	ECVF_RenderThreadSafe);
-
 static TAutoConsoleVariable<int> CVarHMDFixedFoveationLevel(
-	TEXT("r.VRS.HMDFixedFoveationLevel"),
+	TEXT("vr.VRS.HMDFixedFoveationLevel"),
 	0,
 	TEXT("Level of fixed-foveation VRS to apply (when Variable Rate Shading is available)\n")
 	TEXT(" 0: Disabled (default);\n")
@@ -74,7 +64,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return GRHISupportsAttachmentVariableRateShading && GRHIVariableRateShadingImageDataType == VRSImage_Palette;
+		return FDataDrivenShaderPlatformInfo::GetSupportsVariableRateShading(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -170,7 +160,7 @@ void FVariableRateShadingImageManager::ReleaseDynamicRHI()
 FRDGTextureRef FVariableRateShadingImageManager::GetVariableRateShadingImage(FRDGBuilder& GraphBuilder, const FSceneViewFamily& ViewFamily, const TArray<TRefCountPtr<IPooledRenderTarget>>* ExternalVRSSources, EVRSType VRSTypesToExclude)
 {
 	// If the RHI doesn't support VRS, we should always bail immediately.
-	if (!GRHISupportsAttachmentVariableRateShading || !CVarEnableAttachmentVariableRateShading.GetValueOnAnyThread() || !CVarEnableVariableRateShading.GetValueOnAnyThread())
+	if (!GRHISupportsAttachmentVariableRateShading || !GRHIVariableRateShadingEnabled || !GRHIAttachmentVariableRateShadingEnabled)
 	{
 		return nullptr;
 	}

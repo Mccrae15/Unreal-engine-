@@ -29,7 +29,7 @@ public:
 	 * @param Track        The track to use
 	 * @param InName The name for this track
 	 */
-	UFUNCTION(BlueprintCallable, Category="Track", meta=(ScriptMethod))
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Track", meta=(ScriptMethod, DevelopmentOnly))
 	static void SetDisplayName(UMovieSceneTrack* Track, const FText& InName);
 
 	/**
@@ -38,7 +38,7 @@ public:
 	 * @param Track        The track to use
 	 * @return This track's display name
 	 */
-	UFUNCTION(BlueprintCallable, Category="Track", meta=(ScriptMethod))
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Track", meta=(ScriptMethod, DevelopmentOnly))
 	static FText GetDisplayName(UMovieSceneTrack* Track);
 
 	/**
@@ -47,7 +47,7 @@ public:
 	 * @param Track        The track to use
 	 * @return The newly create section if successful
 	 */
-	UFUNCTION(BlueprintCallable, Category="Track", meta=(ScriptMethod))
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Track", meta=(ScriptMethod))
 	static UMovieSceneSection* AddSection(UMovieSceneTrack* Track);
 
 	/**
@@ -56,7 +56,7 @@ public:
 	 * @param Track        The track to use
 	 * @return An array of this track's sections
 	 */
-	UFUNCTION(BlueprintCallable, Category="Track", meta=(ScriptMethod))
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Track", meta=(ScriptMethod))
 	static TArray<UMovieSceneSection*> GetSections(UMovieSceneTrack* Track);
 
 	/**
@@ -65,7 +65,7 @@ public:
 	 * @param Track        The track to remove the section from, if present
 	 * @param Section      The section to remove
 	 */
-	UFUNCTION(BlueprintCallable, Category="Track", meta=(ScriptMethod))
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Track", meta=(ScriptMethod))
 	static void RemoveSection(UMovieSceneTrack* Track, UMovieSceneSection* Section);
 
 	/**
@@ -74,7 +74,7 @@ public:
 	 * @param Track        The track to get the sorting order from
 	 * @return The sorting order of the requested track
 	 */
-	UFUNCTION(BlueprintCallable, Category="Track", meta=(ScriptMethod))
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Track", meta=(ScriptMethod, DevelopmentOnly))
 	static int32 GetSortingOrder(UMovieSceneTrack* Track);
  
 	/**
@@ -83,7 +83,7 @@ public:
 	 * @param Track        The track to get the sorting order from
 	 * @param SortingOrder The sorting order to set
 	 */
-	UFUNCTION(BlueprintCallable, Category="Track", meta=(ScriptMethod))
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Track", meta=(ScriptMethod, DevelopmentOnly))
 	static void SetSortingOrder(UMovieSceneTrack* Track, int32 SortingOrder);
  
 	/**
@@ -92,15 +92,35 @@ public:
 	 * @param Track        The track to get the color tint from
 	 * @return The color tint of the requested track
 	 */
-	UFUNCTION(BlueprintCallable, Category="Track", meta=(ScriptMethod))
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Track", meta=(ScriptMethod, DevelopmentOnly))
 	static FColor GetColorTint(UMovieSceneTrack* Track);
  
 	/**
 	 * Set the color tint for this track
 	 *
-	 * @param Track        The track to get the color tint from
+	 * @param Track        The track to set the color tint for
 	 * @param ColorTint The color tint to set
 	 */
-	UFUNCTION(BlueprintCallable, Category="Track", meta=(ScriptMethod))
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Track", meta=(ScriptMethod, DevelopmentOnly))
 	static void SetColorTint(UMovieSceneTrack* Track, const FColor& ColorTint);
- };
+
+	/**
+	 * Get the section to key for this track
+	 *
+	 * @param Track        The track to get the section to key for
+	 * @return The section to key for the requested track
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Track", meta=(ScriptMethod, DevelopmentOnly))
+	static UMovieSceneSection* GetSectionToKey(UMovieSceneTrack* Track);
+ 
+	/**
+	 * Set the section to key for this track. When properties for this section are modified externally, 
+	 * this section will receive those modifications and act accordingly (add/update keys). This is 
+	 * especially useful when there are multiple overlapping sections.
+	 *
+	 * @param Track        The track to set the section to key for
+	 * @param Section      The section to key for this track
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Track", meta=(ScriptMethod, DevelopmentOnly))
+	static void SetSectionToKey(UMovieSceneTrack* Track, UMovieSceneSection* Section); 
+};

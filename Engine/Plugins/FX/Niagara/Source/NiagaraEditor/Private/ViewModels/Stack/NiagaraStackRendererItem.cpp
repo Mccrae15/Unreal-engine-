@@ -25,6 +25,7 @@
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraScriptMergeManager.h"
 #include "NiagaraClipboard.h"
+#include "NiagaraEmitterEditorData.h"
 
 #include "Styling/SlateIconFinder.h"
 
@@ -137,14 +138,18 @@ UNiagaraRendererProperties* UNiagaraStackRendererItem::GetRendererProperties()
 
 FText UNiagaraStackRendererItem::GetDisplayName() const
 {
-	if (RendererProperties != nullptr)
+	if(DisplayNameCache.IsSet() == false)
 	{
-		return RendererProperties->GetWidgetDisplayName();
+		if (RendererProperties != nullptr)
+		{
+			DisplayNameCache = RendererProperties->GetWidgetDisplayName();
+		}
+		else
+		{
+			DisplayNameCache = FText::FromName(NAME_None);
+		}
 	}
-	else
-	{
-		return FText::FromName(NAME_None);
-	}
+	return DisplayNameCache.GetValue();
 }
 
 bool UNiagaraStackRendererItem::TestCanCutWithMessage(FText& OutMessage) const
@@ -244,6 +249,11 @@ void UNiagaraStackRendererItem::Delete()
 	UNiagaraRendererProperties* Renderer = RendererProperties.Get();
 	Emitter->Modify();
 	Emitter->RemoveRenderer(Renderer);
+	if (UNiagaraEmitterEditorData* Data = Cast<UNiagaraEmitterEditorData>(Emitter->GetEditorData()))
+	{
+		Data->GetStackEditorData().Modify();
+		Data->GetStackEditorData().SetStackEntryDisplayName(GetStackEditorDataKey(), FText());
+	}
 
 	TArray<UObject*> ChangedObjects;
 	ChangedObjects.Add(Renderer);
@@ -351,6 +361,7 @@ void UNiagaraStackRendererItem::RefreshChildrenInternal(const TArray<UNiagaraSta
 	MissingAttributes = GetMissingVariables(RendererProperties.Get(), GetEmitterViewModel()->GetEmitter());
 	bHasBaseRendererCache.Reset();
 	bCanResetToBaseCache.Reset();
+	DisplayNameCache.Reset();
 	Super::RefreshChildrenInternal(CurrentChildren, NewChildren, NewIssues);
 	
 	RefreshIssues(NewIssues);

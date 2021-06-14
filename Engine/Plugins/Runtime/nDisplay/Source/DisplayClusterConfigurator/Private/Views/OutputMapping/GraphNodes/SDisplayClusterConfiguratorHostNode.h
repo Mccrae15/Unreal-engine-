@@ -23,24 +23,21 @@ public:
 
 	//~ Begin SGraphNode interface
 	virtual void UpdateGraphNode() override;
-	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter) override;
+	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty = true) override;
 	virtual FVector2D ComputeDesiredSize(float) const override;
 	virtual FVector2D GetPosition() const override;
 	//~ End SGraphNode interface
 
 	//~ Begin SDisplayClusterConfiguratorBaseNode interface
 	virtual void SetNodeSize(const FVector2D InLocalSize, bool bFixedAspectRatio) override;
-	virtual int32 GetNodeLayerIndex() const override { return DefaultZOrder; }
-	virtual bool CanNodeOverlapSiblings() const override { return false; }
-	virtual bool CanNodeEncroachChildBounds() const { return false; }
 	virtual bool CanNodeBeSnapAligned() const override { return true; }
+	virtual bool CanNodeBeResized() const;
 	//~ End SDisplayClusterConfiguratorBaseNode interface
 
 private:
 	FMargin GetBackgroundPosition() const;
-	FMargin GetAreaResizeHandlePosition() const;
-	EVisibility GetAreaResizeHandleVisibility() const;
 	FMargin GetNodeOriginPosition() const;
+	int32 GetNodeOriginLayerOffset() const;
 
 	EVisibility GetHostNameVisibility() const;
 	FText GetHostNameText() const;
@@ -51,7 +48,4 @@ private:
 
 private:
 	FMargin BorderThickness;
-
-public:
-	static int32 const DefaultZOrder;
 };

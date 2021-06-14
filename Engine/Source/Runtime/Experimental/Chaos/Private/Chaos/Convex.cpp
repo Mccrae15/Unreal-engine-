@@ -144,33 +144,6 @@ namespace Chaos
 		return MostOpposingIdx;
 	}
 
-
-
-	int32 FConvex::GetMostOpposingPlaneWithVertex(int32 VertexIndex, const FVec3& Normal) const
-	{
-		const int32 VertexPlaneNum = NumVertexPlanes(VertexIndex);
-		if ((VertexIndex == INDEX_NONE) || (VertexPlaneNum == 0))
-		{
-			return GetMostOpposingPlane(Normal);
-		}
-
-		int32 MostOpposingIdx = INDEX_NONE;
-		FReal MostOpposingDot = TNumericLimits<FReal>::Max();
-		for (int32 VertexPlaneIndex = 0; VertexPlaneIndex < VertexPlaneNum; ++VertexPlaneIndex)
-		{
-			const int32 PlaneIndex = GetVertexPlane(VertexIndex, VertexPlaneIndex);
-			const TPlaneConcrete<FReal, 3>& Plane = Planes[PlaneIndex];
-			const FReal Dot = FVec3::DotProduct(Plane.Normal(), Normal);
-			if (Dot < MostOpposingDot)
-			{
-				MostOpposingDot = Dot;
-				MostOpposingIdx = PlaneIndex;
-			}
-		}
-		CHAOS_ENSURE(MostOpposingIdx != INDEX_NONE);
-		return MostOpposingIdx;
-	}
-
 	FVec3 FConvex::GetClosestEdgePosition(int32 PlaneIndex, const FVec3& Position) const
 	{
 		FVec3 ClosestEdgePosition = FVec3(0);
@@ -236,23 +209,13 @@ namespace Chaos
 		return false;
 	}
 
-
-	int32 FConvex::NumVertexPlanes(int32 VertexIndex) const
+	int32 FConvex::FindVertexPlanes(int32 VertexIndex, int32* OutVertexPlanes, int32 MaxVertexPlanes) const
 	{
 		if (StructureData.IsValid())
 		{
-			return StructureData.NumVertexPlanes(VertexIndex);
+			return StructureData.FindVertexPlanes(VertexIndex, OutVertexPlanes, MaxVertexPlanes);
 		}
 		return 0;
-	}
-
-	int32 FConvex::GetVertexPlane(int32 VertexIndex, int32 VertexPlaneIndex) const
-	{
-		if (StructureData.IsValid())
-		{
-			return StructureData.GetVertexPlane(VertexIndex, VertexPlaneIndex);
-		}
-		return INDEX_NONE;
 	}
 
 	int32 FConvex::NumPlaneVertices(int32 PlaneIndex) const
@@ -273,6 +236,33 @@ namespace Chaos
 		return INDEX_NONE;
 	}
 
+	int32 FConvex::GetEdgeVertex(int32 EdgeIndex, int32 EdgeVertexIndex) const
+	{
+		if (StructureData.IsValid())
+		{
+			return StructureData.GetEdgeVertex(EdgeIndex, EdgeVertexIndex);
+		}
+		return INDEX_NONE;
+	}
+
+	int32 FConvex::GetEdgePlane(int32 EdgeIndex, int32 EdgePlaneIndex) const
+	{
+		if (StructureData.IsValid())
+		{
+			return StructureData.GetEdgePlane(EdgeIndex, EdgePlaneIndex);
+		}
+		return INDEX_NONE;
+	}
+
+	int32 FConvex::NumEdges() const
+	{
+		if (StructureData.IsValid())
+		{
+			return StructureData.NumEdges();
+		}
+		return 0;
+	}
+
 	// Store the structure data with the convex. This is used by manifold generation, for example
 	void FConvex::CreateStructureData(TArray<TArray<int32>>&& PlaneVertexIndices)
 	{
@@ -283,7 +273,6 @@ namespace Chaos
 	{
 		TArray<FPlane> NewPlanes;
 		TArray<FVec3> NewPoints;
-		TArray<TArray<int32>> NewPointPlanes;
 		NewPlanes.Reserve(Planes.Num());
 
 		// Move all the planes inwards
@@ -318,66 +307,32 @@ namespace Chaos
 						if (NewPointIndex == INDEX_NONE)
 						{
 							NewPointIndex = NewPoints.Add(PlanesPos);
-							NewPointPlanes.AddDefaulted();
 						}
-
-						// Keep track of planes that contribute to the point
-						NewPointPlanes[NewPointIndex].AddUnique(PlaneIndex0);
-						NewPointPlanes[NewPointIndex].AddUnique(PlaneIndex1);
-						NewPointPlanes[NewPointIndex].AddUnique(PlaneIndex2);
 					}
 				}
 			}
 		}
 
-		// Reject points outside the planes
+		// Reject points outside the planes to get down to a sensible number for the build step
 		const FReal PointPlaneTolerance = PointTolerance;
-		for (int32 PointIndex = 0; PointIndex < NewPoints.Num(); ++PointIndex)
+		int32 NumNewPoints = NewPoints.Num();
+		for (int32 PointIndex = 0; PointIndex < NumNewPoints; ++PointIndex)
 		{
-			for (int32 PlaneIndex = 0; PlaneIndex < NewPlanes.Num(); ++PlaneIndex)
+			const int32 NumNewPlanes = NewPlanes.Num();
+			for (int32 PlaneIndex = 0; PlaneIndex < NumNewPlanes; ++PlaneIndex)
 			{
 				const FReal PointPlaneDistance = NewPlanes[PlaneIndex].PlaneDot(NewPoints[PointIndex]);
 				if (PointPlaneDistance > PointPlaneTolerance)
 				{
 					NewPoints.RemoveAtSwap(PointIndex);
-					NewPointPlanes.RemoveAtSwap(PointIndex);
 					--PointIndex;
+					--NumNewPoints;
 					break;
 				}
 			}
 		}
 
-		// Reject planes that are not used
-		TArray<bool> NewPlaneUsed;
-		NewPlaneUsed.SetNumZeroed(NewPlanes.Num());
-		for (int32 PointIndex = 0; PointIndex < NewPoints.Num(); ++PointIndex)
-		{
-			for (int32 PointPlaneIndex = 0; PointPlaneIndex < NewPointPlanes[PointIndex].Num(); ++PointPlaneIndex)
-			{
-				const int32 PlaneIndex = NewPointPlanes[PointIndex][PointPlaneIndex];
-				NewPlaneUsed[PlaneIndex] = true;
-			}
-		}
-
-		for (int32 PlaneIndex = 0; PlaneIndex < NewPlanes.Num(); ++PlaneIndex)
-		{
-			if (!NewPlaneUsed[PlaneIndex])
-			{
-				NewPlanes.RemoveAtSwap(PlaneIndex);
-				NewPlaneUsed.RemoveAtSwap(PlaneIndex);
-				--PlaneIndex;
-			}
-		}
-
-		// Use the new planes
-		Planes.Reset(NewPlanes.Num());
-		for (int32 PlaneIndex = 0; PlaneIndex < NewPlanes.Num(); ++PlaneIndex)
-		{
-			Planes.Emplace(TPlaneConcrete<FReal, 3>(NewPlanes[PlaneIndex].GetOrigin(), NewPlanes[PlaneIndex].GetNormal()));
-		}
-
-
-		// Use the new surface points
-		Vertices = MoveTemp(NewPoints);
+		// Generate a new convex from the points
+		*this = FConvex(NewPoints, 0.0f);
 	}
 }

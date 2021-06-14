@@ -13,8 +13,7 @@ class IDisplayClusterProjectionPolicy;
 class IDisplayClusterProjectionPolicyFactory
 {
 public:
-	virtual ~IDisplayClusterProjectionPolicyFactory() = 0
-	{ }
+	virtual ~IDisplayClusterProjectionPolicyFactory() = default;
 
 public:
 	/**
@@ -26,6 +25,6 @@ public:
 	*
 	* @return - Projection policy instance
 	*/
-	virtual TSharedPtr<IDisplayClusterProjectionPolicy> Create(const FString& ProjectionPolicyId, const struct FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy) = 0;
+	virtual TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe> Create(const FString& ProjectionPolicyId, const struct FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy) = 0;
 	
 };

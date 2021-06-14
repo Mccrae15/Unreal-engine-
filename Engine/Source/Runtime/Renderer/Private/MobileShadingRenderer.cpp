@@ -206,6 +206,7 @@ FMobileSceneRenderer::FMobileSceneRenderer(const FSceneViewFamily* InViewFamily,
 	bRequiresAmbientOcclusionPass = false;
 	bRequiresDistanceFieldShadowingPass = false;
 	bIsFullPrepassEnabled = Scene->EarlyZPassMode == DDM_AllOpaque;
+	bShouldRenderDepthToTranslucency = false;
 
 	// Don't do occlusion queries when doing scene captures
 	for (FViewInfo& View : Views)
@@ -458,6 +459,14 @@ void FMobileSceneRenderer::InitViews(FRHICommandListImmediate& RHICmdList)
 			bShouldRenderCustomDepth |= Views[ViewIndex].bCustomDepthStencilValid;
 		}
 	}
+
+#if PLATFORM_HOLOLENS
+	// Check if any material renders depth to translucent materials.
+	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
+	{
+		bShouldRenderDepthToTranslucency |= Views[ViewIndex].bShouldRenderDepthToTranslucency;
+	}
+#endif
 	
 	const bool bDynamicShadows = ViewFamily.EngineShowFlags.DynamicShadows;
 	
@@ -626,7 +635,7 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 
 	Scene->UpdateAllPrimitiveSceneInfos(RHICmdList);
 
-	PrepareViewRectsForRendering();
+	PrepareViewRectsForRendering(RHICmdList);
 
 	if (ShouldRenderSkyAtmosphere(Scene, ViewFamily.EngineShowFlags))
 	{
@@ -829,22 +838,31 @@ void FMobileSceneRenderer::Render(FRHICommandListImmediate& RHICmdList)
 		GraphBuilder.Execute();
 	}
 
-	if (FXSystem && Views.IsValidIndex(0))
 	{
-		check(RHICmdList.IsOutsideRenderPass());
+		FRendererModule& RendererModule = static_cast<FRendererModule&>(GetRendererModule());
+		FRDGBuilder GraphBuilder(RHICmdList);
+		RendererModule.RenderPostOpaqueExtensions(GraphBuilder, Views, SceneContext);
 
-		FXSystem->PostRenderOpaque(
-			RHICmdList,
-			Views[0].ViewUniformBuffer,
-			nullptr,
-			nullptr,
-			Views[0].AllowGPUParticleUpdate()
-		);
-		if (FGPUSortManager* GPUSortManager = FXSystem->GetGPUSortManager())
+		if (FXSystem && Views.IsValidIndex(0))
 		{
-			GPUSortManager->OnPostRenderOpaque(RHICmdList);
+			AddUntrackedAccessPass(GraphBuilder, [this](FRHICommandListImmediate& RHICmdList)
+			{
+				check(RHICmdList.IsOutsideRenderPass());
+
+				FXSystem->PostRenderOpaque(
+					RHICmdList,
+					Views[0].ViewUniformBuffer,
+					nullptr,
+					nullptr,
+					Views[0].AllowGPUParticleUpdate()
+				);
+				if (FGPUSortManager* GPUSortManager = FXSystem->GetGPUSortManager())
+				{
+					GPUSortManager->OnPostRenderOpaque(RHICmdList);
+				}
+			});
 		}
-		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+		GraphBuilder.Execute();
 	}
 
 	// Flush / submit cmdbuffer
@@ -1171,6 +1189,13 @@ FRHITexture* FMobileSceneRenderer::RenderForward(FRHICommandListImmediate& RHICm
 		{
 			DepthTargetAction = EDepthStencilTargetActions::LoadDepthStencil_StoreDepthStencil;
 		}
+
+#if PLATFORM_HOLOLENS
+		if (bShouldRenderDepthToTranslucency)
+		{
+			ExclusiveDepthStencil = FExclusiveDepthStencil::DepthWrite_StencilWrite;
+		}
+#endif
 
 		FRHIRenderPassInfo TranslucentRenderPassInfo(
 			SceneColor,

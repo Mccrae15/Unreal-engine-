@@ -11,6 +11,7 @@
 #include "Channels/MovieSceneFloatChannel.h"
 #include "CineCameraActor.h"
 #include "CineCameraComponent.h"
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Components/LightComponent.h"
 #include "Components/MeshComponent.h"
 #include "Components/SceneComponent.h"
@@ -112,11 +113,32 @@ bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr:
 
 	SceneComponent.SetRelativeTransform( Transform );
 
-	// Visibility
-	const bool bIsHidden = ( Xformable.ComputeVisibility( EvalTime ) == pxr::UsdGeomTokens->invisible );
-
 	SceneComponent.Modify();
+
+	// Computed (effective) visibility
+	const bool bIsHidden = ( Xformable.ComputeVisibility( EvalTime ) == pxr::UsdGeomTokens->invisible );
 	SceneComponent.SetVisibility( !bIsHidden );
+
+	// Per-prim visibility
+	bool bIsInvisible = false; // Default to 'inherited'
+	if ( pxr::UsdAttribute VisibilityAttr = Xformable.GetVisibilityAttr() )
+	{
+		pxr::TfToken Value;
+		if ( VisibilityAttr.Get( &Value, EvalTime ) )
+		{
+			bIsInvisible = Value == pxr::UsdGeomTokens->invisible;
+		}
+	}
+	if ( bIsInvisible )
+	{
+		SceneComponent.ComponentTags.AddUnique( UnrealIdentifiers::Invisible );
+		SceneComponent.ComponentTags.Remove( UnrealIdentifiers::Inherited );
+	}
+	else
+	{
+		SceneComponent.ComponentTags.Remove( UnrealIdentifiers::Invisible );
+		SceneComponent.ComponentTags.AddUnique( UnrealIdentifiers::Inherited );
+	}
 
 	return true;
 }
@@ -321,15 +343,22 @@ bool UnrealToUsd::ConvertSceneComponent( const pxr::UsdStageRefPtr& Stage, const
 	// Transform
 	ConvertXformable( RelativeTransform, UsdPrim, UsdUtils::GetDefaultTimeCode() );
 
-	// Visibility
-	bool bVisible = SceneComponent->GetVisibleFlag();
-	if ( bVisible )
+	// Per-prim visibility
+	if ( pxr::UsdAttribute VisibilityAttr = XForm.CreateVisibilityAttr() )
 	{
-		XForm.MakeVisible();
-	}
-	else
-	{
-		XForm.MakeInvisible();
+		pxr::TfToken Value = pxr::UsdGeomTokens->inherited;
+
+		if ( SceneComponent->ComponentTags.Contains( UnrealIdentifiers::Invisible ) )
+		{
+			Value = pxr::UsdGeomTokens->invisible;
+		}
+		else if ( !SceneComponent->ComponentTags.Contains( UnrealIdentifiers::Inherited ) )
+		{
+			// We don't have visible nor inherited tags: We're probably exporting a pure UE component, so write out component visibility instead
+			Value = SceneComponent->IsVisible() ? pxr::UsdGeomTokens->inherited : pxr::UsdGeomTokens->invisible;
+		}
+
+		VisibilityAttr.Set<pxr::TfToken>( Value );
 	}
 
 	return true;
@@ -499,15 +528,91 @@ bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const 
 							OverridePrimPath = OverridePrimPath.AppendPath( UnrealToUsd::ConvertPath( *FString::Printf( TEXT( "Section%d" ), SectionIndex ) ).Get() );
 						}
 
-						pxr::UsdPrim OverridePrim = Stage->OverridePrim( OverridePrimPath );
-						if ( pxr::UsdAttribute UnrealMaterialAttr = OverridePrim.CreateAttribute( UnrealIdentifiers::MaterialAssignment, pxr::SdfValueTypeNames->String ) )
+						if ( pxr::UsdPrim OverridePrim = Stage->OverridePrim( OverridePrimPath ) )
 						{
-							UnrealMaterialAttr.Set( UnrealToUsd::ConvertString( *Override->GetPathName() ).Get() );
+							if ( pxr::UsdAttribute UnrealMaterialAttr = OverridePrim.CreateAttribute( UnrealIdentifiers::MaterialAssignment, pxr::SdfValueTypeNames->String ) )
+							{
+								UnrealMaterialAttr.Set( UnrealToUsd::ConvertString( *Override->GetPathName() ).Get() );
+							}
 						}
 					}
 				}
 			}
 		}
+	}
+
+	return true;
+}
+
+bool UnrealToUsd::ConvertHierarchicalInstancedStaticMeshComponent( const UHierarchicalInstancedStaticMeshComponent* HISMComponent, pxr::UsdPrim& UsdPrim, double TimeCode )
+{
+	using namespace pxr;
+
+	FScopedUsdAllocs Allocs;
+
+	UsdGeomPointInstancer PointInstancer{ UsdPrim };
+	if ( !PointInstancer || !HISMComponent )
+	{
+		return false;
+	}
+
+	UsdStageRefPtr Stage = UsdPrim.GetStage();
+	FUsdStageInfo StageInfo{ Stage };
+
+	VtArray<int> ProtoIndices;
+	VtArray<GfVec3f> Positions;
+	VtArray<GfQuath> Orientations;
+	VtArray<GfVec3f> Scales;
+
+	const int32 NumInstances = HISMComponent->GetInstanceCount();
+	ProtoIndices.reserve( ProtoIndices.size() + NumInstances );
+	Positions.reserve( Positions.size() + NumInstances );
+	Orientations.reserve( Orientations.size() + NumInstances );
+	Scales.reserve( Scales.size() + NumInstances );
+
+	for( const FInstancedStaticMeshInstanceData& InstanceData : HISMComponent->PerInstanceSMData )
+	{
+		// Convert axes
+		FTransform UETransform{ InstanceData.Transform };
+		FTransform USDTransform = UsdUtils::ConvertAxes( StageInfo.UpAxis == EUsdUpAxis::ZAxis, UETransform );
+
+		FVector Translation = USDTransform.GetTranslation();
+		FQuat Rotation = USDTransform.GetRotation();
+		FVector Scale = USDTransform.GetScale3D();
+
+		// Compensate metersPerUnit
+		const float UEMetersPerUnit = 0.01f;
+		if ( !FMath::IsNearlyEqual( UEMetersPerUnit, StageInfo.MetersPerUnit ) )
+		{
+			Translation *= ( UEMetersPerUnit / StageInfo.MetersPerUnit );
+		}
+
+		ProtoIndices.push_back( 0 ); // We will always export a single prototype per PointInstancer, since HISM components handle only 1 mesh at a time
+		Positions.push_back( GfVec3f( Translation.X, Translation.Y, Translation.Z ) );
+		Orientations.push_back( GfQuath( Rotation.W, Rotation.X, Rotation.Y, Rotation.Z ) );
+		Scales.push_back( GfVec3f( Scale.X, Scale.Y, Scale.Z ) );
+	}
+
+	const pxr::UsdTimeCode UsdTimeCode( TimeCode );
+
+	if ( UsdAttribute Attr = PointInstancer.CreateProtoIndicesAttr() )
+	{
+		Attr.Set( ProtoIndices, UsdTimeCode );
+	}
+
+	if ( UsdAttribute Attr = PointInstancer.CreatePositionsAttr() )
+	{
+		Attr.Set( Positions, UsdTimeCode );
+	}
+
+	if ( UsdAttribute Attr = PointInstancer.CreateOrientationsAttr() )
+	{
+		Attr.Set( Orientations, UsdTimeCode );
+	}
+
+	if ( UsdAttribute Attr = PointInstancer.CreateScalesAttr() )
+	{
+		Attr.Set( Scales, UsdTimeCode );
 	}
 
 	return true;
@@ -614,7 +719,7 @@ bool UnrealToUsd::ConvertXformable( const FTransform& RelativeTransform, pxr::Us
 	return true;
 }
 
-bool UnrealToUsd::ConvertInstancedFoliageActor( const AInstancedFoliageActor& Actor, pxr::UsdPrim& UsdPrim, double TimeCode, ULevel* InstancesLevel )
+bool UnrealToUsd::ConvertInstancedFoliageActor( const AInstancedFoliageActor& Actor, pxr::UsdPrim& UsdPrim, double TimeCode )
 {
 #if WITH_EDITOR
 	using namespace pxr;
@@ -625,11 +730,6 @@ bool UnrealToUsd::ConvertInstancedFoliageActor( const AInstancedFoliageActor& Ac
 	if ( !PointInstancer )
 	{
 		return false;
-	}
-
-	if ( InstancesLevel == nullptr )
-	{
-		InstancesLevel = Actor.GetLevel();
 	}
 
 	UsdStageRefPtr Stage = UsdPrim.GetStage();
@@ -646,48 +746,39 @@ bool UnrealToUsd::ConvertInstancedFoliageActor( const AInstancedFoliageActor& Ac
 		const UFoliageType* FoliageType = FoliagePair.Key;
 		const FFoliageInfo& Info = FoliagePair.Value.Get();
 
-		// Collect IDs of components that are on the same level as the actor's level. This because later on we'll have level-by-level
-		// export, and we'd want one point instancer per level
-		for ( const TPair<FFoliageInstanceBaseId, FFoliageInstanceBaseInfo>& FoliageInstancePair : Actor.InstanceBaseCache.InstanceBaseMap )
+		for ( const TPair<FFoliageInstanceBaseId, TSet<int32>>& Pair : Info.ComponentHash )
 		{
-			UActorComponent* Comp = FoliageInstancePair.Value.BasePtr.Get();
-			if ( !Comp || Comp->GetComponentLevel() != InstancesLevel )
-			{
-				continue;
-			}
+			const TSet<int32>& InstanceSet = Pair.Value;
 
-			if ( const TSet<int32>* InstanceSet = Info.ComponentHash.Find( FoliageInstancePair.Key ) )
-			{
-				const int32 NumInstances = InstanceSet->Num();
-				ProtoIndices.reserve( ProtoIndices.size() + NumInstances );
-				Positions.reserve( Positions.size() + NumInstances );
-				Orientations.reserve( Orientations.size() + NumInstances );
-				Scales.reserve( Scales.size() + NumInstances );
+			const int32 NumInstances = InstanceSet.Num();
+			ProtoIndices.reserve( ProtoIndices.size() + NumInstances );
+			Positions.reserve( Positions.size() + NumInstances );
+			Orientations.reserve( Orientations.size() + NumInstances );
+			Scales.reserve( Scales.size() + NumInstances );
 
-				for ( int32 InstanceIndex : *InstanceSet )
+			for ( int32 InstanceIndex : InstanceSet )
+			{
+				const FFoliageInstancePlacementInfo* Instance = &Info.Instances[ InstanceIndex ];
+
+				// Convert axes
+				FTransform UETransform{ Instance->Rotation, Instance->Location, Instance->DrawScale3D };
+				FTransform USDTransform = UsdUtils::ConvertAxes( StageInfo.UpAxis == EUsdUpAxis::ZAxis, UETransform );
+
+				FVector Translation = USDTransform.GetTranslation();
+				FQuat Rotation = USDTransform.GetRotation();
+				FVector Scale = USDTransform.GetScale3D();
+
+				// Compensate metersPerUnit
+				const float UEMetersPerUnit = 0.01f;
+				if ( !FMath::IsNearlyEqual( UEMetersPerUnit, StageInfo.MetersPerUnit ) )
 				{
-					const FFoliageInstancePlacementInfo* Instance = &Info.Instances[ InstanceIndex ];
-
-					// Convert axes
-					FTransform UETransform{ Instance->Rotation, Instance->Location, Instance->DrawScale3D };
-					FTransform USDTransform = UsdUtils::ConvertAxes( StageInfo.UpAxis == EUsdUpAxis::ZAxis, UETransform );
-
-					FVector Translation = USDTransform.GetTranslation();
-					FQuat Rotation = USDTransform.GetRotation();
-					FVector Scale = USDTransform.GetScale3D();
-
-					// Compensate metersPerUnit
-					const float UEMetersPerUnit = 0.01f;
-					if ( !FMath::IsNearlyEqual( UEMetersPerUnit, StageInfo.MetersPerUnit ) )
-					{
-						Translation *= ( UEMetersPerUnit / StageInfo.MetersPerUnit );
-					}
-
-					ProtoIndices.push_back( PrototypeIndex );
-					Positions.push_back( GfVec3f( Translation.X, Translation.Y, Translation.Z ) );
-					Orientations.push_back( GfQuath( Rotation.W, Rotation.X, Rotation.Y, Rotation.Z ) );
-					Scales.push_back( GfVec3f( Scale.X, Scale.Y, Scale.Z ) );
+					Translation *= ( UEMetersPerUnit / StageInfo.MetersPerUnit );
 				}
+
+				ProtoIndices.push_back( PrototypeIndex );
+				Positions.push_back( GfVec3f( Translation.X, Translation.Y, Translation.Z ) );
+				Orientations.push_back( GfQuath( Rotation.W, Rotation.X, Rotation.Y, Rotation.Z ) );
+				Scales.push_back( GfVec3f( Scale.X, Scale.Y, Scale.Z ) );
 			}
 		}
 
@@ -729,8 +820,9 @@ bool UnrealToUsd::ConvertXformable( const UMovieScene3DTransformTrack& MovieScen
 		return false;
 	}
 
-	const UMovieScene* MovieScene = MovieSceneTrack.GetTypedOuter< UMovieScene >();
+	const FUsdStageInfo StageInfo( UsdPrim.GetStage() );
 
+	const UMovieScene* MovieScene = MovieSceneTrack.GetTypedOuter< UMovieScene >();
 	if ( !MovieScene )
 	{
 		return false;
@@ -739,14 +831,12 @@ bool UnrealToUsd::ConvertXformable( const UMovieScene3DTransformTrack& MovieScen
 	FScopedUsdAllocs UsdAllocs;
 
 	pxr::UsdGeomXformable Xformable( UsdPrim );
-
 	if ( !Xformable )
 	{
 		return false;
 	}
 
 	UMovieScene3DTransformSection* TransformSection = Cast< UMovieScene3DTransformSection >( const_cast< UMovieScene3DTransformTrack& >( MovieSceneTrack ).FindSection( 0 ) );
-
 	if ( !TransformSection )
 	{
 		return false;
@@ -822,7 +912,6 @@ bool UnrealToUsd::ConvertXformable( const UMovieScene3DTransformTrack& MovieScen
 
 	bool bIsDataOutOfSync = false;
 	{
-		const FUsdStageInfo StageInfo( UsdPrim.GetStage() );
 		int32 ValueIndex = 0;
 
 		FFrameTime UsdStartTime = FFrameRate::TransformTime( PlaybackRange.GetLowerBoundValue(), Resolution, StageFrameRate );
@@ -873,6 +962,19 @@ bool UnrealToUsd::ConvertXformable( const UMovieScene3DTransformTrack& MovieScen
 
 		pxr::SdfChangeBlock ChangeBlock;
 
+		// Compensate different orientation for light or camera components
+		// TODO: Handle inverse compensation when the bound component is a child of a light/camera component
+		FTransform AdditionalRotation = FTransform::Identity;
+		if ( UsdPrim.IsA< pxr::UsdGeomCamera >() || UsdPrim.IsA< pxr::UsdLuxLight >() )
+		{
+			AdditionalRotation = FTransform( FRotator( 0.0f, 90.0f, 0.0f ) );
+
+			if ( StageInfo.UpAxis == EUsdUpAxis::ZAxis )
+			{
+				AdditionalRotation *= FTransform( FRotator( 90.0f, 0.0f, 0.0f ) );
+			}
+		}
+
 		int32 ValueIndex = 0;
 		for ( const TPair< FFrameNumber, float >& Value : LocationValuesX )
 		{
@@ -883,7 +985,7 @@ bool UnrealToUsd::ConvertXformable( const UMovieScene3DTransformTrack& MovieScen
 			FVector Scale( ScaleValuesX[ ValueIndex ].Value, ScaleValuesY[ ValueIndex ].Value, ScaleValuesZ[ ValueIndex ].Value );
 
 			FTransform Transform( Rotation, Location, Scale );
-			ConvertXformable( Transform, UsdPrim, UsdFrameTime.AsDecimal() );
+			ConvertXformable( AdditionalRotation* Transform, UsdPrim, UsdFrameTime.AsDecimal() );
 
 			++ValueIndex;
 		}

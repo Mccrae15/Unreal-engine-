@@ -9,6 +9,8 @@
 #include "NiagaraEmitter.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraEditorModule.h"
+#include "NiagaraObjectSelection.h"
+#include "NiagaraParameterDefinitions.h"
 #include "ViewModels/NiagaraScratchPadUtilities.h"
 
 #include "ScopedTransaction.h"
@@ -16,8 +18,10 @@
 
 #define LOCTEXT_NAMESPACE "NiagaraScratchPadScriptViewModel"
 
-FNiagaraScratchPadScriptViewModel::FNiagaraScratchPadScriptViewModel()
-	: FNiagaraScriptViewModel(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateRaw(this, &FNiagaraScratchPadScriptViewModel::GetDisplayNameInternal)), ENiagaraParameterEditMode::EditAll)
+
+
+FNiagaraScratchPadScriptViewModel::FNiagaraScratchPadScriptViewModel(bool bInIsForDataProcessingOnly)
+	: FNiagaraScriptViewModel(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateRaw(this, &FNiagaraScratchPadScriptViewModel::GetDisplayNameInternal)), ENiagaraParameterEditMode::EditAll, bInIsForDataProcessingOnly)
 	, bIsPendingRename(false)
 	, bIsPinned(false)
 	, EditorHeight(300)
@@ -32,7 +36,10 @@ FNiagaraScratchPadScriptViewModel::~FNiagaraScratchPadScriptViewModel()
 		if (EditScript.Script->GetLatestSource() != nullptr)
 		{
 			UNiagaraScriptSource* EditScriptSource = CastChecked<UNiagaraScriptSource>(EditScript.Script->GetLatestSource());
-			EditScriptSource->NodeGraph->RemoveOnGraphNeedsRecompileHandler(OnGraphNeedsRecompileHandle);
+			if(EditScriptSource->NodeGraph != nullptr)
+			{
+				EditScriptSource->NodeGraph->RemoveOnGraphNeedsRecompileHandler(OnGraphNeedsRecompileHandle);
+			}
 		}
 		EditScript.Script->OnPropertyChanged().RemoveAll(this);
 		EditScript.Script = nullptr;
@@ -48,11 +55,14 @@ void FNiagaraScratchPadScriptViewModel::Initialize(UNiagaraScript* Script)
 	OnGraphNeedsRecompileHandle = EditScriptSource->NodeGraph->AddOnGraphNeedsRecompileHandler(FOnGraphChanged::FDelegate::CreateSP(this, &FNiagaraScratchPadScriptViewModel::OnScriptGraphChanged));
 	EditScript.Script->OnPropertyChanged().AddSP(this, &FNiagaraScratchPadScriptViewModel::OnScriptPropertyChanged);
 	ParameterPanelCommands = MakeShared<FUICommandList>();
-	if (GbShowNiagaraDeveloperWindows)
-	{
-		ParameterPaneViewModel = MakeShared<FNiagaraScriptToolkitParameterPanelViewModel>(this->AsShared());
-		ParameterPaneViewModel->InitBindings();
-	}
+
+	ParameterPaneViewModel = MakeShared<FNiagaraScriptToolkitParameterPanelViewModel>(this->AsShared());
+	FScriptToolkitUIContext UIContext = FScriptToolkitUIContext(
+		FSimpleDelegate::CreateSP(ParameterPaneViewModel.ToSharedRef(), &INiagaraImmutableParameterPanelViewModel::Refresh),
+		FSimpleDelegate(), //@todo(ng) skip binding refresh parameter definitions panel as scratchpad does not have a parameter definitions panel currently
+		FSimpleDelegate::CreateSP(GetVariableSelection(), &FNiagaraObjectSelection::Refresh)
+	);
+	ParameterPaneViewModel->Init(UIContext);
 }
 
 void FNiagaraScratchPadScriptViewModel::Finalize()
@@ -171,31 +181,13 @@ void FNiagaraScratchPadScriptViewModel::ApplyChanges()
 	TArray<UNiagaraNodeFunctionCall*> FunctionCallNodesToRefresh;
 	FNiagaraEditorUtilities::GetReferencingFunctionCallNodes(OriginalScript, FunctionCallNodesToRefresh);
 
-	TArray<UNiagaraStackFunctionInputCollection*> InputCollectionsToRefresh;
-	if (FunctionCallNodesToRefresh.Num())
-	{
-		for (TObjectIterator<UNiagaraStackFunctionInputCollection> It; It; ++It)
-		{
-			UNiagaraStackFunctionInputCollection* StackFunctionInputCollection = *It;
-			if (StackFunctionInputCollection->IsFinalized() == false && FunctionCallNodesToRefresh.Contains(StackFunctionInputCollection->GetInputFunctionCallNode()))
-			{
-				InputCollectionsToRefresh.Add(StackFunctionInputCollection);
-			}
-		}
-	}
-
 	for (UNiagaraNodeFunctionCall* FunctionCallNodeToRefresh : FunctionCallNodesToRefresh)
 	{
 		FunctionCallNodeToRefresh->RefreshFromExternalChanges();
 		FunctionCallNodeToRefresh->MarkNodeRequiresSynchronization(TEXT("ScratchPadChangesApplied"), true);
 	}
 
-	for (UNiagaraStackFunctionInputCollection* InputCollectionToRefresh : InputCollectionsToRefresh)
-	{
-		InputCollectionToRefresh->RefreshChildren();
-		InputCollectionToRefresh->ApplyModuleChanges();
-	}
-
+	OnHasUnappliedChangesChangedDelegate.Broadcast();
 	OnChangesAppliedDelegate.Broadcast();
 }
 
@@ -212,6 +204,11 @@ FNiagaraScratchPadScriptViewModel::FOnRenamed& FNiagaraScratchPadScriptViewModel
 FNiagaraScratchPadScriptViewModel::FOnPinnedChanged& FNiagaraScratchPadScriptViewModel::OnPinnedChanged()
 {
 	return OnPinnedChangedDelegate;
+}
+
+FNiagaraScratchPadScriptViewModel::FOnHasUnappliedChangesChanged& FNiagaraScratchPadScriptViewModel::OnHasUnappliedChangesChanged()
+{
+	return OnHasUnappliedChangesChangedDelegate;
 }
 
 FNiagaraScratchPadScriptViewModel::FOnChangesApplied& FNiagaraScratchPadScriptViewModel::OnChangesApplied()
@@ -231,12 +228,20 @@ FText FNiagaraScratchPadScriptViewModel::GetDisplayNameInternal() const
 
 void FNiagaraScratchPadScriptViewModel::OnScriptGraphChanged(const FEdGraphEditAction &Action)
 {
-	bHasPendingChanges = true;
+	if(bHasPendingChanges == false)
+	{
+		bHasPendingChanges = true;
+		OnHasUnappliedChangesChangedDelegate.Broadcast();
+	}
 }
 
 void FNiagaraScratchPadScriptViewModel::OnScriptPropertyChanged(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	bHasPendingChanges = true;
+	if (bHasPendingChanges == false)
+	{
+		bHasPendingChanges = true;
+		OnHasUnappliedChangesChangedDelegate.Broadcast();
+	}
 }
 
 FNiagaraScratchPadScriptViewModel::FOnNodeIDFocusRequested& FNiagaraScratchPadScriptViewModel::OnNodeIDFocusRequested()

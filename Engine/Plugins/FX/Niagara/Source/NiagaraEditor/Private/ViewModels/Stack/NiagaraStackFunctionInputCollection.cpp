@@ -6,10 +6,10 @@
 #include "NiagaraClipboard.h"
 #include "NiagaraDataInterface.h"
 #include "NiagaraGraph.h"
+#include "NiagaraNodeAssignment.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "NiagaraNodeOutput.h"
 #include "NiagaraNodeParameterMapSet.h"
-#include "NiagaraStackEditorData.h"
 #include "ScopedTransaction.h"
 #include "EdGraph/EdGraphPin.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
@@ -17,7 +17,6 @@
 #include "ViewModels/Stack/NiagaraStackFunctionInput.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "ViewModels/Stack/NiagaraStackInputCategory.h"
-#include "ViewModels/Stack/NiagaraStackModuleItem.h"
 
 #define LOCTEXT_NAMESPACE "UNiagaraStackFunctionInputCollection"
 
@@ -121,16 +120,6 @@ void UNiagaraStackFunctionInputCollection::GetChildInputs(TArray<UNiagaraStackFu
 	}
 }
 
-void UNiagaraStackFunctionInputCollection::ApplyModuleChanges()
-{
-	TArray<UNiagaraStackFunctionInput*> ChildInputs;
-	GetChildInputs(ChildInputs);
-	for (UNiagaraStackFunctionInput* ChildInput : ChildInputs)
-	{
-		ChildInput->ApplyModuleChanges();
-	}
-}
-
 struct FNiagaraParentData
 {
 	const UEdGraphPin* ParentPin;
@@ -145,19 +134,6 @@ void UNiagaraStackFunctionInputCollection::AddInvalidChildStackIssue(FName PinNa
         FText::Format(LOCTEXT("InvalidHierarchyWarningFormat", "The attribute {0} was used as parent in the metadata although it is itself the child of another attribute.\nPlease check the module metadata to fix this."),
             FText::FromString(PinName.ToString())), GetStackEditorDataKey(), true);
 	OutIssues.Add(InvalidHierarchyWarning);
-}
-
-bool UNiagaraStackFunctionInputCollection::IsInheritedModule() const
-{
-	if (InputFunctionCallNode != ModuleNode)
-	{
-		return false;
-	}
-	if (UNiagaraStackModuleItem* ModuleItem = Cast<UNiagaraStackModuleItem>(GetOuter()))
-	{
-		return ModuleItem->CanMoveAndDelete() == false;
-	}
-	return false;
 }
 
 void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)
@@ -184,10 +160,7 @@ void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<
 	TMap<FName, UEdGraphPin*> StaticSwitchInputs;
 	TArray<const UEdGraphPin*> PinsWithInvalidTypes;
 
-	UNiagaraGraph* InputFunctionGraph = InputFunctionCallNode->FunctionScript != nullptr
-		? CastChecked<UNiagaraScriptSource>(InputFunctionCallNode->FunctionScript->GetSource(InputFunctionCallNode->SelectedScriptVersion))->NodeGraph
-		: nullptr;
-
+	UNiagaraGraph* InputFunctionGraph = InputFunctionCallNode->GetCalledGraph();
 	TArray<FInputData> InputDataCollection;
 	TMap<FName, FNiagaraParentData> ParentMapping;
 	
@@ -442,42 +415,14 @@ UNiagaraStackEntry::FStackIssueFix UNiagaraStackFunctionInputCollection::GetRese
 	}));
 }
 
-UNiagaraStackEntry::FStackIssueFix UNiagaraStackFunctionInputCollection::GetUpgradeVersionFix(FText FixDescription)
+FText GetUserFriendlyFunctionName(UNiagaraNodeFunctionCall* Node)
 {
-	return FStackIssueFix(
-        FixDescription,
-        FStackIssueFixDelegate::CreateLambda([=]()
-    {
-        FScopedTransaction ScopedTransaction(FixDescription);
-        InputFunctionCallNode->ChangeScriptVersion(InputFunctionCallNode->FunctionScript->GetExposedVersion().VersionGuid);
-        if (InputFunctionCallNode->RefreshFromExternalChanges())
-        {
-        	InputFunctionCallNode->GetNiagaraGraph()->NotifyGraphNeedsRecompile();
-        	GetSystemViewModel()->ResetSystem();
-        }
-    }));
-}
-
-FText GetChangelistText(UNiagaraScript* NiagaraScript, const FNiagaraAssetVersion& FromVersion, const FNiagaraAssetVersion& ToVersion)
-{
-	FText Result;
-	for (FNiagaraAssetVersion Version : NiagaraScript->GetAllAvailableVersions())
+	if (Node->IsA<UNiagaraNodeAssignment>())
 	{
-		if (Version <= FromVersion)
-		{
-			continue;
-		}
-		if (ToVersion < Version)
-		{
-			break;
-		}
-		FText ChangeDescription = NiagaraScript->GetScriptData(Version.VersionGuid)->VersionChangeDescription;
-		if (!ChangeDescription.IsEmpty())
-		{
-			Result = FText::Format(FText::FromString("{0}{1}.{2}: {3}\n"), Result, Version.MajorVersion, Version.MinorVersion, ChangeDescription);
-		}
+		// The function name of assignment nodes contains a guid, which is just confusing for the user to see 
+		return LOCTEXT("AssignmentNodeName", "SetVariables");
 	}
-	return Result;
+	return FText::FromString(Node->GetFunctionName());
 }
 
 void UNiagaraStackFunctionInputCollection::RefreshIssues(const TArray<FName>& DuplicateInputNames, const TArray<FName>& ValidAliasedInputNames, const TArray<const UEdGraphPin*>& PinsWithInvalidTypes,
@@ -509,7 +454,7 @@ void UNiagaraStackFunctionInputCollection::RefreshIssues(const TArray<FName>& Du
 					EStackIssueSeverity::Warning,
 					FText::Format(LOCTEXT("InvalidInputOverrideSummaryFormat", "Invalid Input Override: {0}"), FText::FromString(OverridePin->PinName.ToString())),
 					FText::Format(LOCTEXT("InvalidInputOverrideFormat", "The input {0} was previously overriden but is no longer exposed by the function {1}.\nPress the fix button to remove this unused override data,\nor check the function definition to see why this input is no longer exposed."),
-						FText::FromString(OverridePin->PinName.ToString()), FText::FromString(InputFunctionCallNode->GetFunctionName())),
+						FText::FromString(OverridePin->PinName.ToString()), GetUserFriendlyFunctionName(InputFunctionCallNode)),
 					GetStackEditorDataKey(),
 					false,
 					GetNodeRemovalFix(OverridePin, LOCTEXT("RemoveInvalidInputTransaction", "Remove input override")));
@@ -560,7 +505,7 @@ void UNiagaraStackFunctionInputCollection::RefreshIssues(const TArray<FName>& Du
 					EStackIssueSeverity::Error,
 					FText::Format(LOCTEXT("DeprecatedInputSummaryFormat", "Deprecated Input Override: {0}"), FText::FromString(OverridePin->PinName.ToString())),
 					FText::Format(LOCTEXT("DeprecatedInputFormat", "The input {0} is no longer exposed by the function {1}, but there exists a static switch parameter with the same name instead.\nYou can choose to copy the previously entered data over to the new parameter or remove the override to discard it."),
-						FText::FromString(OverridePin->PinName.ToString()), FText::FromString(InputFunctionCallNode->GetFunctionName())),
+						FText::FromString(OverridePin->PinName.ToString()), GetUserFriendlyFunctionName(InputFunctionCallNode)),
 					GetStackEditorDataKey(),
 					false,
 					Fixes);
@@ -579,7 +524,7 @@ void UNiagaraStackFunctionInputCollection::RefreshIssues(const TArray<FName>& Du
 			EStackIssueSeverity::Error,
 			FText::Format(LOCTEXT("DuplicateInputSummaryFormat", "Duplicate Input: {0}"), FText::FromName(DuplicateInputName)),
 			FText::Format(LOCTEXT("DuplicateInputFormat", "There are multiple inputs with the same name {0} exposed by the function {1}.\nThis is not supported and must be fixed in the script that defines this function.\nCheck for inputs with the same name and different types or static switches."),
-				FText::FromName(DuplicateInputName), FText::FromString(InputFunctionCallNode->GetFunctionName())),
+				FText::FromName(DuplicateInputName), GetUserFriendlyFunctionName(InputFunctionCallNode)),
 			GetStackEditorDataKey(),
 			false);
 		NewIssues.Add(DuplicateInputError);
@@ -591,8 +536,8 @@ void UNiagaraStackFunctionInputCollection::RefreshIssues(const TArray<FName>& Du
 		FStackIssue InputWithInvalidTypeError(
 			EStackIssueSeverity::Error,
 			FText::Format(LOCTEXT("InputWithInvalidTypeSummaryFormat", "Input has an invalid type: {0}"), FText::FromName(PinWithInvalidType->PinName)),
-			FText::Format(LOCTEXT("InputWithInvalidTypeFormat", "The input {0} on function {1} has a type which is invalid.\nThe type of this input likely doesn't exist anymore.\nThis input must be fixed in the script before this module can be used."),
-				FText::FromName(PinWithInvalidType->PinName), FText::FromString(InputFunctionCallNode->GetFunctionName())),
+			FText::Format(LOCTEXT("InputWithInvalidTypeFormat", "The input {0} on function {1} has a type which is invalid.\nThe type of this input doesn't exist anymore.\nThe type must be brought back into the project or this input must be removed from the script."),
+				FText::FromName(PinWithInvalidType->PinName), GetUserFriendlyFunctionName(InputFunctionCallNode)),
 			GetStackEditorDataKey(),
 			false);
 		NewIssues.Add(InputWithInvalidTypeError);
@@ -607,60 +552,11 @@ void UNiagaraStackFunctionInputCollection::RefreshIssues(const TArray<FName>& Du
 				EStackIssueSeverity::Warning,
 				FText::Format(LOCTEXT("InvalidInputSummaryFormat", "Invalid Input: {0}"), FText::FromString(InputFunctionCallNodePin->PinName.ToString())),
 				FText::Format(LOCTEXT("InvalidInputFormat", "The input {0} was previously set but is no longer exposed by the function {1}.\nPress the fix button to remove this unused input data,\nor check the function definition to see why this input is no longer exposed."),
-					FText::FromString(InputFunctionCallNodePin->PinName.ToString()), FText::FromString(InputFunctionCallNode->GetFunctionName())),
+					FText::FromString(InputFunctionCallNodePin->PinName.ToString()), GetUserFriendlyFunctionName(InputFunctionCallNode)),
 				GetStackEditorDataKey(),
 				false,
 				GetResetPinFix(InputFunctionCallNodePin, LOCTEXT("RemoveInvalidInputPinFix", "Remove invalid input.")));
 			NewIssues.Add(InvalidInputError);
-		}
-	}
-
-	// Generate an issue if the script version is out of date
-	if (InputFunctionCallNode->FunctionScript && InputFunctionCallNode->FunctionScript->IsVersioningEnabled() && !IsInheritedModule())
-	{
-		FNiagaraAssetVersion ExposedVersion = InputFunctionCallNode->FunctionScript->GetExposedVersion();
-		FNiagaraAssetVersion ReferencedVersion = InputFunctionCallNode->FunctionScript->GetScriptData(InputFunctionCallNode->SelectedScriptVersion)->Version;
-		if (ReferencedVersion.MajorVersion < ExposedVersion.MajorVersion)
-		{
-			TArray<FStackIssueFix> Fixes;
-			Fixes.Add(GetUpgradeVersionFix(LOCTEXT("UpgradeVersionFix", "Upgrade to newest version.")));
-			//TODO MV: add "fix all" and "copy and fix" actions
-						
-			FText ChangelistDescriptions = GetChangelistText(InputFunctionCallNode->FunctionScript, ReferencedVersion, ExposedVersion);
-			FText LongDescription = FText::Format(LOCTEXT("DeprecatedVersionFormat", "This script has a newer version available.\nYou can upgrade now, but major version upgrades can sometimes come with breaking changes! So check that everything is still working as expected afterwards.{0}"),
-				ChangelistDescriptions.IsEmpty() ? FText() : FText::Format(LOCTEXT("DeprecatedVersionFormatChanges", "\n\nVersion change description:\n{0}"), ChangelistDescriptions));
-			FStackIssue UpgradeVersion(
-                EStackIssueSeverity::Warning,
-                FText::Format(LOCTEXT("DeprecatedVersionSummaryFormat", "Deprecated script version: {0}.{1} -> {2}.{3}"),
-                	FText::AsNumber(ReferencedVersion.MajorVersion), FText::AsNumber(ReferencedVersion.MinorVersion), FText::AsNumber(ExposedVersion.MajorVersion), FText::AsNumber(ExposedVersion.MinorVersion)),
-                LongDescription,
-                GetStackEditorDataKey(),
-                true,
-                Fixes);
-			NewIssues.Add(UpgradeVersion);
-		}
-	}
-
-	// Generate a note of the changelist when the script version was manually changed
-	if (InputFunctionCallNode->FunctionScript && InputFunctionCallNode->FunctionScript->IsVersioningEnabled())
-	{
-		FGuid SelectedVersionGuid = InputFunctionCallNode->SelectedScriptVersion;
-		FGuid PreviousVersionGuid = InputFunctionCallNode->PreviousScriptVersion;
-		FVersionedNiagaraScriptData* SelectedVersion = InputFunctionCallNode->FunctionScript->GetScriptData(SelectedVersionGuid);
-		FVersionedNiagaraScriptData* PreviousVersion = InputFunctionCallNode->FunctionScript->GetScriptData(PreviousVersionGuid);
-		if (PreviousVersionGuid.IsValid() && PreviousVersionGuid != SelectedVersionGuid && SelectedVersion && PreviousVersion)
-		{
-			FText ChangelistDescriptions = GetChangelistText(InputFunctionCallNode->FunctionScript, PreviousVersion->Version, SelectedVersion->Version);
-			if (!ChangelistDescriptions.IsEmpty())
-			{
-				FStackIssue UpgradeInfo(
-	                EStackIssueSeverity::Info,
-	                LOCTEXT("VersionUpgradeInfoSummary", "Version upgrade note"),
-	                FText::Format(LOCTEXT("VersionUpgradeFormatChanges", "The version of this script was recently upgraded; here is a list of changes:\n{0}"), ChangelistDescriptions),
-	                GetStackEditorDataKey(),
-	                true);
-				NewIssues.Add(UpgradeInfo);
-			}
 		}
 	}
 }

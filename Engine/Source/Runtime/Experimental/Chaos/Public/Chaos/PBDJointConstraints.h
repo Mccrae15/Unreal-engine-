@@ -43,7 +43,6 @@ namespace Chaos
 		FVec3 GetLinearImpulse() const;
 		FVec3 GetAngularImpulse() const;
 
-		FPBDJointSettings& GetSettings();
 		const FPBDJointSettings& GetSettings() const;
 
 		void SetSettings(const FPBDJointSettings& Settings);
@@ -178,7 +177,6 @@ namespace Chaos
 		 */
 		const FParticlePair& GetConstrainedParticles(int32 ConstraintIndex) const;
 
-		FPBDJointSettings& GetConstraintSettings(int32 ConstraintIndex);
 		const FPBDJointSettings& GetConstraintSettings(int32 ConstraintIndex) const;
 
 		void SetConstraintSettings(int32 ConstraintIndex, const FPBDJointSettings& InConstraintSettings);
@@ -226,6 +224,8 @@ namespace Chaos
 
 	private:
 		friend class FPBDJointConstraintHandle;
+
+		FReal CalculateIterationStiffness(int32 It, int32 NumIts) const;
 
 		void GetConstrainedParticleIndices(const int32 ConstraintIndex, int32& Index0, int32& Index1) const;
 		void CalculateConstraintSpace(int32 ConstraintIndex, FVec3& OutX0, FMatrix33& OutR0, FVec3& OutX1, FMatrix33& OutR1) const;

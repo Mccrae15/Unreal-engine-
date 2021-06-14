@@ -192,12 +192,13 @@ public:
 	uint32 numDispatches;
 	uint32 numClears;
 	uint32 numBarriers;
+	uint32 numPendingBarriers;
 	uint32 numCopies;
 	uint32 otherWorkCounter;
 
 	bool HasDoneWork() const
 	{
-		return (numDraws + numDispatches + numClears + numBarriers + numCopies + otherWorkCounter) > 0;
+		return (numDraws + numDispatches + numClears + numBarriers + numPendingBarriers + numCopies + otherWorkCounter) > 0;
 	}
 
 	/** Constant buffers for Set*ShaderParameter calls. */
@@ -359,6 +360,7 @@ public:
 
 	// This should be called right after the effect generates the resources which will be used in subsequent frame(s).
 	virtual void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHITexture*> InTextures) final AFR_API_OVERRIDE;
+	virtual void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHIVertexBuffer*> InBuffers) final AFR_API_OVERRIDE;
 
 #if D3D12_RHI_RAYTRACING
 	virtual void RHICopyBufferRegion(FRHIVertexBuffer* DestBuffer, uint64 DstOffset, FRHIVertexBuffer* SourceBuffer, uint64 SrcOffset, uint64 NumBytes) final override;
@@ -441,6 +443,10 @@ protected:
 	void WriteGPUEventStackToBreadCrumbData(bool bBeginEvent);
 
 private:
+
+	template <typename TD3D12Resource, typename TCopyFunction>
+	void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<TD3D12Resource*> InResources, const TCopyFunction& InCopyFunction);
+
 	void RHIClearMRT(bool* bClearColorArray, int32 NumClearColors, const FLinearColor* ColorArray, bool bClearDepth, float Depth, bool bClearStencil, uint32 Stencil);
 
 	static void ClearUAV(TRHICommandList_RecursiveHazardous<FD3D12CommandContext>& RHICmdList, FD3D12UnorderedAccessView* UAV, const void* ClearValues, bool bFloat);
@@ -698,6 +704,11 @@ public:
 	FORCEINLINE virtual void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHITexture*> InTextures) final AFR_API_OVERRIDE
 	{
 		ContextRedirect(RHIBroadcastTemporalEffect(InEffectName, InTextures));
+	}
+
+	FORCEINLINE virtual void RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHIVertexBuffer*> InBuffers) final AFR_API_OVERRIDE
+	{
+		ContextRedirect(RHIBroadcastTemporalEffect(InEffectName, InBuffers));
 	}
 
 	virtual void RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, const TCHAR* InName) final override

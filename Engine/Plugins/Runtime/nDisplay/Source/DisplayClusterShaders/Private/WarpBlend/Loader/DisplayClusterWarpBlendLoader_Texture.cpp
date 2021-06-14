@@ -12,8 +12,6 @@
 
 #include "Misc/DisplayClusterHelpers.h"
 
-#include "Windows/WindowsHWrapper.h"
-
 THIRD_PARTY_INCLUDES_START
 #include "mpcdiAlphaMap.h"
 #include "mpcdiBetaMap.h"
@@ -30,7 +28,7 @@ THIRD_PARTY_INCLUDES_END
 
 
 
-IDisplayClusterRenderTexture* ImplCreateTexture(EPixelFormat InPixelFormat, uint32_t InWidth, uint32_t InHeight, void* InTextureData, bool bInHasCPUAccess = false)
+IDisplayClusterRenderTexture* ImplCreateTexture(EPixelFormat InPixelFormat, uint32_t InWidth, uint32_t InHeight, const void* InTextureData, bool bInHasCPUAccess = false)
 {
 	FDisplayClusterRenderTexture* pTexture = new FDisplayClusterRenderTexture();
 	pTexture->CreateTexture(InPixelFormat, InWidth, InHeight, InTextureData, bInHasCPUAccess);
@@ -70,11 +68,12 @@ IDisplayClusterRenderTexture* FDisplayClusterWarpBlendLoader_Texture::CreateBlen
 
 	if (!FPaths::FileExists(PNGFileName))
 	{
-		//@todo Handle error: blend map file not found
+		UE_LOG(LogDisplayClusterWarpBlend, Error, TEXT("Blend map file '%s' not found"), *PNGFileName);
+
 		return nullptr;
 	}
 
-	std::string FileName = TCHAR_TO_ANSI(*PNGFileName);
+	const std::string FileName = TCHAR_TO_ANSI(*PNGFileName);
 
 	mpcdi::DataMap* PngData;
 	mpcdi::MPCDI_Error res = mpcdi::PNGReadWrite::Read(FileName, PngData);
@@ -83,7 +82,7 @@ IDisplayClusterRenderTexture* FDisplayClusterWarpBlendLoader_Texture::CreateBlen
 		return FDisplayClusterWarpBlendLoader_Texture::CreateBlendMap(PngData);
 	}
 
-	//@todo handle error
+	UE_LOG(LogDisplayClusterWarpBlend, Error, TEXT("Can't load blend map from file '%s'"), *PNGFileName);
 	return nullptr;
 }
 
@@ -96,7 +95,7 @@ IDisplayClusterRenderTexture* FDisplayClusterWarpBlendLoader_Texture::CreateDumm
 IDisplayClusterRenderTexture* ImplCreateWarpMap(const FLoadedWarpMapData& Loader)
 {
 	const EPixelFormat InPixelFormat = PF_A32B32G32R32F;
-	return ImplCreateTexture(InPixelFormat, Loader.Width, Loader.Height, Loader.WarpData, true);
+	return ImplCreateTexture(InPixelFormat, Loader.GetWidth(), Loader.GetHeight(), Loader.GetWarpData(), true);
 }
 
 IDisplayClusterRenderTexture* FDisplayClusterWarpBlendLoader_Texture::CreateWarpMap(EDisplayClusterWarpProfileType InProfileType, mpcdi::GeometryWarpFile* SourceWarpMap)
@@ -134,13 +133,16 @@ IDisplayClusterRenderTexture* FDisplayClusterWarpBlendLoader_Texture::CreateWarp
 	}
 
 	bool bResult = false;
-	std::string FileName = TCHAR_TO_ANSI(*PFMFileFullPath);
+	const std::string FileName = TCHAR_TO_ANSI(*PFMFileFullPath);
 	mpcdi::PFM* PFMData;
 	mpcdi::MPCDI_Error res = mpcdi::PfmIO::Read(FileName, PFMData);
 	if (mpcdi::MPCDI_SUCCESS == res && PFMData)
 	{
 		FLoadedWarpMapData WarpMapData;
-		return FDisplayClusterWarpBlendLoader_WarpMap::Load(WarpMapData, ProfileType, PFMData, PFMScale, bIsUnrealGameSpace) ? ImplCreateWarpMap(WarpMapData) : nullptr;
+		if (FDisplayClusterWarpBlendLoader_WarpMap::Load(WarpMapData, ProfileType, PFMData, PFMScale, bIsUnrealGameSpace))
+		{
+			return ImplCreateWarpMap(WarpMapData);
+		}
 	}
 
 	UE_LOG(LogDisplayClusterWarpBlend, Error, TEXT("Can't load PFM from File %s"), *PFMFileFullPath);

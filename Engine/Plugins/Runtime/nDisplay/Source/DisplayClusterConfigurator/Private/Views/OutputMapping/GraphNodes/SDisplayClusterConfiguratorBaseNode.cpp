@@ -8,6 +8,8 @@
 #include "Interfaces/Views/TreeViews/IDisplayClusterConfiguratorViewTree.h"
 #include "Interfaces/Views/TreeViews/IDisplayClusterConfiguratorTreeItem.h"
 #include "Views/OutputMapping/EdNodes/DisplayClusterConfiguratorBaseNode.h"
+#include "Views/OutputMapping/Widgets/SDisplayClusterConfiguratorResizer.h"
+#include "Views/OutputMapping/Widgets/SDisplayClusterConfiguratorLayeringBox.h"
 
 #include "Widgets/Images/SImage.h"
 #include "SGraphPanel.h"
@@ -87,6 +89,8 @@ void SAlignmentRuler::SetThickness(TAttribute<FOptionalSize> InThickness)
 	}
 }
 
+const float SDisplayClusterConfiguratorBaseNode::ResizeHandleSize = 20;
+
 void SDisplayClusterConfiguratorBaseNode::Construct(const FArguments& InArgs, UDisplayClusterConfiguratorBaseNode* InBaseNode, const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit)
 {
 	SGraphNode::Construct();
@@ -95,8 +99,6 @@ void SDisplayClusterConfiguratorBaseNode::Construct(const FArguments& InArgs, UD
 
 	GraphNode = InBaseNode;
 	check(GraphNode);
-
-	ZIndex = 0;
 
 	SetCursor(TAttribute<TOptional<EMouseCursor::Type>>(this, &SDisplayClusterConfiguratorBaseNode::GetCursor));
 }
@@ -130,6 +132,24 @@ void SDisplayClusterConfiguratorBaseNode::UpdateGraphNode()
 	SetVisibility(MakeAttributeSP(this, &SDisplayClusterConfiguratorBaseNode::GetNodeVisibility));
 	SetEnabled(MakeAttributeSP(this, &SDisplayClusterConfiguratorBaseNode::IsNodeEnabled));
 
+	GetOrAddSlot(ENodeZone::BottomRight)
+		.SlotSize(FVector2D(ResizeHandleSize))
+		.SlotOffset(TAttribute<FVector2D>(this, &SDisplayClusterConfiguratorBaseNode::GetReizeHandleOffset))
+		.VAlign(VAlign_Top)
+		.HAlign(HAlign_Left)
+		.AllowScaling(false)
+		[
+			SNew(SDisplayClusterConfiguratorLayeringBox)
+			.LayerOffset(DisplayClusterConfiguratorGraphLayers::OrnamentLayerIndex)
+			.Visibility(this, &SDisplayClusterConfiguratorBaseNode::GetResizeHandleVisibility)
+			[
+				SNew(SDisplayClusterConfiguratorResizer, ToolkitPtr.Pin().ToSharedRef(), SharedThis(this))
+				.MinimumSize(this, &SDisplayClusterConfiguratorBaseNode::GetNodeMinimumSize)
+				.MaximumSize(this, &SDisplayClusterConfiguratorBaseNode::GetNodeMaximumSize)
+				.IsFixedAspectRatio(this, &SDisplayClusterConfiguratorBaseNode::IsAspectRatioFixed)
+			]
+		];
+
 	// The rest of widgets should be created by child classes
 }
 
@@ -138,7 +158,7 @@ FVector2D SDisplayClusterConfiguratorBaseNode::ComputeDesiredSize(float) const
 	return GetSize();
 }
 
-void SDisplayClusterConfiguratorBaseNode::MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter)
+void SDisplayClusterConfiguratorBaseNode::MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty)
 {
 	TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> Toolkit = ToolkitPtr.Pin();
 	check(Toolkit.IsValid());
@@ -151,30 +171,58 @@ void SDisplayClusterConfiguratorBaseNode::MoveTo(const FVector2D& NewPosition, F
 	UDisplayClusterConfiguratorBaseNode* EdNode = GetGraphNodeChecked<UDisplayClusterConfiguratorBaseNode>();
 	UDisplayClusterConfiguratorBaseNode* ParentEdNode = EdNode->GetParent();
 
+	const FGraphPanelSelectionSet& SelectedNodes = GetOwnerPanel()->SelectionManager.GetSelectedNodes();
+
+	TSet<UDisplayClusterConfiguratorBaseNode*> SelectedBaseNodes;
+	for (UObject* SelectedObject : SelectedNodes)
+	{
+		if (UDisplayClusterConfiguratorBaseNode* BaseNode = Cast<UDisplayClusterConfiguratorBaseNode>(SelectedObject))
+		{
+			SelectedBaseNodes.Add(BaseNode);
+		}
+	}
+
 	// If the parent node is also being moved, we don't want to move this node; otherwise, weird translations happen as the parent tries to update its child positions.
-	const bool bIsParentSelected = GetOwnerPanel()->SelectionManager.SelectedNodes.Contains(EdNode->GetParent());
+	const bool bIsParentSelected = SelectedBaseNodes.Contains(EdNode->GetParent());
 	if (bIsParentSelected)
 	{
 		return;
 	}
 
 	const bool bIsNodeFiltered = NodeFilter.Contains(SharedThis(this));
-	if (!bIsNodeFiltered)
+	if (!bIsNodeFiltered && !EdNode->IsUserInteractingWithNode())
 	{
 		BeginUserInteraction();
 	}
 
-	const bool bIsOverlappingAllowed = OutputMapping->GetOutputMappingSettings().bAllowClusterItemOverlap;
-
-	FVector2D BestOffset = Offset;
-	if (!CanNodeExceedParentBounds() && !bIsNodeFiltered)
+	// If the user is not directly interacting with this node (clicking it directly to drag it), don't update the node's position.
+	// In order to correctly move multiple selected nodes at once while preventing overlap or aligning nodes,  the node being directly
+	// moved will handle the move offset and apply it to the entire group of selected nodes instead of allowing each node to determine
+	// its own movement.
+	if (!EdNode->IsUserDirectlyInteractingWithNode())
 	{
-		BestOffset = EdNode->FindBoundedOffsetFromParent(BestOffset);
+		return;
 	}
 
-	if (!CanNodeOverlapSiblings() && !bIsOverlappingAllowed && !bIsNodeFiltered)
+	FVector2D BestOffset = Offset;
+	if (!bIsNodeFiltered)
 	{
-		BestOffset = EdNode->FindNonOverlappingOffsetFromParent(BestOffset);
+		const bool bIsOverlappingAllowed = OutputMapping->GetOutputMappingSettings().bAllowClusterItemOverlap;
+
+		// Check for overlapping across the entire group of nodes that are being moved, and iteratively update the best offset to prevent
+		// any node being moved from overlapping with any of its siblings
+		for (UDisplayClusterConfiguratorBaseNode* BaseNode : SelectedBaseNodes)
+		{
+			if (!BaseNode->CanNodeExceedParentBounds() || !BaseNode->CanNodeHaveNegativePosition())
+			{
+				BestOffset = BaseNode->FindBoundedOffsetFromParent(BestOffset);
+			}
+
+			if (!BaseNode->CanNodeOverlapSiblings() && !bIsOverlappingAllowed)
+			{
+				BestOffset = BaseNode->FindNonOverlappingOffsetFromParent(BestOffset, SelectedBaseNodes);
+			}
+		}
 	}
 
 	FVector2D AlignmentOffset = FVector2D::ZeroVector;
@@ -188,7 +236,7 @@ void SDisplayClusterConfiguratorBaseNode::MoveTo(const FVector2D& NewPosition, F
 		Params.SnapProximity = AlignmentSettings.SnapProximity;
 		Params.SnapAdjacentEdgesPadding = AlignmentSettings.AdjacentEdgesSnapPadding;
 
-		FNodeAlignmentPair Alignments = EdNode->GetTranslationAlignments(BestOffset, Params);
+		FNodeAlignmentPair Alignments = EdNode->GetTranslationAlignments(BestOffset, Params, SelectedBaseNodes);
 		AlignmentOffset = Alignments.GetOffset();
 
 		UpdateAlignmentTarget(XAlignmentTarget, Alignments.XAlignment, Alignments.XAlignment.TargetNode == ParentEdNode);
@@ -200,7 +248,27 @@ void SDisplayClusterConfiguratorBaseNode::MoveTo(const FVector2D& NewPosition, F
 		YAlignmentTarget.TargetNode.Reset();
 	}
 
-	SGraphNode::MoveTo(CurrentPosition + BestOffset + AlignmentOffset, NodeFilter);
+	SGraphNode::MoveTo(CurrentPosition + BestOffset + AlignmentOffset, NodeFilter, bMarkDirty);
+
+	// Nodes that aren't being directly interacted with aren't allowed to update their positions themselves since that might cause
+	// issues with overlapping and alignment, so the node being directly dragged and moved needs to update the positions of all selected
+	// nodes to move them as a cohesive group
+	if (!bIsNodeFiltered)
+	{
+		for (UDisplayClusterConfiguratorBaseNode* BaseNode : SelectedBaseNodes)
+		{
+			if (BaseNode != EdNode)
+			{
+				BaseNode->Modify();
+				BaseNode->NodePosX += BestOffset.X + AlignmentOffset.X;
+				BaseNode->NodePosY += BestOffset.Y + AlignmentOffset.Y;
+
+				BaseNode->UpdateObject();
+				BaseNode->UpdateChildNodes();
+			}
+		}
+	}
+
 
 	if (!bIsNodeFiltered)
 	{
@@ -220,8 +288,16 @@ void SDisplayClusterConfiguratorBaseNode::EndUserInteraction() const
 {
 	SGraphNode::EndUserInteraction();
 
-	UDisplayClusterConfiguratorBaseNode* EdNode = GetGraphNodeChecked<UDisplayClusterConfiguratorBaseNode>();
-	EdNode->ClearUserInteractingWithNode();
+	// EndUserInteraction is only called on the widget the user initially clicked on, but since nodes are marked as being 
+	// interacted with if they are moved, all selected nodes need their interaction flag cleared.
+	const FGraphPanelSelectionSet& SelectedNodes = GetOwnerPanel()->SelectionManager.GetSelectedNodes();
+	for (UObject* SelectedNode : SelectedNodes)
+	{
+		if (UDisplayClusterConfiguratorBaseNode* BaseNode = Cast<UDisplayClusterConfiguratorBaseNode>(SelectedNode))
+		{
+			BaseNode->ClearUserInteractingWithNode();
+		}
+	}
 
 	XAlignmentTarget.TargetNode = nullptr;
 	YAlignmentTarget.TargetNode = nullptr;
@@ -244,15 +320,7 @@ bool SDisplayClusterConfiguratorBaseNode::ShouldAllowCulling() const
 
 int32 SDisplayClusterConfiguratorBaseNode::GetSortDepth() const
 {
-	int32 Depth = GetNodeLayerIndex() + ZIndex;
-
-	// If this node is selected, add 1 to its depth to ensure it is drawn an top of other nodes in its layer.
-	if (GetOwnerPanel()->SelectionManager.SelectedNodes.Contains(GraphNode))
-	{
-		Depth++;
-	}
-
-	return Depth;
+	return GetNodeLogicalLayer();
 }
 
 TArray<FOverlayWidgetInfo> SDisplayClusterConfiguratorBaseNode::GetOverlayWidgets(bool bSelected, const FVector2D& WidgetSize) const
@@ -272,7 +340,34 @@ TArray<FOverlayWidgetInfo> SDisplayClusterConfiguratorBaseNode::GetOverlayWidget
 void SDisplayClusterConfiguratorBaseNode::BeginUserInteraction() const
 {
 	UDisplayClusterConfiguratorBaseNode* EdNode = GetGraphNodeChecked<UDisplayClusterConfiguratorBaseNode>();
-	EdNode->MarkUserInteractingWithNode();
+
+	bool bIsInteractingDirectly = false;
+	const FVector2D CursorPos = GetOwnerPanel()->PanelCoordToGraphCoord(GetOwnerPanel()->GetTickSpaceGeometry().AbsoluteToLocal(FSlateApplication::Get().GetCursorPos()));
+
+	if (EdNode->GetNodeBounds().IsInside(CursorPos))
+	{
+		bIsInteractingDirectly = true;
+
+		// Check that there isn't another node above this node that the user might be clicking on
+		const FGraphPanelSelectionSet& SelectedNodes = GetOwnerPanel()->SelectionManager.GetSelectedNodes();
+		const int32 EdNodeLayer = EdNode->GetNodeLayer(SelectedNodes);
+
+		for (UObject* SelectedNode : SelectedNodes)
+		{
+			if (UDisplayClusterConfiguratorBaseNode* BaseNode = Cast<UDisplayClusterConfiguratorBaseNode>(SelectedNode))
+			{
+				if (BaseNode->GetNodeBounds().IsInside(CursorPos))
+				{
+					if (BaseNode->GetNodeLayer(SelectedNodes) > EdNodeLayer)
+					{
+						bIsInteractingDirectly = false;
+					}
+				}
+			}
+		}
+	}
+
+	EdNode->MarkUserInteractingWithNode(bIsInteractingDirectly);
 }
 
 void SDisplayClusterConfiguratorBaseNode::SetNodeSize(const FVector2D InLocalSize, bool bFixedAspectRatio)
@@ -289,17 +384,17 @@ void SDisplayClusterConfiguratorBaseNode::SetNodeSize(const FVector2D InLocalSiz
 	const FVector2D CurrentSize = EdNode->GetNodeSize();
 
 	FVector2D BestSize = InLocalSize;
-	if (!CanNodeExceedParentBounds())
+	if (!EdNode->CanNodeExceedParentBounds())
 	{
 		BestSize = EdNode->FindBoundedSizeFromParent(BestSize, bFixedAspectRatio);
 	}
 
-	if (!CanNodeEncroachChildBounds())
+	if (!EdNode->CanNodeEncroachChildBounds())
 	{
 		BestSize = EdNode->FindBoundedSizeFromChildren(BestSize, bFixedAspectRatio);
 	}
 
-	if (!CanNodeOverlapSiblings() && !bIsOverlappingAllowed)
+	if (!EdNode->CanNodeOverlapSiblings() && !bIsOverlappingAllowed)
 	{
 		BestSize = EdNode->FindNonOverlappingSizeFromParent(BestSize, bFixedAspectRatio);
 	}
@@ -383,10 +478,38 @@ TOptional<EMouseCursor::Type> SDisplayClusterConfiguratorBaseNode::GetCursor() c
 	return EMouseCursor::Default;
 }
 
+int32 SDisplayClusterConfiguratorBaseNode::GetNodeLogicalLayer() const
+{
+	UDisplayClusterConfiguratorBaseNode* EdNode = GetGraphNodeChecked<UDisplayClusterConfiguratorBaseNode>();
+	return EdNode->GetNodeLayer(GetOwnerPanel()->SelectionManager.SelectedNodes);
+}
+
+int32 SDisplayClusterConfiguratorBaseNode::GetNodeVisualLayer() const
+{
+	UDisplayClusterConfiguratorBaseNode* EdNode = GetGraphNodeChecked<UDisplayClusterConfiguratorBaseNode>();
+	return EdNode->GetNodeLayer(GetOwnerPanel()->SelectionManager.SelectedNodes);
+}
+
+FVector2D SDisplayClusterConfiguratorBaseNode::GetReizeHandleOffset() const
+{
+	const FVector2D NodeSize = ComputeDesiredSize(FSlateApplication::Get().GetApplicationScale());
+	const float GraphZoom = GetOwnerPanel()->GetZoomAmount();
+	return FVector2D(NodeSize.X, NodeSize.Y) * GraphZoom;
+}
+
+EVisibility SDisplayClusterConfiguratorBaseNode::GetResizeHandleVisibility() const
+{
+	if (!CanNodeBeResized())
+	{
+		return EVisibility::Collapsed;
+	}
+
+	return GetSelectionVisibility();
+}
+
 bool SDisplayClusterConfiguratorBaseNode::CanSnapAlign() const
 {
-	bool bAreMultipleNodesSelected = GetOwnerPanel()->SelectionManager.SelectedNodes.Num() > 1;
-	return FSlateApplication::Get().GetModifierKeys().IsShiftDown() && !bAreMultipleNodesSelected;
+	return FSlateApplication::Get().GetModifierKeys().IsShiftDown();
 }
 
 void SDisplayClusterConfiguratorBaseNode::UpdateAlignmentTarget(FAlignmentRulerTarget& OutTarget, const FNodeAlignment& Alignment, bool bIsTargetingParent)

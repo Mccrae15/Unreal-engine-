@@ -102,11 +102,7 @@ void FExportContext::Populate()
 	Scenes.PopulateFromModel(ModelRef);
 	ComponentDefinitions.PopulateFromModel(ModelRef);
 
-	// Add the model metadata into the dictionary of metadata definitions.
-	FDatasmithSketchUpMetadata::AddMetadataDefinition(ModelRef);
-
 	RootNode->ToDatasmith(*this);
-
 }
 
 void FExportContext::Update()
@@ -130,9 +126,16 @@ void FExportContext::Update()
 	RootNode->Update(*this);
 
 	Textures.Update();
+
+	// Wait for mesh export to complete
+	for(TFuture<bool>& Task: MeshExportTasks)
+	{
+		Task.Get();
+	}
+	MeshExportTasks.Reset();
 }
 
-FDefinition* FExportContext::GetEntityDefinition(SUEntityRef Entity)
+FDefinition* FExportContext::GetDefinition(SUEntityRef Entity)
 {
 	// No Entity means Model
 	if (SUIsInvalid(Entity))
@@ -144,6 +147,26 @@ FDefinition* FExportContext::GetEntityDefinition(SUEntityRef Entity)
 		return ComponentDefinitions.GetComponentDefinition(SUComponentDefinitionFromEntity(Entity)).Get();
 	}
 }
+
+FDefinition* FExportContext::GetDefinition(FEntityIDType DefinitionEntityId)
+{
+	FDefinition* DefinitionPtr = nullptr;
+
+	if (DefinitionEntityId.EntityID == 0)
+	{
+		return ModelDefinition.Get();
+	}
+	else
+	{
+		if (TSharedPtr<FComponentDefinition>* Ptr = ComponentDefinitions.FindComponentDefinition(DefinitionEntityId))
+		{
+			return Ptr->Get();
+		}
+	}
+	return nullptr;
+}
+
+
 
 void FComponentDefinitionCollection::Update()
 {
@@ -205,9 +228,6 @@ void FComponentDefinitionCollection::PopulateFromModel(SUModelRef InModelRef)
 		for (SUComponentDefinitionRef SComponentDefinitionRef : SComponentDefinitions)
 		{
 			AddComponentDefinition(SComponentDefinitionRef);
-
-			// Add the normal component definition metadata into the dictionary of metadata definitions.
-			FDatasmithSketchUpMetadata::AddMetadataDefinition(SComponentDefinitionRef);
 		}
 	}
 
@@ -264,11 +284,37 @@ TSharedPtr<FComponentDefinition>* FComponentDefinitionCollection::FindComponentD
 	return ComponentDefinitionMap.Find(ComponentDefinitionID);
 }
 
-void FEntitiesObjectCollection::RegisterEntitiesFaces(DatasmithSketchUp::FEntities& Entities, const TSet<int32>& FaceIds)
+void FEntitiesObjectCollection::RegisterEntities(DatasmithSketchUp::FEntities& Entities)
 {
-	for (int32 FaceId : FaceIds)
+	for (int32 FaceId : Entities.EntitiesGeometry->FaceIds)
 	{
 		FaceIdForEntitiesMap.Add(FaceId, &Entities);
+	}
+
+	for (DatasmithSketchUp::FEntityIDType LayerId : Entities.EntitiesGeometry->Layers)
+	{
+		LayerIdForEntitiesMap.FindOrAdd(LayerId).Add(&Entities);
+	}
+}
+
+void FEntitiesObjectCollection::UnregisterEntities(DatasmithSketchUp::FEntities& Entities)
+{
+	if (!Entities.EntitiesGeometry)
+	{
+		return;
+	}
+
+	for (int32 FaceId : Entities.EntitiesGeometry->FaceIds)
+	{
+		FaceIdForEntitiesMap.Remove(FaceId);
+	}
+
+	for (DatasmithSketchUp::FEntityIDType LayerId : Entities.EntitiesGeometry->Layers)
+	{
+		if(TSet<DatasmithSketchUp::FEntities*>* Ptr = LayerIdForEntitiesMap.Find(LayerId))
+		{
+			Ptr->Remove(&Entities);
+		}
 	}
 }
 
@@ -289,27 +335,40 @@ DatasmithSketchUp::FEntities* FEntitiesObjectCollection::FindFace(int32 FaceId)
 	return nullptr;
 }
 
+void FEntitiesObjectCollection::LayerModified(FEntityIDType LayerId)
+{
+	if (TSet<DatasmithSketchUp::FEntities*>* Ptr = LayerIdForEntitiesMap.Find(LayerId))
+	{
+		for (DatasmithSketchUp::FEntities* Entities : *Ptr)
+		{
+			Entities->Definition.InvalidateDefinitionGeometry();
+		}
+	}
+}
 
-TSharedPtr<FComponentInstance> FComponentInstanceCollection::AddComponentInstance(SUComponentInstanceRef InComponentInstanceRef)
+TSharedPtr<FComponentInstance> FComponentInstanceCollection::AddComponentInstance(FDefinition& ParentDefinition, SUComponentInstanceRef InComponentInstanceRef)
 {
 	FComponentInstanceIDType ComponentInstanceId = DatasmithSketchUpUtils::GetComponentInstanceID(InComponentInstanceRef);
 
+	TSharedPtr<FComponentInstance> ComponentInstance;
 	if (TSharedPtr<FComponentInstance>* Ptr = ComponentInstanceMap.Find(ComponentInstanceId))
 	{
-		return *Ptr;
+		ComponentInstance = *Ptr; 
+	}
+	else
+	{
+		TSharedPtr<FComponentDefinition> Definition = Context.ComponentDefinitions.GetComponentDefinition(InComponentInstanceRef);
+		ComponentInstance = MakeShared<FComponentInstance>(SUComponentInstanceToEntity(InComponentInstanceRef), *Definition);
+		Definition->LinkComponentInstance(ComponentInstance.Get());
+		ComponentInstanceMap.Add(ComponentInstanceId, ComponentInstance);
 	}
 
-	TSharedPtr<FComponentDefinition> Definition = Context.ComponentDefinitions.GetComponentDefinition(InComponentInstanceRef);
+	ComponentInstance->SetParentDefinition(Context, &ParentDefinition);
 
-	TSharedPtr<FComponentInstance> ComponentInstance = MakeShared<FComponentInstance>(SUComponentInstanceToEntity(InComponentInstanceRef), *Definition);
-
-	Definition->LinkComponentInstance(ComponentInstance.Get());
-
-	ComponentInstanceMap.Add(ComponentInstanceId, ComponentInstance);
 	return ComponentInstance;
 }
 
-bool FComponentInstanceCollection::RemoveComponentInstance(FComponentInstanceIDType ComponentInstanceId)
+bool FComponentInstanceCollection::RemoveComponentInstance(FComponentInstanceIDType ParentEntityId, FComponentInstanceIDType ComponentInstanceId)
 {
 	const TSharedPtr<FComponentInstance>* ComponentInstancePtr = ComponentInstanceMap.Find(ComponentInstanceId);
 	if (!ComponentInstancePtr)
@@ -318,12 +377,28 @@ bool FComponentInstanceCollection::RemoveComponentInstance(FComponentInstanceIDT
 	}
 	const TSharedPtr<FComponentInstance>& ComponentInstance = *ComponentInstancePtr;
 
-	ComponentInstance->RemoveComponentInstance(Context);
+	FDefinition* ParentDefinition =  Context.GetDefinition(ParentEntityId);
 
-	ComponentInstanceMap.Remove(ComponentInstanceId);
+	// Remove ComponentInstance for good only if incoming ParentDefinition is current Instance's parent. 
+	//
+	// Details:
+	// ComponentInstance which removal is notified could have been relocated to another Definition 
+	// This happens when Make Group is done - first new Group is added, containing existing ComponentInstance
+	// And only after that event about removal from previous owning Definition is received
+	if (ComponentInstance->IsParentDefinition(ParentDefinition))
+	{
+		RemoveComponentInstance(ComponentInstance);
+	}
 
 	return true;
 }
+
+void FComponentInstanceCollection::RemoveComponentInstance(TSharedPtr<FComponentInstance> ComponentInstance)
+{
+	ComponentInstance->RemoveComponentInstance(Context);
+	ComponentInstanceMap.Remove(ComponentInstance->GetComponentInstanceId());
+}
+
 
 void FComponentInstanceCollection::InvalidateComponentInstanceGeometry(FComponentInstanceIDType ComponentInstanceID)
 {
@@ -331,21 +406,34 @@ void FComponentInstanceCollection::InvalidateComponentInstanceGeometry(FComponen
 	{
 		(*Ptr)->InvalidateEntityGeometry();
 	}
-	else
-	{
-		// todo: implement. This could happen if
-		//  - component instance was previously skipped because it doesn't contain meaningful data(probably it's not needed to process it it's still empty)
-		//  - was removed recently. Not sure if 'changed' can code after 'removed'
-		//  - addition wasn't handled
-		// - anything else?
-	}
 }
 
-bool FComponentInstanceCollection::InvalidateComponentInstanceProperties(FComponentInstanceIDType ComponentInstanceID)
+void FComponentInstanceCollection::InvalidateComponentInstanceMetadata(FComponentInstanceIDType ComponentInstanceID)
 {
 	if (TSharedPtr<FComponentInstance>* Ptr = FindComponentInstance(ComponentInstanceID))
 	{
-		(*Ptr)->InvalidateEntityProperties();
+		(*Ptr)->InvalidateEntityProperties(); // Metadata is updated with properties
+	}
+}
+
+bool FComponentInstanceCollection::InvalidateComponentInstanceProperties(FComponentInstanceIDType ComponentInstanceId)
+{
+	if (TSharedPtr<FComponentInstance>* Ptr = FindComponentInstance(ComponentInstanceId))
+	{
+		TSharedPtr<FComponentInstance> ComponentInstance = *Ptr;
+		
+		// Replacing definition on a component instance fires the same event as changing properties
+		SUComponentInstanceRef ComponentInstanceRef = ComponentInstance->GetComponentInstanceRef();
+		TSharedPtr<FComponentDefinition> Definition = Context.ComponentDefinitions.GetComponentDefinition(ComponentInstanceRef);
+		if (ComponentInstance->GetDefinition() != Definition.Get())
+		{
+			// Recreate and re-add instance
+			FDefinition* ParentDefinition = ComponentInstance->Parent;
+			RemoveComponentInstance(ComponentInstance);
+			ParentDefinition->AddInstance(Context, AddComponentInstance(*ParentDefinition, ComponentInstanceRef));
+		}
+
+		ComponentInstance->InvalidateEntityProperties();
 		return true;
 	}
 	return false;
@@ -366,6 +454,18 @@ void FComponentInstanceCollection::UpdateGeometry()
 	{
 		TSharedPtr<FComponentInstance> ComponentInstance = KeyValue.Value;
 		ComponentInstance->UpdateEntityGeometry(Context);
+	}
+}
+
+void FComponentInstanceCollection::LayerModified(DatasmithSketchUp::FEntityIDType LayerId)
+{
+	for (const auto& KeyValue : ComponentInstanceMap)
+	{
+		TSharedPtr<DatasmithSketchUp::FComponentInstance> ComponentInstance = KeyValue.Value;
+		if (SUIsValid(ComponentInstance->LayerRef) && (LayerId == DatasmithSketchUpUtils::GetEntityID(SULayerToEntity(ComponentInstance->LayerRef))))
+		{
+			ComponentInstance->InvalidateEntityProperties();
+		}
 	}
 }
 

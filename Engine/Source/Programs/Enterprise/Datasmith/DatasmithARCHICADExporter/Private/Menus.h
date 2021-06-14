@@ -2,9 +2,11 @@
 
 #pragma once
 
-#include "AddonTools.h"
+#include "Utils/AddonTools.h"
 
 BEGIN_NAMESPACE_UE_AC
+
+#define UE_AC_NO_MENU 1 // 1 = Dont create menu
 
 class FMenus
 {
@@ -16,23 +18,20 @@ class FMenus
 	static GSErrCode Initialize();
 
 	// Ename or disable menu item
-	static void SetMenuItemStatus(short InMenu, short InItem, bool InEnabled);
+	static void SetMenuItemStatus(short InMenu, short InItem, bool InSet, GSFlags InFlag);
 
 	// Change the text of an item
 	static void SetMenuItemText(short InMenu, short InItem, const GS::UniString& ItemStr);
+
+	// AutoSync status changed
+	static void AutoSyncChanged();
 
   private:
 	// Menu command handler
 	static GSErrCode __ACENV_CALL MenuCommandHandler(const API_MenuParams* MenuParams) noexcept;
 
 	// Process menu command
-	static GSErrCode DoMenuCommand(void* InMenuParams, void*);
-
-	// Intra add-ons command handler
-	static GSErrCode __ACENV_CALL SyncCommandHandler(GSHandle ParHdl, GSPtr ResultData, bool SilentMode) noexcept;
-
-	// Process intra add-ons command
-	static GSErrCode DoSyncCommand(void*, void*);
+	static GSErrCode DoMenuCommand(const API_MenuParams& InMenuParams);
 };
 
 END_NAMESPACE_UE_AC

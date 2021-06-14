@@ -111,11 +111,37 @@ namespace Chaos
 			CreateStructureData(MoveTemp(FaceIndices));
 
 			SetMargin(InMargin);
-		}	
+		}
 
-	private:
+		FConvex& operator=(const FConvex& Other) = delete;
+		
+		FConvex& operator=(FConvex&& Other)
+		{
+			// Base class assignment
+			// @todo(chaos): Base class needs protected assignment
+			Type = Other.Type;
+			CollisionType = Other.CollisionType;
+			Margin = Other.Margin;
+			bIsConvex = Other.bIsConvex;
+			bDoCollide = Other.bDoCollide;
+			bHasBoundingBox = Other.bHasBoundingBox;
+#if TRACK_CHAOS_GEOMETRY
+			bIsTracked = Other.bIsTracked;
+#endif
+			// This class assignment
+			Planes = MoveTemp(Other.Planes);
+			Vertices = MoveTemp(Other.Vertices);
+			LocalBoundingBox = MoveTemp(Other.LocalBoundingBox);
+			StructureData = MoveTemp(Other.StructureData);
+			Volume = MoveTemp(Other.Volume);
+			CenterOfMass = MoveTemp(Other.CenterOfMass);
+
+			return *this;
+		}
+
 		void MovePlanesAndRebuild(FReal InDelta);
 
+	private:
 		void CreateStructureData(TArray<TArray<int32>>&& FaceIndices);
 
 	public:
@@ -329,19 +355,14 @@ namespace Chaos
 		// Get the index of the plane that most opposes the normal
 		int32 GetMostOpposingPlaneScaled(const FVec3& Normal, const FVec3& Scale) const;
 
-		// Get the index of the plane that most opposes the normal, assuming it passes through the specified vertex
-		int32 GetMostOpposingPlaneWithVertex(int32 VertexIndex, const FVec3& Normal) const;
-
 		// Get the nearest point on an edge of the specified face
 		FVec3 GetClosestEdgePosition(int32 PlaneIndex, const FVec3& Position) const;
 
 		bool GetClosestEdgeVertices(int32 PlaneIndex, const FVec3& Position, int32& OutVertexIndex0, int32& OutVertexIndex1) const;
 
-		// The number of planes that use the specified vertex
-		int32 NumVertexPlanes(int32 VertexIndex) const;
-
-		// Get the plane index of one of the planes that uses the specified vertex
-		int32 GetVertexPlane(int32 VertexIndex, int32 VertexPlaneIndex) const;
+		// Get an array of all the plane indices that belong to a vertex (up to MaxVertexPlanes).
+		// Returns the number of planes found.
+		int32 FindVertexPlanes(int32 VertexIndex, int32* OutVertexPlanes, int32 MaxVertexPlanes) const;
 
 		// The number of vertices that make up the corners of the specified face
 		int32 NumPlaneVertices(int32 PlaneIndex) const;
@@ -349,23 +370,29 @@ namespace Chaos
 		// Get the vertex index of one of the vertices making up the corners of the specified face
 		int32 GetPlaneVertex(int32 PlaneIndex, int32 PlaneVertexIndex) const;
 
+		int32 GetEdgeVertex(int32 EdgeIndex, int32 EdgeVertexIndex) const;
+
+		int32 GetEdgePlane(int32 EdgeIndex, int32 EdgePlaneIndex) const;
+
 		int32 NumPlanes() const
 		{
 			return Planes.Num();
 		}
+
+		int32 NumEdges() const;
 
 		int32 NumVertices() const
 		{
 			return (int32)Vertices.Num();
 		}
 
-		// Get the plane at the specified index (e.g., indices from GetVertexPlane)
+		// Get the plane at the specified index (e.g., indices from FindVertexPlanes)
 		const TPlaneConcrete<FReal, 3>& GetPlane(int32 FaceIndex) const
 		{
 			return Planes[FaceIndex];
 		}
 
-		// Get the vertex at the specified index (e.g., indices from GetPlaneVertex)
+		// Get the vertex at the specified index (e.g., indices from GetPlaneVertexs)
 		const FVec3& GetVertex(int32 VertexIndex) const
 		{
 			return Vertices[VertexIndex];
@@ -420,6 +447,8 @@ namespace Chaos
 			return MaxVIdx;
 		}
 
+	public:
+
 		FVec3 GetMarginAdjustedVertex(int32 VertexIndex, FReal InMargin) const
 		{
 			// @chaos(todo): moving the vertices this way based on margin is only valid for small margins. If the margin
@@ -427,15 +456,23 @@ namespace Chaos
 			// This can be fixed with some extra data in the convex structure, but for now we accept the fact that large 
 			// margins on convexes with small faces can cause non-convex core shapes.
 
-			// Get any 3 planes that contribute to this vertex
-			if (NumVertexPlanes(VertexIndex) >= 3)
+			if (InMargin == 0.0f)
 			{
-				const int32 PlaneIndex0 = GetVertexPlane(VertexIndex, 0);
-				const int32 PlaneIndex1 = GetVertexPlane(VertexIndex, 1);
-				const int32 PlaneIndex2 = GetVertexPlane(VertexIndex, 2);
+				return GetVertex(VertexIndex);
+			}
 
-				// Move the planes by the margin and recalculate the interection
-				// @todo(chaos): calculate dV/dm per vertex and store it in StructureData
+			// Get any 3 planes that contribute to this vertex
+			int32 PlaneIndices[3];
+			int32 NumVertexPlanes = FindVertexPlanes(VertexIndex, PlaneIndices, 3);
+
+			// Move the planes by the margin and recalculate the interection
+			// @todo(chaos): calculate dV/dm per vertex and store it in StructureData
+			if (NumVertexPlanes >= 3)
+			{
+				const int32 PlaneIndex0 = PlaneIndices[0];
+				const int32 PlaneIndex1 = PlaneIndices[1];
+				const int32 PlaneIndex2 = PlaneIndices[2];
+
 				FVec3 PlanesPos;
 				FPlane NewPlanes[3] =
 				{
@@ -449,26 +486,57 @@ namespace Chaos
 				}
 			}
 
-			return FVec3(0);
+			// If we get here, the convex hull is malformed. Try to handle it anyway 
+			// @todo(chaos): track down the invalid hull issue
+
+			if (NumVertexPlanes == 2)
+			{
+				const int32 PlaneIndex0 = PlaneIndices[0];
+				const int32 PlaneIndex1 = PlaneIndices[1];
+				const FVec3 NewPlaneX = GetVertex(VertexIndex);
+				const FVec3 NewPlaneN0 = Planes[PlaneIndex0].Normal();
+				const FVec3 NewPlaneN1 = Planes[PlaneIndex1].Normal();
+				const FVec3 NewPlaneN = (NewPlaneN0 + NewPlaneN1).GetSafeNormal();
+				return NewPlaneX - (InMargin * NewPlaneN);
+			}
+
+			if (NumVertexPlanes == 1)
+			{
+				const int32 PlaneIndex0 = PlaneIndices[0];
+				const FVec3 NewPlaneX = GetVertex(VertexIndex);
+				const FVec3 NewPlaneN = Planes[PlaneIndex0].Normal();
+				return NewPlaneX - (InMargin * NewPlaneN);
+			}
+
+			// Ok now we really are done...just return the outer vertex and duck
+			return GetVertex(VertexIndex);
 		}
 
 		FVec3 GetMarginAdjustedVertexScaled(int32 VertexIndex, FReal InMargin, const FVec3& Scale) const
 		{
-			// Get any 3 planes that contribute to this vertex
-			if (NumVertexPlanes(VertexIndex) >= 3)
+			if (InMargin == 0.0f)
 			{
-				const int32 PlaneIndex0 = GetVertexPlane(VertexIndex, 0);
-				const int32 PlaneIndex1 = GetVertexPlane(VertexIndex, 1);
-				const int32 PlaneIndex2 = GetVertexPlane(VertexIndex, 2);
+				return GetVertex(VertexIndex) * Scale;
+			}
 
-				// Move the planes by the margin and recalculate the interection
-				// @todo(chaos): calculate dV/dm per vertex and store it in StructureData (but see todo above)
+			// Get any 3 planes that contribute to this vertex
+			int32 PlaneIndices[3];
+			int32 NumVertexPlanes = FindVertexPlanes(VertexIndex, PlaneIndices, 3);
+
+			// Move the planes by the margin and recalculate the interection
+			// @todo(chaos): calculate dV/dm per vertex and store it in StructureData (but see todo above)
+			if (NumVertexPlanes >= 3)
+			{
+				const int32 PlaneIndex0 = PlaneIndices[0];
+				const int32 PlaneIndex1 = PlaneIndices[1];
+				const int32 PlaneIndex2 = PlaneIndices[2];
+
 				const FVec3 NewPlaneX = Scale * GetVertex(VertexIndex);
 				const FVec3 NewPlaneNs[3] = 
 				{
-					(Scale * Planes[PlaneIndex0].Normal()).GetUnsafeNormal(),
-					(Scale * Planes[PlaneIndex1].Normal()).GetUnsafeNormal(),
-					(Scale * Planes[PlaneIndex2].Normal()).GetUnsafeNormal(),
+					(Planes[PlaneIndex0].Normal() / Scale).GetUnsafeNormal(),
+					(Planes[PlaneIndex1].Normal() / Scale).GetUnsafeNormal(),
+					(Planes[PlaneIndex2].Normal() / Scale).GetUnsafeNormal(),
 				};
 				FReal NewPlaneDs[3] = 
 				{
@@ -490,7 +558,30 @@ namespace Chaos
 				}
 			}
 
-			return FVec3(0);
+			// If we get here, the convex hull is malformed. Try to handle it anyway 
+			// @todo(chaos): track down the invalid hull issue
+
+			if (NumVertexPlanes == 2)
+			{
+				const int32 PlaneIndex0 = PlaneIndices[0];
+				const int32 PlaneIndex1 = PlaneIndices[1];
+				const FVec3 NewPlaneX = Scale * GetVertex(VertexIndex);
+				const FVec3 NewPlaneN0 = (Planes[PlaneIndex0].Normal() / Scale).GetUnsafeNormal();
+				const FVec3 NewPlaneN1 = (Planes[PlaneIndex1].Normal() / Scale).GetUnsafeNormal();
+				const FVec3 NewPlaneN = (NewPlaneN0 + NewPlaneN1).GetSafeNormal();
+				return NewPlaneX - (InMargin * NewPlaneN);
+			}
+
+			if (NumVertexPlanes == 1)
+			{
+				const int32 PlaneIndex0 = PlaneIndices[0];
+				const FVec3 NewPlaneX = Scale * GetVertex(VertexIndex);
+				const FVec3 NewPlaneN = (Planes[PlaneIndex0].Normal() / Scale).GetUnsafeNormal();
+				return NewPlaneX - (InMargin * NewPlaneN);
+			}
+
+			// Ok now we really are done...just return the outer vertex and duck
+			return GetVertex(VertexIndex) * Scale;
 		}
 
 	public:

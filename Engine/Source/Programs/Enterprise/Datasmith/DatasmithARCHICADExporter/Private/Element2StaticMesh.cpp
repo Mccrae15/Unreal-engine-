@@ -3,7 +3,7 @@
 #include "Element2StaticMesh.h"
 #include "Synchronizer.h"
 #include "DatasmithHashTools.h"
-#include "3DElement2String.h"
+#include "Utils/3DElement2String.h"
 
 #include "ConvexPolygon.hpp"
 #include "ModelElement.hpp"
@@ -39,25 +39,20 @@ class FElement2StaticMesh::FVertex
 
 	// Constructor
 	FVertex()
-		: Index(0)
+		: Used(false)
+		, Index(kInvalidVertex)
 	{
 	}
 
-	ModelerAPI::Vertex Vertex; // The vertex
-	union
-	{
-		bool Used; // Used flag
-		int	 Index; // New index
-	};
+	ModelerAPI::Vertex LocalVertex; // The vertex in local coordinates
+	ModelerAPI::Vertex WorldVertex; // The vertex in world coordinates
+	bool			   Used; // Used flag
+	int				   Index; // New index
 };
 
 // Constructor
-FElement2StaticMesh::FElement2StaticMesh(const FSyncContext&			   InSyncContext,
-										 const Geometry::Transformation3D& InWorld2Local)
-	: World2Local(InWorld2Local)
-	, Matrix(InWorld2Local.GetMatrix())
-	, bIsIdentity(InWorld2Local.IsIdentity())
-	, SyncContext(InSyncContext)
+FElement2StaticMesh::FElement2StaticMesh(const FSyncContext& InSyncContext)
+	: SyncContext(InSyncContext)
 	, bSomeHasTextures(false)
 	, BugsCount(0)
 {
@@ -70,7 +65,7 @@ FString FElement2StaticMesh::ComputeMeshElementName(const TCHAR* InMeshFileHash)
 {
 	FDatasmithHash HashName;
 	HashName.Update(InMeshFileHash);
-	for (size_t i = 0; i < GlobalMaterialsUsed.size(); ++i)
+	for (VecMaterialSyncData::SizeType i = 0; i < GlobalMaterialsUsed.Num(); ++i)
 	{
 		HashName.Update(GlobalMaterialsUsed[i]->GetDatasmithId());
 	}
@@ -194,7 +189,20 @@ void FElement2StaticMesh::AddVertex(GS::Int32 InBodyVertex, const Geometry::Vect
 	if (!vertex.Used)
 	{
 		// Not already used, get value from body
-		CurrentBody.GetVertex(InBodyVertex, &vertex.Vertex);
+		CurrentBody.GetVertex(InBodyVertex, &vertex.LocalVertex, ModelerAPI::CoordinateSystem::ElemLocal);
+		if (!bIsIdentity)
+		{
+			Geometry::Point3D WorldPt = Vertex2Point3D(vertex.LocalVertex);
+			Geometry::Point3D LocalPt = World2Local.Apply(WorldPt);
+			vertex.LocalVertex.x = LocalPt.x;
+			vertex.LocalVertex.y = LocalPt.y;
+			vertex.LocalVertex.z = LocalPt.z;
+		}
+		vertex.LocalVertex.x *= SyncContext.ScaleLength;
+		vertex.LocalVertex.y *= SyncContext.ScaleLength;
+		vertex.LocalVertex.z *= SyncContext.ScaleLength;
+
+		CurrentBody.GetVertex(InBodyVertex, &vertex.WorldVertex, ModelerAPI::CoordinateSystem::World);
 		vertex.Used = true;
 	}
 
@@ -208,7 +216,7 @@ void FElement2StaticMesh::AddVertex(GS::Int32 InBodyVertex, const Geometry::Vect
 		ModelerAPI::TextureCoordinate AcUV;
 		try
 		{
-			CurrentPolygon.GetTextureCoordinate(&vertex.Vertex, &AcUV);
+			CurrentPolygon.GetTextureCoordinate(&vertex.WorldVertex, &AcUV);
 		}
 		catch (...)
 		{
@@ -223,26 +231,29 @@ void FElement2StaticMesh::AddVertex(GS::Int32 InBodyVertex, const Geometry::Vect
 		}
 
 		// Rotate texture and size the texture (ideally build a material that implement this functionality)
-		ModelerAPI::TextureCoordinate UV;
-		UV.u = (MatData.CosAngle * AcUV.u - MatData.SinAngle * AcUV.v) * MatData.InvXSize;
-		UV.v = (-MatData.SinAngle * AcUV.u - MatData.CosAngle * AcUV.v) * MatData.InvYSize;
-
+		FTextureCoordinate UV;
+		UV.u = AcUV.u; //(MatData.CosAngle * AcUV.u - MatData.SinAngle * AcUV.v) * MatData.InvXSize;
+		UV.v = -AcUV.v; //(-MatData.SinAngle * AcUV.u - MatData.CosAngle * AcUV.v) * MatData.InvYSize;
+#if PIVOT_0_5_0_5
+		UV.u += 0.5;
+		UV.v += 0.5;
+#endif
 		// Convert Vertex coordinate to texture coordinate.
-		MapUVs::iterator ItUV = UVs.find(UV);
-		if (ItUV == UVs.end())
+		int* UVFound = UVs.Find(UV);
+		if (UVFound == nullptr)
 		{
-			ObjectUV = (int)UVs.size();
-			UVs[UV] = ObjectUV;
+			ObjectUV = (int)UVs.Num();
+			UVs.Add(UV, ObjectUV);
 			bSomeHasTextures = true;
 		}
 		else
 		{
-			ObjectUV = ItUV->second;
+			ObjectUV = *UVFound;
 		}
 	}
 
 	Geometry::Vector3D VertexWorldNormal = bIsIdentity ? VertexNormal : Matrix * VertexNormal;
-	FVector CurrentNormal(-float(VertexWorldNormal.x), float(VertexWorldNormal.y), float(VertexWorldNormal.z));
+	FVector CurrentNormal(float(VertexWorldNormal.x), -float(VertexWorldNormal.y), float(VertexWorldNormal.z));
 
 	// Create triangles
 	if (VertexCount == 0)
@@ -282,7 +293,7 @@ void FElement2StaticMesh::AddVertex(GS::Int32 InBodyVertex, const Geometry::Vect
 				}
 			}
 #endif
-			Triangles.push_back(CurrentTriangle);
+			Triangles.Add(CurrentTriangle);
 		}
 		CurrentTriangle.V1 = ObjectVertex;
 		CurrentTriangle.UV1 = ObjectUV;
@@ -303,15 +314,15 @@ void FElement2StaticMesh::InitPolygonMaterial()
 		SyncContext, MaterialIdx, TextureIdx, bIsSurfaceBody ? kDoubleSide : kSingleSide);
 
 	// Performance heuristic, we presume reuse of previous one
-	if (LocalMaterialIndex >= GlobalMaterialsUsed.size() || GlobalMaterialsUsed[LocalMaterialIndex] != CurrentMaterial)
+	if (LocalMaterialIndex >= GlobalMaterialsUsed.Num() || GlobalMaterialsUsed[LocalMaterialIndex] != CurrentMaterial)
 	{
-		for (LocalMaterialIndex = GlobalMaterialsUsed.size();;)
+		for (LocalMaterialIndex = GlobalMaterialsUsed.Num();;)
 		{
 			if (LocalMaterialIndex == 0)
 			{
 				// Not found, add it to the vector and quit the loop
-				LocalMaterialIndex = GlobalMaterialsUsed.size();
-				GlobalMaterialsUsed.push_back(CurrentMaterial);
+				LocalMaterialIndex = GlobalMaterialsUsed.Num();
+				GlobalMaterialsUsed.Add(CurrentMaterial);
 				break;
 			}
 			if (GlobalMaterialsUsed[--LocalMaterialIndex] == CurrentMaterial)
@@ -322,12 +333,13 @@ void FElement2StaticMesh::InitPolygonMaterial()
 		}
 	}
 
-	UE_AC_Assert(LocalMaterialIndex < GlobalMaterialsUsed.size() ||
+	UE_AC_Assert(LocalMaterialIndex < GlobalMaterialsUsed.Num() ||
 				 GlobalMaterialsUsed[LocalMaterialIndex] == CurrentMaterial);
 	CurrentTriangle.LocalMatID = (int)LocalMaterialIndex;
 }
 
-void FElement2StaticMesh::AddElementGeometry(const ModelerAPI::Element& InModelElement)
+void FElement2StaticMesh::AddElementGeometry(const ModelerAPI::Element&		   InModelElement,
+											 const Geometry::Transformation3D& InWorld2Local)
 {
 #if 0
 	UE_AC_TraceF("Element\n%s\n", F3DElement2String::Element2String(InModelElement).c_str());
@@ -339,18 +351,21 @@ void FElement2StaticMesh::AddElementGeometry(const ModelerAPI::Element& InModelE
 		UE_AC_DebugF("FElement2StaticMesh::AddElementGeometry - Break element found\n");
 	}
 #endif
+	World2Local = InWorld2Local;
+	Matrix = InWorld2Local.GetMatrix();
+	bIsIdentity = InWorld2Local.IsIdentity();
 
 	// Collect geometry from element's bodies
-	GS::Int32 NbBodies = InModelElement.GetMeshBodyCount();
+	GS::Int32 NbBodies = InModelElement.GetTessellatedBodyCount();
 	UE_AC_STAT(SyncContext.Stats.BodiesStats.Inc(NbBodies));
 
 	for (GS::Int32 IndexBody = 1; IndexBody <= NbBodies; IndexBody++)
 	{
-		InModelElement.GetMeshBody(IndexBody, &CurrentBody);
+		InModelElement.GetTessellatedBody(IndexBody, &CurrentBody);
 		bIsSurfaceBody = CurrentBody.IsSurfaceBody();
 		GS::Int32 NbVertices = CurrentBody.GetVertexCount();
-		StartVertex = (int)Vertices.size();
-		Vertices.resize(StartVertex + NbVertices); // Set space for bodies vertex
+		StartVertex = (int)Vertices.Num();
+		Vertices.AddZeroed(NbVertices); // Set space for bodies vertex
 
 		// Collect triangles from body's polygon
 		GS::Int32 NbPolygons = CurrentBody.GetPolygonCount();
@@ -379,7 +394,8 @@ void FElement2StaticMesh::AddElementGeometry(const ModelerAPI::Element& InModelE
 						for (GS::Int32 j = 1; j <= NbVerts; j++)
 						{
 							AddVertex(ConvexPolygon.GetVertexIndex(j),
-									  Vertor2Vector3D(ConvexPolygon.GetNormalVectorByVertex(j)));
+									  Vertor2Vector3D(ConvexPolygon.GetNormalVectorByVertex(
+										  j, ModelerAPI::CoordinateSystem::ElemLocal)));
 						}
 					}
 				}
@@ -390,7 +406,8 @@ void FElement2StaticMesh::AddElementGeometry(const ModelerAPI::Element& InModelE
 					for (GS::Int32 IndexPedg = 1; IndexPedg <= NbEdges; IndexPedg++)
 					{
 						AddVertex(CurrentPolygon.GetVertexIndex(IndexPedg),
-								  Vertor2Vector3D(CurrentPolygon.GetNormalVectorByVertex(IndexPedg)));
+								  Vertor2Vector3D(CurrentPolygon.GetNormalVectorByVertex(
+									  IndexPedg, ModelerAPI::CoordinateSystem::ElemLocal)));
 					}
 				}
 			}
@@ -403,13 +420,20 @@ void FElement2StaticMesh::AddElementGeometry(const ModelerAPI::Element& InModelE
 	}
 }
 
+// Validate Vertice
+inline void ValidateVertice(int32 InIndex, const FElement2StaticMesh::VecVertices& InVertices, int32 InVertexUsedCount)
+{
+	UE_AC_Assert(InIndex >= 0 && InIndex < InVertices.Num() && InVertices[InIndex].Index >= 0 &&
+				 InVertices[InIndex].Index < InVertexUsedCount);
+}
+
 // Fill 3d maesh data from collected goemetry
 void FElement2StaticMesh::FillMesh(FDatasmithMesh* OutMesh)
 {
 	// Count used vertices and set new index value
-	int32  VertexUsedCount = 0;
-	size_t NbVertices = Vertices.size();
-	size_t IndexVertex;
+	int32				  VertexUsedCount = 0;
+	VecVertices::SizeType NbVertices = Vertices.Num();
+	VecVertices::SizeType IndexVertex;
 	for (IndexVertex = 0; IndexVertex < NbVertices; IndexVertex++)
 	{
 		FVertex& vertex = Vertices[IndexVertex];
@@ -431,16 +455,8 @@ void FElement2StaticMesh::FillMesh(FDatasmithMesh* OutMesh)
 		FVertex& vertex = Vertices[IndexVertex];
 		if (vertex.Index != FVertex::kInvalidVertex)
 		{
-			Geometry::Point3D WorldPt = Vertex2Point3D(vertex.Vertex) - SyncContext.ModelOrigin;
-
-			if (!bIsIdentity)
-			{
-				WorldPt = World2Local.Apply(WorldPt);
-			}
-
-			WorldPt *= SyncContext.ScaleLength;
-
-			OutMesh->SetVertex(vertex.Index, -(float)WorldPt.x, (float)WorldPt.y, (float)WorldPt.z);
+			OutMesh->SetVertex(vertex.Index, (float)vertex.LocalVertex.x, -(float)vertex.LocalVertex.y,
+							   (float)vertex.LocalVertex.z);
 		}
 	}
 
@@ -448,17 +464,17 @@ void FElement2StaticMesh::FillMesh(FDatasmithMesh* OutMesh)
 	int32 UVChannel = OutMesh->GetUVChannelsCount();
 	UE_AC_Assert(UVChannel == 0); // Must be 0
 	OutMesh->AddUVChannel();
-	OutMesh->SetUVCount(UVChannel, int32(UVs.size()));
-	UE_AC_STAT(SyncContext.Stats.TotalUVPts += int32(UVs.size()));
-	for (MapUVs::iterator ItUV = UVs.begin(); ItUV != UVs.end(); ItUV++)
+	OutMesh->SetUVCount(UVChannel, int32(UVs.Num()));
+	UE_AC_STAT(SyncContext.Stats.TotalUVPts += int32(UVs.Num()));
+	for (const TPair< FTextureCoordinate, int >& ItUV : UVs)
 	{
-		OutMesh->SetUV(UVChannel, ItUV->second, ItUV->first.u, ItUV->first.v);
+		OutMesh->SetUV(UVChannel, ItUV.Value, ItUV.Key.u, ItUV.Key.v);
 	}
 
 	// Count valid triangles
-	int32  TrianglesValidCount = 0;
-	size_t NbTriangles = Triangles.size();
-	size_t IndexTriangle;
+	int32				   TrianglesValidCount = 0;
+	VecTriangles::SizeType NbTriangles = Triangles.Num();
+	VecTriangles::SizeType IndexTriangle;
 	for (IndexTriangle = 0; IndexTriangle < NbTriangles; IndexTriangle++)
 	{
 		if (Triangles[IndexTriangle].IsValid())
@@ -471,11 +487,16 @@ void FElement2StaticMesh::FillMesh(FDatasmithMesh* OutMesh)
 	UE_AC_STAT(SyncContext.Stats.TotalTriangles += TrianglesValidCount);
 	OutMesh->SetFacesCount(TrianglesValidCount);
 	int32 IndexFace = 0;
-	for (size_t IndexTriangle = 0; IndexTriangle < NbTriangles; IndexTriangle++)
+	for (IndexTriangle = 0; IndexTriangle < NbTriangles; IndexTriangle++)
 	{
 		const FTriangle& triangle = Triangles[IndexTriangle];
 		if (triangle.IsValid())
 		{
+#if 0
+			ValidateVertice(triangle.V0, Vertices, VertexUsedCount);
+			ValidateVertice(triangle.V1, Vertices, VertexUsedCount);
+			ValidateVertice(triangle.V2, Vertices, VertexUsedCount);
+#endif
 			OutMesh->SetFace(IndexFace, Vertices[triangle.V0].Index, Vertices[triangle.V1].Index,
 							 Vertices[triangle.V2].Index, triangle.LocalMatID);
 
@@ -506,6 +527,8 @@ TSharedPtr< IDatasmithMeshElement > FElement2StaticMesh::CreateMesh()
 	FMD5Hash MeshHash = MeshHasher.GetHashValue();
 	Mesh.SetName(*LexToString(MeshHash));
 
+	const FMeshDimensions* Dimensions = SyncContext.GetSyncDatabase().GetMeshIndexor().FindMesh(Mesh.GetName());
+
 	FString MeshElementName = ComputeMeshElementName(Mesh.GetName());
 
 #if DUMP_GEOMETRY
@@ -519,15 +542,19 @@ TSharedPtr< IDatasmithMeshElement > FElement2StaticMesh::CreateMesh()
 
 	// If mesh already exist ?
 	FString FullPath(FPaths::Combine(OutputPath, FPaths::SetExtension(Mesh.GetName(), TEXT("udsmesh"))));
-	if (!FPaths::FileExists(FullPath))
+	if (Dimensions == nullptr || !FPaths::FileExists(FullPath))
 	{
 		// Create a new mesh file
 		UE_AC_STAT(SyncContext.Stats.TotalMeshesCreated++);
 		FDatasmithMeshExporter MeshExporter;
 		MeshElement =
 			MeshExporter.ExportToUObject(*OutputPath, Mesh.GetName(), Mesh, nullptr, EDSExportLightmapUV::Never);
-		MeshElement->SetName(*MeshElementName);
-		MeshElement->SetFileHash(MeshHash);
+		if (MeshElement.IsValid())
+		{
+			MeshElement->SetName(*MeshElementName);
+			MeshElement->SetFileHash(MeshHash);
+			SyncContext.GetSyncDatabase().GetMeshIndexor().AddMesh(*MeshElement);
+		}
 	}
 	else
 	{
@@ -536,12 +563,12 @@ TSharedPtr< IDatasmithMeshElement > FElement2StaticMesh::CreateMesh()
 		MeshElement = FDatasmithSceneFactory::CreateMesh(*MeshElementName);
 		MeshElement->SetFile(*FullPath);
 		MeshElement->SetFileHash(MeshHash);
-		// Currently, no need to set Dimensions, Area, Width, we dont use them
+		MeshElement->SetDimensions(Dimensions->Area, Dimensions->Width, Dimensions->Height, Dimensions->Depth);
 	}
 
 	if (MeshElement.IsValid())
 	{
-		for (size_t i = 0; i < GlobalMaterialsUsed.size(); ++i)
+		for (VecMaterialSyncData::SizeType i = 0; i < GlobalMaterialsUsed.Num(); ++i)
 		{
 			MeshElement->SetMaterial(*GlobalMaterialsUsed[i]->GetDatasmithId(), (int32)i);
 		}

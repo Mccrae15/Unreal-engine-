@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include "NiagaraMessages.h"
 #include "NiagaraTypes.h"
+#include "Engine/UserDefinedEnum.h"
 #include "UObject/GCObject.h"
 #include "UObject/SoftObjectPtr.h"
 #include "NiagaraClipboard.generated.h"
@@ -39,7 +41,7 @@ public:
 
 	static const UNiagaraClipboardFunctionInput* CreateExpressionValue(UObject* InOuter, FName InInputName, FNiagaraTypeDefinition InInputType, TOptional<bool> bInEditConditionValue, const FString& InExpressionValue);
 
-	static const UNiagaraClipboardFunctionInput* CreateDynamicValue(UObject* InOuter, FName InInputName, FNiagaraTypeDefinition InInputType, TOptional<bool> bInEditConditionValue, FString InDynamicValueName, UNiagaraScript* InDynamicValue);
+	static const UNiagaraClipboardFunctionInput* CreateDynamicValue(UObject* InOuter, FName InInputName, FNiagaraTypeDefinition InInputType, TOptional<bool> bInEditConditionValue, FString InDynamicValueName, UNiagaraScript* InDynamicValue, const FGuid& InScriptVersion);
 
 	UPROPERTY()
 	FName InputName;
@@ -92,7 +94,7 @@ class NIAGARAEDITOR_API UNiagaraClipboardFunction : public UObject
 public:
 	DECLARE_DYNAMIC_DELEGATE_OneParam(FOnPastedFunctionCallNode, UNiagaraNodeFunctionCall*, PastedFunctionCall);
 
-	static UNiagaraClipboardFunction* CreateScriptFunction(UObject* InOuter, FString InFunctionName, UNiagaraScript* InScript);
+	static UNiagaraClipboardFunction* CreateScriptFunction(UObject* InOuter, FString InFunctionName, UNiagaraScript* InScript, const FGuid& InScriptVersion = FGuid(), const TArray<FNiagaraStackMessage> InStackMessages = TArray<FNiagaraStackMessage>());
 
 	static UNiagaraClipboardFunction* CreateAssignmentFunction(UObject* InOuter, FString InFunctionName, const TArray<FNiagaraVariable>& InAssignmentTargets, const TArray<FString>& InAssignmentDefaults);
 
@@ -119,6 +121,12 @@ public:
 
 	UPROPERTY()
 	FOnPastedFunctionCallNode OnPastedFunctionCallNodeDelegate;
+
+	UPROPERTY()
+	FGuid ScriptVersion;
+
+	UPROPERTY()
+	TArray<FNiagaraStackMessage> Messages;
 };
 
 UCLASS()

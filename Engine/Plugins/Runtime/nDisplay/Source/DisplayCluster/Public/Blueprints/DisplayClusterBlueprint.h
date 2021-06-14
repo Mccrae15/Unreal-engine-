@@ -6,8 +6,7 @@
 #include "DisplayClusterBlueprint.generated.h"
 
 
-
-UCLASS(BlueprintType)
+UCLASS(BlueprintType, DisplayName = "nDisplay Blueprint")
 class DISPLAYCLUSTER_API UDisplayClusterBlueprint : public UBlueprint
 {
 	GENERATED_BODY()
@@ -21,24 +20,41 @@ public:
 	virtual UClass* GetBlueprintClass() const override;
 	virtual void GetReparentingRules(TSet<const UClass*>& AllowedChildrenOfClasses, TSet<const UClass*>& DisallowedChildrenOfClasses) const override;
 	// ~UBlueprint
-
-#endif
+#endif // WITH_EDITOR
 	
+	//~ Begin UObject Interface
+	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	//~ End UObject Interface
+
 	class UDisplayClusterBlueprintGeneratedClass* GetGeneratedClass() const;
 
 	UDisplayClusterConfigurationData* GetOrLoadConfig();
 	UDisplayClusterConfigurationData* GetConfig() const { return ConfigData; }
-	
-	void SetConfigData(UDisplayClusterConfigurationData* InConfigData);
 
-	const FString& GetConfigPath() const { return PathToConfig; }
+	/**
+	 * Set the config data on the CDO and update the config file path.
+	 * When bForceRecreate is false this only updates the config path after initial creation.
+	 * 
+	 * @param InConfigData New config data to set. This will be a template for the CDO to use if being created initially or force recreated.
+	 * @param bForceRecreate Force recreate the config data on the CDO. This will break instance sync and only recommended for importing.
+	 */
+	void SetConfigData(UDisplayClusterConfigurationData* InConfigData, bool bForceRecreate = false);
+
+	const FString& GetConfigPath() const;
 	void SetConfigPath(const FString& InPath);
 	
+public:
+	// Holds the last saved config export. In the AssetRegistry to allow parsing without loading.
+	UPROPERTY(AssetRegistrySearchable)
+	FString ConfigExport;
+
+private:
+
+	//** Updates the ConfigExport property. Called when saving the asset.
+	void UpdateConfigExportProperty();
+
 protected:
 	UPROPERTY()
-	FString PathToConfig;
-
-	UPROPERTY(Export)
 	UDisplayClusterConfigurationData* ConfigData;
 
 private:

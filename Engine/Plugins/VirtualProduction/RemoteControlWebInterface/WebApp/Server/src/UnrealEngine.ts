@@ -1,8 +1,10 @@
-import { IPayload, IPayloads, IPreset, IView, PropertyType, PropertyValue, IAsset, AssetAction } from '../../Client/src/shared';
+import { IPayload, IPayloads, IPreset, IPanel, IView, ICustomStackWidget, ICustomStackTabs, PropertyValue, 
+        IAsset, WidgetTypes, PropertyType } from '../../Client/src/shared';
 import _ from 'lodash';
 import WebSocket from 'ws';
 import { Notify, Program } from './';
 import request from 'superagent';
+import crypto from 'crypto';
 
 
 namespace UnrealApi {
@@ -13,6 +15,7 @@ namespace UnrealApi {
     FieldsRemoved     = 'PresetFieldsRemoved',
     MetadataModified  = 'PresetMetadataModified',
     ActorModified     = 'PresetActorModified',
+    EntitiesModified  = 'PresetEntitiesModified',
   }
 
   export type Presets = { 
@@ -58,6 +61,10 @@ namespace UnrealApi {
 
   export type Assets = {
     Assets: IAsset[];
+  };
+
+  export type RenameLabel = {
+    AssignedLabel: string;
   };
 }
 
@@ -112,8 +119,7 @@ export namespace UnrealEngine {
 
   async function refresh() {
     try {
-      await pullPresets();
-      await pullValues();
+      await pullPresets(true);
     } catch (error) {
     }
   }
@@ -134,56 +140,28 @@ export namespace UnrealEngine {
       }
 
       switch (message.Type) {
-        case UnrealApi.PresetEvent.FieldsRenamed: {
-          const view = views[message.PresetName];
-          if (!view)
-            return;
-
-          const panels = _.compact(_.flatMap(view.tabs, tab => tab.panels));
-          if (panels?.length) {
-            const allWidgets = _.flatMap(panels, panel => panel.widgets);
-            for (const Rename of message.RenamedFields) {
-              const widgets = _.filter(allWidgets, w => w.property === Rename.OldFieldLabel);
-              for (const widget of widgets)
-                widget.property = Rename.NewFieldLabel;
-            }
-            
-            Notify.onViewChange(message.PresetName, view);
-          }
-
-          refresh();
-          break;
-        }
-
         case UnrealApi.PresetEvent.FieldsChanged: {
           const preset = _.find(presets, p => p.Name === message.PresetName);
           if (!preset)
             break;
 
           for (const field of message.ChangedFields) {
-            setPayloadValueInternal(payloads, [message.PresetName, field.PropertyLabel], field.PropertyValue);
-              Notify.emitValueChange(message.PresetName, field.PropertyLabel, field.PropertyValue);
+            const property = _.find(preset.ExposedProperties, p => p.DisplayName === field.PropertyLabel); 
+            if (!property)
+              continue;
+
+            setPayloadValueInternal(payloads, [message.PresetName, property.ID], field.PropertyValue);
+            Notify.emitValueChange(message.PresetName, property.ID, field.PropertyValue);
           }
           break;
         }
 
-        case UnrealApi.PresetEvent.ActorModified: {
-          const preset = _.find(presets, p => p.Name === message.PresetName);
-          if (!preset)
-            break;
-
-          for (const actor of message.ModifiedActors) {
-            for (const property of actor.ModifiedProperties)
-              setPayloadValueInternal(payloads, [message.PresetName, actor.DisplayName, property.PropertyName], property.PropertyValue);
-
-            Notify.emitValueChange(message.PresetName, actor.DisplayName, payloads[message.PresetName]?.[actor.DisplayName]);
-          }
-          break;
-        }
- 
         case UnrealApi.PresetEvent.FieldsAdded:
         case UnrealApi.PresetEvent.FieldsRemoved:
           refresh();
+          break;
+
+        case UnrealApi.PresetEvent.EntitiesModified:
           break;
 
         case UnrealApi.PresetEvent.MetadataModified:
@@ -263,42 +241,78 @@ export namespace UnrealEngine {
     return presets;
   }
 
-  async function pullPresets(): Promise<void> {
+  async function pullPresets(pullValues?: boolean): Promise<void> {
     try {
-      const all = [];
+      const allPresets = [];
+      const allPayloads: IPayloads = {};
+  
       const { Presets } = await get<UnrealApi.Presets>('/remote/presets');
       
       for (const p of Presets ?? []) {
-        if (!_.find(presets, preset => preset.Name === p.Name)) {
-          registerToPreset(p.Name);
-          
-          const res = await get<UnrealApi.View>(`/remote/preset/${p.Name}/metadata/view`);
-          refreshView(p.Name, res?.Value);
-        }
-
-        const { Preset } = await get<UnrealApi.Preset>(`/remote/preset/${p.Name}`);
+        const Preset = await pullPreset(p.Name);
         if (!Preset)
           continue;
 
-        Preset.ExposedProperties = [];
-        Preset.ExposedFunctions = [];
-        Preset.ExposedActors = [];
-        for (const Group of Preset.Groups) {
-          Preset.ExposedProperties.push(...Group.ExposedProperties);
-          Preset.ExposedFunctions.push(...Group.ExposedFunctions);
-          Preset.ExposedActors.push(...Group.ExposedActors);
-        }
-        
-        all.push(Preset);
+        allPresets.push(Preset);
+        if (pullValues)
+          allPayloads[Preset.Name] = await pullPresetValues(Preset);
       }
 
-      const compact =  _.compact(all);
+      const compact =  _.compact(allPresets);
       if (!equal(presets, compact)) {
         presets = compact;
         Notify.emit('presets', presets);
       }
+
+      if (pullValues && !equal(payloads, allPayloads)) {
+        payloads = allPayloads;
+        Notify.emit('payloads', payloads );
+      }
+
     } catch (error) {
       console.log('Failed to pull presets data');
+    }
+  }
+
+  async function pullPreset(name: string): Promise<IPreset> {
+    try {
+      if (!_.find(presets, preset => preset.Name === name)) {
+        registerToPreset(name);
+
+        const res = await get<UnrealApi.View>(`/remote/preset/${name}/metadata/view`);
+        refreshView(name, res?.Value);
+      }
+
+      const { Preset } = await get<UnrealApi.Preset>(`/remote/preset/${name}`);
+      if (!Preset)
+        return null;
+
+      Preset.ExposedProperties = [];
+      Preset.ExposedFunctions = [];
+      Preset.Exposed = {};
+
+      for (const Group of Preset.Groups) {
+        for (const Property of Group.ExposedProperties) {
+          Property.Type = Property.UnderlyingProperty.Type;
+          Preset.Exposed[Property.ID] = Property;
+        }
+
+        for (const Function of Group.ExposedFunctions) {
+          if (!Function.Metadata)
+            Function.Metadata = {};
+
+          Function.Type = PropertyType.Function;
+          Function.Metadata.Widget = WidgetTypes.Button;
+          Preset.Exposed[Function.ID] = Function;
+        }
+
+        Preset.ExposedProperties.push(...Group.ExposedProperties);
+        Preset.ExposedFunctions.push(...Group.ExposedFunctions);
+      }
+
+      return Preset;
+    } catch (error) {
+      console.log(`Failed to pull preset '${name}' data`);
     }
   }
 
@@ -309,13 +323,58 @@ export namespace UnrealEngine {
 
       const view = JSON.parse(viewJson) as IView;
       if (equal(view, views[preset]))
-        return;
+        return; 
+
+      for (const tab of view.tabs) {
+        if (!tab.panels)
+          continue;
+
+        for (const panel of tab.panels)
+          setPanelIds(panel);
+      }
 
       views[preset] = view;
-      Notify.onViewChange(preset, view);
+      Notify.onViewChange(preset, view, true);
     } catch (error) {
       console.log('Failed to parse View of Preset', preset);
     }    
+  }
+
+  function setPanelIds(panel: IPanel) {
+    if (!panel.id)
+      panel.id = crypto.randomBytes(16).toString('hex');
+
+    if (panel.widgets)
+      return setWidgetsId(panel.widgets);
+
+    if (panel.items)
+      for (const item of panel.items) {
+        if (!item.id)
+          item.id = crypto.randomBytes(16).toString('hex');
+
+        for (const panel of item.panels)
+          setPanelIds(panel);
+      }
+  }
+
+  function setWidgetsId(widgets?: ICustomStackWidget[]) {
+    if (!widgets)
+      return;
+
+    for (const widget of widgets) {
+      if (!widget.id)
+        widget.id = crypto.randomBytes(16).toString('hex');
+
+      if (widget.widget === 'Tabs') {
+        const tabWidget = widget as ICustomStackTabs;
+        for (const tab of tabWidget?.tabs ?? []) {
+          if (!tab.id)
+            tab.id = crypto.randomBytes(16).toString('hex');
+
+          setWidgetsId(tab.widgets);
+        }
+      }
+    }
   }
 
   function equal(a: any, b: any): boolean {
@@ -352,27 +411,14 @@ export namespace UnrealEngine {
     return false;
   }
 
-  async function pullValues(): Promise<void> {
-    const updatedPayloads = {};
-    
-    for (const Preset of presets) {
-      for (const group of Preset.Groups) {
-        for (const property of group.ExposedProperties) {
-           const value = await get<UnrealApi.PropertyValues>(`/remote/preset/${Preset.Name}/property/${property.DisplayName}`);
-           setPayloadValueInternal(updatedPayloads, [Preset.Name, property.DisplayName], value?.PropertyValues?.[0]?.PropertyValue);
-        }
-
-        for (const actor of group.ExposedActors) {
-          const value = await get<any>(`/remote/preset/${Preset.Name}/actor/${actor.DisplayName}`);
-          setPayloadValueInternal(updatedPayloads, [Preset.Name, actor.DisplayName], value);
-        }
-      }
+  async function pullPresetValues(Preset: IPreset): Promise<IPayload> {
+    const updatedPayloads: IPayloads = {};
+    for (const property of Preset.ExposedProperties) {
+      const value = await get<UnrealApi.PropertyValues>(`/remote/preset/${Preset.Name}/property/${property.ID}`);
+      setPayloadValueInternal(updatedPayloads, [Preset.Name, property.ID], value?.PropertyValues?.[0]?.PropertyValue);
     }
 
-    if (!equal(payloads, updatedPayloads)) {
-      payloads = updatedPayloads;
-      Notify.emit('payloads', payloads );
-    }
+    return updatedPayloads[Preset.Name];
   }
 
   export async function getPayload(preset: string): Promise<IPayload> {
@@ -384,15 +430,15 @@ export namespace UnrealEngine {
   }
 
   export async function setPayload(preset: string, payload: IPayload): Promise<void> {
-      payloads[preset] = payload;
+    payloads[preset] = payload;
   }
 
   export async function setPayloadValue(preset: string, property: string, value: PropertyValue): Promise<void> {
     try {
       const body: any = { GenerateTransaction: true };
       if (value !== null) {
-    setPayloadValueInternal(payloads, [preset, property], value);
-    Notify.emitValueChange(preset, property, value);
+        // setPayloadValueInternal(payloads, [preset, property], value);
+        // Notify.emitValueChange(preset, property, value);
         body.PropertyValue = value;
       } else {
         body.ResetToDefault = true; 
@@ -400,46 +446,16 @@ export namespace UnrealEngine {
 
       await put(`/remote/preset/${preset}/property/${property}`, body);
 
-      if (value === null) {
-        const ret = await get<UnrealApi.GetPropertyValue>(`/remote/preset/${preset}/property/${property}`);
-        if (ret) {
-          setPayloadValueInternal(payloads, [preset, property], ret.PropertyValue);
-          Notify.emitValueChange(preset, property, ret.PropertyValue);
-        }
-      }
+      // if (value === null) {
+      //   const ret = await get<UnrealApi.PropertyValues>(`/remote/preset/${preset}/property/${property}`);
+      //   value = ret.PropertyValues?.[0]?.PropertyValue;
+      //   if (value !== undefined) {
+      //     setPayloadValueInternal(payloads, [preset, property], value);
+      //     Notify.emitValueChange(preset, property, value);
+      //   }
+      // }
     } catch (err) {
       console.log('Failed to set preset data:', err.message);
-    }
-  }
-
-  export async function setActorValue(preset: string, actor: string, property: string, value: PropertyValue): Promise<void> {
-    const payload = payloads[preset];
-    if (!payload)
-      return;
-
-    try {
-      const body: any = { GenerateTransaction: true };
-
-      if (value !== null) {
-        _.set(payload[actor] as IPayload, property, value);
-        Notify.emitValueChange(preset, actor, payload[actor]);
-
-        body.PropertyValue = value;
-      } else {
-        body.ResetToDefault = true;
-      }
-
-      await put(`/remote/preset/${preset}/actor/${actor}/property/${property}`, body);
-
-      if (value === null) {
-        const ret = await get<UnrealApi.GetPropertyValue>(`/remote/preset/${preset}/actor/${actor}/property/${property}`);
-        if (ret) {
-          _.set(payload[actor] as IPayload, property, ret.PropertyValue);
-          Notify.emitValueChange(preset, actor, payload[actor]);
-        }
-      }
-    } catch (err) {
-      console.log('Failed to set actor property value:', err.message);
     }
   }
 
@@ -459,50 +475,28 @@ export namespace UnrealEngine {
     element[ _.last(path) ] = value;
   }
 
-  export async function resetPayloadValue(preset: string, property: string): Promise<void> {
+  export async function executeFunction(preset: string, func: string, args: Record<string, any>): Promise<void> {
     try {
-      await put(`/remote/preset/${preset}/property/${property}`, { ResetToDefault: true, GenerateTransaction: true });
-    } catch (err) {
-      console.log('Failed to reset preset property', err.message);
-    }
-  }
-
-  export async function executeFunction(preset: string, actor: string, func: string): Promise<void> {
-    try {
-      let url = `/remote/preset/${preset}`;
-      if (actor)
-        url += `/actor/${actor}`;
-      
-      url += `/function/${func}`;
-
-      await put(url, { Parameters: {}, GenerateTransaction: true });
+      const url = `/remote/preset/${preset}/function/${func}`;
+      await put(url, { Parameters: args, GenerateTransaction: true });
     } catch (err) {
       console.log('Failed to set execute function call:', err.message);
     }
   }
 
-  export async function executeAssetAction(asset: string, action: AssetAction, meta: any): Promise<void> {
-    if (!asset)
-      return;
-
-    switch (action) {
-      case AssetAction.SequencePlay:
-        await playSequence(asset);
-        break;
-    }
-  }
-
-  async function playSequence(asset: string) {
-    const sequencer = '/Script/LevelSequenceEditor.Default__LevelSequenceEditorBlueprintLibrary';
-    const editor = '/Script/EditorScriptingUtilities.Default__EditorAssetLibrary';
+  export async function setPresetPropertyMetadata(preset: string, property: string, metadata: string, value: string) {
     try {
-      await put('/remote/object/call', { objectPath: editor, functionName: 'LoadAsset', parameters: { 'AssetPath': asset }  });
-      await put('/remote/object/call', { objectPath: sequencer, functionName: 'OpenLevelSequence', parameters: { 'LevelSequence': asset }  });
-      await put('/remote/object/call', { objectPath: sequencer, functionName: 'Pause' });
-      await put('/remote/object/call', { objectPath: sequencer, functionName: 'SetCurrentTime', parameters: { NewFrame: 0 } });
-      await put('/remote/object/call', { objectPath: sequencer, functionName: 'Play' });
+
+      const url = `/remote/preset/${preset}/property/${property}/metadata/${metadata}`;
+      await put(url, { value });
+      const p = _.find(presets, p => p.Name === preset);
+      const prop = p?.Exposed[property];
+      if (prop) {
+        prop.Metadata[metadata] = value;
+        Notify.emit('presets', presets);
+      }
     } catch (err) {
-      console.log('Failed to play sequence');
+      console.log(`Failed to set property metadata`);
     }
   }
 
@@ -511,13 +505,21 @@ export namespace UnrealEngine {
   }
 
   export async function setView(preset: string, view: IView): Promise<void> {
+    for (const tab of view.tabs) {
+      if (!tab.panels)
+        continue;
+
+      for (const panel of tab.panels)
+        setPanelIds(panel);
+    }
+
     views[preset] = view;
     const Value = JSON.stringify(view);
     await put(`/remote/preset/${preset}/metadata/view`, { Value });
   }
 
   export async function search(query: string, types: string[], prefix: string, count: number): Promise<IAsset[]> {
-    const ret = await put<UnrealApi.Assets>('/remote/search/assets', { 
+    const ret = await put<UnrealApi.Assets>('/remote/search/assets', {
       Query: query,
       Limit: count,
       Filter: {
@@ -541,6 +543,7 @@ export namespace UnrealEngine {
       case 'PUT':
         if (body)
           return put(url, body);
+        break;
     }
 
     return Promise.resolve({});

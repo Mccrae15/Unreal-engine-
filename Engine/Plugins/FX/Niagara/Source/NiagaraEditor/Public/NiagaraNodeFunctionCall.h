@@ -5,8 +5,11 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "NiagaraEditorCommon.h"
+#include "NiagaraMessages.h"
 #include "NiagaraNodeWithDynamicPins.h"
 #include "NiagaraNodeInput.h"
+#include "UpgradeNiagaraScriptResults.h"
+
 #include "NiagaraNodeFunctionCall.generated.h"
 
 class UNiagaraScript;
@@ -54,8 +57,7 @@ class UNiagaraNodeFunctionCall : public UNiagaraNodeWithDynamicPins
 public:
 	DECLARE_MULTICAST_DELEGATE(FOnInputsChanged);
 
-
-	UPROPERTY(EditAnywhere, Category = "Function")
+	UPROPERTY(EditAnywhere, Category = "Function", meta = (ForceShowEngineContent = true, ForceShowPluginContent = true))
 	UNiagaraScript* FunctionScript;
 
 	UPROPERTY(VisibleAnywhere, AdvancedDisplay, Category = "Version Details")
@@ -83,6 +85,17 @@ public:
 	/** Can be used by the ui after a version change to display change notes */
 	UPROPERTY(meta = (SkipForCompileHash = "true"))
 	FGuid PreviousScriptVersion;
+
+	/** Can be used by the ui after a version change to display change notes */
+	UPROPERTY(meta = (SkipForCompileHash = "true"))
+	FString PythonUpgradeScriptWarnings;
+
+	UPROPERTY()
+	ENiagaraFunctionDebugState DebugState;
+
+	/** Controls whether the debug state of the current function gets propagated into this function call. */
+	UPROPERTY(EditAnywhere, Category = "Debug")
+	bool bInheritDebugStatus = true;
 
 	bool ScriptIsValid() const;
 
@@ -122,7 +135,7 @@ public:
 
 	void BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive = true, bool bFilterForCompilation = true) const override;
 
-	NIAGARAEDITOR_API void ChangeScriptVersion(FGuid NewScriptVersion, bool bShowNotesInStack = false);
+	NIAGARAEDITOR_API void ChangeScriptVersion(FGuid NewScriptVersion, const FNiagaraScriptVersionUpgradeContext& UpgradeContext, bool bShowNotesInStack = false);
 
 	FString GetFunctionName() const { return FunctionDisplayName; }
 	NIAGARAEDITOR_API UNiagaraGraph* GetCalledGraph() const;
@@ -135,6 +148,9 @@ public:
 
 	/** Attempts to find the input pin for a static switch with the given name in the internal script graph. Returns nullptr if no such pin can be found. */
 	UEdGraphPin* FindStaticSwitchInputPin(const FName& VariableName) const;
+
+	/** checks to see if this called function contains any debug switches */
+	NIAGARAEDITOR_API bool ContainsDebugSwitch() const;
 
 	/** Tries to rename this function call to a new name.  The actual name that gets applied might be different due to conflicts with existing
 		nodes with the same name. */
@@ -151,10 +167,19 @@ public:
 
 	virtual TSharedPtr<SGraphNode> CreateVisualWidget() override;
 
+	// Messages API
 	NIAGARAEDITOR_API const TMap<FGuid, UNiagaraMessageData*>& GetMessages() const { return MessageKeyToMessageMap; };
 	NIAGARAEDITOR_API void AddMessage(const FGuid& MessageKey, UNiagaraMessageData* NewMessage) { MessageKeyToMessageMap.Add(MessageKey, NewMessage); };
 	NIAGARAEDITOR_API void RemoveMessage(const FGuid& MessageKey) { MessageKeyToMessageMap.Remove(MessageKey); };
 	void RemoveMessageDelegateable(const FGuid MessageKey) { MessageKeyToMessageMap.Remove(MessageKey); };
+
+	// Custom Notes API
+	NIAGARAEDITOR_API const TArray<FNiagaraStackMessage>& GetCustomNotes() const { return StackMessages; };
+	NIAGARAEDITOR_API void AddCustomNote(const FNiagaraStackMessage& StackMessage);
+	NIAGARAEDITOR_API void RemoveCustomNote(const FGuid& MessageKey);
+	NIAGARAEDITOR_API FSimpleDelegate& OnCustomNotesChanged() { return OnCustomNotesChangedDelegate; }
+	void RemoveCustomNoteViaDelegate(const FGuid MessageKey);
+
 protected:
 
 	virtual bool GetValidateDataInterfaces() const { return true; };
@@ -192,10 +217,15 @@ protected:
 
 	UPROPERTY(meta = (SkipForCompileHash="true"))
 	TMap<FGuid, UNiagaraMessageData*> MessageKeyToMessageMap;
+	
+	UPROPERTY(meta = (SkipForCompileHash="true"))
+	TArray<FNiagaraStackMessage> StackMessages;
 
 	UPROPERTY(meta = (SkipForCompileHash="true"))
 	TMap<FGuid, FName> BoundPinNames;
 
 	FOnInputsChanged OnInputsChangedDelegate;
+
+	FSimpleDelegate OnCustomNotesChangedDelegate;
 };
 

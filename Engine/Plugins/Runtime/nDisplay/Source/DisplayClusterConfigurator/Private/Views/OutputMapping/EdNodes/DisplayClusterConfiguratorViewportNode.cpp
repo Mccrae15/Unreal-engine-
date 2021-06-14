@@ -3,25 +3,34 @@
 #include "Views/OutputMapping/EdNodes/DisplayClusterConfiguratorViewportNode.h"
 
 #include "ClusterConfiguration/DisplayClusterConfiguratorClusterUtils.h"
+#include "ClusterConfiguration/ViewModels/DisplayClusterConfiguratorViewportViewModel.h"
 #include "Views/OutputMapping/EdNodes/DisplayClusterConfiguratorWindowNode.h"
 #include "Views/OutputMapping/GraphNodes/SDisplayClusterConfiguratorViewportNode.h"
 #include "Interfaces/Views/TreeViews/IDisplayClusterConfiguratorViewTree.h"
 #include "Interfaces/Views/TreeViews/IDisplayClusterConfiguratorTreeItem.h"
 
 #include "DisplayClusterConfigurationTypes.h"
+#include "DisplayClusterConfiguratorBlueprintEditor.h"
+#include "DisplayClusterRootActor.h"
+#include "Components/DisplayClusterPreviewComponent.h"
 
-
-UDisplayClusterConfiguratorViewportNode::~UDisplayClusterConfiguratorViewportNode()
+void UDisplayClusterConfiguratorViewportNode::Initialize(const FString& InNodeName, int32 InNodeZIndex, UObject* InObject, const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit)
 {
-	OnPreviewUpdated.Unbind();
-}
-
-void UDisplayClusterConfiguratorViewportNode::Initialize(const FString& InNodeName, UObject* InObject, const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit)
-{
-	UDisplayClusterConfiguratorBaseNode::Initialize(InNodeName, InObject, InToolkit);
+	UDisplayClusterConfiguratorBaseNode::Initialize(InNodeName, InNodeZIndex, InObject, InToolkit);
 
 	UDisplayClusterConfigurationViewport* CfgViewport = GetObjectChecked<UDisplayClusterConfigurationViewport>();
 	CfgViewport->OnPostEditChangeChainProperty.Add(UDisplayClusterConfigurationViewport::FOnPostEditChangeChainProperty::FDelegate::CreateUObject(this, &UDisplayClusterConfiguratorViewportNode::OnPostEditChangeChainProperty));
+
+	ViewportVM = MakeShareable(new FDisplayClusterConfiguratorViewportViewModel(CfgViewport));
+}
+
+void UDisplayClusterConfiguratorViewportNode::Cleanup()
+{
+	if (ObjectToEdit.IsValid())
+	{
+		UDisplayClusterConfigurationViewport* CfgViewport = GetObjectChecked<UDisplayClusterConfigurationViewport>();
+		CfgViewport->OnPostEditChangeChainProperty.RemoveAll(this);
+	}
 }
 
 TSharedPtr<SGraphNode> UDisplayClusterConfiguratorViewportNode::CreateVisualWidget()
@@ -31,18 +40,33 @@ TSharedPtr<SGraphNode> UDisplayClusterConfiguratorViewportNode::CreateVisualWidg
 
 bool UDisplayClusterConfiguratorViewportNode::IsNodeVisible() const
 {
+	if (!IsObjectValid())
+	{
+		return false;
+	}
+
 	UDisplayClusterConfigurationViewport* Viewport = GetObjectChecked<UDisplayClusterConfigurationViewport>();
 	return Viewport->bIsVisible;
 }
 
 bool UDisplayClusterConfiguratorViewportNode::IsNodeEnabled() const
 {
+	if (!IsObjectValid())
+	{
+		return false;
+	}
+
 	UDisplayClusterConfigurationViewport* Viewport = GetObjectChecked<UDisplayClusterConfigurationViewport>();
 	return Viewport->bIsEnabled;
 }
 
 void UDisplayClusterConfiguratorViewportNode::DeleteObject()
 {
+	if (!IsObjectValid())
+	{
+		return;
+	}
+
 	UDisplayClusterConfigurationViewport* Viewport = GetObjectChecked<UDisplayClusterConfigurationViewport>();
 	FDisplayClusterConfiguratorClusterUtils::RemoveViewportFromClusterNode(Viewport);
 }
@@ -53,10 +77,8 @@ void UDisplayClusterConfiguratorViewportNode::WriteNodeStateToObject()
 	const FVector2D LocalPosition = GetNodeLocalPosition();
 	const FVector2D LocalSize = TransformSizeToLocal(GetNodeSize());
 
-	CfgViewport->Region.X = LocalPosition.X;
-	CfgViewport->Region.Y = LocalPosition.Y;
-	CfgViewport->Region.W = LocalSize.X;
-	CfgViewport->Region.H = LocalSize.Y;
+	FDisplayClusterConfigurationRectangle NewRegion(LocalPosition.X, LocalPosition.Y, LocalSize.X, LocalSize.Y);
+	ViewportVM->SetRegion(NewRegion);
 }
 
 void UDisplayClusterConfiguratorViewportNode::ReadNodeStateFromObject()
@@ -79,21 +101,30 @@ const FDisplayClusterConfigurationRectangle& UDisplayClusterConfiguratorViewport
 
 bool UDisplayClusterConfiguratorViewportNode::IsFixedAspectRatio() const
 {
+	if (!IsObjectValid())
+	{
+		return false;
+	}
+
 	UDisplayClusterConfigurationViewport* CfgViewport = GetObjectChecked<UDisplayClusterConfigurationViewport>();
 	return CfgViewport->bFixedAspectRatio;
 }
 
-void UDisplayClusterConfiguratorViewportNode::SetPreviewTexture(UTexture* InTexture)
-{
-	PreviewTexture = InTexture;
-	OnPreviewUpdated.ExecuteIfBound();
-}
-
 UTexture* UDisplayClusterConfiguratorViewportNode::GetPreviewTexture() const
 {
-	if (PreviewTexture.IsValid())
+	TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> Toolkit = ToolkitPtr.Pin();
+	check(Toolkit.IsValid());
+
+	if (ADisplayClusterRootActor* RootActor = Cast<ADisplayClusterRootActor>(Toolkit->GetPreviewActor()))
 	{
-		return PreviewTexture.Get();
+		UDisplayClusterConfiguratorWindowNode* ParentWindow = GetParentChecked<UDisplayClusterConfiguratorWindowNode>();
+		if (UDisplayClusterPreviewComponent* PreviewComp = RootActor->GetPreviewComponent(ParentWindow->GetNodeName(), GetNodeName()))
+		{
+			if (UTexture2D* Texture = PreviewComp->GetOrCreateRenderTexture2D())
+			{
+				return Texture;
+			}
+		}
 	}
 
 	return nullptr;
@@ -101,6 +132,19 @@ UTexture* UDisplayClusterConfiguratorViewportNode::GetPreviewTexture() const
 
 void UDisplayClusterConfiguratorViewportNode::OnPostEditChangeChainProperty(const FPropertyChangedChainEvent& PropertyChangedEvent)
 {
+	// If the pointer to the blueprint editor is no longer valid, its likely that the editor this node was created for was closed,
+	// and this node is orphaned and will eventually be GCed.
+	if (!ToolkitPtr.IsValid())
+	{
+		return;
+	}
+	
+	// If the object is no longer valid, don't attempt to sync properties
+	if (!IsObjectValid())
+	{
+		return;
+	}
+
 	const UDisplayClusterConfigurationViewport* CfgViewport = GetObjectChecked<UDisplayClusterConfigurationViewport>();
 
 	const FName& PropertyName = PropertyChangedEvent.GetPropertyName();

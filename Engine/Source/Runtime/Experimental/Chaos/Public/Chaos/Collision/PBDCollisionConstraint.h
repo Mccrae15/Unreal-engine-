@@ -22,10 +22,15 @@ namespace Chaos
 		FManifoldPoint() 
 			: CoMContactPoints{ FVec3(0), FVec3(0) }
 			, CoMContactNormal(0)
+			, CoMContactTangent(0)
 			, NetImpulse(0)
 			, NetPushOut(0)
 			, NetPushOutImpulseNormal(0)
 			, NetPushOutImpulseTangent(0)
+			, NetPushOutNormal(0)
+			, NetPushOutTangent(0)
+			, NetImpulseNormal(0)
+			, NetImpulseTangent(0)
 			, InitialContactVelocity(0)
 			, InitialPhi(0)
 			, bPotentialRestingContact(false)
@@ -38,10 +43,15 @@ namespace Chaos
 			: ContactPoint(InContactPoint)
 			, CoMContactPoints{ FVec3(0), FVec3(0) }
 			, CoMContactNormal(0)
+			, CoMContactTangent(0)
 			, NetImpulse(0)
 			, NetPushOut(0)
 			, NetPushOutImpulseNormal(0)
 			, NetPushOutImpulseTangent(0)
+			, NetPushOutNormal(0)
+			, NetPushOutTangent(0)
+			, NetImpulseNormal(0)
+			, NetImpulseTangent(0)
 			, InitialContactVelocity(0)
 			, InitialPhi(0)
 			, bPotentialRestingContact(false)
@@ -54,10 +64,15 @@ namespace Chaos
 		FContactPoint ContactPoint;			// Shape-space data from low-level collision detection
 		FVec3 CoMContactPoints[2];			// CoM-space contact points on the two bodies core shapes (not including margin)
 		FVec3 CoMContactNormal;				// CoM-space contact normal relative to ContactNormalOwner body	
+		FVec3 CoMContactTangent;			// CoM-space contact tangent for friction
 		FVec3 NetImpulse;					// Total impulse applied by this contact point
 		FVec3 NetPushOut;					// Total pushout applied at this contact point
 		FReal NetPushOutImpulseNormal;		// Total pushout impulse along normal (for final velocity correction) applied at this contact point
 		FReal NetPushOutImpulseTangent;		// Total pushout impulse along tangent (for final velocity correction) applied at this contact point
+		FReal NetPushOutNormal;
+		FReal NetPushOutTangent;
+		FReal NetImpulseNormal;
+		FReal NetImpulseTangent;
 		FReal InitialContactVelocity;		// Contact velocity at start of frame (used for restitution)
 		FReal InitialPhi;					// Contact separation at first contact (used for pushout restitution)
 		bool bPotentialRestingContact;		// Whether this may be a resting contact (used for static fricton)
@@ -251,6 +266,7 @@ namespace Chaos
 
 		FRigidBodyPointContactConstraint() 
 			: Base(Base::FType::SinglePoint)
+			, CullDistance(FLT_MAX)
 			, bUseManifold(false)
 		{}
 
@@ -263,13 +279,20 @@ namespace Chaos
 			const FImplicitObject* Implicit1, 
 			const FBVHParticles* Simplicial1, 
 			const FRigidTransform3& Transform1,
+			const FReal InCullDistance,
 			const EContactShapesType ShapesType,
 			const bool bInUseManifold)
 			: Base(Particle0, Implicit0, Simplicial0, Transform0, Particle1, Implicit1, Simplicial0, Transform1, Base::FType::SinglePoint, ShapesType)
-			, bUseManifold(bInUseManifold)
-		{}
+			, CullDistance(InCullDistance)
+			, bUseManifold(false)
+		{
+			bUseManifold = bInUseManifold && CanUseManifold(Particle0, Particle1);
+		}
 
 		static typename Base::FType StaticType() { return Base::FType::SinglePoint; };
+
+		FReal GetCullDistance() const { return CullDistance; }
+		void SetCullDistance(FReal InCullDistance) { CullDistance = InCullDistance; }
 
 		bool GetUseManifold() const { return bUseManifold; }
 
@@ -307,22 +330,31 @@ namespace Chaos
 			const FImplicitObject* Implicit1, 
 			const FBVHParticles* Simplicial1,
 			const FRigidTransform3& Transform1,
-			typename Base::FType InType, 
+			const FReal InCullDistance,
+			typename Base::FType InType,
 			const EContactShapesType ShapesType)
 			: Base(Particle0, Implicit0, Simplicial0, Transform0, Particle1, Implicit1, Simplicial1, Transform1, InType, ShapesType)
+			, CullDistance(InCullDistance)
 			, bUseManifold(false)
 		{}
+
+		// Whether we can use manifolds for the given partices. Manifolds do not work well with Joints and PBD
+		// because the bodies may be moved (and especially rotated) a lot in the solver and this can make the manifold extremely inaccurate
+		bool CanUseManifold(FGeometryParticleHandle* Particle0, FGeometryParticleHandle* Particle1) const;
 
 		bool AreMatchingContactPoints(const FContactPoint& A, const FContactPoint& B, FReal& OutScore) const;
 		int32 FindManifoldPoint(const FContactPoint& ContactPoint) const;
 		int32 AddManifoldPoint(const FContactPoint& ContactPoint, const FReal Dt);
 		void InitManifoldPoint(FManifoldPoint& ManifoldPoint, FReal Dt);
 		void UpdateManifoldPoint(int32 ManifoldPointIndex, const FContactPoint& ContactPoint, const FReal Dt);
+		void UpdateManifoldPointFromContact(FManifoldPoint& ManifoldPoint);
 		void SetActiveContactPoint(const FContactPoint& ContactPoint);
+		void GetWorldSpaceManifoldPoint(const FManifoldPoint& ManifoldPoint, const FVec3& P0, const FRotation3& Q0, const FVec3& P1, const FRotation3& Q1, FVec3& OutContactLocation, FVec3& OutContactNormal, FReal& OutContactPhi);
 
 		// @todo(chaos): Switching this to inline allocator does not help, but maybe a physics scratchpad would
 		//TArray<FManifoldPoint, TInlineAllocator<4>> ManifoldPoints;
 		TArray<FManifoldPoint> ManifoldPoints;
+		FReal CullDistance;
 		bool bUseManifold;
 	};
 
@@ -346,8 +378,9 @@ namespace Chaos
 			const FImplicitObject* Implicit1, 
 			const FBVHParticles* Simplicial1, 
 			const FRigidTransform3& Transform1,
+			const FReal InCullDistance,
 			EContactShapesType ShapesType)
-			: Base(Particle0, Implicit0, Simplicial0, Transform0, Particle1, Implicit1, Simplicial1, Transform1, Base::FType::SinglePointSwept, ShapesType)
+			: Base(Particle0, Implicit0, Simplicial0, Transform0, Particle1, Implicit1, Simplicial1, Transform1, InCullDistance, Base::FType::SinglePointSwept, ShapesType)
 			, TimeOfImpact(0)
 		{}
 

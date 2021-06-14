@@ -16,6 +16,7 @@
 #include "NiagaraParameterCollection.h"
 #include "NiagaraUserRedirectionParameterStore.h"
 #include "NiagaraEffectType.h"
+#include "NiagaraParameterDefinitionsSubscriber.h"
 
 #include "NiagaraSystem.generated.h"
 
@@ -199,7 +200,7 @@ struct FNiagaraRendererExecutionIndex
 
 /** Container for multiple emitters that combine together to create a particle system effect.*/
 UCLASS(BlueprintType)
-class NIAGARA_API UNiagaraSystem : public UFXSystemAsset
+class NIAGARA_API UNiagaraSystem : public UFXSystemAsset, public INiagaraParameterDefinitionsSubscriber
 {
 	GENERATED_UCLASS_BODY()
 
@@ -222,6 +223,7 @@ public:
 	virtual void PreEditChange(FProperty* PropertyThatWillChange)override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override; 
 	virtual void BeginCacheForCookedPlatformData(const ITargetPlatform *TargetPlatform) override;
+	//~ End UObject interface
 
 	/** Helper method to handle when an internal variable has been renamed. Renames any downstream dependencies in the emitters or exposed variables.*/
 	void HandleVariableRenamed(const FNiagaraVariable& InOldVariable, const FNiagaraVariable& InNewVariable, bool bUpdateContexts);
@@ -229,12 +231,34 @@ public:
 	void HandleVariableRemoved(const FNiagaraVariable& InOldVariable, bool bUpdateContexts);
 #endif
 
+#if WITH_EDITORONLY_DATA
+	//~ Begin INiagaraParameterDefinitionsSubscriber interface
+	virtual const TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() const override { return ParameterDefinitionsSubscriptions; };
+	virtual TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() override { return ParameterDefinitionsSubscriptions; };
+
+	/** Get all UNiagaraScriptSourceBase of this subscriber. */
+	virtual TArray<UNiagaraScriptSourceBase*> GetAllSourceScripts() override;
+
+	/** Get the path to the UObject of this subscriber. */
+	virtual FString GetSourceObjectPathName() const override;
+
+	/** Get All adapters to editor only script vars owned directly by this subscriber. */
+	virtual TArray<UNiagaraEditorParametersAdapterBase*> GetEditorOnlyParametersAdapters() override;
+
+	/** Get all subscribers that are owned by this subscriber.
+	 *  Note: Implemented for synchronizing UNiagaraSystem. UNiagaraSystem returns all UNiagaraEmitters it owns to call SynchronizeWithParameterDefinitions for each.
+	 */
+	virtual TArray<INiagaraParameterDefinitionsSubscriber*> GetOwnedParameterDefinitionsSubscribers() override;
+	//~ End INiagaraParameterDefinitionsSubscriber interface
+#endif 
+
 	/** Gets an array of the emitter handles. */
 	const TArray<FNiagaraEmitterHandle>& GetEmitterHandles();
 	const TArray<FNiagaraEmitterHandle>& GetEmitterHandles()const;
 
 private:
 	bool IsValidInternal() const;
+	
 public:
 	/** Returns true if this system is valid and can be instanced. False otherwise. */
 	bool IsValid() const { return FPlatformProperties::RequiresCookedData() ? bIsValidCached : IsValidInternal(); }
@@ -243,6 +267,9 @@ public:
 	/** Adds a new emitter handle to this System.  The new handle exposes an Instance value which is a copy of the
 		original asset. */
 	FNiagaraEmitterHandle AddEmitterHandle(UNiagaraEmitter& SourceEmitter, FName EmitterName);
+
+	/** Adds a new emitter handle to this system without copying the original asset. This should only be used for temporary systems and never for live assets. */
+	void AddEmitterHandleDirect(FNiagaraEmitterHandle& EmitterHandleToAdd);
 
 	/** Duplicates an existing emitter handle and adds it to the System.  The new handle will reference the same source asset,
 		but will have a copy of the duplicated Instance value. */
@@ -343,6 +370,9 @@ public:
 	/** Gets editor specific data stored with this system. */
 	UNiagaraEditorDataBase* GetEditorData();
 
+	/** Gets editor specific parameters stored with this system */
+	UNiagaraEditorParametersAdapterBase* GetEditorParameters();
+
 	/** Gets editor specific data stored with this system. */
 	const UNiagaraEditorDataBase* GetEditorData() const;
 
@@ -358,8 +388,11 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable, meta = (SkipSystemResetOnChange = "true"))
 	bool bExposeToLibrary;
 
+	UPROPERTY()
+	bool bIsTemplateAsset_DEPRECATED;
+
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable, meta = (SkipSystemResetOnChange = "true"))
-	bool bIsTemplateAsset;
+	ENiagaraScriptTemplateSpecification TemplateSpecification;;
 
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable, meta = (SkipSystemResetOnChange = "true"))
 	FText TemplateAssetDescription;
@@ -376,6 +409,9 @@ public:
 	UPROPERTY(transient)
 	FNiagaraSystemUpdateContext UpdateContext;
 #endif
+
+	void UpdateSystemAfterLoad();
+	void EnsureFullyLoaded() const;
 
 	bool ShouldAutoDeactivate() const { return bAutoDeactivate; }
 	bool IsLooping() const;
@@ -414,6 +450,13 @@ public:
 	/** If true bTrimAttributes will be made to be true during cooks */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance", meta = (SkipSystemResetOnChange = "true"))
 	uint32 bTrimAttributesOnCook : 1;
+
+	/** If true, forcefully disables all debug switches */
+	UPROPERTY(meta = (SkipSystemResetOnChange = "true"))
+	uint32 bDisableAllDebugSwitches : 1;
+	/** Subscriptions to definitions of parameters. */
+	UPROPERTY()
+	TArray<FParameterDefinitionsSubscription> ParameterDefinitionsSubscriptions;
 
 #endif
 
@@ -461,6 +504,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Debug")
 	bool bDumpDebugEmitterInfo;
 
+	bool bFullyLoaded = false;
 
 	/** When enabled, we follow the settings on the UNiagaraComponent for tick order. When this option is disabled, we ignore any dependencies from data interfaces or other variables and instead fire off the simulation as early in the frame as possible. This greatly
 	reduces overhead and allows the game thread to run faster, but comes at a tradeoff if the dependencies might leave gaps or other visual artifacts.*/
@@ -470,10 +514,12 @@ public:
 	bool HasSystemScriptDIsWithPerInstanceData() const;
 	FORCEINLINE bool HasDIsWithPostSimulateTick()const{ return bHasDIsWithPostSimulateTick; }
 	FORCEINLINE bool HasAnyGPUEmitters()const{ return bHasAnyGPUEmitters; }
+	FORCEINLINE bool NeedsGPUContextInitForDataInterfaces() const { return bNeedsGPUContextInitForDataInterfaces; }
 
 	const TArray<FName>& GetUserDINamesReadInSystemScripts() const;
 
 	FBox GetFixedBounds() const;
+	FORCEINLINE void SetFixedBounds(const FBox& Box) { FixedBounds = Box;  }
 
 #if WITH_EDITOR
 	void SetEffectType(UNiagaraEffectType* EffectType);
@@ -605,6 +651,10 @@ protected:
 	UPROPERTY()
 	UNiagaraEditorDataBase* EditorData;
 
+	/** Wrapper for editor only parameters. */
+	UPROPERTY()
+	UNiagaraEditorParametersAdapterBase* EditorParameters;
+
 	bool bIsolateEnabled;
 
 	/** A multicast delegate which is called whenever the script has been compiled (successfully or not). */
@@ -645,6 +695,10 @@ protected:
 
 	UPROPERTY()
 	bool bHasSystemScriptDIsWithPerInstanceData;
+
+	UPROPERTY()
+	bool bNeedsGPUContextInitForDataInterfaces;
+
 
 	UPROPERTY()
 	TArray<FName> UserDINamesReadInSystemScripts;

@@ -5,6 +5,7 @@
 #include "DatasmithSketchUpCommon.h"
 #include "DatasmithSketchUpComponent.h"
 #include "DatasmithSketchUpExportContext.h"
+#include "DatasmithSketchUpMetadata.h"
 #include "DatasmithSketchUpMesh.h"
 #include "DatasmithSketchUpString.h"
 #include "DatasmithSketchUpSummary.h"
@@ -132,7 +133,8 @@ namespace DatasmithSketchUp
 		FExportContext& Context,
 		FExtractedMaterial& InMaterial,
 		TCHAR const* InMaterialName,
-		bool         bInScaleTexture
+		FTexture* Texture,
+		bool bInScaleTexture
 	)
 	{
 		// Create a Datasmith material element for the material definition.
@@ -148,44 +150,76 @@ namespace DatasmithSketchUp
 
 		DatasmithMaterialElementPtr->SetTwoSided(false);// todo: consider this
 
-		IDatasmithMaterialExpressionColor* ExpressionColor = DatasmithMaterialElementPtr->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
-		ExpressionColor->SetName(TEXT("Base Color"));
-		ExpressionColor->GetColor() = LinearColor;
-		ExpressionColor->ConnectExpression(DatasmithMaterialElementPtr->GetBaseColor());
-
 		bool bTranslucent = InMaterial.bSourceColorAlphaUsed;
-		if (SUIsValid(InMaterial.TextureRef))
+		if (Texture)
 		{
-			FTexture* Texture = (InMaterial.SourceType == SUMaterialType::SUMaterialType_ColorizedTexture)
-				? Context.Textures.AddColorizedTexture(InMaterial.TextureRef, InMaterial.SketchupSourceName)
-				: Context.Textures.AddTexture(InMaterial.TextureRef);
+			IDatasmithMaterialExpressionTexture* ExpressionTexture = DatasmithMaterialElementPtr->AddMaterialExpression< IDatasmithMaterialExpressionTexture >();
+			ExpressionTexture->SetName(TEXT("Texture"));
+			ExpressionTexture->SetTexturePathName(Texture->GetDatasmithElementName());
 
-			DatasmithMaterialsUtils::FUVEditParameters UVParameters;
-			if (bInScaleTexture)
+			// Apply texture scaling
+			if (bInScaleTexture && !Texture->TextureScale.Equals(FVector2D::UnitVector))
 			{
-				UVParameters.UVTiling = Texture->TextureScale;
+				IDatasmithMaterialExpressionFunctionCall* UVEditExpression = DatasmithMaterialElementPtr->AddMaterialExpression< IDatasmithMaterialExpressionFunctionCall >();
+				UVEditExpression->SetFunctionPathName(TEXT("/DatasmithContent/Materials/UVEdit.UVEdit"));
+
+				UVEditExpression->ConnectExpression(ExpressionTexture->GetInputCoordinate());
+
+				// Tiling
+				IDatasmithMaterialExpressionColor* TilingValue = DatasmithMaterialElementPtr->AddMaterialExpression< IDatasmithMaterialExpressionColor >();
+				TilingValue->SetName(TEXT("UV Tiling"));
+				TilingValue->GetColor() = FLinearColor(Texture->TextureScale.X, Texture->TextureScale.Y, 0.f);
+
+				TilingValue->ConnectExpression(*UVEditExpression->GetInput(2));
+
+				//IDatasmithMaterialExpressionColor* OffsetValue = MaterialElement->AddMaterialExpression< IDatasmithMaterialExpressionColor >();
+				//OffsetValue->SetName(TEXT("UV Offset"));
+				//OffsetValue->GetColor() = FLinearColor(0.f, 0.f, 0.f);
+				//OffsetValue->ConnectExpression(*UVEditExpression->GetInput(7));
+
+				IDatasmithMaterialExpressionTextureCoordinate* TextureCoordinateExpression = DatasmithMaterialElementPtr->AddMaterialExpression< IDatasmithMaterialExpressionTextureCoordinate >();
+				TextureCoordinateExpression->SetCoordinateIndex(0);
+				TextureCoordinateExpression->ConnectExpression(*UVEditExpression->GetInput(0));
 			}
 
-			IDatasmithMaterialExpressionTexture* ExpressionTexture = DatasmithMaterialsUtils::CreateTextureExpression(DatasmithMaterialElementPtr, TEXT("Texture"), Texture->GetDatasmithElementName(), UVParameters);
-
-			// todo: multiply or replace base color with texture?
 			ExpressionTexture->ConnectExpression(DatasmithMaterialElementPtr->GetBaseColor());
 
 			bTranslucent = bTranslucent || Texture->GetTextureUseAlphaChannel();
+
+			// Set the Datasmith material element opacity.
+			if (Texture->GetTextureUseAlphaChannel())
+			{
+				// Invert texture translarency to get Unreal opacity
+				IDatasmithMaterialExpressionGeneric* ExpressionOpacity = DatasmithMaterialElementPtr->AddMaterialExpression<IDatasmithMaterialExpressionGeneric>();
+				ExpressionOpacity->SetExpressionName(TEXT("OneMinus"));
+
+
+				ExpressionTexture->ConnectExpression(*ExpressionOpacity->GetInput(0), 3);
+
+				ExpressionOpacity->ConnectExpression(DatasmithMaterialElementPtr->GetOpacity());
+			}
 		}
+		else
+		{
+			IDatasmithMaterialExpressionColor* ExpressionColor = DatasmithMaterialElementPtr->AddMaterialExpression<IDatasmithMaterialExpressionColor>();
+			ExpressionColor->SetName(TEXT("Base Color"));
+			ExpressionColor->GetColor() = LinearColor;
+			ExpressionColor->ConnectExpression(DatasmithMaterialElementPtr->GetBaseColor());
+
+			// Set the Datasmith material element opacity.
+			if (InMaterial.bSourceColorAlphaUsed)
+			{
+				IDatasmithMaterialExpressionScalar* ExpressionOpacity = DatasmithMaterialElementPtr->AddMaterialExpression<IDatasmithMaterialExpressionScalar>();
+				ExpressionOpacity->SetName(TEXT("Opacity"));
+				ExpressionOpacity->GetScalar() = float(InMaterial.SourceColor.alpha) / float(255);
+				ExpressionOpacity->ConnectExpression(DatasmithMaterialElementPtr->GetOpacity());
+			}
+		}
+
 
 		if (bTranslucent)
 		{
 			DatasmithMaterialElementPtr->SetBlendMode(/*EBlendMode::BLEND_Translucent*/2);
-		}
-
-		// Set the Datasmith material element opacity.
-		if (InMaterial.bSourceColorAlphaUsed)
-		{
-			IDatasmithMaterialExpressionScalar* ExpressionOpacity = DatasmithMaterialElementPtr->AddMaterialExpression<IDatasmithMaterialExpressionScalar>();
-			ExpressionOpacity->SetName(TEXT("Opacity"));
-			ExpressionOpacity->GetScalar() = float(InMaterial.SourceColor.alpha) / float(255);
-			ExpressionOpacity->ConnectExpression(DatasmithMaterialElementPtr->GetOpacity());
 		}
 
 		Context.DatasmithScene->AddMaterial(DatasmithMaterialElementPtr);
@@ -240,6 +274,7 @@ void FMaterial::Remove(FExportContext& Context)
 		Context.DatasmithScene->RemoveMaterial(MaterialInheritedByNodes->DatasmithElement);
 	}
 
+	Context.Textures.UnregisterMaterial(this);
 }
 
 void FMaterial::Update(FExportContext& Context)
@@ -247,9 +282,22 @@ void FMaterial::Update(FExportContext& Context)
 	FExtractedMaterial ExtractedMaterial(Context, MaterialRef);
 	EntityId = ExtractedMaterial.SketchupSourceID.EntityID;
 
+	if (Texture)
+	{
+		Context.Textures.UnregisterMaterial(this);
+		Texture = nullptr;
+	}
+
+	if (SUIsValid(ExtractedMaterial.TextureRef))
+	{
+		Texture = (ExtractedMaterial.SourceType == SUMaterialType::SUMaterialType_ColorizedTexture)
+			? Context.Textures.AddColorizedTexture(ExtractedMaterial.TextureRef, ExtractedMaterial.SketchupSourceName)
+			: Context.Textures.AddTexture(ExtractedMaterial.TextureRef, ExtractedMaterial.SketchupSourceName);
+		Context.Textures.RegisterMaterial(this);
+	}
 
 	{
-		TSharedPtr<IDatasmithBaseMaterialElement> Element = CreateMaterialElement(Context, ExtractedMaterial, *ExtractedMaterial.LocalizedMaterialName, false);
+		TSharedPtr<IDatasmithBaseMaterialElement> Element = CreateMaterialElement(Context, ExtractedMaterial, *ExtractedMaterial.LocalizedMaterialName, Texture, false);
 
 		if (MaterialDirectlyAppliedToMeshes)
 		{
@@ -263,7 +311,7 @@ void FMaterial::Update(FExportContext& Context)
 	}
 
 	{
-		TSharedPtr<IDatasmithBaseMaterialElement> Element = CreateMaterialElement(Context, ExtractedMaterial, *ExtractedMaterial.InheritedMaterialName, true);
+		TSharedPtr<IDatasmithBaseMaterialElement> Element = CreateMaterialElement(Context, ExtractedMaterial, *ExtractedMaterial.InheritedMaterialName, Texture, true);
 
 		if (MaterialInheritedByNodes)
 		{

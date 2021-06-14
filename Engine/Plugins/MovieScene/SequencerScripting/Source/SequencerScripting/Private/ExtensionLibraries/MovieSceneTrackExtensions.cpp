@@ -16,7 +16,10 @@ void UMovieSceneTrackExtensions::SetDisplayName(UMovieSceneTrack* Track, const F
 
 FText UMovieSceneTrackExtensions::GetDisplayName(UMovieSceneTrack* Track)
 {
+#if WITH_EDITORONLY_DATA
 	return Track->GetDisplayName();
+#endif
+	return FText::GetEmpty();
 }
 
 UMovieSceneSection* UMovieSceneTrackExtensions::AddSection(UMovieSceneTrack* Track)
@@ -77,4 +80,15 @@ void UMovieSceneTrackExtensions::SetColorTint(UMovieSceneTrack* Track, const FCo
 	Track->SetColorTint(ColorTint); 
 #endif
 }
+
+UMovieSceneSection* UMovieSceneTrackExtensions::GetSectionToKey(UMovieSceneTrack* Track) 
+{ 
+	return Track->GetSectionToKey(); 
+}
+
+void UMovieSceneTrackExtensions::SetSectionToKey(UMovieSceneTrack* Track, UMovieSceneSection* Section) 
+{ 
+	Track->SetSectionToKey(Section); 
+}
+
 

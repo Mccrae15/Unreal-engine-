@@ -42,8 +42,6 @@ public:
 
 	void GetChildInputs(TArray<UNiagaraStackFunctionInput*>& OutResult) const;
 
-	void ApplyModuleChanges();
-
 	static FText UncategorizedName;
 
 protected:
@@ -63,8 +61,6 @@ private:
 	FStackIssueFix GetUpgradeVersionFix(FText FixDescription);
 
 	void AddInvalidChildStackIssue(FName PinName, TArray<FStackIssue>& OutIssues);
-
-	bool IsInheritedModule() const;
 
 	struct FInputData
 	{

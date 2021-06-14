@@ -13,6 +13,7 @@
 #include "Widgets/DataprepGraph/SDataprepGraphEditor.h"
 #include "Widgets/DataprepWidgets.h"
 
+#include "DragAndDrop/AssetDragDropOp.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
 #include "GenericPlatform/ICursor.h"
@@ -562,10 +563,10 @@ bool SDataprepGraphTrackNode::RefreshLayout()
 	return false;
 }
 
-void SDataprepGraphTrackNode::MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter)
+void SDataprepGraphTrackNode::MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty)
 {
 	// Block track node to specific position
-	SGraphNode::MoveTo( TrackAnchor, NodeFilter);
+	SGraphNode::MoveTo( TrackAnchor, NodeFilter, bMarkDirty);
 }
 
 const FSlateBrush* SDataprepGraphTrackNode::GetShadowBrush(bool bSelected) const
@@ -599,6 +600,12 @@ FReply SDataprepGraphTrackNode::OnDrop(const FGeometry& MyGeometry, const FDragD
 
 FReply SDataprepGraphTrackNode::OnDragOver(const FGeometry & MyGeometry, const FDragDropEvent& DragDropEvent)
 {
+	TSharedPtr<FAssetDragDropOp> AssetOp = DragDropEvent.GetOperationAs<FAssetDragDropOp>();
+	if (AssetOp.IsValid())
+	{
+		return FReply::Handled();
+	}
+
 	TSharedPtr<FDataprepDragDropOp> DragActionNodeOp = DragDropEvent.GetOperationAs<FDataprepDragDropOp>();
 	if(DragActionNodeOp.IsValid())
 	{
@@ -923,7 +930,7 @@ bool SDataprepGraphTrackNode::OnNodeDragged( TSharedPtr<SDataprepGraphBaseAction
 	const FVector2D TrackSize = TrackWidgetPtr->GetWorkingSize() * ZoomAmount;
 	float PanAmount = 0.f;
 
-	DragCallback LocalComputePanAmount = [&](const FVector2D& SlotRange, float Delta) -> float
+	DragCallback LocalComputePanAmount = [this, GraphPanel, ZoomAmount, TrackSize, PanelSize, DragTrackPosition, &TrackGeometry, &PanAmount](const FVector2D& SlotRange, float Delta) -> float
 	{
 		if(TrackSize.X > PanelSize.X)
 		{

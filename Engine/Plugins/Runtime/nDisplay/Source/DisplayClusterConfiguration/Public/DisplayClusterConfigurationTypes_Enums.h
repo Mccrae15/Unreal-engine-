@@ -23,7 +23,7 @@ enum class EDisplayClusterConfigurationKeyboardReflectionType : uint8
 	None     UMETA(DisplayName = "No reflection"),
 	nDisplay UMETA(DisplayName = "nDisplay buttons only"),
 	Core     UMETA(DisplayName = "UE core keyboard events only"),
-	All      UMETA(DisplayName = "Both nDisplay and UE4 core events")
+	All      UMETA(DisplayName = "Both nDisplay and UE core events")
 };
 
 UENUM()
@@ -75,10 +75,10 @@ UENUM()
 enum class EDisplayClusterConfigurationICVFX_LightcardRenderMode : uint8
 {
 	// Render incamera frame over lightcard
-	Over    UMETA(DisplayName = "Lightcard OVER"),
+	Over    UMETA(DisplayName = "Lightcard Over Frustum"),
 
 	// Over lightcard over incamera frame
-	Under   UMETA(DisplayName = "Lightcard UNDER"),
+	Under   UMETA(DisplayName = "Lightcard Under Frustum"),
 };
 
 UENUM()
@@ -91,10 +91,10 @@ enum class EDisplayClusterConfigurationICVFX_OverrideLightcardRenderMode : uint8
 	Disabled    UMETA(DisplayName = "Disabled"),
 
 	// Render incamera frame over lightcard for this viewport
-	Over    UMETA(DisplayName = "Lightcard OVER"),
+	Over    UMETA(DisplayName = "Lightcard Over Frustum"),
 
 	// Over lightcard over incamera frame  for this viewport
-	Under   UMETA(DisplayName = "Lightcard UNDER"),
+	Under   UMETA(DisplayName = "Lightcard Under Frustum"),
 };
 
 UENUM()
@@ -121,16 +121,6 @@ enum class EDisplayClusterConfigurationViewport_StereoMode : uint8
 
 	// Force monoscopic render mode for this viewport (performance)
 	ForceMono   UMETA(DisplayName = "Force Mono"),
-};
-
-UENUM()
-enum class EDisplayClusterConfigurationICVFX_CameraFrameSizeSource: uint8
-{
-	// Use default ICVFX camera size from StageSettings
-	Default     UMETA(DisplayName = "Default value from StageSettings"),
-
-	// Unique camera frame size
-	Custom      UMETA(DisplayName = "Custom size value"),
 };
 
 UENUM()
@@ -169,7 +159,7 @@ enum class EDisplayClusterConfigurationRenderMGPUMode : uint8
 	// Disable multi GPU rendering
 	None         UMETA(DisplayName = "Disabled"),
 
-	// Use default UE4 crossGPU transfer
+	// Use default UE crossGPU transfer
 	Enabled      UMETA(DisplayName = "Enabled"),
 
 	// Performance (Experimental): Use optimized transfer once per frame with bLockStepGPUs=true
@@ -178,3 +168,20 @@ enum class EDisplayClusterConfigurationRenderMGPUMode : uint8
 	// Performance (Experimental): Use optimized transfer once per frame with bLockStepGPUs=false 
 	Optimized_DisabledLockSteps  UMETA(DisplayName = "Optimization: Disabled Lockstep"),
 };
+
+UENUM()
+enum class EDisplayClusterConfigurationViewportOverscanMode : uint8
+{
+	None     UMETA(DisplayName = "Disabled"),
+	Pixels   UMETA(DisplayName = "Enabled: Pixels values"),
+	Percent  UMETA(DisplayName = "Enabled: Percent values")
+};
+
+UENUM()
+enum class EDisplayClusterConfigurationRenderMode : uint8
+{
+	Mono        UMETA(DisplayName = "Mono"),
+	SideBySide  UMETA(DisplayName = "Stereo: Side By Side"),
+	TopBottom   UMETA(DisplayName = "Stereo: Top Bottom")
+};
+

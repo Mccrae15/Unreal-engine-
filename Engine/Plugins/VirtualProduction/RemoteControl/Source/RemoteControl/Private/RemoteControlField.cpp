@@ -4,6 +4,7 @@
 
 #include "Components/ActorComponent.h"
 #include "GameFramework/Actor.h"
+#include "IRemoteControlModule.h"
 #include "RemoteControlObjectVersion.h"
 #include "RemoteControlFieldPath.h"
 #include "RemoteControlBinding.h"
@@ -192,6 +193,11 @@ TSharedPtr<IRemoteControlPropertyHandle> FRemoteControlProperty::GetPropertyHand
 	return FRemoteControlPropertyHandle::GetPropertyHandle(ThisPtr, Property, ParentProperty, ParentFieldPath, ArrayIndex);
 }
 
+bool FRemoteControlProperty::IsEditableInPackaged() const
+{
+	return bIsEditableInPackaged || IRemoteControlModule::Get().PropertySupportsRawModificationWithoutEditor(GetProperty());
+}
+
 bool FRemoteControlProperty::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FRemoteControlObjectVersion::GUID);
@@ -232,7 +238,14 @@ UClass* FRemoteControlProperty::GetSupportedBindingClass() const
 	
 	if (FProperty* Property = GetProperty())
 	{
-		return Property->GetOwnerClass();
+		if (UClass* PropertyOwnerClass = Property->GetOwnerClass())
+		{
+			return PropertyOwnerClass;
+		}
+		else if (!OwnerClass.IsValid() && FieldPathInfo.GetSegmentCount() > 0 && FieldPathInfo.GetFieldSegment(0).IsResolved())
+		{
+			return FieldPathInfo.GetFieldSegment(0).ResolvedData.Field->GetOwnerClass();
+		}
 	}
 	return nullptr;
 }
@@ -289,32 +302,46 @@ void FRemoteControlProperty::InitializeMetadata()
 
 FRemoteControlFunction::FRemoteControlFunction(FName InLabel, FRCFieldPathInfo FieldPathInfo, UFunction* InFunction)
 	: FRemoteControlField(nullptr, EExposedFieldType::Function, InLabel, MoveTemp(FieldPathInfo), {})
-	, Function(InFunction)
+	, FunctionPath(InFunction)
 {
-	check(Function);
-	FunctionArguments = MakeShared<FStructOnScope>(Function);
-	Function->InitializeStruct(FunctionArguments->GetStructMemory());
+	checkSlow(InFunction);
+	FunctionArguments = MakeShared<FStructOnScope>(InFunction);
+	InFunction->InitializeStruct(FunctionArguments->GetStructMemory());
 	AssignDefaultFunctionArguments();
 	OwnerClass = GetSupportedBindingClass();
+
+#if WITH_EDITOR
+	CachedFunctionArgsHash = HashFunctionArguments(InFunction);
+#endif
 }
 
 FRemoteControlFunction::FRemoteControlFunction(URemoteControlPreset* InPreset, FName InLabel, FRCFieldPathInfo InFieldPathInfo, UFunction* InFunction, const TArray<URemoteControlBinding*>& InBindings)
 	: FRemoteControlField(InPreset, EExposedFieldType::Function, InLabel, MoveTemp(InFieldPathInfo), InBindings)
-	, Function(InFunction)
+	, FunctionPath(InFunction)
 {
-	check(Function);
-	FunctionArguments = MakeShared<FStructOnScope>(Function);
-	Function->InitializeStruct(FunctionArguments->GetStructMemory());
+	check(InFunction);
+	FunctionArguments = MakeShared<FStructOnScope>(InFunction);
+	InFunction->InitializeStruct(FunctionArguments->GetStructMemory());
+	CachedFunction = InFunction;
 	AssignDefaultFunctionArguments();
 	OwnerClass = GetSupportedBindingClass();
 
-	bIsEditorOnly = Function->HasAnyFunctionFlags(FUNC_EditorOnly);
-	bIsCallableInPackaged = Function->HasAnyFunctionFlags(FUNC_BlueprintCallable);
+	bIsEditorOnly = InFunction->HasAnyFunctionFlags(FUNC_EditorOnly);
+	bIsCallableInPackaged = InFunction->HasAnyFunctionFlags(FUNC_BlueprintCallable);
+
+#if WITH_EDITOR
+	CachedFunctionArgsHash = HashFunctionArguments(InFunction);
+#endif
 }
 
 uint32 FRemoteControlFunction::GetUnderlyingEntityIdentifier() const
 {
-	return Function ? GetTypeHash(Function->GetName()) : 0;
+	if (UFunction* Function = GetFunction())
+	{
+		return GetTypeHash(Function->GetName());
+	}
+	
+	return 0;
 }
 
 bool FRemoteControlFunction::Serialize(FArchive& Ar)
@@ -333,14 +360,19 @@ void FRemoteControlFunction::PostSerialize(const FArchive& Ar)
 	if (Ar.IsLoading())
 	{
 		int32 CustomVersion = Ar.CustomVer(FRemoteControlObjectVersion::GUID);
+
 		if (CustomVersion < FRemoteControlObjectVersion::AddedFieldFlags)
 		{
-			if (Function)
+			if (UFunction* Function = GetFunction())
 			{
 				bIsEditorOnly = Function->HasAnyFunctionFlags(FUNC_EditorOnly);
 				bIsCallableInPackaged = Function->HasAnyFunctionFlags(FUNC_BlueprintCallable);
 			}
 		}
+
+#if WITH_EDITOR
+		CachedFunctionArgsHash = HashFunctionArguments(GetFunction());
+#endif
 	}
 }
 
@@ -351,7 +383,7 @@ UClass* FRemoteControlFunction::GetSupportedBindingClass() const
 		return Class;	
 	}
 
-	if (Function)
+	if (UFunction* Function = GetFunction())
 	{
 		return Function->GetOwnerClass();
 	}
@@ -360,58 +392,144 @@ UClass* FRemoteControlFunction::GetSupportedBindingClass() const
 
 bool FRemoteControlFunction::IsBound() const
 {
-	if (!Function)
+	if (UFunction* Function = GetFunction())
 	{
-		return false;
+		TArray<UObject*> BoundObjects = GetBoundObjects();
+		if (!BoundObjects.Num())
+		{
+			return false;
+		}
+		
+		if (UClass* SupportedClass = GetSupportedBindingClass())
+		{
+			return BoundObjects.ContainsByPredicate([SupportedClass](UObject* Object){ return Object->GetClass() && Object->GetClass()->IsChildOf(SupportedClass);});
+		}
 	}
 	
-	TArray<UObject*> BoundObjects = GetBoundObjects();
-	if (!BoundObjects.Num())
-	{
-		return false;
-	}
-	
-	if (UClass* SupportedClass = GetSupportedBindingClass())
-	{
-		return BoundObjects.ContainsByPredicate([SupportedClass](UObject* Object){ return Object->GetClass()->IsChildOf(SupportedClass);});
-	}
-
 	return false;
 }
+
+UFunction* FRemoteControlFunction::GetFunction() const
+{
+	UObject* ResolvedObject = FunctionPath.ResolveObject();
+	
+	if (!ResolvedObject)
+	{
+		ResolvedObject = FunctionPath.TryLoad();
+	}
+
+	UFunction* ResolvedFunction = Cast<UFunction>(ResolvedObject);
+	if (ResolvedFunction)
+	{
+		CachedFunction = ResolvedFunction;
+	}
+	
+	return ResolvedFunction;
+}
+
+#if WITH_EDITOR
+void FRemoteControlFunction::RegenerateArguments()
+{
+	// Recreate the function arguments with the function from the new BP and copy the old ones on top of it.
+	if (UFunction* Function = GetFunction())
+	{
+		FStructOnScope NewFunctionOnScope{ Function };
+
+		// Only port the old values if the new function has the same arguments.
+		// We use a hash to determine compatibility because the old function may not be available after a recompile.
+		const uint32 NewHash = HashFunctionArguments(Function);
+		if (CachedFunctionArgsHash == NewHash)
+		{
+			for (TFieldIterator<FProperty> It(Function); It; ++It)
+			{
+				It->CopyCompleteValue_InContainer(NewFunctionOnScope.GetStructMemory(), FunctionArguments->GetStructMemory());
+			}
+		}
+		else
+		{
+			CachedFunctionArgsHash = NewHash; 
+		}
+		
+		*FunctionArguments = MoveTemp(NewFunctionOnScope);
+	}
+}
+#endif
 
 void FRemoteControlFunction::AssignDefaultFunctionArguments()
 {
 #if WITH_EDITOR
-	for (TFieldIterator<FProperty> It(Function); It; ++It)
+	if (UFunction* Function = GetFunction())
 	{
-		if (!It->HasAnyPropertyFlags(CPF_ReturnParm))
+		for (TFieldIterator<FProperty> It(Function); It; ++It)
 		{
-			const FName DefaultPropertyKey = *FString::Printf(TEXT("CPP_Default_%s"), *It->GetName());
-			const FString& PropertyDefaultValue = Function->GetMetaData(DefaultPropertyKey);
-			if (!PropertyDefaultValue.IsEmpty())
+			if (!It->HasAnyPropertyFlags(CPF_ReturnParm))
 			{
-				It->ImportText(*PropertyDefaultValue, It->ContainerPtrToValuePtr<uint8>(FunctionArguments->GetStructMemory()), PPF_None, NULL);
+				const FName DefaultPropertyKey = *FString::Printf(TEXT("CPP_Default_%s"), *It->GetName());
+				const FString& PropertyDefaultValue = Function->GetMetaData(DefaultPropertyKey);
+				if (!PropertyDefaultValue.IsEmpty())
+				{
+					It->ImportText(*PropertyDefaultValue, It->ContainerPtrToValuePtr<uint8>(FunctionArguments->GetStructMemory()), PPF_None, NULL);
+				}
 			}
 		}
 	}
 #endif
 }
 
+#if WITH_EDITOR
+uint32 FRemoteControlFunction::HashFunctionArguments(UFunction* InFunction)
+{
+	if (!InFunction)
+	{
+		return 0;
+	}
+
+	uint32 Hash = GetTypeHash(InFunction->NumParms);
+
+	for (TFieldIterator<FProperty> It(InFunction); It; ++It)
+	{
+		const bool Param = It->HasAnyPropertyFlags(CPF_Parm);
+		const bool OutParam = It->HasAnyPropertyFlags(CPF_OutParm) && !It->HasAnyPropertyFlags(CPF_ConstParm);
+		const bool ReturnParam = It->HasAnyPropertyFlags(CPF_ReturnParm);
+
+		if (!Param || OutParam || ReturnParam)
+		{
+			continue;
+		}
+
+		Hash = HashCombine(Hash, GetTypeHash(It->GetClass()->GetFName()));
+		Hash = HashCombine(Hash, GetTypeHash(It->GetSize()));
+	}
+
+	return Hash;
+}
+#endif
+
 FArchive& operator<<(FArchive& Ar, FRemoteControlFunction& RCFunction)
 {
 	Ar.UsingCustomVersion(FRemoteControlObjectVersion::GUID);
-	
+
 	FRemoteControlFunction::StaticStruct()->SerializeTaggedProperties(Ar, (uint8*)&RCFunction, FRemoteControlFunction::StaticStruct(), nullptr);
 
 	if (Ar.IsLoading())
 	{
-		RCFunction.FunctionArguments = MakeShared<FStructOnScope>(RCFunction.Function);
+#if WITH_EDITOR
+		if (RCFunction.Function_DEPRECATED && RCFunction.FunctionPath.IsValid())
+		{
+			RCFunction.FunctionPath = RCFunction.Function_DEPRECATED;
+		}
+#endif
+		
+		if (UFunction* Function = RCFunction.GetFunction())
+		{
+			RCFunction.FunctionArguments = MakeShared<FStructOnScope>(Function);
+			Function->SerializeTaggedProperties(Ar, RCFunction.FunctionArguments->GetStructMemory(), Function, nullptr);
+		}
 	}
-
-	if (ensure(RCFunction.Function))
+	else if (RCFunction.CachedFunction.IsValid())
 	{
-		RCFunction.Function->SerializeTaggedProperties(Ar, RCFunction.FunctionArguments->GetStructMemory(), RCFunction.Function, nullptr);
+		RCFunction.CachedFunction->SerializeTaggedProperties(Ar, RCFunction.FunctionArguments->GetStructMemory(), RCFunction.CachedFunction.Get(), nullptr);	
 	}
-
+		
 	return Ar;
 }

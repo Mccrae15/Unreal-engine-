@@ -1,16 +1,13 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
 #include "Amf_Common.h"
+#include "HAL/Platform.h"
+
+#if PLATFORM_DESKTOP && !PLATFORM_APPLE
+
 #include "AVEncoder.h"
 
-#define CHECK_AMF_RET(AMF_call)\
-{\
-	AMF_RESULT Res = AMF_call;\
-	if (!(Res== AMF_OK || Res==AMF_ALREADY_INITIALIZED))\
-	{\
-		UE_LOG(LogAVEncoder, Error, TEXT("`" #AMF_call "` failed with error code: %d"), Res);\
-		/*check(false);*/\
-		return;\
-	}\
-}
+#include "RHI.h"
 
 namespace AVEncoder
 {
@@ -54,14 +51,34 @@ namespace AVEncoder
         }
     }
 
+    bool FAmfCommon::CreateEncoder(amf::AMFComponentPtr& outEncoder)
+    {
+		AMF_RESULT res = AmfFactory->CreateComponent(AmfContext, AMFVideoEncoderVCE_AVC, &outEncoder);
+		if (res != AMF_OK)
+		{
+			UE_LOG(LogAVEncoder, Error, TEXT("AMF failed to create Encoder component with code: %d"), res);
+			return false;
+		}
+        return true;
+    }
+
     void FAmfCommon::SetupAmfFunctions()
     {
 	    check(!bIsAvailable);
-        
-        // TODO (M84FIX) Amf setup
-        DllHandle = FPlatformProcess::GetDllHandle(UTF8_TO_TCHAR(AMF_DLL_NAME));
 
-        AMFInit_Fn AmfInitFn = (AMFInit_Fn)FPlatformProcess::GetDllExport(DllHandle, UTF8_TO_TCHAR(AMF_INIT_FUNCTION_NAME));
+		// Can't use Amf without and AMD GPU (also no point if its not the one RHI is using)
+		if (!IsRHIDeviceAMD())
+		{
+			return;
+		}
+
+#ifdef AMF_DLL_NAMEA
+        DllHandle = FPlatformProcess::GetDllHandle(TEXT(AMF_DLL_NAMEA));
+
+        AMFInit_Fn AmfInitFn = (AMFInit_Fn)FPlatformProcess::GetDllExport(DllHandle, TEXT(AMF_INIT_FUNCTION_NAME));
+#else
+        AMFInit_Fn AmfInitFn = nullptr;
+#endif
         if (AmfInitFn == nullptr)
         {
             return;
@@ -71,7 +88,28 @@ namespace AVEncoder
 
         CHECK_AMF_RET(AmfFactory->CreateContext(&AmfContext));
 
-        bIsAvailable = true;
+		// TODO this needs to get moved to lazy initialize when the encoder is actually called 
+		{
+			FString RHIName = GDynamicRHI->GetName();
 
+			if (RHIName == "D3D11")
+			{
+				AmfContext->InitDX11(GDynamicRHI->RHIGetNativeDevice());
+			}
+			else if (RHIName == "D3D12")
+			{
+				AMFContext2Ptr(AmfContext)->InitDX12(GDynamicRHI->RHIGetNativeDevice());
+			}
+			else if (RHIName == "Vulkan")
+			{
+				AMFContext1Ptr(AmfContext)->InitVulkan(GDynamicRHI->RHIGetNativeDevice());
+			}
+
+			bIsCtxInitialized = true;
+		}
+
+        bIsAvailable = true;
     }
 }
+
+#endif  // PLATFORM_DESKTOP && !PLATFORM_APPLE

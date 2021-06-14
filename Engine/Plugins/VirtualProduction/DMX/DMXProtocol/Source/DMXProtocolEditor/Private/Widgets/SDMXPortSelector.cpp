@@ -26,7 +26,7 @@ TSharedRef<FDMXPortSelectorItem> FDMXPortSelectorItem::CreateItem(const FDMXInpu
 {
 	TSharedRef<FDMXPortSelectorItem> NewItem = MakeShared<FDMXPortSelectorItem>();
 
-	NewItem->ItemName = InInputPortConfig.PortName;
+	NewItem->ItemName = InInputPortConfig.GetPortName();
 	NewItem->PortGuid = InInputPortConfig.GetPortGuid();
 	NewItem->Type = EDMXPortSelectorItemType::Input;
 
@@ -38,7 +38,7 @@ TSharedRef<FDMXPortSelectorItem> FDMXPortSelectorItem::CreateItem(const FDMXOutp
 {
 	TSharedRef<FDMXPortSelectorItem> NewItem = MakeShared<FDMXPortSelectorItem>();
 
-	NewItem->ItemName = InOutputPortConfig.PortName;
+	NewItem->ItemName = InOutputPortConfig.GetPortName();
 	NewItem->PortGuid = InOutputPortConfig.GetPortGuid();
 	NewItem->Type = EDMXPortSelectorItemType::Output;
 
@@ -55,7 +55,7 @@ void SDMXPortSelector::Construct(const FArguments& InArgs)
 	UDMXProtocolSettings* ProtocolSettings = GetMutableDefault<UDMXProtocolSettings>();
 	check(ProtocolSettings);
 
-	ProtocolSettings->OnPortConfigsChanged.AddSP(this, &SDMXPortSelector::OnPortConfigsChanged);
+	FDMXPortManager::Get().OnPortsChanged.AddSP(this, &SDMXPortSelector::OnPortsChanged);
 
 	ChildSlot
 		[
@@ -71,6 +71,8 @@ void SDMXPortSelector::Construct(const FArguments& InArgs)
 		check(PortNameComboBox.IsValid());
 		PortNameComboBox->SetSelectedItem(InitialSelection);
 	}
+
+	bIsUnderConstruction = false;
 }
 
 bool SDMXPortSelector::IsInputPortSelected() const
@@ -196,9 +198,6 @@ void SDMXPortSelector::OnPortItemSelectionChanged(TSharedPtr<FDMXPortSelectorIte
 		}
 		else
 		{
-			// Only broadcast changes, but not the initial selection
-			bool bInitialSelection = !RestoreItem.IsValid();
-
 			if (Item.IsValid())
 			{
 				RestoreItem = Item;
@@ -209,7 +208,8 @@ void SDMXPortSelector::OnPortItemSelectionChanged(TSharedPtr<FDMXPortSelectorIte
 				PortNameTextBlock->SetText(LOCTEXT("SelectPortPrompt", "Please select a port"));
 			}
 
-			if (!bInitialSelection)
+			// Only broadcast changes after construction
+			if (!bIsUnderConstruction)
 			{
 				OnPortSelected.ExecuteIfBound();
 			}
@@ -344,7 +344,7 @@ TSharedPtr<FDMXPortSelectorItem> SDMXPortSelector::GetFirstPortInComboBoxSource(
 	return PortItemPtr ? *PortItemPtr : nullptr;
 }
 
-void SDMXPortSelector::OnPortConfigsChanged()
+void SDMXPortSelector::OnPortsChanged()
 {
 	check(PortNameComboBox.IsValid());
 

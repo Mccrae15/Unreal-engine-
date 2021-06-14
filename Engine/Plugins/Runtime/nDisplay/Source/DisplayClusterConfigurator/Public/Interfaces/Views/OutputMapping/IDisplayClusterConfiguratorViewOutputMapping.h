@@ -16,7 +16,7 @@ struct FOutputMappingSettings
 	bool bKeepClusterNodesInHosts;
 	bool bLockViewports;
 	bool bLockClusterNodes;
-	bool bZoomToSelectedClusterItems;
+	bool bTintSelectedViewports;
 	float ViewScale;
 
 	FOutputMappingSettings() :
@@ -28,7 +28,7 @@ struct FOutputMappingSettings
 		bKeepClusterNodesInHosts(true),
 		bLockViewports(false),
 		bLockClusterNodes(false),
-		bZoomToSelectedClusterItems(true),
+		bTintSelectedViewports(true),
 		ViewScale(1.0f)
 	{ }
 };
@@ -77,11 +77,16 @@ class IDisplayClusterConfiguratorViewOutputMapping
 	: public IDisplayClusterConfiguratorView
 {
 public:
+	virtual ~IDisplayClusterConfiguratorViewOutputMapping() = default;
+
+public:
 	DECLARE_MULTICAST_DELEGATE(FOnOutputMappingBuilt);
 
 	using FOnOutputMappingBuiltDelegate = FOnOutputMappingBuilt::FDelegate;
 
 public:
+	virtual void Cleanup() = 0;
+
 	virtual const FOutputMappingSettings& GetOutputMappingSettings() const = 0;
 	virtual FOutputMappingSettings& GetOutputMappingSettings() = 0;
 
@@ -95,5 +100,7 @@ public:
 	virtual FDelegateHandle RegisterOnOutputMappingBuilt(const FOnOutputMappingBuiltDelegate& Delegate) = 0;
 	virtual void UnregisterOnOutputMappingBuilt(FDelegateHandle DelegateHandle) = 0;
 
-	virtual void SetViewportPreviewTexture(const FString& NodeId, const FString& ViewportId, UTexture* InTexture) = 0;
+	virtual void FindAndSelectObjects(const TArray<UObject*>& ObjectsToSelect) = 0;
+
+	virtual void JumpToObject(UObject* InObject) = 0;
 };

@@ -58,6 +58,11 @@ static const int32 MaxHWDecodeH = 1088;
 
 }
 
+
+DECLARE_CYCLE_STAT(TEXT("FVideoDecoderH264::Decode()"), STAT_ElectraPlayer_VideoH264Decode, STATGROUP_ElectraPlayer);
+DECLARE_CYCLE_STAT(TEXT("FVideoDecoderH264::ConvertOutput()"), STAT_ElectraPlayer_VideoH264ConvertOutput, STATGROUP_ElectraPlayer);
+
+
 namespace Electra {
 
 IVideoDecoderH264::FSystemConfiguration			FVideoDecoderH264::SystemConfig;
@@ -459,6 +464,9 @@ bool FVideoDecoderH264::FallbackToSwDecoding(FString Reason)
 		// Once multithread protection is enabled we don't disable it, so UE4's rendering device stays protected for the rest of its lifetime.
 		// Some other system could enable multithread protection after we did it, we have no means to know about this, and so disabling it
 		// at the end of playback can cause GPU driver crash
+		//
+		// The DX11 rendering device will also come in as null if DX12 or a non-DX rendering API is used on the PC.
+		//
 		if (Electra::FDXDeviceInfo::s_DXDeviceInfo->RenderingDx11Device)
 		{
 			HRESULT res;
@@ -864,7 +872,10 @@ bool FVideoDecoderH264::AcquireOutputBuffer()
 
 bool FVideoDecoderH264::ConvertDecodedImage(const TRefCountPtr<IMFSample>& DecodedOutputSample)
 {
-	FParamDict* OutputBufferSampleProperties = new FParamDict();
+	SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264ConvertOutput);
+	CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264ConvertOutput);
+
+	TUniquePtr<FParamDict> OutputBufferSampleProperties = MakeUnique<FParamDict>();
 	if (!OutputBufferSampleProperties)
 	{
 		return false;
@@ -956,14 +967,14 @@ bool FVideoDecoderH264::ConvertDecodedImage(const TRefCountPtr<IMFSample>& Decod
 
 	if (CurrentRenderOutputBuffer != nullptr)
 	{
-		if (!SetupDecodeOutputData(FIntPoint(videoArea.Area.cx, videoArea.Area.cy), DecodedOutputSample, OutputBufferSampleProperties))
+		if (!SetupDecodeOutputData(FIntPoint(videoArea.Area.cx, videoArea.Area.cy), DecodedOutputSample, OutputBufferSampleProperties.Get()))
 		{
 			return false;
 		}
 
 		Renderer->ReturnBuffer(CurrentRenderOutputBuffer, true, *OutputBufferSampleProperties);
 		CurrentRenderOutputBuffer = nullptr;
-
+		OutputBufferSampleProperties.Release();
 	}
 	return true;
 }
@@ -1007,7 +1018,8 @@ bool FVideoDecoderH264::Decode(FAccessUnit* AccessUnit, bool bResolutionChanged)
 		DWORD					dwSize = 0;
 		LONGLONG				llSampleTime = 0;
 
-		CSV_SCOPED_TIMING_STAT(ElectraPlayer, FVideoDecoderH264_Worker);
+		SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+		CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
 
 		VERIFY_HR(MFCreateSample(InputSample.GetInitReference()), "Failed to create video decoder input sample", ERRCODE_INTERNAL_COULD_NOT_CREATE_INPUT_SAMPLE);
 		VERIFY_HR(MFCreateMemoryBuffer((DWORD) AccessUnit->AUSize, InputSampleBuffer.GetInitReference()), "Failed to create video decoder input sample memory buffer", ERRCODE_INTERNAL_COULD_NOT_CREATE_INPUTBUFFER);
@@ -1058,7 +1070,8 @@ bool FVideoDecoderH264::Decode(FAccessUnit* AccessUnit, bool bResolutionChanged)
 
 		if (!CurrentDecoderOutputBuffer.IsValid())
 		{
-			CSV_SCOPED_TIMING_STAT(ElectraPlayer, FVideoDecoderH264_Worker);
+			SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+			CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
 
 			if (!CreateDecoderOutputBuffer())
 			{
@@ -1076,6 +1089,8 @@ bool FVideoDecoderH264::Decode(FAccessUnit* AccessUnit, bool bResolutionChanged)
 			// Draining for resolution change?
 			if (bResolutionChanged || bDecoderFlushPending)
 			{
+				SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+				CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
 				bDecoderFlushPending = false;
 				CurrentSampleInfo = NewSampleInfo;
 				SetupBufferAcquisitionProperties();
@@ -1091,6 +1106,8 @@ bool FVideoDecoderH264::Decode(FAccessUnit* AccessUnit, bool bResolutionChanged)
 			{
 				// Yes. This means we have received all pending output and are done now.
 				// Issue a flush for completeness sake.
+				SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+				CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
 				VERIFY_HR(DecoderTransform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0), "Failed to issue video decoder flush command", ERRCODE_INTERNAL_COULD_NOT_SET_DECODER_FLUSHCOMMAND);
 				// And start over.
 				VERIFY_HR(DecoderTransform->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0), "Failed to set video decoder stream begin", ERRCODE_INTERNAL_COULD_NOT_SET_DECODER_BEGIN);
@@ -1101,8 +1118,6 @@ bool FVideoDecoderH264::Decode(FAccessUnit* AccessUnit, bool bResolutionChanged)
 			}
 			else if (InputSample.IsValid())
 			{
-				CSV_SCOPED_TIMING_STAT(ElectraPlayer, FVideoDecoderH264_Worker);
-
 				VERIFY_HR(DecoderTransform->ProcessInput(0, InputSample.GetReference(), 0), "Failed to process video decoder input", ERRCODE_INTERNAL_COULD_NOT_PROCESS_INPUT);
 				// Used this sample. Have no further input data for now, but continue processing to produce output if possible.
 				InputSample = nullptr;
@@ -1116,6 +1131,8 @@ bool FVideoDecoderH264::Decode(FAccessUnit* AccessUnit, bool bResolutionChanged)
 		}
 		else if (res == MF_E_TRANSFORM_STREAM_CHANGE)
 		{
+			SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+			CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
 			//if((CurrentDecoderOutputBuffer->mOutputBuffer.dwFlags & MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE) != 0)
 			{
 				// Update output type.
@@ -1143,13 +1160,12 @@ bool FVideoDecoderH264::Decode(FAccessUnit* AccessUnit, bool bResolutionChanged)
 					}
 				}
 
-				CSV_SCOPED_TIMING_STAT(ElectraPlayer, FVideoDecoderH264_Worker);
-
 				// Check if to be flushed now. This may have resulted in AcquireOutputBuffer() to return with no buffer!
 				if (FlushDecoderSignal.IsSignaled())
 				{
 					break;
 				}
+
 				if (!ConvertDecodedImage(DecodedOutputSample))
 				{
 					return false;
@@ -1293,6 +1309,7 @@ void FVideoDecoderH264::WorkerThread()
 
 	bool bDone = false;
 	bool bInDummyDecodeMode = false;
+	bool bGotLastSequenceAU = false;
 
 	// Require a new media input type based on the actual first access unit.
 	bool bNeedInitialReconfig = true;
@@ -1301,7 +1318,8 @@ void FVideoDecoderH264::WorkerThread()
 		// Notify optional buffer listener that we will now be needing an AU for our input buffer.
 		if (!bError && InputBufferListener && AccessUnits.Num() == 0)
 		{
-			CSV_SCOPED_TIMING_STAT(ElectraPlayer, FVideoDecoderH264_Worker);
+			SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+			CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
 
 			FAccessUnitBufferInfo	sin;
 			IAccessUnitBufferListener::FBufferStats	stats;
@@ -1343,7 +1361,8 @@ void FVideoDecoderH264::WorkerThread()
 				if (!CurrentAccessUnit->bIsDummyData)
 				{
 					{
-					CSV_SCOPED_TIMING_STAT(ElectraPlayer, FVideoDecoderH264_Worker);
+					SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+					CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
 					PrepareAU(CurrentAccessUnit);
 					}
 
@@ -1351,7 +1370,7 @@ void FVideoDecoderH264::WorkerThread()
 					if (!bError)
 					{
 						// Update the buffer acquisition after a change in streams?
-						bool bFormatChangedJustNow = CurrentSampleInfo.IsDifferentFromOtherVideo(NewSampleInfo);
+						bool bFormatChangedJustNow = CurrentSampleInfo.IsDifferentFromOtherVideo(NewSampleInfo) || bGotLastSequenceAU;
 
 						if (bInDummyDecodeMode)
 						{
@@ -1361,7 +1380,8 @@ void FVideoDecoderH264::WorkerThread()
 
 						if (!bHaveDecoder)
 						{
-							CSV_SCOPED_TIMING_STAT(ElectraPlayer, FVideoDecoderH264_Worker);
+							SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+							CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
 							DecoderCreate();
 							bNeedInitialReconfig = true;
 						}
@@ -1380,7 +1400,7 @@ void FVideoDecoderH264::WorkerThread()
 							SetupBufferAcquisitionProperties();
 						}
 						bNeedInitialReconfig = false;
-
+						bGotLastSequenceAU = CurrentAccessUnit->bIsLastInPeriod;
 						if (!Decode(CurrentAccessUnit, false))
 						{
 							bError = true;
@@ -1435,7 +1455,8 @@ void FVideoDecoderH264::WorkerThread()
 		// Flush?
 		if (FlushDecoderSignal.IsSignaled())
 		{
-			CSV_SCOPED_TIMING_STAT(ElectraPlayer, FVideoDecoderH264_Worker);
+			SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+			CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
 
 			// Destroy and re-create.
 			InternalDecoderDestroy();

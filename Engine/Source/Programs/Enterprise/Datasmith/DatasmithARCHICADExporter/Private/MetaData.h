@@ -2,26 +2,25 @@
 
 #pragma once
 
-#include "AddonTools.h"
+#include "Utils/AddonTools.h"
 
 BEGIN_NAMESPACE_UE_AC
 
 class FMetaData
 {
   public:
-	FMetaData(const GS::Guid& InElementId);
+	//	FMetaData(const GS::Guid& InElementID);
 
-	FMetaData(const GS::Guid& InElementId, const TSharedPtr< IDatasmithActorElement >& InActorElement);
+	FMetaData(const TSharedPtr< IDatasmithElement >& InElement);
 
-	void SetAssociatedElement(const GS::Guid& /* InElementId */,
-							  const TSharedPtr< IDatasmithActorElement >& InActorElement)
+	void SetAssociatedElement(const GS::Guid& /* InElementID */, const TSharedPtr< IDatasmithElement >& InElement)
 	{
-		MetaData->SetAssociatedElement(InActorElement);
+		MetaData->SetAssociatedElement(InElement);
 	}
 
-	void SetOrUpdate(TSharedPtr< IDatasmithMetaDataElement >* IOPtr, IDatasmithScene* IOScene);
+	bool SetOrUpdate(TSharedPtr< IDatasmithMetaDataElement >* IOPtr, IDatasmithScene* IOScene);
 
-	void ExportMetaData();
+	void ExportMetaData(const GS::Guid& InElementID);
 
 	const TSharedRef< IDatasmithMetaDataElement >& GetMetaData() const { return MetaData; }
 
@@ -47,23 +46,24 @@ class FMetaData
 	void AddMetaDataProperty(API_VariantType variantType, const GS::UniString& PropertyKey,
 							 const GS::UniString& PropertyValue);
 
-	void ExportElementIDProperty();
+	void ExportElementIDProperty(const API_Guid& InlementId);
 
-	void ExportClassifications();
+	void ExportClassifications(const API_Guid& InlementId);
 
-	void ExportCategories();
+	void ExportCategories(const API_Guid& InlementId);
 
-	void ExportIFCProperties();
+	void ExportIFCType(const API_Guid& InlementId);
 
-	void ExportIFCAttributes();
+	void ExportIFCProperties(const API_Guid& InlementId);
 
-	void ExportProperties();
+	void ExportIFCAttributes(const API_Guid& InlementId);
+
+	void ExportProperties(const API_Guid& InlementId);
 
 	GS::UniString GetPropertyValueString(const API_IFCPropertyValue& InIFCPropertyValue);
 
 	GS::UniString GetPropertyValueString(const API_Variant& InVariant);
 
-	const GS::Guid							ElementId;
 	TSharedRef< IDatasmithMetaDataElement > MetaData;
 };
 

@@ -19,14 +19,13 @@ void FDisplayClusterConfiguratorCommands::RegisterCommands()
 	UI_COMMAND(ToggleLockClusterNodesInHosts, "Keep Cluster Nodes inside Hosts", "Prevents cluster nodes from being moved outside of hosts when being manipulated", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ToggleLockViewports, "Lock Viewports in place", "Locks viewports in place, preventing them from being selected or dragged", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ToggleLockClusterNodes, "Lock Cluster Nodes in place", "Locks cluster nodes in place, preventing them from being selected or dragged", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND(ToggleTintViewports, "Tint Selected Viewports", "Toggles tinting selected viewports orange to better indicate that they are selected", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ZoomToFit, "Zoom To Fit", "Zoom To Fit In Graph", EUserInterfaceActionType::Button, FInputChord(EKeys::Z));
 
 	UI_COMMAND(BrowseDocumentation, "Documentation", "Opens the documentation reference documentation", EUserInterfaceActionType::Button, FInputChord());
 
 	UI_COMMAND(ToggleAdjacentEdgeSnapping, "Toggle Adjacent Edge Snapping", "Enables or disables snapping adjacent viewport edges together", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ToggleSameEdgeSnapping, "Toggle Same Edge Snapping", "Enables or disables snapping equivalent viewport edges together", EUserInterfaceActionType::ToggleButton, FInputChord());
-
-	UI_COMMAND(ToggleZoomToSelectedItems, "Zoom to Selected Cluster Items", "Enables or disables zooming to cluster items in the Output Mapping graph editor when they are selected ", EUserInterfaceActionType::ToggleButton, FInputChord());
 
 	UI_COMMAND(FillParentNode, "Fill Parent", "Resizes and positions this node to fill its parent", EUserInterfaceActionType::Button, FInputChord(EKeys::F, EModifierKey::Shift));
 	UI_COMMAND(SizeToChildNodes, "Size to Children", "Resizes this node to completely wrap its children", EUserInterfaceActionType::Button, FInputChord(EKeys::C, EModifierKey::Shift));
@@ -38,8 +37,10 @@ void FDisplayClusterConfiguratorCommands::RegisterCommands()
 	UI_COMMAND(ShowFloor, "Show Floor", "Toggles a ground mesh for collision", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ShowGrid, "Show Grid", "Toggles the grid", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ShowOrigin, "Show World Origin", "Display the exact world origin for nDisplay", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND(EnableAA, "Enable AA", "Enable anti aliasing in the preview window", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ShowPreview, "Show Projection Preview", "Show a projection preview when applicable", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(Show3DViewportNames, "Show Viewport Names", "Shows the viewport names in 3d space", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND(ToggleShowXformGizmos, "Show Xform Gizmos", "Shows the Xform component gizmos", EUserInterfaceActionType::ToggleButton, FInputChord());
 }
 
 #undef LOCTEXT_NAMESPACE

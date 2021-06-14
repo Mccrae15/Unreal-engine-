@@ -2931,7 +2931,7 @@ namespace AutomationTool
 
 				foreach (FileReference FileRef in DirectoryReference.EnumerateFiles(PathRef, "*", SearchOption.TopDirectoryOnly))
 				{
-					if (FileRef.GetExtension() == ".dylib" || FileRef.GetExtension() == ".so")
+					if (FileRef.GetExtension() == ".dylib" || FileRef.GetExtension() == ".so" || FileRef.GetExtension() == ".bundle")
 					{
 						SignMacFileOrFolder(FileRef.FullName, bIgnoreExtension, NotarizationEntitlements);
 					}
@@ -2944,6 +2944,7 @@ namespace AutomationTool
 			Extensions.Add(".so");
 			Extensions.Add(".app");
 			Extensions.Add(".framework");
+			Extensions.Add(".bundle");
 
 			bool bIsExecutable = bIgnoreExtension || (!bIsDirectory && Path.GetExtension(InPath) == "" && !InPath.EndsWith("PkgInfo"));
 

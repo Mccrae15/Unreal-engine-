@@ -76,7 +76,6 @@ void ReleaseBrickData(FVolumetricLightmapBrickData& BrickData)
 }
 
 void SetupPathTracingLightParameters(const GPULightmass::FLightSceneRenderState& LightScene, FRDGBuilder& GraphBuilder, FRDGBufferSRV** OutLightBuffer, uint32* OutLightCount);
-FSkyLightData SetupSkyLightParameters(const GPULightmass::FLightSceneRenderState& LightScene);
 
 namespace GPULightmass
 {
@@ -222,7 +221,7 @@ void FVolumetricLightmapRenderer::VoxelizeScene()
 		RHICmdList.Transition(FRHITransitionInfo(VoxelizationVolumeMips[0]->GetRenderTargetItem().UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVGraphics));
 	}
 
-
+	// Setup ray tracing scene with LOD 0
 	Scene->SetupRayTracingScene();
 
 	FMemMark Mark(FMemStack::Get());
@@ -518,9 +517,6 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 #if RHI_RAYTRACING
 			if (IsRayTracingEnabled())
 			{
-				// These two buffers must have lifetime extended beyond RHICmdList.RayTraceDispatch()
-				TUniformBufferRef<FSkyLightData> SkyLightDataUniformBuffer;
-
 				FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 
 				{
@@ -556,9 +552,10 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 
 					SetupPathTracingLightParameters(Scene->LightSceneRenderState, GraphBuilder, PassParameters);
 
-					// TODO: find a way to share IES atlas with path tracer ...
-					PassParameters->IESTexture = GWhiteTexture->TextureRHI;
+
 					PassParameters->IESTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+					PassParameters->SSProfilesTexture = GetSubsufaceProfileTexture_RT(GraphBuilder.RHICmdList)->GetShaderResourceRHI();
 
 					FSceneRenderState* SceneRenderState = Scene; // capture member variable
 					GraphBuilder.AddPass(

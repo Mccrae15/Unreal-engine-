@@ -4,7 +4,8 @@
 
 #include <stddef.h>
 
-#include "WarningsDisabler.h"
+#include "Utils/WarningsDisabler.h"
+#include "Utils/TaskMgr.h"
 
 DISABLE_SDK_WARNINGS_START
 
@@ -19,15 +20,17 @@ DISABLE_SDK_WARNINGS_START
 
 DISABLE_SDK_WARNINGS_END
 
-#include "DebugTools.h"
+#include "Utils/DebugTools.h"
 #include "LoadDatasmithDlls.h"
 #include "Export.h"
 #include "Menus.h"
 #include "Palette.h"
 #include "ProjectEvent.h"
+#include "Utils/ViewEvent.h"
 #include "ElementEvent.h"
 #include "ResourcesIDs.h"
 #include "Synchronizer.h"
+#include "ReportWindow.h"
 
 using namespace UE_AC;
 
@@ -41,7 +44,7 @@ using namespace UE_AC;
 
 API_AddonType __ACENV_CALL CheckEnvironment(API_EnvirParams* envir)
 {
-	UE_AC_TraceF("--- UE_AC CheckEnvironment\n");
+	UE_AC_TraceF("-> UE_AC CheckEnvironment\n");
 
 	short		  IdDescription = LocalizeResId(kStrListSyncPlugInDescription);
 	GS::UniString versStr("\n\t");
@@ -53,6 +56,8 @@ API_AddonType __ACENV_CALL CheckEnvironment(API_EnvirParams* envir)
 	RSGetIndString(&envir->addOnInfo.description, IdDescription, 2, ACAPI_GetOwnResModule());
 	envir->addOnInfo.description += versStr;
 
+	UE_AC_TraceF("<- UE_AC CheckEnvironment\n");
+
 	return APIAddon_Preload;
 }
 
@@ -62,12 +67,25 @@ API_AddonType __ACENV_CALL CheckEnvironment(API_EnvirParams* envir)
 
 GSErrCode __ACENV_CALL RegisterInterface(void)
 {
-	UE_AC_TraceF("--- UE_AC RegisterInterface\n");
+	UE_AC_TraceF("-> UE_AC RegisterInterface\n");
 
 	GSErrCode GSErr = FExport::Register();
-	GSErr = FMenus::Register();
+	if (GSErr == NoError)
+	{
+		GSErr = FMenus::Register();
+	}
+	if (GSErr == NoError)
+	{
+		GSErr = FSynchronizer::Register();
+	}
+	if (GSErr == NoError)
+	{
+		GSErr = FTraceListener::Register();
+	}
 
 	ACAPI_KeepInMemory(true);
+
+	UE_AC_TraceF("<- UE_AC RegisterInterface\n");
 
 	return GSErr;
 }
@@ -79,9 +97,10 @@ GSErrCode __ACENV_CALL RegisterInterface(void)
 
 GSErrCode __ACENV_CALL Initialize(void)
 {
-	UE_AC_TraceF("--- UE_AC Initialize\n");
+	UE_AC_TraceF("-> UE_AC Initialize\n");
 
 	LoadDatasmithDlls();
+	FTraceListener::Get();
 
 	GSErrCode GSErr = FExport::Initialize();
 	if (GSErr == NoError)
@@ -90,7 +109,15 @@ GSErrCode __ACENV_CALL Initialize(void)
 	}
 	if (GSErr == NoError)
 	{
+		GSErr = FSynchronizer::Initialize();
+	}
+	if (GSErr == NoError)
+	{
 		GSErr = FProjectEvent::Initialize();
+	}
+	if (GSErr == NoError)
+	{
+		GSErr = FViewEvent::Initialize();
 	}
 	if (GSErr == NoError)
 	{
@@ -100,6 +127,9 @@ GSErrCode __ACENV_CALL Initialize(void)
 	FPalette::Register();
 
 	ACAPI_KeepInMemory(true);
+
+	UE_AC_TraceF("<- UE_AC Initialize\n");
+
 	return GSErr;
 }
 
@@ -110,12 +140,17 @@ GSErrCode __ACENV_CALL Initialize(void)
 
 GSErrCode __ACENV_CALL FreeData(void)
 {
-	UE_AC_TraceF("--- UE_AC FreeData\n");
+	UE_AC_TraceF("-> UE_AC FreeData\n");
 
 	FPalette::Delete();
 	FPalette::Unregister();
 	FSynchronizer::DeleteSingleton();
 	UnloadDatasmithDlls(true);
+	FReportWindow::Delete();
+	FTraceListener::Delete();
+	FTaskMgr::DeleteMgr();
+
+	UE_AC_TraceF("<- UE_AC FreeData\n");
 
 	return NoError;
 }

@@ -122,13 +122,10 @@ private:
 						check(Generation >= GenerationSyncPoint.Key);
 						ActiveGenerations.Dequeue(GenerationSyncPoint);
 
-						// Unblock other threads while we wait for the command list to complete
-						ActiveGenerationsCS.Unlock();
-
 						GenerationSyncPoint.Value.WaitForCompletion();
 
-						ActiveGenerationsCS.Lock();
-						LastCompleteGeneration = FMath::Max(LastCompleteGeneration, GenerationSyncPoint.Key);
+						check(GenerationSyncPoint.Key > LastCompleteGeneration);
+						LastCompleteGeneration = GenerationSyncPoint.Key;
 					}
 				}
 			}
@@ -492,14 +489,7 @@ public:
 		return CommandListData->TrackedResourceState.GetResourceState(pResource);
 	}
 
-	void AddPendingResourceBarrier(FD3D12Resource* Resource, D3D12_RESOURCE_STATES State, uint32 SubResource)
-	{
-		check(CommandListData);
-
-		FD3D12PendingResourceBarrier PRB = { Resource, State, SubResource };
-
-		CommandListData->PendingResourceBarriers.Add(PRB);
-	}
+	D3D12RHI_API void AddPendingResourceBarrier(FD3D12Resource* Resource, D3D12_RESOURCE_STATES State, uint32 SubResource);
 
 	TArray<FD3D12PendingResourceBarrier>& PendingResourceBarriers()
 	{

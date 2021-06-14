@@ -556,31 +556,36 @@ FString FString::TrimEnd() &&
 	return MoveTemp(*this);
 }
 
-void FString::TrimQuotesInline(bool* bQuotesRemoved)
+void FString::TrimCharInline(const TCHAR CharacterToTrim, bool* bCharRemoved)
 {
 	bool bQuotesWereRemoved=false;
 	int32 Start = 0, Count = Len();
 	if ( Count > 0 )
 	{
-		if ( (*this)[0] == TCHAR('"') )
+		if ( (*this)[0] == CharacterToTrim )
 		{
 			Start++;
 			Count--;
 			bQuotesWereRemoved=true;
 		}
 
-		if ( Len() > 1 && (*this)[Len() - 1] == TCHAR('"') )
+		if ( Len() > 1 && (*this)[Len() - 1] == CharacterToTrim )
 		{
 			Count--;
 			bQuotesWereRemoved=true;
 		}
 	}
 
-	if ( bQuotesRemoved != nullptr )
+	if ( bCharRemoved != nullptr )
 	{
-		*bQuotesRemoved = bQuotesWereRemoved;
+		*bCharRemoved = bQuotesWereRemoved;
 	}
 	MidInline(Start, Count, false);
+}
+
+void FString::TrimQuotesInline(bool* bQuotesRemoved)
+{
+	TrimCharInline(TCHAR('"'), bQuotesRemoved);
 }
 
 FString FString::TrimQuotes(bool* bQuotesRemoved) const &
@@ -593,6 +598,19 @@ FString FString::TrimQuotes(bool* bQuotesRemoved) const &
 FString FString::TrimQuotes(bool* bQuotesRemoved) &&
 {
 	TrimQuotesInline(bQuotesRemoved);
+	return MoveTemp(*this);
+}
+
+FString FString::TrimChar(const TCHAR CharacterToTrim, bool* bCharRemoved) const &
+{
+	FString Result(*this);
+	Result.TrimCharInline(CharacterToTrim, bCharRemoved);
+	return Result;
+}
+
+FString FString::TrimChar(const TCHAR CharacterToTrim, bool* bCharRemoved) &&
+{
+	TrimCharInline(CharacterToTrim, bCharRemoved);
 	return MoveTemp(*this);
 }
 
@@ -785,13 +803,20 @@ bool FString::ToHexBlob( const FString& Source, uint8* DestBuffer, const uint32 
 	return false;
 }
 
+PRAGMA_DISABLE_OPTIMIZATION
+void StripNegativeZero(double& InFloat)
+{
+	// This works for translating a negative zero into a positive zero,
+	// but if optimizations are enabled when compiling with -ffast-math
+	// or /fp:fast, the compiler can strip it out.
+	InFloat += 0.0f;
+}
+PRAGMA_ENABLE_OPTIMIZATION
+
 FString FString::SanitizeFloat( double InFloat, const int32 InMinFractionalDigits )
 {
 	// Avoids negative zero
-	if( InFloat == 0 )
-	{
-		InFloat = 0;
-	}
+	StripNegativeZero(InFloat);
 
 	// First create the string
 	FString TempString = FString::Printf(TEXT("%f"), InFloat);

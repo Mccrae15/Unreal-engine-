@@ -7,6 +7,7 @@
 #include "Render/Viewport/DisplayClusterViewport_VisibilitySettings.h"
 
 #include "Render/Viewport/Containers/ImplDisplayClusterViewport_CameraMotionBlur.h"
+#include "Render/Viewport/Containers/ImplDisplayClusterViewport_Overscan.h"
 
 #include "SceneViewExtensionContext.h"
 #include "OpenColorIODisplayExtension.h"
@@ -16,9 +17,18 @@ class FDisplayClusterTextureResource;
 class FDisplayClusterViewportManager;
 class FDisplayClusterRenderTargetManager;
 class FDisplayClusterRenderFrameManager;
-class FDisplayClusterViewportProxy_ExchangeContainer;
+class FDisplayClusterViewportProxyData;
 class FDisplayClusterViewportProxy;
 struct FDisplayClusterRenderFrameSettings;
+class FDisplayClusterViewportConfigurationCameraViewport;
+class FDisplayClusterViewportConfigurationCameraICVFX;
+class FDisplayClusterViewportConfigurationICVFX;
+
+class FDisplayClusterViewportConfigurationHelpers;
+class FDisplayClusterViewportConfigurationHelpers_ICVFX;
+class FDisplayClusterViewportConfigurationHelpers_OpenColorIO;
+
+struct FDisplayClusterViewportConfigurationProjectionPolicy;
 
 /**
  * Rendering viewport (sub-region of the main viewport)
@@ -28,9 +38,9 @@ class FDisplayClusterViewport
 	: public IDisplayClusterViewport
 {
 public:
-	FDisplayClusterViewport(FDisplayClusterViewportManager& Owner, const FString& ViewportId, TSharedPtr<IDisplayClusterProjectionPolicy> InProjectionPolicy);
+	FDisplayClusterViewport(FDisplayClusterViewportManager& Owner, const FString& ViewportId, const TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& InProjectionPolicy);
 	
-	virtual ~FDisplayClusterViewport() = default;
+	virtual ~FDisplayClusterViewport();
 
 public:
 	//////////////////////////////////////////////////////
@@ -42,29 +52,16 @@ public:
 		return ViewportId; 
 	}
 
-	virtual FDisplayClusterViewport_RenderSettings& GetRenderSettings() override
-	{
-		check(IsInGameThread());
-		return RenderSettings;
-	}
-
-	virtual FDisplayClusterViewport_RenderSettingsICVFX& GetRenderSettingsICVFX() override
-	{
-		check(IsInGameThread());
-		return RenderSettingsICVFX;
-	}
-
-	virtual FDisplayClusterViewport_PostRenderSettings& GetPostRenderSettings() override
-	{
-		check(IsInGameThread());
-		return PostRenderSettings;
-	}
-
 	virtual const FDisplayClusterViewport_RenderSettings& GetRenderSettings() const override
 	{
 		check(IsInGameThread());
 		return RenderSettings;
 	}
+
+	virtual void CalculateProjectionMatrix(const uint32 InContextNum, float Left, float Right, float Top, float Bottom, float ZNear, float ZFar, bool bIsAnglesInput) override;
+
+	virtual bool    CalculateView(const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP) override;
+	virtual bool    GetProjectionMatrix(const uint32 InContextNum, FMatrix& OutPrjMatrix)  override;
 
 	virtual const FDisplayClusterViewport_RenderSettingsICVFX& GetRenderSettingsICVFX() const override
 	{
@@ -78,17 +75,12 @@ public:
 		return PostRenderSettings;
 	}
 
-	virtual const TSharedPtr<IDisplayClusterProjectionPolicy>& GetProjectionPolicy() const override
+	virtual const TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& GetProjectionPolicy() const override
 	{
 		check(IsInGameThread());
 		return ProjectionPolicy;
 	}
 
-	virtual TArray<FDisplayClusterViewport_Context>& GetContexts() override
-	{
-		check(IsInGameThread());
-		return Contexts;
-	}
 
 	virtual const TArray<FDisplayClusterViewport_Context>& GetContexts() const override
 	{
@@ -96,12 +88,6 @@ public:
 		return Contexts;
 	}
 
-	// Override postprocess settings for this viewport
-	virtual       IDisplayClusterViewport_CustomPostProcessSettings& GetViewport_CustomPostProcessSettings() override
-	{
-		check(IsInGameThread());
-		return CustomPostProcessSettings;
-	}
 	virtual const IDisplayClusterViewport_CustomPostProcessSettings& GetViewport_CustomPostProcessSettings() const override
 	{
 		check(IsInGameThread());
@@ -116,6 +102,8 @@ public:
 	//////////////////////////////////////////////////////
 	/// ~IDisplayClusterViewport
 	//////////////////////////////////////////////////////
+
+	FMatrix ImplCreateProjectionMatrix(float InLeft, float InRight, float InTop, float InBottom, float ZNear, float ZFar) const;
 
 #if WITH_EDITOR
 	FSceneView* ImplCalcScenePreview(class FSceneViewFamilyContext& InOutViewFamily, uint32 ContextNum);
@@ -149,11 +137,27 @@ public:
 	bool HandleStartScene();
 	void HandleEndScene();
 
-	void UpdateViewExtensions(FViewport* InViewport);
+	void ResetRuntimeParameters()
+	{
+		// Reset runtim flags from prev frame:
+		RenderSettings.BeginUpdateSettings();
+		RenderSettingsICVFX.BeginUpdateSettings();
+		PostRenderSettings.BeginUpdateSettings();
+		VisibilitySettings.ResetConfiguration();
+		CameraMotionBlur.ResetConfiguration();
+		OverscanRendering.ResetConfiguration();
+	}
+
+
+	// Active view extension for this viewport
+	const TArray<FSceneViewExtensionRef> GatherActiveExtensions(FViewport* InViewport) const;
+
 	bool UpdateFrameContexts(const uint32 InViewPassNum, const FDisplayClusterRenderFrameSettings& InFrameSettings);
 
-	// Send viewport data to render thread scene proxy
-	void UpdateSceneProxyData();
+	void ImplReleaseOpenColorIODisplayExtension();
+
+public:
+	FIntRect GetValidRect(const FIntRect& InRect, const TCHAR* DbgSourceName);
 
 public:
 	// Support OCIO:
@@ -163,12 +167,9 @@ public:
 	TSharedPtr<FOpenColorIODisplayExtension, ESPMode::ThreadSafe> OpenColorIODisplayExtension;
 
 public:
-	// Active view extension for this viewport
-	TArray<TSharedRef<class ISceneViewExtension, ESPMode::ThreadSafe>> ViewExtensions;
-
 	// Projection policy instance that serves this viewport
-	TSharedPtr<IDisplayClusterProjectionPolicy> ProjectionPolicy;
-	TSharedPtr<IDisplayClusterProjectionPolicy> UninitializedProjectionPolicy;
+	TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe> ProjectionPolicy;
+	TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe> UninitializedProjectionPolicy;
 
 	// Game thread only settings:
 	FDisplayClusterViewport_CustomPostProcessSettings CustomPostProcessSettings;
@@ -176,13 +177,23 @@ public:
 
 	// Additional features:
 	FImplDisplayClusterViewport_CameraMotionBlur CameraMotionBlur;
+	FImplDisplayClusterViewport_Overscan         OverscanRendering;
 
-private:
+protected:
 	friend FDisplayClusterViewportProxy;
-	friend FDisplayClusterViewportProxy_ExchangeContainer;
+	friend FDisplayClusterViewportProxyData;
 	friend FDisplayClusterViewportManager;
 	friend FDisplayClusterRenderTargetManager;
 	friend FDisplayClusterRenderFrameManager;
+	friend FDisplayClusterViewportConfigurationCameraViewport;
+	friend FDisplayClusterViewportConfigurationCameraICVFX;
+
+	friend FDisplayClusterViewportConfigurationICVFX;
+
+	friend FDisplayClusterViewportConfigurationHelpers;
+	friend FDisplayClusterViewportConfigurationHelpers_ICVFX;
+	friend FDisplayClusterViewportConfigurationHelpers_OpenColorIO;
+	friend FDisplayClusterViewportConfigurationProjectionPolicy;
 
 	// viewport render thread data
 	FDisplayClusterViewportProxy* ViewportProxy = nullptr;
@@ -204,6 +215,10 @@ private:
 	// Projection policy output resources
 	TArray<FDisplayClusterTextureResource*> OutputFrameTargetableResources;
 	TArray<FDisplayClusterTextureResource*> AdditionalFrameTargetableResources;
+
+#if WITH_EDITOR
+	FTextureRHIRef OutputPreviewTargetableResource;
+#endif
 
 	// unique viewport resources
 	TArray<FDisplayClusterTextureResource*> InputShaderResources;

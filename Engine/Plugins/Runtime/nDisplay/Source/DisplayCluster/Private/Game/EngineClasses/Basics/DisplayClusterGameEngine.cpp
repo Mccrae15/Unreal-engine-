@@ -7,7 +7,6 @@
 #include "Config/IPDisplayClusterConfigManager.h"
 #include "DisplayClusterEnums.h"
 #include "Engine/DynamicBlueprintBinding.h"
-#include "Input/IPDisplayClusterInputManager.h"
 
 #include "DisplayClusterConfigurationTypes.h"
 #include "IDisplayClusterConfiguration.h"
@@ -37,11 +36,11 @@ namespace DisplayClusterGameEngineUtils
 	static const FString WaitForGameName     = TEXT("WaitForGameStart");
 }
 
-// Enable/disable warp&blend
+// Advanced cluster synchronization during LoadMap
 static TAutoConsoleVariable<int32> CVarGameStartBarrierAvoidance(
 	TEXT("nDisplay.game.GameStartBarrierAvoidance"),
 	1,
-	TEXT("Avoid entering GameStartBarrier on loaing level\n")
+	TEXT("Avoid entering GameStartBarrier on loading level\n")
 	TEXT("0 : disabled\n")
 	TEXT("1 : enabled\n")
 );
@@ -156,12 +155,10 @@ bool UDisplayClusterGameEngine::InitializeInternals()
 	// Store diagnostics settings locally
 	Diagnostics = Config->Diagnostics;
 
-	InputMgr       = GDisplayCluster->GetPrivateInputMgr();
 	ClusterMgr     = GDisplayCluster->GetPrivateClusterMgr();
 	NodeController = ClusterMgr->GetController();
 
 	check(ClusterMgr);
-	check(InputMgr);
 	check(NodeController);
 
 	FOnClusterEventJsonListener GameSyncTransition = FOnClusterEventJsonListener::CreateUObject(this, &UDisplayClusterGameEngine::GameSyncChange);
@@ -281,14 +278,8 @@ void UDisplayClusterGameEngine::Tick(float DeltaSeconds, bool bIdleMode)
 	{
 		//////////////////////////////////////////////////////////////////////////////////////////////
 		// Frame start barrier
-		{
-			double ThreadTime  = 0.f;
-			double BarrierTime = 0.f;
-
-			UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("Sync frame start"));
-			NodeController->WaitForFrameStart(&ThreadTime, &BarrierTime);
-			UE_LOG(LogDisplayClusterEngine, VeryVerbose, TEXT("FrameStartBarrier: ThreadTime=%f, BarrierTime=%f"), ThreadTime, BarrierTime);
-		}
+		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("Sync frame start"));
+		NodeController->WaitForFrameStart();
 
 		// Perform StartFrame notification
 		GDisplayCluster->StartFrame(GFrameCounter);
@@ -316,7 +307,7 @@ void UDisplayClusterGameEngine::Tick(float DeltaSeconds, bool bIdleMode)
 
 		//////////////////////////////////////////////////////////////////////////////////////////////
 		// Frame end barrier
-		NodeController->WaitForFrameEnd(nullptr, nullptr);
+		NodeController->WaitForFrameEnd();
 
 		// Perform EndFrame notification
 		GDisplayCluster->EndFrame(GFrameCounter);
@@ -400,7 +391,7 @@ void UDisplayClusterGameEngine::CheckGameStartBarrier()
 {
 	if (!BarrierAvoidanceOn())
 	{
-		NodeController->WaitForGameStart(nullptr, nullptr);
+		NodeController->WaitForGameStart();
 	}
 	else
 	{
@@ -410,7 +401,7 @@ void UDisplayClusterGameEngine::CheckGameStartBarrier()
 			UE_LOG(LogDisplayClusterEngine, Display, TEXT("CheckGameStartBarrier - we are no longer out of sync. Restoring Play."));
 			if (RunningMode == EDisplayClusterRunningMode::Startup)
 			{
-				NodeController->WaitForGameStart(nullptr, nullptr);
+				NodeController->WaitForGameStart();
 			}
 			UGameplayStatics::SetGamePaused(WorldContextObject,false);
 			RunningMode = EDisplayClusterRunningMode::Synced;

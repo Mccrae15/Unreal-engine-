@@ -17,7 +17,6 @@
 #include "Textures/SlateIcon.h"
 #include "UI/Customizations/RemoteControlEntityCustomization.h"
 #include "UI/RemoteControlPanelStyle.h"
-#include "UI/SRCPanelInputBindings.h"
 #include "UI/SRCPanelExposedEntitiesList.h"
 #include "UI/SRemoteControlPanel.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -31,9 +30,9 @@ namespace RemoteControlUIModule
 {
 	const TArray<FName> CustomizedStructNames = {
 		FRemoteControlProperty::StaticStruct()->GetFName(),
-        FRemoteControlFunction::StaticStruct()->GetFName(),
-        FRemoteControlActor::StaticStruct()->GetFName()
-    };
+		FRemoteControlFunction::StaticStruct()->GetFName(),
+		FRemoteControlActor::StaticStruct()->GetFName()
+	};
 }
 
 void FRemoteControlUIModule::StartupModule()
@@ -102,13 +101,7 @@ TSharedRef<SRemoteControlPanel> FRemoteControlUIModule::CreateRemoteControlPanel
 					WeakActivePanel = MoveTemp(Panel);
 				}
 			});
-
 	return PanelRef;
-}
-
-TSharedRef<SRCPanelInputBindings> FRemoteControlUIModule::CreateInputBindingsWidget(URemoteControlPreset* Preset)
-{
-	return SAssignNew(WeakActiveInputBindingsWidget, SRCPanelInputBindings, Preset);
 }
 
 void FRemoteControlUIModule::RegisterContextMenuExtender()
@@ -143,8 +136,20 @@ void FRemoteControlUIModule::RegisterDetailRowExtension()
 
 void FRemoteControlUIModule::UnregisterDetailRowExtension()
 {
-	FPropertyEditorModule& Module = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	Module.GetGlobalRowExtensionDelegate().RemoveAll(this);
+	if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
+	{
+		FPropertyEditorModule& Module = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		Module.GetGlobalRowExtensionDelegate().RemoveAll(this);
+	}
+}
+
+URemoteControlPreset* FRemoteControlUIModule::GetActivePreset() const
+{
+	if (const TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
+	{
+		return Panel->GetPreset();
+	}
+	return nullptr;
 }
 
 void FRemoteControlUIModule::RegisterAssetTools()
@@ -311,15 +316,24 @@ bool FRemoteControlUIModule::ShouldDisplayExposeIcon(const TSharedRef<IPropertyH
 			return false;
 		}
 
-		// Don't display an expose icon for settings
 		if (PropertyHandle->GetNumOuterObjects() == 1)
 		{
 			TArray<UObject*> OuterObjects;
 			PropertyHandle->GetOuterObjects(OuterObjects);
-		
-			if (OuterObjects[0] && OuterObjects[0]->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
+
+			if (OuterObjects[0])
 			{
-				return false;
+				// Don't display an expose icon for default objects.
+				if (OuterObjects[0]->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
+				{
+					return false;
+				}
+
+				// Don't display an expose icon for transient objects such as material editor parameters.
+				if (OuterObjects[0]->GetOutermost()->HasAnyFlags(RF_Transient))
+				{
+					return false;
+				}
 			}
 		}
 	}
@@ -366,7 +380,10 @@ void FRemoteControlUIModule::RegisterSettings()
 
 void FRemoteControlUIModule::UnregisterSettings()
 {
-	GetMutableDefault<URemoteControlUISettings>()->OnSettingChanged().RemoveAll(this);
+	if (UObjectInitialized())
+	{
+		GetMutableDefault<URemoteControlUISettings>()->OnSettingChanged().RemoveAll(this);
+	}
 }
 
 void FRemoteControlUIModule::OnSettingsModified(UObject*, FPropertyChangedEvent&)
@@ -374,14 +391,6 @@ void FRemoteControlUIModule::OnSettingsModified(UObject*, FPropertyChangedEvent&
 	if (TSharedPtr<SRemoteControlPanel> Panel = WeakActivePanel.Pin())
 	{
 		if (TSharedPtr<SRCPanelExposedEntitiesList> EntityList = Panel->GetEntityList())
-		{
-			EntityList->Refresh();
-		}	
-	}
-
-	if (TSharedPtr<SRCPanelInputBindings> InputBindings = WeakActiveInputBindingsWidget.Pin())
-	{
-		if (TSharedPtr<SRCPanelExposedEntitiesList> EntityList = InputBindings->GetEntityList())
 		{
 			EntityList->Refresh();
 		}	

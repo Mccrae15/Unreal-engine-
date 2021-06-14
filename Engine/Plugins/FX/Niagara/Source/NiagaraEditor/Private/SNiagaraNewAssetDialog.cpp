@@ -3,7 +3,7 @@
 #include "SNiagaraNewAssetDialog.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraEditorStyle.h"
-#include "SNiagaraAssetPickerList.h"
+#include "NiagaraEditor/Private/SNiagaraAssetPickerList.h"
 #include "NiagaraEditorSettings.h"
 
 #include "AssetData.h"
@@ -29,6 +29,11 @@ void SNiagaraNewAssetDialog::Construct(const FArguments& InArgs, FName InSaveCon
 	SelectedOptionIndex = DialogConfig.SelectedOptionIndex;
 
 	Options = InOptions;
+	// It is possible that the number of options has changed since the options config was last saved; make sure the SelectedOptionsIndex from the config is valid.
+	if (SelectedOptionIndex > Options.Num() - 1)
+	{
+		SelectedOptionIndex = Options.Num() - 1;
+	}
 
 	SetOnWindowClosed(FOnWindowClosed::CreateSP(this, &SNiagaraNewAssetDialog::OnWindowClosed));
 	
@@ -68,12 +73,17 @@ void SNiagaraNewAssetDialog::Construct(const FArguments& InArgs, FName InSaveCon
 				.BorderImage(FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.NewAssetDialog.SubBorder"))
 				.BorderBackgroundColor(this, &SNiagaraNewAssetDialog::GetOptionBorderColor, OptionIndex)
 				[
-						SNew(SCheckBox)
-						.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
-						.CheckBoxContentUsesAutoWidth(false)
-						.IsChecked(this, &SNiagaraNewAssetDialog::GetOptionCheckBoxState, OptionIndex)
-						.OnCheckStateChanged(this, &SNiagaraNewAssetDialog::OptionCheckBoxStateChanged, OptionIndex)
-						.Content()
+					SNew(SCheckBox)
+					.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
+					.CheckBoxContentUsesAutoWidth(false)
+					.IsChecked(this, &SNiagaraNewAssetDialog::GetOptionCheckBoxState, OptionIndex)
+					.OnCheckStateChanged(this, &SNiagaraNewAssetDialog::OptionCheckBoxStateChanged, OptionIndex)
+					.Content()
+					[
+						// this border catches the double click before the checkbox can
+						SNew(SBorder)
+						.BorderImage(FEditorStyle::Get().GetBrush("NoBorder"))
+						.OnMouseDoubleClick(this, &SNiagaraNewAssetDialog::OnOptionDoubleClicked, OptionIndex)
 						[
 							SNew(SVerticalBox)
 							+ SVerticalBox::Slot()
@@ -96,7 +106,7 @@ void SNiagaraNewAssetDialog::Construct(const FArguments& InArgs, FName InSaveCon
 								.AutoWrapText(true)
 							]
 						]
-					
+					]
 				]
 			];
 
@@ -110,7 +120,7 @@ void SNiagaraNewAssetDialog::Construct(const FArguments& InArgs, FName InSaveCon
 		.SupportsMaximize(false)
 		.SupportsMinimize(false)
 		[
-			SNew(SWizard)
+			SAssignNew(Wizard, SWizard)
 			.OnCanceled(this, &SNiagaraNewAssetDialog::OnCancelButtonClicked)
 			.OnFinished(this, &SNiagaraNewAssetDialog::OnOkButtonClicked)
 			.CanFinish(this, &SNiagaraNewAssetDialog::IsOkButtonEnabled)
@@ -127,17 +137,22 @@ void SNiagaraNewAssetDialog::Construct(const FArguments& InArgs, FName InSaveCon
 			]
 			+ SWizard::Page()
 			.CanShow(this, &SNiagaraNewAssetDialog::HasAssetPage)
-			.OnEnter(this, &SNiagaraNewAssetDialog::GetAssetPicker)
+			.OnEnter(this, &SNiagaraNewAssetDialog::ShowAssetPicker)
 			[
 				SAssignNew(AssetSettingsPage, SBox)
 			]
 		]);
 }
 
-void SNiagaraNewAssetDialog::GetAssetPicker()
+void SNiagaraNewAssetDialog::ShowAssetPicker()
 {
 	bOnAssetStage = true;
 	AssetSettingsPage->SetContent(Options[SelectedOptionIndex].AssetPicker);
+
+	if(Options[SelectedOptionIndex].WidgetToFocusOnEntry.IsValid())
+	{
+		FSlateApplication::Get().SetKeyboardFocus(Options[SelectedOptionIndex].WidgetToFocusOnEntry);
+	}
 }
 
 void SNiagaraNewAssetDialog::ResetStage()
@@ -168,6 +183,16 @@ void SNiagaraNewAssetDialog::ConfirmSelection()
 	RequestDestroyWindow();
 }
 
+void SNiagaraNewAssetDialog::ConfirmSelection(const FAssetData& AssetData)
+{
+	SelectedAssets.Add(AssetData);
+	
+	const FNiagaraNewAssetDialogOption& SelectedOption = Options[SelectedOptionIndex];
+	SelectedOption.OnSelectionConfirmed.ExecuteIfBound();
+	bUserConfirmedSelection = true;
+	RequestDestroyWindow();
+}
+
 void SNiagaraNewAssetDialog::OnWindowClosed(const TSharedRef<SWindow>& Window)
 {
 	SaveConfig();
@@ -178,6 +203,27 @@ FSlateColor SNiagaraNewAssetDialog::GetOptionBorderColor(int32 OptionIndex) cons
 	return SelectedOptionIndex == OptionIndex
 		? FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.NewAssetDialog.ActiveOptionBorderColor")
 		: FSlateColor(FLinearColor::Transparent);
+}
+
+FReply SNiagaraNewAssetDialog::OnOptionDoubleClicked(const FGeometry& Geometry, const FPointerEvent& PointerEvent, int32 OptionIndex)
+{
+	SelectedOptionIndex = OptionIndex;
+	if(Wizard->CanShowPage(Wizard->GetCurrentPageIndex() + 1))
+	{
+		Wizard->AdvanceToPage(Wizard->GetCurrentPageIndex() + 1);
+		return FReply::Handled();
+	}
+	// if we can't advance, we attempt to finish instead
+	else
+	{
+		if(IsOkButtonEnabled())
+		{
+			OnOkButtonClicked();
+			return FReply::Handled();
+		}
+	}
+
+	return FReply::Unhandled();
 }
 
 FSlateColor SNiagaraNewAssetDialog::GetOptionTextColor(int32 OptionIndex) const

@@ -1,8 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NVENC_Common.h"
+#include "HAL/Platform.h"
+
+#if PLATFORM_DESKTOP && !PLATFORM_APPLE
+
 #include "CoreMinimal.h"
+#include "RHI.h"
 #include "VideoEncoderCommon.h"
+#include "HAL/PlatformProcess.h"
 
 // define a function pointer for creating an instance of nvEncodeAPI
 typedef NVENCSTATUS(NVENCAPI* NVENCAPIPROC)(NV_ENCODE_API_FUNCTION_LIST*);
@@ -42,7 +48,13 @@ void FNVENCCommon::Shutdown()
 
 void FNVENCCommon::SetupNVENCFunctions()
 {
-	bIsAvailable = false;
+	check(!bIsAvailable);
+
+	// Can't use NVENC without a NVIDIA GPU (also no point if its not the one RHI is using)
+	if (!IsRHIDeviceNVIDIA())
+	{
+		return;
+	}
 
 	// clear function call table
 	FMemory::Memzero(static_cast<NV_ENCODE_API_FUNCTION_LIST*>(this), sizeof(NV_ENCODE_API_FUNCTION_LIST));
@@ -83,3 +95,5 @@ void FNVENCCommon::SetupNVENCFunctions()
 }
 
 } /* namespace AVEncoder */
+
+#endif // PLATFORM_DESKTOP && !PLATFORM_APPLE

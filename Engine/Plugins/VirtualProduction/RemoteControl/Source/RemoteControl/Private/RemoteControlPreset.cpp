@@ -6,8 +6,11 @@
 #include "Algo/ForEach.h"
 #include "Algo/Transform.h"
 #include "Components/ActorComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "GameFramework/Actor.h"
+#include "HAL/IConsoleManager.h"
 #include "IRemoteControlModule.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/Optional.h"
 #include "RemoteControlExposeRegistry.h"
 #include "RemoteControlFieldPath.h"
@@ -21,12 +24,19 @@
 #include "UObject/StructOnScope.h"
 
 #if WITH_EDITOR
+#include "AnalyticsEventAttribute.h"
 #include "Editor.h"
+#include "EngineAnalytics.h"
+#include "Engine/Blueprint.h"
+#include "ScopedTransaction.h"
 #include "TimerManager.h"
 #endif
 
+URemoteControlPreset::FOnPostLoadRemoteControlPreset URemoteControlPreset::OnPostLoadRemoteControlPreset;
 
-#define LOCTEXT_NAMESPACE "RemoteControlPreset" 
+#define LOCTEXT_NAMESPACE "RemoteControlPreset"
+
+static TAutoConsoleVariable<int32> CVarRemoteControlFramesBetweenPropertyWatch(TEXT("RemoteControl.FramesBetweenPropertyWatch"), 5, TEXT("The number of frames between every property value comparison when manually watching for property changes."));
 
 namespace
 {
@@ -66,6 +76,34 @@ namespace
 		checkNoEntry();
 		return NAME_None;
 	}
+
+	FName GenerateExposedFieldLabel(const FString& FieldName, UObject* FieldOwner)
+	{
+		FName OutputName;
+		
+		if (ensure(FieldOwner))
+		{
+			FString ObjectName;
+	#if WITH_EDITOR
+			if (AActor* Actor = Cast<AActor>(FieldOwner))
+			{
+				ObjectName = Actor->GetActorLabel();
+			}
+			else if(UActorComponent* Component = Cast<UActorComponent>(FieldOwner))
+			{
+				ObjectName = Component->GetOwner()->GetActorLabel();
+			}
+			else
+	#endif
+			{
+				// Get the class name when dealing with BP libraries and subsystems. 
+				ObjectName = FieldOwner->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject) ? FieldOwner->GetClass()->GetName() : FieldOwner->GetName();
+			}
+
+			OutputName = *FString::Printf(TEXT("%s (%s)"), *FieldName, *ObjectName);
+		}
+		return OutputName;
+	}
 }
 
 FRemoteControlPresetExposeArgs::FRemoteControlPresetExposeArgs()
@@ -74,7 +112,7 @@ FRemoteControlPresetExposeArgs::FRemoteControlPresetExposeArgs()
 }
 
 FRemoteControlPresetExposeArgs::FRemoteControlPresetExposeArgs(FString InLabel, FGuid InGroupId)
-	: Label(MoveTemp(Label))
+	: Label(MoveTemp(InLabel))
 	, GroupId(MoveTemp(InGroupId))
 {
 }
@@ -460,6 +498,7 @@ TOptional<FRemoteControlFunction> FRemoteControlTarget::GetFunction(FGuid Functi
 	return Field;
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 TOptional<FExposedProperty> FRemoteControlTarget::ResolveExposedProperty(FGuid PropertyId) const
 {
 	TOptional<FExposedProperty> OptionalExposedProperty;
@@ -480,7 +519,9 @@ TOptional<FExposedProperty> FRemoteControlTarget::ResolveExposedProperty(FGuid P
 
 	return OptionalExposedProperty;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 TOptional<FExposedFunction> FRemoteControlTarget::ResolveExposedFunction(FGuid FunctionId) const
 {
 	TOptional<FExposedFunction> OptionalExposedFunction;
@@ -488,7 +529,7 @@ TOptional<FExposedFunction> FRemoteControlTarget::ResolveExposedFunction(FGuid F
 	if (TOptional<FRemoteControlFunction> RCFunction = GetFunction(FunctionId))
 	{
 		FExposedFunction ExposedFunction;
-		ExposedFunction.Function = RCFunction->Function;
+		ExposedFunction.Function = RCFunction->GetFunction();
 		ExposedFunction.DefaultParameters = RCFunction->FunctionArguments;
 		ExposedFunction.OwnerObjects = ResolveBoundObjects();
 		OptionalExposedFunction = MoveTemp(ExposedFunction);
@@ -496,6 +537,7 @@ TOptional<FExposedFunction> FRemoteControlTarget::ResolveExposedFunction(FGuid F
 
 	return OptionalExposedFunction;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 TArray<UObject*> FRemoteControlTarget::ResolveBoundObjects() const
 {
@@ -563,6 +605,7 @@ bool FRemoteControlTarget::CanBindObjects(const TArray<UObject*>& ObjectsToTest)
 	return OwnersCommonBase && OwnersCommonBase->IsChildOf(Class);
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FProperty* FRemoteControlTarget::FindPropertyRecursive(UStruct* Container, TArray<FString>& DesiredPropertyPath) const
 {
 	if (DesiredPropertyPath.Num() <= 0)
@@ -593,6 +636,7 @@ FProperty* FRemoteControlTarget::FindPropertyRecursive(UStruct* Container, TArra
 
 	return nullptr;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 URemoteControlPreset::URemoteControlPreset()
 	: Layout(FRemoteControlPresetLayout{ this })
@@ -608,7 +652,6 @@ void URemoteControlPreset::PostInitProperties()
 	if (!HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
 	{
 		RegisterDelegates();
-		IRemoteControlModule::Get().RegisterPreset(GetFName(), this);
 	}
 }
 
@@ -626,7 +669,8 @@ void URemoteControlPreset::PostEditChangeProperty(struct FPropertyChangedEvent& 
 void URemoteControlPreset::PostLoad()
 {
 	Super::PostLoad();
-	IRemoteControlModule::Get().RegisterPreset(GetFName(), this);
+
+	OnPostLoadRemoteControlPreset.Broadcast(this);
 
 	RegisterDelegates();
 
@@ -634,25 +678,17 @@ void URemoteControlPreset::PostLoad()
 
 	CacheFieldLayoutData();
 
-	RebindingManager->Rebind(this);
-
 	InitializeEntitiesMetadata();
 
 	RegisterEntityDelegates();
+
+	CreatePropertyWatchers();
 }
 
 void URemoteControlPreset::BeginDestroy()
 {
 	UnregisterDelegates();
-	IRemoteControlModule::Get().UnregisterPreset(GetFName());
 	Super::BeginDestroy();
-}
-
-void URemoteControlPreset::PostRename(UObject* OldOuter, const FName OldName)
-{
-	Super::PostRename(OldOuter, OldName);
-	IRemoteControlModule::Get().UnregisterPreset(OldName);
-	IRemoteControlModule::Get().RegisterPreset(GetFName(), this);
 }
 
 FName URemoteControlPreset::GetOwnerAlias(FGuid FieldId) const
@@ -700,6 +736,17 @@ TWeakPtr<FRemoteControlProperty> URemoteControlPreset::ExposeProperty(UObject* O
 		return nullptr;
 	}
 
+	FProperty* Property = FieldPath.GetResolvedData().Field;
+	check(Property);
+
+	FString FieldName;
+
+#if WITH_EDITOR
+	FieldName = Property->GetDisplayNameText().ToString();
+#else
+	FieldName = FieldPath.GetFieldName().ToString();
+#endif
+
 	FName DesiredName = *Args.Label;
 
 	if (DesiredName == NAME_None)
@@ -720,11 +767,43 @@ TWeakPtr<FRemoteControlProperty> URemoteControlPreset::ExposeProperty(UObject* O
 			ObjectName = Object->GetName();
 		}
 
-		DesiredName = *FString::Printf(TEXT("%s (%s)"), *FieldPath.GetFieldName().ToString(), *ObjectName);
+		DesiredName = *FString::Printf(TEXT("%s (%s)"), *FieldName, *ObjectName);
 	}
 
+#if WITH_EDITOR
+	// Enable property if it has an edit condition.	
+	const FString EditConditionPropertyName = Property->GetMetaData("EditCondition");
+	if (!EditConditionPropertyName.IsEmpty())
+	{
+		FRCFieldPathInfo EditConditionPropertyPath = FieldPath;
+		EditConditionPropertyPath.Segments.Pop();
+		EditConditionPropertyPath.Segments.Emplace(EditConditionPropertyName);
+		if (EditConditionPropertyPath.Resolve(Object))
+		{
+			FRCFieldResolvedData Data = EditConditionPropertyPath.GetResolvedData();
+			if (ensure(Data.IsValid() && Data.Field->IsA(FBoolProperty::StaticClass())))
+			{
+				if (!Data.Field->HasAnyPropertyFlags(CPF_EditConst))
+				{
+					const FScopedTransaction Transaction(FText::Format(LOCTEXT("SetEditConditionState", "Set {0} edit condition state "), FText::FromString(FieldName)));
+					Object->Modify();
+					CastFieldChecked<FBoolProperty>(Data.Field)->SetPropertyValue_InContainer(Data.ContainerAddress, true);
+				}
+			}
+		}			
+	}
+#endif
+
 	FRemoteControlProperty RCProperty{ this, Registry->GenerateUniqueLabel(DesiredName), MoveTemp(FieldPath), { FindOrAddBinding(Object) } };
-	return StaticCastSharedPtr<FRemoteControlProperty>(Expose(MoveTemp(RCProperty), FRemoteControlProperty::StaticStruct(), Args.GroupId));
+
+	TSharedPtr<FRemoteControlProperty> RCPropertyPtr = StaticCastSharedPtr<FRemoteControlProperty>(Expose(MoveTemp(RCProperty), FRemoteControlProperty::StaticStruct(), Args.GroupId));
+
+	if (PropertyShouldBeWatched(RCPropertyPtr))
+	{
+		CreatePropertyWatcher(RCPropertyPtr);
+	}
+
+	return RCPropertyPtr;
 }
 
 TWeakPtr<FRemoteControlFunction> URemoteControlPreset::ExposeFunction(UObject* Object, UFunction* Function, FRemoteControlPresetExposeArgs Args)
@@ -734,13 +813,42 @@ TWeakPtr<FRemoteControlFunction> URemoteControlPreset::ExposeFunction(UObject* O
 		return nullptr;
 	}
 
-	FName DesiredName = Args.Label.IsEmpty() ? Function->GetFName() : *Args.Label;
+	FName DesiredName = *Args.Label;
+
+	if (DesiredName == NAME_None)
+	{
+		FString FunctionName;
+#if WITH_EDITOR
+		FunctionName = Function->GetDisplayNameText().ToString(); 
+#else
+		FunctionName = Function->GetName();
+#endif
+		
+		DesiredName = GenerateExposedFieldLabel(FunctionName, Object);
+	}
+
 	FRemoteControlFunction RCFunction{ this, Registry->GenerateUniqueLabel(DesiredName), Function->GetName(), Function, { FindOrAddBinding(Object) } };
-	return StaticCastSharedPtr<FRemoteControlFunction>(Expose(MoveTemp(RCFunction), FRemoteControlFunction::StaticStruct(), Args.GroupId));
+	TSharedPtr<FRemoteControlFunction> RCFunctionPtr = StaticCastSharedPtr<FRemoteControlFunction>(Expose(MoveTemp(RCFunction), FRemoteControlFunction::StaticStruct(), Args.GroupId));
+
+	RegisterOnCompileEvent(RCFunctionPtr);
+	
+	return RCFunctionPtr;
 }
 
 TSharedPtr<FRemoteControlEntity> URemoteControlPreset::Expose(FRemoteControlEntity&& Entity, UScriptStruct* EntityType, const FGuid& GroupId)
 {
+	Registry->Modify();
+
+#if WITH_EDITOR
+	if (FEngineAnalytics::IsAvailable())
+	{
+		TArray<FAnalyticsEventAttribute> EventAttributes;
+		check(EntityType);
+		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("ExposedEntityType"), EntityType->GetName()));
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("RemoteControl.EntityExposed"), EventAttributes);	
+	}
+#endif
+	
 	TSharedPtr<FRemoteControlEntity> RCEntity = Registry->AddExposedEntity(MoveTemp(Entity), EntityType);
 	InitializeEntityMetadata(RCEntity);
 	
@@ -859,6 +967,79 @@ void URemoteControlPreset::RegisterEntityDelegates()
 	for (const TSharedPtr<FRemoteControlEntity>& Entity : Registry->GetExposedEntities())
 	{
 		Entity->OnEntityModifiedDelegate.BindUObject(this, &URemoteControlPreset::OnEntityModified);
+
+		if (Entity->GetStruct() == FRemoteControlFunction::StaticStruct())
+		{
+			RegisterOnCompileEvent(StaticCastSharedPtr<FRemoteControlFunction>(Entity));
+		}
+	}
+}
+
+void URemoteControlPreset::RegisterOnCompileEvent(const TSharedPtr<FRemoteControlFunction>& RCFunction)
+{
+#if WITH_EDITOR
+	if (UFunction* UnderlyingFunction = RCFunction->GetFunction())
+	{
+		if (UBlueprintGeneratedClass* BPClass = Cast<UBlueprintGeneratedClass>(UnderlyingFunction->GetOwnerClass()))
+		{
+			if (UBlueprint* Blueprint = Cast<UBlueprint>(BPClass->ClassGeneratedBy))
+			{
+				if (!BlueprintsWithRegisteredDelegates.Contains(Blueprint))
+				{
+					BlueprintsWithRegisteredDelegates.Emplace(Blueprint);
+					Blueprint->OnCompiled().AddUObject(this, &URemoteControlPreset::OnBlueprintRecompiled);
+				}
+			}
+		}
+	}
+#endif
+}
+
+void URemoteControlPreset::CreatePropertyWatcher(const TSharedPtr<FRemoteControlProperty>& RCProperty)
+{
+	if (ensure(RCProperty))
+	{
+		if (!PropertyWatchers.Contains(RCProperty->GetId()))
+		{
+			FRCPropertyWatcher Watcher{RCProperty, FSimpleDelegate::CreateLambda([this, WeakProperty = TWeakPtr<FRemoteControlProperty>(RCProperty)]()
+			{
+				if (TSharedPtr<FRemoteControlProperty> PinnedProperty = WeakProperty.Pin())
+				{
+					PerFrameModifiedProperties.Add(PinnedProperty->GetId());
+				}
+			})};
+			
+			PropertyWatchers.Add(RCProperty->GetId(), MoveTemp(Watcher));
+		}
+	}
+}
+
+bool URemoteControlPreset::PropertyShouldBeWatched(const TSharedPtr<FRemoteControlProperty>& RCProperty) const
+{
+	// If we are not running in editor, we need to watch all properties as there is no object modified callback.
+	if (!GIsEditor)
+	{
+		return true;	
+	}
+	
+	static const TSet<FName> WatchedPropertyNames =
+		{
+			UStaticMeshComponent::GetRelativeLocationPropertyName(),
+			UStaticMeshComponent::GetRelativeRotationPropertyName(),
+			UStaticMeshComponent::GetRelativeScale3DPropertyName()
+		};
+	
+	return RCProperty && WatchedPropertyNames.Contains(RCProperty->FieldName);
+}
+
+void URemoteControlPreset::CreatePropertyWatchers()
+{
+	for (const TSharedPtr<FRemoteControlProperty>& ExposedProperty : Registry->GetExposedEntities<FRemoteControlProperty>())
+	{
+		if (PropertyShouldBeWatched(ExposedProperty))
+		{
+			CreatePropertyWatcher(ExposedProperty);
+		}
 	}
 }
 
@@ -903,6 +1084,7 @@ void URemoteControlPreset::RenameField(FName OldFieldLabel, FName NewFieldLabel)
 	RenameExposedEntity(GetExposedEntityId(OldFieldLabel), NewFieldLabel);
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 TOptional<FExposedProperty> URemoteControlPreset::ResolveExposedProperty(FName PropertyLabel) const
 {
 	TOptional<FExposedProperty> OptionalExposedProperty;
@@ -915,7 +1097,9 @@ TOptional<FExposedProperty> URemoteControlPreset::ResolveExposedProperty(FName P
 
 	return OptionalExposedProperty;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 TOptional<FExposedFunction> URemoteControlPreset::ResolveExposedFunction(FName FunctionLabel) const
 {
 	TOptional<FExposedFunction> OptionalExposedFunction;
@@ -924,11 +1108,12 @@ TOptional<FExposedFunction> URemoteControlPreset::ResolveExposedFunction(FName F
 		OptionalExposedFunction = FExposedFunction();
 		OptionalExposedFunction->DefaultParameters = RCProp->FunctionArguments;
 		OptionalExposedFunction->OwnerObjects = RCProp->GetBoundObjects();
-		OptionalExposedFunction->Function = RCProp->Function;
+		OptionalExposedFunction->Function = RCProp->GetFunction();
 	}
 
 	return OptionalExposedFunction;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void URemoteControlPreset::Unexpose(FName EntityLabel)
 {
@@ -940,10 +1125,12 @@ void URemoteControlPreset::Unexpose(const FGuid& EntityId)
 	if (EntityId.IsValid() && Registry->GetExposedEntity(EntityId).IsValid())
 	{
 		OnEntityUnexposedDelegate.Broadcast(this, EntityId);
+		Registry->Modify();
 		Registry->RemoveExposedEntity(EntityId);
 		FRCCachedFieldData CachedData = FieldCache.FindChecked(EntityId);
 		Layout.RemoveField(CachedData.LayoutGroupId, EntityId);
-		FieldCache.Remove(EntityId);	
+		FieldCache.Remove(EntityId);
+		PropertyWatchers.Remove(EntityId);
 	}
 }
 
@@ -954,6 +1141,7 @@ FName URemoteControlPreset::CreateTarget(const TArray<UObject*>& TargetObjects)
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FRemoteControlTarget& URemoteControlPreset::CreateAndGetTarget(const TArray<UObject*>& TargetObjects)
 {
 	check(TargetObjects.Num() != 0);
@@ -972,9 +1160,11 @@ FRemoteControlTarget& URemoteControlPreset::CreateAndGetTarget(const TArray<UObj
 
 	return RemoteControlTargets.Add(Alias, MoveTemp(Target));
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void URemoteControlPreset::DeleteTarget(FName TargetName)
 {	
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if (FRemoteControlTarget* Target = RemoteControlTargets.Find(TargetName))
 	{
 		for (auto It = Target->ExposedProperties.CreateConstIterator(); It; ++It)
@@ -984,14 +1174,17 @@ void URemoteControlPreset::DeleteTarget(FName TargetName)
 	}
 
 	RemoteControlTargets.Remove(TargetName);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void URemoteControlPreset::RenameTarget(FName TargetName, FName NewTargetName)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FRemoteControlTarget Target;
 	RemoteControlTargets.RemoveAndCopyValue(TargetName, Target);
 	Target.Alias = NewTargetName;
 	RemoteControlTargets.Add(NewTargetName, MoveTemp(Target));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void URemoteControlPreset::CacheLayoutData()
@@ -1011,11 +1204,17 @@ TArray<UObject*> URemoteControlPreset::ResolvedBoundObjects(FName FieldLabel)
 	return Objects;
 }
 
+void URemoteControlPreset::RebindUnboundEntities()
+{
+	RebindingManager->Rebind(this);
+	Algo::Transform(Registry->GetExposedEntities(), PerFrameUpdatedEntities, [](const TSharedPtr<FRemoteControlEntity>& Entity) { return Entity->GetId(); });
+}
+
 void URemoteControlPreset::NotifyExposedPropertyChanged(FName PropertyLabel)
 {
 	if (TSharedPtr<FRemoteControlProperty> ExposedProperty = GetExposedEntity<FRemoteControlProperty>(GetExposedEntityId(PropertyLabel)).Pin())
 	{
-		OnExposedPropertyChanged().Broadcast(this, *ExposedProperty);
+		PerFrameModifiedProperties.Add(ExposedProperty->GetId());
 	}
 }
 
@@ -1043,6 +1242,11 @@ void URemoteControlPreset::Serialize(FArchive& Ar)
 		{
 			ConvertTargetsToBindings();
 		}
+
+		if (!PresetId.IsValid())
+		{
+			PresetId = FGuid::NewGuid();
+		}
 	}
 }
 
@@ -1053,6 +1257,7 @@ FRemoteControlField* URemoteControlPreset::GetFieldPtr(FGuid FieldId)
 
 void URemoteControlPreset::ConvertFieldsToRemoveComponentChain()
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 #if WITH_EDITOR
 	CacheFieldsData();
 
@@ -1116,9 +1321,7 @@ void URemoteControlPreset::ConvertFieldsToRemoveComponentChain()
 
 			if (!DestinationTarget)
 			{
-				PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				DestinationTarget = &CreateAndGetTarget({ ObjectMapEntry.Key });
-				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 
 			MovePropertiesToTarget(MoveTemp(ObjectMapEntry.Value), *DestinationTarget);
@@ -1140,12 +1343,14 @@ void URemoteControlPreset::ConvertFieldsToRemoveComponentChain()
 	RegroupPropertiesInTargets(GroupPropertiesByObjects());
 	RemoveEmptyTargets();
 #endif
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void URemoteControlPreset::ConvertFieldsToEntities()
 {
 #if WITH_EDITOR
 	// Convert properties and functions to inherit from FRemoteControlEntities while preserving their old data.
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	for (TTuple<FName, FRemoteControlTarget>& Tuple : RemoteControlTargets)
 	{
 		for (FRemoteControlProperty& Property : Tuple.Value.ExposedProperties)
@@ -1158,6 +1363,7 @@ void URemoteControlPreset::ConvertFieldsToEntities()
 			Function.Owner = this;
 		}
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif
 }
 
@@ -1165,6 +1371,7 @@ void URemoteControlPreset::ConvertTargetsToBindings()
 {
 #if WITH_EDITOR
 	// Convert targets to bindings, and put everything in the registry.
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	for (TTuple<FName, FRemoteControlTarget>& Tuple : RemoteControlTargets)
 	{
 		TArray<URemoteControlBinding*> NewBindings;
@@ -1198,6 +1405,7 @@ void URemoteControlPreset::ConvertTargetsToBindings()
 	{
 		RCActor->Bindings = { FindOrAddBinding(TSoftObjectPtr<UObject>{ RCActor->Path }) }; 
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif
 }
 
@@ -1244,6 +1452,7 @@ FName URemoteControlPreset::RenameExposedEntity(const FGuid& ExposedEntityId, FN
 
 bool URemoteControlPreset::IsExposed(const FGuid& ExposedEntityId) const
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(URemoteControlPreset::IsExposed);
 	if (FieldCache.Contains(ExposedEntityId))
 	{
 		return true;
@@ -1323,12 +1532,14 @@ void URemoteControlPreset::OnExpose(const FExposeInfo& Info)
 	{
 		NameToGuidMap.Add(Field->GetLabel(), Info.FieldId);
 		Layout.AddField(FieldGroupId, Info.FieldId);
-		OnPropertyExposed().Broadcast(this, Field->GetLabel());
+		OnEntityExposed().Broadcast(this, Info.FieldId);
 	}
 }
 
 void URemoteControlPreset::OnUnexpose(FGuid UnexposedFieldId)
  {
+	OnEntityUnexposed().Broadcast(this, UnexposedFieldId);
+	
 	FRCCachedFieldData CachedData = FieldCache.FindChecked(UnexposedFieldId);
 
 	Layout.RemoveField(CachedData.LayoutGroupId, UnexposedFieldId);
@@ -1344,11 +1555,6 @@ void URemoteControlPreset::OnUnexpose(FGuid UnexposedFieldId)
 			It.RemoveCurrent();
 		}
 	}
-
-	if (FieldLabel != NAME_None)
-	{
-		OnPropertyUnexposed().Broadcast(this, FieldLabel);
-	}
 }
 
 void URemoteControlPreset::CacheFieldsData()
@@ -1358,6 +1564,7 @@ void URemoteControlPreset::CacheFieldsData()
 		return;
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	for (TTuple<FName, FRemoteControlTarget>& Target : RemoteControlTargets)
 	{
 		FieldCache.Reserve(FieldCache.Num() + Target.Value.ExposedProperties.Num() + Target.Value.ExposedFunctions.Num());
@@ -1371,6 +1578,7 @@ void URemoteControlPreset::CacheFieldsData()
 		Algo::ForEach(Target.Value.ExposedProperties, CacheField);
 		Algo::ForEach(Target.Value.ExposedFunctions, CacheField);
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void URemoteControlPreset::CacheFieldLayoutData()
@@ -1387,30 +1595,49 @@ void URemoteControlPreset::CacheFieldLayoutData()
 void URemoteControlPreset::OnObjectPropertyChanged(UObject* Object, struct FPropertyChangedEvent& Event)
 {
 	// Objects modified should have run through the preobjectmodified. If interesting, they will be cached
-	for (auto Iter = PreObjectModifiedCache.CreateIterator(); Iter; ++Iter)
+	TRACE_CPUPROFILER_EVENT_SCOPE(URemoteControlPreset::OnObjectPropertyChanged);
+ 
+	if (Event.Property == nullptr)
 	{
-		FGuid& PropertyId = Iter.Key();
-		FPreObjectModifiedCache& CacheEntry = Iter.Value();
-
-		if (CacheEntry.Object == Object
-			&& CacheEntry.Property == Event.Property)
+		if(Event.MemberProperty == nullptr)
 		{
-			if (TSharedPtr<FRemoteControlProperty> Property = Registry->GetExposedEntity<FRemoteControlProperty>(PropertyId))
+			// When no property is passed to OnObjectPropertyChanged (such as by LevelSnapshot->Restore()), let's assume they all changed since we don't have more context.
+			for (TSharedPtr<FRemoteControlProperty> Property : Registry->GetExposedEntities<FRemoteControlProperty>())
 			{
-				UE_LOG(LogRemoteControl, VeryVerbose, TEXT("(%s) Change detected on %s::%s"), *GetName(), *Object->GetName(), *Event.Property->GetName());
-				OnExposedPropertyChanged().Broadcast(this, *Property);
-				Iter.RemoveCurrent();
+				if (Property->GetBoundObjects().Contains(Object))
+				{
+					PerFrameModifiedProperties.Add(Property->GetId());
+				}
 			}
 		}
 	}
-
-	for (auto Iter = PreObjectModifiedActorCache.CreateIterator(); Iter; ++Iter)
+	else
+	{
+		for (auto Iter = PreObjectsModifiedCache.CreateIterator(); Iter; ++Iter)
+		{
+			FGuid& PropertyId = Iter.Key();
+			FPreObjectsModifiedCache& CacheEntry = Iter.Value();
+ 
+			if (CacheEntry.Objects.Contains(Object)
+                && CacheEntry.Property == Event.Property)
+			{
+				if (TSharedPtr<FRemoteControlProperty> Property = Registry->GetExposedEntity<FRemoteControlProperty>(PropertyId))
+				{
+					UE_LOG(LogRemoteControl, VeryVerbose, TEXT("(%s) Change detected on %s::%s"), *GetName(), *Object->GetName(), *Event.Property->GetName());
+					PerFrameModifiedProperties.Add(Property->GetId());
+					Iter.RemoveCurrent();
+				}
+			}
+		}
+	}
+ 
+	for (auto Iter = PreObjectsModifiedActorCache.CreateIterator(); Iter; ++Iter)
 	{
 		FGuid& ActorId = Iter.Key();
-		FPreObjectModifiedCache& CacheEntry = Iter.Value();
-
-		if ((CacheEntry.Object == Object)
-			&& CacheEntry.Property == Event.Property)
+		FPreObjectsModifiedCache& CacheEntry = Iter.Value();
+ 
+		if (CacheEntry.Objects.Contains(Object)
+            && CacheEntry.Property == Event.Property)
 		{
 			if (TSharedPtr<FRemoteControlActor> RCActor = GetExposedEntity<FRemoteControlActor>(ActorId).Pin())
 			{
@@ -1423,6 +1650,7 @@ void URemoteControlPreset::OnObjectPropertyChanged(UObject* Object, struct FProp
 
 void URemoteControlPreset::OnPreObjectPropertyChanged(UObject* Object, const class FEditPropertyChain& PropertyChain)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(URemoteControlPreset::OnPreObjectPropertyChanged);
 	using PropertyNode = TDoubleLinkedList<FProperty*>::TDoubleLinkedListNode;
 
 	//Quick validation of the property chain
@@ -1445,68 +1673,93 @@ void URemoteControlPreset::OnPreObjectPropertyChanged(UObject* Object, const cla
 			FString ActorPath = RCActor->Path.ToString();
 			if (Object->GetPathName() == ActorPath || Object->GetTypedOuter<AActor>()->GetPathName() == ActorPath)
 			{
-				FPreObjectModifiedCache& CacheEntry = PreObjectModifiedActorCache.FindOrAdd(RCActor->GetId());
+				FPreObjectsModifiedCache& CacheEntry = PreObjectsModifiedActorCache.FindOrAdd(RCActor->GetId());
+				
 				// Don't recreate entries for a property we have already cached
 				// or if the property was already cached by a child component.
+				
+				bool bParentObjectCached = CacheEntry.Objects.ContainsByPredicate([Object](UObject* InObjectToCompare){ return InObjectToCompare->GetTypedOuter<AActor>() == Object; }); 
 				if (CacheEntry.Property == PropertyChain.GetActiveNode()->GetValue()
 					|| CacheEntry.MemberProperty == PropertyChain.GetActiveMemberNode()->GetValue()
-					|| (CacheEntry.Object && CacheEntry.Object->GetTypedOuter<AActor>() == Object))
+					|| bParentObjectCached)
 				{
 					continue;
 				}
-				CacheEntry.Object = Object;
+				
+				CacheEntry.Objects.AddUnique(Object);
 				CacheEntry.Property = PropertyChain.GetActiveNode()->GetValue();
 				CacheEntry.MemberProperty = PropertyChain.GetActiveMemberNode()->GetValue();
 			}
 		}
 	}
 
-	for (TPair<FName, FRemoteControlTarget>& Pair : RemoteControlTargets)
+	for (TSharedPtr<FRemoteControlProperty> RCProperty : Registry->GetExposedEntities<FRemoteControlProperty>())
 	{
-		FRemoteControlTarget& Target = Pair.Value;
-		TArray<UObject*> BoundObjects = Target.ResolveBoundObjects();
-
-		// At the moment targets can only have one bound objects.
-		if (BoundObjects.Num() != 1)
+		//If this property is already cached, skip it
+		if (PreObjectsModifiedCache.Contains(RCProperty->GetId()))
+		{
+			continue;
+		}
+		
+		TArray<UObject*> BoundObjects = RCProperty->GetBoundObjects();
+		if (BoundObjects.Num() == 0)
 		{
 			continue;
 		}
 
-		UObject* BoundObject = BoundObjects[0];
-
-		// Handle case where we get a change callback on the object's outer directly instead of the component.
-		if (BoundObject == Object || BoundObject->GetOuter() == Object)
+		for (UObject* BoundObject : BoundObjects)
 		{
-			for (const FRemoteControlProperty& Property : Target.ExposedProperties)
+			if (BoundObject == Object || BoundObject->GetOuter() == Object)
 			{
-				//If this property is already cached, skip it
-				if (PreObjectModifiedCache.Contains(Property.GetId()))
-				{
-					continue;
-				}
-
-				if (TOptional<FExposedProperty> ExposedProprety = Target.ResolveExposedProperty(Property.GetId()))
+				if (FProperty* ExposedProperty = RCProperty->GetProperty())
 				{
 					bool bHasFound = false;
 					PropertyNode* Current = Tail;
 					while (Current && bHasFound == false)
 					{
 						//Verify if the exposed property was changed
-						if (ExposedProprety->Property == Current->GetValue())
+						if (ExposedProperty == Current->GetValue())
 						{
 							bHasFound = true;
 
-							FPreObjectModifiedCache& NewEntry = PreObjectModifiedCache.FindOrAdd(Property.GetId());
-							NewEntry.Object = Object;
+							FPreObjectsModifiedCache& NewEntry = PreObjectsModifiedCache.FindOrAdd(RCProperty->GetId());
+							NewEntry.Objects.AddUnique(Object);
 							NewEntry.Property = PropertyChain.GetActiveNode()->GetValue();
 							NewEntry.MemberProperty = PropertyChain.GetActiveMemberNode()->GetValue();
 						}
 
-						//Go backward to walk up the property hierarchy to see if an owning property is exposed
+						// Go backward to walk up the property hierarchy to see if an owning property is exposed.
 						Current = Current->GetPrevNode();
 					}
 				}
 			}
+		}
+	}
+}
+
+void URemoteControlPreset::OnPostPropertyModifiedRemotely(const FRCObjectReference& ObjectRef)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(URemoteControlPreset::OnPostPropertyModifiedRemotely);
+	if (!ObjectRef.Property.IsValid())
+	{
+		return;
+	}
+
+	uint32 ModifiedPropertyPathHash = ObjectRef.PropertyPathInfo.PathHash;
+	
+	for (const TSharedPtr<FRemoteControlProperty>& RCProperty : Registry->GetExposedEntities<FRemoteControlProperty>())
+	{
+		if (RCProperty->FieldPathInfo.PathHash == ModifiedPropertyPathHash && RCProperty->GetBoundObjects().Contains(ObjectRef.Object.Get()))
+		{
+			PerFrameModifiedProperties.Add(RCProperty->GetId());
+		}
+	}
+
+	for (const TSharedPtr<FRemoteControlActor>& RCActor : Registry->GetExposedEntities<FRemoteControlActor>())
+	{
+		if (RCActor->GetBoundObjects().Contains(ObjectRef.Object.Get()))
+		{
+			OnActorPropertyModified().Broadcast(this, *RCActor, ObjectRef.Object.Get(), ObjectRef.Property.Get());
 		}
 	}
 }
@@ -1519,7 +1772,10 @@ void URemoteControlPreset::RegisterDelegates()
 	FCoreUObjectDelegates::OnObjectPropertyChanged.AddUObject(this, &URemoteControlPreset::OnObjectPropertyChanged);
 	FCoreUObjectDelegates::OnPreObjectPropertyChanged.AddUObject(this, &URemoteControlPreset::OnPreObjectPropertyChanged);
 
-	GEngine->OnLevelActorDeleted().AddUObject(this, &URemoteControlPreset::OnActorDeleted);
+	if (GEngine)
+	{
+		GEngine->OnLevelActorDeleted().AddUObject(this, &URemoteControlPreset::OnActorDeleted);
+	}
 	FEditorDelegates::PostPIEStarted.AddUObject(this, &URemoteControlPreset::OnPieEvent);
 	FEditorDelegates::EndPIE.AddUObject(this, &URemoteControlPreset::OnPieEvent);
 	
@@ -1528,18 +1784,33 @@ void URemoteControlPreset::RegisterDelegates()
 		GEditor->OnObjectsReplaced().AddUObject(this, &URemoteControlPreset::OnReplaceObjects);
 	}
 
-	FCoreDelegates::OnEndFrame.AddUObject(this, &URemoteControlPreset::OnEndFrame);
-
 	FEditorDelegates::MapChange.AddUObject(this, &URemoteControlPreset::OnMapChange);
 #endif
+
+	FCoreDelegates::OnBeginFrame.AddUObject(this, &URemoteControlPreset::OnBeginFrame);
+	FCoreDelegates::OnEndFrame.AddUObject(this, &URemoteControlPreset::OnEndFrame);
+	IRemoteControlModule::Get().OnPostPropertyModifiedRemotely().AddUObject(this, &URemoteControlPreset::OnPostPropertyModifiedRemotely);
 }
 
 void URemoteControlPreset::UnregisterDelegates()
 {
-#if WITH_EDITOR
-	FEditorDelegates::MapChange.RemoveAll(this);
-
+	if (FModuleManager::Get().IsModuleLoaded("RemoteControl"))
+	{
+		IRemoteControlModule::Get().OnPostPropertyModifiedRemotely().RemoveAll(this);
+	}
+	FCoreDelegates::OnBeginFrame.RemoveAll(this);
 	FCoreDelegates::OnEndFrame.RemoveAll(this);
+
+#if WITH_EDITOR
+	for (TWeakObjectPtr<UBlueprint> Blueprint : BlueprintsWithRegisteredDelegates)
+	{
+		if (Blueprint.IsValid())
+		{
+			Blueprint->OnCompiled().RemoveAll(this);
+		}
+	}
+	
+	FEditorDelegates::MapChange.RemoveAll(this);
 
 	if (GEditor)
 	{
@@ -1587,11 +1858,12 @@ void URemoteControlPreset::OnActorDeleted(AActor* Actor)
 	{
 		if (Entity)
 		{
-			for (TWeakObjectPtr<URemoteControlBinding> Binding : Entity->Bindings)
+			for (auto It = Entity->Bindings.CreateIterator(); It; ++It)
 			{
-				if (ModifiedBindings.Contains(Binding.Get()))
+				if (ModifiedBindings.Contains(It->Get()))
 				{
 					PerFrameUpdatedEntities.Add(Entity->GetId());
+					It.RemoveCurrent();
 					break;
 				}
 			}
@@ -1636,7 +1908,12 @@ void URemoteControlPreset::OnReplaceObjects(const TMap<UObject*, UObject*>& Repl
 	{
 		for (TWeakObjectPtr<URemoteControlBinding> Binding : Entity->Bindings)
 		{
-			if (ModifiedBindings.Contains(Binding.Get()))
+			if (!Binding.IsValid())
+			{
+				continue;
+			}
+				
+			if (ModifiedBindings.Contains(Binding.Get()) || ReplacementObjectMap.FindKey(Binding->Resolve()))
 			{
 				PerFrameUpdatedEntities.Add(Entity->GetId());
 			}
@@ -1644,26 +1921,136 @@ void URemoteControlPreset::OnReplaceObjects(const TMap<UObject*, UObject*>& Repl
 	}
 }
 
+void URemoteControlPreset::OnMapChange(uint32)
+{
+	// Delay the refresh in order for the old actors to be invalid.
+	GEditor->GetTimerManager()->SetTimerForNextTick(FTimerDelegate::CreateLambda([this]()
+	{
+		Algo::Transform(Registry->GetExposedEntities(), PerFrameUpdatedEntities, [](const TSharedPtr<FRemoteControlEntity>& Entity) { return Entity->GetId(); });
+	}));
+}
+
+void URemoteControlPreset::OnBlueprintRecompiled(UBlueprint* Blueprint)
+{
+	if (!Blueprint)
+	{
+		return;
+	}
+
+	for (TSharedPtr<FRemoteControlFunction> RCFunction : Registry->GetExposedEntities<FRemoteControlFunction>())
+	{
+		if (UClass* Class = RCFunction->GetSupportedBindingClass())
+		{
+			if (Class->ClassGeneratedBy == Blueprint)
+			{
+				if (UFunction* OldFunction = RCFunction->GetFunction())
+				{
+					UClass* NewClass = Blueprint->GeneratedClass;
+					if (!!NewClass->FindFunctionByName(OldFunction->GetFName()))
+					{
+						RCFunction->RegenerateArguments();
+						PerFrameUpdatedEntities.Add(RCFunction->GetId());
+					}
+				}
+			}
+		}
+	}
+}
+
+#endif
+
+void URemoteControlPreset::OnBeginFrame()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(URemoteControlPreset::OnBeginFrame);
+	PropertyChangeWatchFrameCounter++;
+
+	if (PropertyChangeWatchFrameCounter == CVarRemoteControlFramesBetweenPropertyWatch.GetValueOnGameThread() - 1)
+	{
+		PropertyChangeWatchFrameCounter = 0;
+		for (TPair<FGuid, FRCPropertyWatcher>& Entry : PropertyWatchers)
+		{
+			Entry.Value.CheckForChange();
+		}
+	}
+}
+
 void URemoteControlPreset::OnEndFrame()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(URemoteControlPreset::OnEndFrame);
 	if (PerFrameUpdatedEntities.Num())
 	{
 		OnEntitiesUpdatedDelegate.Broadcast(this, PerFrameUpdatedEntities);
 		PerFrameUpdatedEntities.Empty();
 	}
+
+	if (PerFrameModifiedProperties.Num())
+	{
+		OnPropertyChangedDelegate.Broadcast(this, PerFrameModifiedProperties);
+		PerFrameModifiedProperties.Empty();
+	}
 }
 
-void URemoteControlPreset::OnMapChange(uint32)
+URemoteControlPreset::FRCPropertyWatcher::FRCPropertyWatcher(const TSharedPtr<FRemoteControlProperty>& InWatchedProperty, FSimpleDelegate&& InOnWatchedValueChanged)
+	: OnWatchedValueChanged(MoveTemp(InOnWatchedValueChanged))
+	, WatchedProperty(InWatchedProperty)
 {
-	// Delay the rebinding in order for the old actor points to be invalid, and for the new actors to be valid in the current map.
-	GEditor->GetTimerManager()->SetTimerForNextTick(FTimerDelegate::CreateLambda([this]()
-		{
-			RebindingManager->Rebind(this);
-			Algo::Transform(Registry->GetExposedEntities(), PerFrameUpdatedEntities, [](const TSharedPtr<FRemoteControlEntity>& Entity) { return Entity->GetId(); });
-		}));
+	if (TOptional<FRCFieldResolvedData> ResolvedData = GetWatchedPropertyResolvedData())
+	{
+		SetLastFrameValue(*ResolvedData);
+	}
 }
 
-#endif
+void URemoteControlPreset::FRCPropertyWatcher::CheckForChange()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FRCPropertyWatcher::CheckForChange);
+	if (TOptional<FRCFieldResolvedData> ResolvedData = GetWatchedPropertyResolvedData())
+	{
+		if (TSharedPtr<FRemoteControlProperty> RCProperty = WatchedProperty.Pin())
+		{
+			const void* NewValueAddress = ResolvedData->Field->ContainerPtrToValuePtr<void>(ResolvedData->ContainerAddress);
+			if (ResolvedData->Field->GetSize() != LastFrameValue.Num() || !ResolvedData->Field->Identical(LastFrameValue.GetData(), NewValueAddress))
+			{
+				SetLastFrameValue(*ResolvedData);
+				OnWatchedValueChanged.ExecuteIfBound();
+			}
+		}
+	}
+}
+
+TOptional<FRCFieldResolvedData> URemoteControlPreset::FRCPropertyWatcher::GetWatchedPropertyResolvedData() const
+{
+	TOptional<FRCFieldResolvedData> ResolvedData;
+	
+	if (TSharedPtr<FRemoteControlProperty> RCProperty = WatchedProperty.Pin())
+	{
+		if (!RCProperty->FieldPathInfo.IsResolved())
+		{
+			// In theory all objects should have the same value if they have an exposed property.
+			TArray<UObject*> Objects = RCProperty->GetBoundObjects();
+			if (Objects.Num() != 0)
+			{
+				RCProperty->FieldPathInfo.Resolve(Objects[0]);
+			}
+		}
+
+		if (RCProperty->FieldPathInfo.IsResolved())
+		{
+			ResolvedData = RCProperty->FieldPathInfo.GetResolvedData();
+		}
+	}
+
+	return ResolvedData;
+}
+
+void URemoteControlPreset::FRCPropertyWatcher::SetLastFrameValue(const FRCFieldResolvedData& ResolvedData)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FRCPropertyWatcher::SetLastFrameValue);
+	checkSlow(ResolvedData.Field);
+	checkSlow(ResolvedData.ContainerAddress);
+	
+	const void* NewValueAddress = ResolvedData.Field->ContainerPtrToValuePtr<void>(ResolvedData.ContainerAddress);
+	LastFrameValue.SetNumUninitialized(ResolvedData.Field->GetSize());
+	ResolvedData.Field->CopyCompleteValue(LastFrameValue.GetData(), NewValueAddress);
+}
 
 #undef LOCTEXT_NAMESPACE /* RemoteControlPreset */ 
-

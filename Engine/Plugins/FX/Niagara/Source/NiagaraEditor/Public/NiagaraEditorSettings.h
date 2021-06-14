@@ -10,6 +10,24 @@
 #include "NiagaraEditorSettings.generated.h"
 
 class UCurveFloat;
+enum class EScriptSource : uint8;
+
+namespace FNiagaraEditorGuids
+{
+	const extern FGuid SystemNamespaceMetaDataGuid;
+	const extern FGuid EmitterNamespaceMetaDataGuid;
+	const extern FGuid ParticleAttributeNamespaceMetaDataGuid;
+	const extern FGuid ModuleNamespaceMetaDataGuid;
+	const extern FGuid ModuleOutputNamespaceMetaDataGuid;
+	const extern FGuid ModuleLocalNamespaceMetaDataGuid;
+	const extern FGuid TransientNamespaceMetaDataGuid;
+	const extern FGuid StackContextNamespaceMetaDataGuid;
+	const extern FGuid EngineNamespaceMetaDataGuid;
+	const extern FGuid UserNamespaceMetaDataGuid;
+	const extern FGuid ParameterCollectionNamespaceMetaDataGuid;
+	const extern FGuid DataInstanceNamespaceMetaDataGuid;
+	const extern FGuid StaticSwitchNamespaceMetaDataGuid;
+}
 
 USTRUCT()
 struct FNiagaraNewAssetDialogConfig
@@ -43,13 +61,15 @@ enum class ENiagaraNamespaceMetadataOptions
 };
 
 USTRUCT()
-struct FNiagaraNamespaceMetadata
+struct NIAGARAEDITOR_API FNiagaraNamespaceMetadata
 {
 	GENERATED_BODY()
 
 	FNiagaraNamespaceMetadata();
 
 	FNiagaraNamespaceMetadata(TArray<FName> InNamespaces, FName InRequiredNamespaceModifier = NAME_None);
+
+	//FNiagaraNamespaceMetadata(const FNiagaraNamespaceMetadata& Other);
 
 	bool operator==(const FNiagaraNamespaceMetadata& Other) const
 	{
@@ -144,7 +164,19 @@ struct FNiagaraNamespaceMetadata
 		return *this;
 	}
 
+	FNiagaraNamespaceMetadata& SetGuid(const FGuid& NewGuid)
+	{ 
+		Guid = NewGuid; 
+		return *this;
+	}
+
 	bool IsValid() const { return Namespaces.Num() > 0; }
+
+	const FGuid& GetGuid() const { return Guid; }
+
+private:
+	UPROPERTY(Transient)
+	FGuid Guid;
 };
 
 USTRUCT()
@@ -158,6 +190,31 @@ struct NIAGARAEDITOR_API FNiagaraCurveTemplate
 	UPROPERTY(EditAnywhere, Category = Curve, meta = (AllowedClasses = "CurveFloat"))
 	FSoftObjectPath CurveAsset;
 };
+
+USTRUCT()
+struct NIAGARAEDITOR_API FNiagaraActionColors
+{
+	GENERATED_BODY()
+
+	FNiagaraActionColors();
+	
+	UPROPERTY(EditAnywhere, Category = Color)
+	FLinearColor NiagaraColor;
+
+	UPROPERTY(EditAnywhere, Category = Color)
+	FLinearColor GameColor;
+
+	UPROPERTY(EditAnywhere, Category = Color)
+	FLinearColor PluginColor;
+
+	UPROPERTY(EditAnywhere, Category = Color)
+	FLinearColor DeveloperColor;
+};
+
+FORCEINLINE uint32 GetTypeHash(const FNiagaraNamespaceMetadata& NamespaceMetaData)
+{
+	return GetTypeHash(NamespaceMetaData.GetGuid());
+}
 
 UCLASS(config = Niagara, defaultconfig, meta=(DisplayName="Niagara"))
 class NIAGARAEDITOR_API UNiagaraEditorSettings : public UDeveloperSettings
@@ -237,6 +294,7 @@ public:
 
 	FNiagaraNamespaceMetadata GetDefaultNamespaceMetadata() const;
 	FNiagaraNamespaceMetadata GetMetaDataForNamespaces(TArray<FName> Namespaces) const;
+	FNiagaraNamespaceMetadata GetMetaDataForId(const FGuid& NamespaceId) const;
 	const TArray<FNiagaraNamespaceMetadata>& GetAllNamespaceMetadata() const;
 
 	FNiagaraNamespaceMetadata GetDefaultNamespaceModifierMetadata() const;
@@ -259,6 +317,7 @@ public:
 
 	const TMap<FString, FString>& GetHLSLKeywordReplacementsMap()const { return HLSLKeywordReplacements; }
 
+	FLinearColor GetSourceColor(EScriptSource Source) const;
 private:
 	void SetupNamespaceMetadata();
 	void BuildCachedPlaybackSpeeds() const;
@@ -292,6 +351,9 @@ private:
 	/** Speeds used for slowing down and speeding up the playback speeds */
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
 	TArray<float> PlaybackSpeeds;
+
+	UPROPERTY(config, EditAnywhere, Category = "Niagara Colors")
+	FNiagaraActionColors ActionColors;
 
 	/** This is built using PlaybackSpeeds, populated whenever it is accessed using GetPlaybackSpeeds() */
 	mutable TOptional<TArray<float>> CachedPlaybackSpeeds;

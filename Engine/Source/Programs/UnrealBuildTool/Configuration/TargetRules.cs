@@ -396,7 +396,7 @@ namespace UnrealBuildTool
 		[RequiresUniqueBuildEnvironment]
 		[CommandLine("-NoCompileChaos", Value = "false")]
 		[CommandLine("-CompileChaos", Value = "true")]
-		public bool bCompileChaos = true;
+		public bool bCompileChaos = false;
 
 		/// <summary>
 		/// Whether to use the Chaos physics interface. This overrides the physx flags to disable APEX and NvCloth
@@ -404,7 +404,7 @@ namespace UnrealBuildTool
 		[RequiresUniqueBuildEnvironment]
 		[CommandLine("-NoUseChaos", Value = "false")]
 		[CommandLine("-UseChaos", Value = "true")]
-		public bool bUseChaos = true;
+		public bool bUseChaos = false;
 
 		/// <summary>
 		/// Whether to compile in checked chaos features for debugging
@@ -428,20 +428,20 @@ namespace UnrealBuildTool
 		/// Whether to include PhysX support.
 		/// </summary>
 		[RequiresUniqueBuildEnvironment]
-		public bool bCompilePhysX = false;
+		public bool bCompilePhysX = true;
 
 		/// <summary>
 		/// Whether to include PhysX APEX support.
 		/// </summary>
 		[RequiresUniqueBuildEnvironment]
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/BuildSettings.BuildSettings", "bCompileApex")]
-		public bool bCompileAPEX = false;
+		public bool bCompileAPEX = true;
 
 		/// <summary>
 		/// Whether to include NvCloth.
 		/// </summary>
 		[RequiresUniqueBuildEnvironment]
-		public bool bCompileNvCloth = false;
+		public bool bCompileNvCloth = true;
 
 		/// <summary>
 		/// Whether to include ICU unicode/i18n support in Core.
@@ -920,6 +920,18 @@ namespace UnrealBuildTool
 		public int MinGameModuleSourceFilesForUnityBuild = 32;
 
 		/// <summary>
+		/// Default treatment of uncategorized warnings
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public WarningLevel DefaultWarningLevel = WarningLevel.Warning;
+
+		/// <summary>
+		/// Whether to treat all warnings as errors. UE generally treats most warnings as errors, with the exception of deprecation warnings,
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public WarningLevel DeprecationWarningLevel = WarningLevel.Warning;
+
+		/// <summary>
 		/// Forces shadow variable warnings to be treated as errors on platforms that support it.
 		/// </summary>
 		[CommandLine("-ShadowVariableErrors", Value = nameof(WarningLevel.Error))]
@@ -1172,8 +1184,13 @@ namespace UnrealBuildTool
 		/// Whether to deploy the executable after compilation on platforms that require deployment.
 		/// </summary>
 		[CommandLine("-Deploy")]
-		[CommandLine("-SkipDeploy", Value = "false")]
 		public bool bDeployAfterCompile = false;
+
+		/// <summary>
+		/// Whether to force skipping deployment for platforms that require deployment by default.
+		/// </summary>
+		[CommandLine("-SkipDeploy")]
+		private bool bForceSkipDeploy = false; 
 
 		/// <summary>
 		/// When enabled, allows XGE to compile pre-compiled header files on remote machines.  Otherwise, PCHs are always generated locally.
@@ -1554,6 +1571,7 @@ namespace UnrealBuildTool
 
 			// Allow the build platform to set defaults for this target
 			UEBuildPlatform.GetBuildPlatform(Platform).ResetTarget(this);
+			bDeployAfterCompile = bForceSkipDeploy ? false : bDeployAfterCompile;
 
 			// Set the default build version
 			if(String.IsNullOrEmpty(BuildVersion))
@@ -2369,6 +2387,16 @@ namespace UnrealBuildTool
 		public int MinGameModuleSourceFilesForUnityBuild
 		{
 			get { return Inner.MinGameModuleSourceFilesForUnityBuild; }
+		}
+
+		public WarningLevel DefaultWarningLevel
+		{
+			get { return Inner.DefaultWarningLevel; }
+		}
+
+		public WarningLevel DeprecationWarningLevel
+		{
+			get { return Inner.DeprecationWarningLevel; }
 		}
 
 		public WarningLevel ShadowVariableWarningLevel

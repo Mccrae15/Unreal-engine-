@@ -132,6 +132,8 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 
 	LevelSequenceAttribute = InArgs._LevelSequence;
 
+	TakeRecorderModeAttribute = InArgs._TakeRecorderMode;
+
 	CacheMetaData();
 
 	if (TakeMetaData && !TakeMetaData->IsLocked())
@@ -459,12 +461,12 @@ void STakeRecorderCockpit::Construct(const FArguments& InArgs)
 	}
 }
 
-bool STakeRecorderCockpit::CanStartRecording(FText* OutErrorText) const
+bool STakeRecorderCockpit::CanStartRecording(FText& OutErrorText) const
 {
 	bool bCanRecord = CanRecord();
-	if (!bCanRecord && OutErrorText)
+	if (!bCanRecord)
 	{
-		*OutErrorText = RecordErrorText;
+		OutErrorText = RecordErrorText;
 	}
 	return bCanRecord;
 }
@@ -506,7 +508,7 @@ void STakeRecorderCockpit::UpdateRecordError()
 		return;
 	}
 
-	if (!Sequence->HasAnyFlags(RF_Transient))
+	if (!Sequence->HasAnyFlags(RF_Transient) && TakeRecorderModeAttribute.Get() != ETakeRecorderMode::RecordIntoSequence)
 	{
 		RecordErrorText = FText();
 		return;
@@ -869,11 +871,32 @@ FReply STakeRecorderCockpit::OnAddMarkedFrame()
 		FFrameNumber ElapsedFrame = FFrameNumber(static_cast<int32>(FrameRate.AsDecimal() * RecordingDuration.GetTotalSeconds()));
 		
 		ULevelSequence* LevelSequence = LevelSequenceAttribute.Get();
+		if (!LevelSequence)
+		{
+			return FReply::Handled();
+		}
+
 		UMovieScene* MovieScene = LevelSequence->GetMovieScene();
+		if (!MovieScene)
+		{
+			return FReply::Handled();
+		}
+
+		FFrameRate DisplayRate = MovieScene->GetDisplayRate();
+		FFrameRate TickResolution = MovieScene->GetTickResolution();
 
 		FMovieSceneMarkedFrame MarkedFrame;
-		MarkedFrame.FrameNumber = ConvertFrameTime(ElapsedFrame, MovieScene->GetDisplayRate(), MovieScene->GetTickResolution()).CeilToFrame();
 
+		UTakeRecorderSources* Sources = LevelSequence->FindMetaData<UTakeRecorderSources>();
+		if (Sources && Sources->GetSettings().bStartAtCurrentTimecode)
+		{
+			MarkedFrame.FrameNumber = FFrameRate::TransformTime(FFrameTime(FApp::GetTimecode().ToFrameNumber(DisplayRate)), DisplayRate, TickResolution).FloorToFrame();
+		}
+		else
+		{
+			MarkedFrame.FrameNumber = ConvertFrameTime(ElapsedFrame, DisplayRate, TickResolution).CeilToFrame();
+		}
+		
 		int32 MarkedFrameIndex = MovieScene->AddMarkedFrame(MarkedFrame);
 		UTakeRecorderBlueprintLibrary::OnTakeRecorderMarkedFrameAdded(MovieScene->GetMarkedFrames()[MarkedFrameIndex]);
 	}
@@ -883,7 +906,7 @@ FReply STakeRecorderCockpit::OnAddMarkedFrame()
 
 bool STakeRecorderCockpit::Reviewing() const 
 {
-	return bool(!Recording() && (TakeMetaData->Recorded()));
+	return bool(!Recording() && (TakeMetaData->Recorded() && TakeRecorderModeAttribute.Get() != ETakeRecorderMode::RecordIntoSequence));
 }
 
 bool STakeRecorderCockpit::Recording() const
@@ -954,6 +977,7 @@ void STakeRecorderCockpit::StartRecording()
 		FTakeRecorderParameters Parameters;
 		Parameters.User    = GetDefault<UTakeRecorderUserSettings>()->Settings;
 		Parameters.Project = GetDefault<UTakeRecorderProjectSettings>()->Settings;
+		Parameters.TakeRecorderMode = TakeRecorderModeAttribute.Get();
 
 		FText ErrorText = LOCTEXT("UnknownError", "An unknown error occurred when trying to start recording");
 

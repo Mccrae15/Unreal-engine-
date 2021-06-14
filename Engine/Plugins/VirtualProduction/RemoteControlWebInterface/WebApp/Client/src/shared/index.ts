@@ -20,11 +20,6 @@ export enum PropertyType {
   Text =        'FText',
 
   Function =    'Function',
-  Asset =       'Asset',
-}
-
-export enum AssetAction {
-  SequencePlay =     'SEQUENCE_PLAY',
 }
 
 export interface ColorProperty {
@@ -68,9 +63,13 @@ export interface IFunction {
 }
 
 export interface IExposedFunction {
+  ID: string;
   DisplayName: string;
   UnderlyingFunction: IFunction;
   Metadata: { [key: string]: string };
+
+  //Added
+  Type: PropertyType;
 }
 
 export interface IProperty {
@@ -81,8 +80,15 @@ export interface IProperty {
 }
 
 export interface IExposedProperty {
+  ID: string;
   DisplayName: string;
+  Metadata: Record<string, string>;
+  Widget: WidgetType;
   UnderlyingProperty: IProperty;
+  OwnerObjects: IObject[];
+
+  //Added
+  Type: PropertyType;
 }
 
 export interface IActor {
@@ -100,7 +106,6 @@ export interface IGroup {
   Name: string;
   ExposedProperties: IExposedProperty[];
   ExposedFunctions: IExposedFunction[];
-  ExposedActors: IExposedActor[];
 }
 
 export interface IPreset {
@@ -110,13 +115,16 @@ export interface IPreset {
   
   ExposedProperties?: IExposedProperty[];
   ExposedFunctions?: IExposedFunction[];
-  ExposedActors?: IExposedActor[];
+  Exposed?: Record<string, IExposedProperty | IExposedFunction>;
 }
 
-export interface IAsset {
+export interface IObject {
   Name: string;
   Class: string;
   Path: string;
+}
+
+export interface IAsset extends IObject {
   Metadata: Record<string, string>;
 }
 
@@ -125,11 +133,12 @@ export type IPayload = { [property: string]: PropertyValue | IPayload };
 export type IPayloads = { [preset: string]: IPayload };
 
 export enum WidgetTypes {
-  Gauge =           'Gauge',
+  Dial =            'Dial',
   Slider =          'Slider',
   Sliders =         'Sliders',
   ScaleSlider =     'Scale Slider',
   ColorPicker =     'Color Picker',
+  MiniColorPicker = 'Mini Color Picker',
   Toggle =          'Toggle',
   Joystick =        'Joystick',
   Button =          'Button',
@@ -138,48 +147,46 @@ export enum WidgetTypes {
   Dropdown =        'Dropdown',
   ImageSelector =   'Image Selector',
   Vector =          'Vector',
-
-  Level =           'Level',
-  Sequence =        'Sequence',
+  Spacer =          'Spacer',
+  Tabs =            'Tabs',
 }
 
 export type WidgetType = keyof typeof WidgetTypes | string;
 
 
-export type IWidgetMeta = { [key: string]: any } & {
-  default?: PropertyValue;
-  min?: number;
-  max?: number;
-};
+export type IWidgetMeta = {
+  Description?: string;
+  Min?: number;
+  Max?: number;
+} & { [key: string]: any };
 
-export interface IWidget {
-  title?: string;
-  type?: WidgetType;
-  property?: string;
-  meta?: IWidgetMeta;
-  order?: number;
+
+export enum IPanelType {
+  Panel = 'PANEL',
+  List  = 'LIST',
 }
 
 export interface IPanel {
-  name: string;
-  stack?: boolean;
-  widgets: IWidget[];
-
+  id?: string;
+  title?: string;
+  type: IPanelType;
+  widgets?: ICustomStackWidget[];
+  items?: ICustomStackListItem[];
 }
 
 export enum TabLayout {
-  Panel1X1 =      '1x1',
-  Panel1x2 =      '1x2',
-  Panel2x1 =      '2x1',
-  Panel2x2 =      '2x2',
-  Stack =         'Stack',
-
-  CustomActor =   'CustomActor',
+  Stack =    'Stack',
+  Screen =   'Screen',
 }
 
-export interface IActorWidget {
-  type: 'Walls' | 'Cards' | 'Location' | 'Camera' | 'Save' | 'Another' | 'GreenScreen' | 'Snapshot';
-  actors: string[];
+export enum ScreenType {
+  Snapshot =      'Snapshot',
+  Sequencer =     'Sequencer',
+}
+
+export interface IScreen {
+  type: ScreenType;
+  data?: any;
 }
 
 export interface IDropdownOption {
@@ -188,66 +195,56 @@ export interface IDropdownOption {
 }
 
 export interface ICustomStackProperty {
-  actor?: string;
+  id?: string;
   property: string;
   propertyType: PropertyType;
   widget: WidgetType;
+
+  // Label only
   label?: string;
-  reset?: PropertyValue;
-
-  min?: number;
-  max?: number;
-
-  // Sliders & Vector only
-  lock?: boolean;
 
   // Vector only
-  widgets?: (WidgetTypes.Joystick | WidgetTypes.Sliders | WidgetTypes.Gauge)[];
-  speedMin?: number;
-  speedMax?: number;
+  widgets?: WidgetType[];
 
   // Dropdown only
   options?: IDropdownOption[];
-}
 
-export interface ICustomStackFunction {
-  actor: string;
-  function: string;
+  // Function arguments
+  args?: Record<string, any>;
+
+  // Space only
+  spaces?: number;
 }
 
 export interface ICustomStackItem {
+  id?: string;
   label: string;
   widgets: ICustomStackWidget[];
 }
 
 export interface ICustomStackTabs {
+  id?: string;
   widget: 'Tabs';
   tabs: ICustomStackItem[];
 }
 
-export interface ICustomStackListItem extends ICustomStackItem {
-  check?: { actor: string;  property: string; };
+export interface ICustomStackListItem {
+  id?: string;
+  label: string;
+  check?: { actor: string; property: string; };
+  panels: IPanel[];
 }
 
-export interface ICustomStackList {
-  widget: 'List';
-  items: ICustomStackListItem[];
-  addFunction?: ICustomStackFunction;
-  removeFunction?: ICustomStackFunction;
-}
+export type ICustomStackWidget = ICustomStackProperty | ICustomStackTabs;
 
-export type ICustomStackWidget = ICustomStackProperty | ICustomStackTabs | ICustomStackList;
+export interface IView {
+  tabs: ITab[];
+}
 
 export interface ITab {
   name: string;
   icon: string;
   layout: TabLayout;
   panels?: IPanel[];
-  stack?: ICustomStackWidget[];
-
-  actor?: IActorWidget;
-}
-
-export interface IView {
-  tabs: ITab[];
+  screen?: IScreen;
 }

@@ -30,11 +30,11 @@ public class LiveLinkCameraEditor : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
+				"CameraCalibrationCore",
 				"Core",
 				"CoreUObject",
 				"DetailCustomizations",
 				"EditorStyle",
-				"LensDistortion",
 				"LiveLinkInterface",
 				"LiveLinkCamera",
 				"LiveLinkComponents",

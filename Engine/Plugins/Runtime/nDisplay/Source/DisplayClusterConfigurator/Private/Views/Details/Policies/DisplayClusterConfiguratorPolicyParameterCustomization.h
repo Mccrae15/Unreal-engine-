@@ -36,6 +36,7 @@ public:
 		const FString& InKey,
 		UDisplayClusterBlueprint* InBlueprint,
 		UDisplayClusterConfigurationViewport* InConfigurationViewport,
+		const TSharedPtr<IPropertyHandle>& InParametersHandle,
 		const FString* InInitialValue = nullptr);
 
 	virtual ~FPolicyParameterInfo() {}
@@ -54,14 +55,13 @@ public:
 
 	/** Retrieve (or add) the parameter information from the viewport data object. */
 	FText GetOrAddCustomParameterValueText() const;
-
 protected:
 	
 	/** Checks the data model if the parameter exists. */
 	bool IsParameterAlreadyAdded() const;
 	
 	/** Update the parameter value in the viewport data object. */
-	void UpdateCustomParameterValueText(const FString& NewValue);
+	void UpdateCustomParameterValueText(const FString& NewValue, bool bNotify = true) const;
 
 	/** Visibility of this parameter. Uses OnParameterVisibilityCheck to check. */
 	virtual EVisibility IsParameterVisible() const;
@@ -81,6 +81,9 @@ protected:
 
 	/** Used to determine parameter visibility. */
 	FParameterVisible OnParameterVisibilityCheck;
+
+	/** Handle to the owning property being set. */
+	TSharedPtr<IPropertyHandle> ParametersHandle;
 
 private:
 	/** The display name only for the UI. */
@@ -104,6 +107,7 @@ public:
 		const FString& InKey,
 		UDisplayClusterBlueprint* InBlueprint,
 		UDisplayClusterConfigurationViewport* InConfigurationViewport,
+		const TSharedPtr<IPropertyHandle>& InParametersHandle,
 		const TArray<FString>& InValues,
 		const FString* InInitialItem = nullptr,
 		bool bSort = true);
@@ -148,17 +152,18 @@ public:
 		const FString& InKey,
 		UDisplayClusterBlueprint* InBlueprint,
 		UDisplayClusterConfigurationViewport* InConfigurationViewport,
-		TSubclassOf<UActorComponent> InComponentClass);
+		const TSharedPtr<IPropertyHandle>& InParametersHandle,
+		const TArray<TSubclassOf<UActorComponent>>& InComponentClasses);
 
 	/** Populate CustomParameterOptions based on this parameter. */
 	void CreateParameterValues(ADisplayClusterRootActor* RootActor);
 
 	/** The type of component this parameter represents. */
-	TSubclassOf<UActorComponent> GetComponentType() const { return ComponentType; }
+	const TArray<TSubclassOf<UActorComponent>>& GetComponentTypes() const { return ComponentTypes; }
 
 private:
 	/** A component class to use for creating parameter options. */
-	TSubclassOf<UActorComponent> ComponentType;
+	TArray<TSubclassOf<UActorComponent>> ComponentTypes;
 };
 
 /**
@@ -173,7 +178,8 @@ public:
 		const FString& InKey,
 		UDisplayClusterBlueprint* InBlueprint,
 		UDisplayClusterConfigurationViewport* InConfigurationViewport,
-		T InDefaultValue = 0, TOptional<T> InMinValue = TOptional<T>(), TOptional<T> InMaxValue = TOptional<T>()) : FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport)
+		const TSharedPtr<IPropertyHandle>& InParametersHandle,
+		T InDefaultValue = 0, TOptional<T> InMinValue = TOptional<T>(), TOptional<T> InMaxValue = TOptional<T>()) : FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InParametersHandle)
 	{
 		MinValue = InMinValue;
 		MaxValue = InMaxValue;
@@ -234,7 +240,8 @@ public:
 		const FString& InDisplayName,
 		const FString& InKey,
 		UDisplayClusterBlueprint* InBlueprint,
-		UDisplayClusterConfigurationViewport* InConfigurationViewport);
+		UDisplayClusterConfigurationViewport* InConfigurationViewport,
+		const TSharedPtr<IPropertyHandle>& InParametersHandle);
 
 	// FPolicyParameterInfo
 	virtual void CreateCustomRowWidget(IDetailChildrenBuilder& InDetailWidgetRow) override;
@@ -251,7 +258,9 @@ public:
 		const FString& InDisplayName,
 		const FString& InKey,
 		UDisplayClusterBlueprint* InBlueprint,
-		UDisplayClusterConfigurationViewport* InConfigurationViewport);
+		UDisplayClusterConfigurationViewport* InConfigurationViewport,
+		const TSharedPtr<IPropertyHandle>& InParametersHandle
+		);
 
 	// FPolicyParameterInfo
 	virtual void CreateCustomRowWidget(IDetailChildrenBuilder& InDetailWidgetRow) override;
@@ -272,7 +281,8 @@ public:
 		const FString& InKey,
 		UDisplayClusterBlueprint* InBlueprint,
 		UDisplayClusterConfigurationViewport* InConfigurationViewport,
-		const TArray<FString>& InFileExtensions) : FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport)
+		const TSharedPtr<IPropertyHandle>& InParametersHandle,
+		const TArray<FString>& InFileExtensions) : FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InParametersHandle)
 	{
 		FileExtensions = InFileExtensions;
 	}
@@ -300,7 +310,8 @@ public:
 		const FString& InDisplayName,
 		const FString& InKey,
 		UDisplayClusterBlueprint* InBlueprint,
-		UDisplayClusterConfigurationViewport* InConfigurationViewport) : FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport)
+		UDisplayClusterConfigurationViewport* InConfigurationViewport,
+		const TSharedPtr<IPropertyHandle>& InParametersHandle) : FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InParametersHandle)
 	{
 	}
 
@@ -328,7 +339,8 @@ public:
 		const FString& InDisplayName,
 		const FString& InKey,
 		UDisplayClusterBlueprint* InBlueprint,
-		UDisplayClusterConfigurationViewport* InConfigurationViewport);
+		UDisplayClusterConfigurationViewport* InConfigurationViewport,
+		const TSharedPtr<IPropertyHandle>& InParametersHandle);
 
 	// FPolicyParameterInfo
 	virtual void CreateCustomRowWidget(IDetailChildrenBuilder& InDetailWidgetRow) override;
@@ -355,6 +367,50 @@ private:
 };
 
 /**
+* Policy info for 4x4 matrix.
+*/
+class FPolicyParameterInfo4x4Matrix final : public FPolicyParameterInfoFloatReference
+{
+public:
+	FPolicyParameterInfo4x4Matrix(
+		const FString& InDisplayName,
+		const FString& InKey,
+		UDisplayClusterBlueprint* InBlueprint,
+		UDisplayClusterConfigurationViewport* InConfigurationViewport,
+		const TSharedPtr<IPropertyHandle>& InParametersHandle);
+
+	// FPolicyParameterInfo
+	virtual void CreateCustomRowWidget(IDetailChildrenBuilder& InDetailWidgetRow) override;
+	// ~FPolicyParameterInfo
+
+private:
+	void CustomizeRow(const FText& InHeaderText, TSharedRef<float>& InX, TSharedRef<float>& InY,
+		TSharedRef<float>& InZ, TSharedRef<float>& InW, FDetailWidgetRow& InDetailWidgetRow);
+	virtual void FormatTextAndUpdateParameter() override;
+
+private:
+	mutable TSharedRef<float> A;
+	mutable TSharedRef<float> B;
+	mutable TSharedRef<float> C;
+	mutable TSharedRef<float> D;
+
+	mutable TSharedRef<float> E;
+	mutable TSharedRef<float> F;
+	mutable TSharedRef<float> G;
+	mutable TSharedRef<float> H;
+
+	mutable TSharedRef<float> I;
+	mutable TSharedRef<float> J;
+	mutable TSharedRef<float> K;
+	mutable TSharedRef<float> L;
+
+	mutable TSharedRef<float> M;
+	mutable TSharedRef<float> N;
+	mutable TSharedRef<float> O;
+	mutable TSharedRef<float> P;
+};
+
+/**
  * Policy info for rotator.
  */
 class FPolicyParameterInfoRotator final : public FPolicyParameterInfoFloatReference
@@ -364,7 +420,8 @@ public:
 		const FString& InDisplayName,
 		const FString& InKey,
 		UDisplayClusterBlueprint* InBlueprint,
-		UDisplayClusterConfigurationViewport* InConfigurationViewport);
+		UDisplayClusterConfigurationViewport* InConfigurationViewport,
+		const TSharedPtr<IPropertyHandle>& InParametersHandle);
 
 	// FPolicyParameterInfo
 	virtual void CreateCustomRowWidget(IDetailChildrenBuilder& InDetailWidgetRow) override;
@@ -389,7 +446,8 @@ public:
 		const FString& InDisplayName,
 		const FString& InKey,
 		UDisplayClusterBlueprint* InBlueprint,
-		UDisplayClusterConfigurationViewport* InConfigurationViewport);
+		UDisplayClusterConfigurationViewport* InConfigurationViewport,
+		const TSharedPtr<IPropertyHandle>& InParametersHandle);
 
 	// FPolicyParameterInfo
 	virtual void CreateCustomRowWidget(IDetailChildrenBuilder& InDetailWidgetRow) override;

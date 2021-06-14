@@ -217,7 +217,7 @@ void SNiagaraParameterName::UpdateContent(FName InDisplayedParameterName, int32 
 		];
 	}
 
-	if (Decorator.IsValid())
+	if (Decorator.IsValid() && Decorator != SNullWidget::NullWidget)
 	{
 		ContentBox->AddSlot()
 		.VAlign(VAlign_Center)
@@ -329,6 +329,12 @@ void SNiagaraParameterName::EnterNamespaceModifierEditingMode()
 			UpdateContent(ParameterName.Get(), NamePartIndexForEditableModifier);
 		}
 	}
+}
+
+void SNiagaraParameterName::UpdateDecorator(TSharedRef<SWidget> InDecorator)
+{
+	Decorator = InDecorator;
+	UpdateContent(ParameterName.Get());
 }
 
 void SNiagaraParameterNameTextBlock::Construct(const FArguments& InArgs)

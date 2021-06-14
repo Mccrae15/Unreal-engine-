@@ -31,12 +31,15 @@
 #include "Customizations/NiagaraOutlinerCustomization.h"
 #include "IStructureDetailsView.h"
 
+
+#if WITH_NIAGARA_DEBUGGER
+
 #define LOCTEXT_NAMESPACE "SNiagaraDebugger"
+
+const FName SNiagaraDebugger::DebugWindowName(TEXT("NiagaraDebugger"));
 
 namespace NiagaraDebuggerLocal
 {
-	static const FName NiagaraDebuggerTabName(TEXT("NiagaraDebugger"));
-
 	DECLARE_DELEGATE_TwoParams(FOnExecConsoleCommand, const TCHAR*, bool);
 
 	template<typename T>
@@ -66,8 +69,11 @@ namespace NiagaraDebugHudTab
 		StructureViewArgs.bShowClasses = true;
 		StructureViewArgs.bShowInterfaces = true;
 
+		TSharedRef<IStructureDetailsView> StructureDetailsView = PropertyModule.CreateStructureDetailView(DetailsViewArgs, StructureViewArgs, nullptr);
+		StructureDetailsView->GetDetailsView()->SetGenericLayoutDetailsDelegate(FOnGetDetailCustomizationInstance::CreateStatic(&FNiagaraDebugHUDSettingsDetailsCustomization::MakeInstance, DebugHudSettings));
+
 		TSharedPtr<FStructOnScope> StructOnScope = MakeShared<FStructOnScope>(FNiagaraDebugHUDSettingsData::StaticStruct(), reinterpret_cast<uint8*>(&DebugHudSettings->Data));
-		TSharedRef<IStructureDetailsView> StructureDetailsView = PropertyModule.CreateStructureDetailView(DetailsViewArgs, StructureViewArgs, StructOnScope);
+		StructureDetailsView->SetStructureData(StructOnScope);
 
 		TabManager->RegisterTabSpawner(
 			TabName,
@@ -628,6 +634,7 @@ namespace NiagaraSessionBrowserTab
 	}
 }
 
+
 SNiagaraDebugger::SNiagaraDebugger()
 {
 }
@@ -730,7 +737,7 @@ void SNiagaraDebugger::FillWindowMenu(FMenuBuilder& MenuBuilder)
 void SNiagaraDebugger::RegisterTabSpawner()
 {
 	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
-		NiagaraDebuggerLocal::NiagaraDebuggerTabName,
+		SNiagaraDebugger::DebugWindowName,
 		FOnSpawnTab::CreateStatic(&SNiagaraDebugger::SpawnNiagaraDebugger)
 	)
 	.SetDisplayName(NSLOCTEXT("UnrealEditor", "NiagaraDebuggerTab", "Niagara Debugger"))
@@ -743,7 +750,7 @@ void SNiagaraDebugger::UnregisterTabSpawner()
 {
 	if (FSlateApplication::IsInitialized())
 	{
-		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(NiagaraDebuggerLocal::NiagaraDebuggerTabName);
+		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(SNiagaraDebugger::DebugWindowName);
 	}
 }
 
@@ -790,6 +797,16 @@ TSharedRef<SDockTab> SNiagaraDebugger::SpawnNiagaraDebugger(const FSpawnTabArgs&
 
 	NomadTab->SetContent(MainWidget);
 	return NomadTab;
+}
+
+void SNiagaraDebugger::FocusDebugTab()
+{
+	TabManager->TryInvokeTab(NiagaraDebugHudTab::TabName);
+}
+
+void SNiagaraDebugger::FocusOutlineTab()
+{
+	TabManager->TryInvokeTab(NiagaraOutlinerTab::TabName);
 }
 
 TSharedRef<SWidget> SNiagaraDebugger::MakeToolbar()
@@ -864,7 +881,7 @@ TSharedRef<SWidget> SNiagaraDebugger::MakeToolbar()
 		{
 			ToolbarBuilder.AddToolBarButton(
 				FUIAction(
-					FExecuteAction::CreateLambda([=]() {Settings->Data.PlaybackMode = ENiagaraDebugPlaybackMode::Step; Settings->NotifyPropertyChanged(); }),
+					FExecuteAction::CreateLambda([=]() {Settings->Data.PlaybackMode = ENiagaraDebugPlaybackMode::Step; Settings->NotifyPropertyChanged(); Settings->Data.PlaybackMode = ENiagaraDebugPlaybackMode::Paused; }),
 					FCanExecuteAction(),
 					FIsActionChecked::CreateLambda([=]() { return Settings->Data.PlaybackMode == ENiagaraDebugPlaybackMode::Step; })
 				),
@@ -1009,3 +1026,5 @@ TSharedRef<SWidget> SNiagaraDebugger::MakePlaybackOptionsMenu()
 	return MenuBuilder.MakeWidget();
 }
 #undef LOCTEXT_NAMESPACE
+
+#endif

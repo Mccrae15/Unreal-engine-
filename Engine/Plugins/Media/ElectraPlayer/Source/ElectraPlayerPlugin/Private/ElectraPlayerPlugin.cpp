@@ -9,6 +9,9 @@
 #include "ElectraPlayerPlugin.h"
 #include "IElectraPlayerRuntimeModule.h"
 #include "IElectraPlayerPluginModule.h"
+#include "IElectraMetadataSample.h"
+
+#include "MediaMetaDataDecoderOutput.h"
 
 using namespace Electra;
 
@@ -94,9 +97,81 @@ FElectraPlayerPlugin::~FElectraPlayerPlugin()
 
 //-----------------------------------------------------------------------------
 
+class FElectraBinarySample : public IElectraBinarySample
+{
+public:
+	virtual ~FElectraBinarySample() = default;
+	virtual const void* GetData() override						{ return Metadata->GetData(); }
+	virtual uint32 GetSize() const override						{ return Metadata->GetSize(); }
+	virtual FGuid GetGUID() const override						{ return IElectraBinarySample::GetSampleTypeGUID(); }
+	virtual const FString& GetSchemeIdUri() const override		{ return Metadata->GetSchemeIdUri(); }
+	virtual const FString& GetValue() const override			{ return Metadata->GetValue(); }
+	virtual const FString& GetID() const override				{ return Metadata->GetID(); }
+
+	virtual EDispatchedMode GetDispatchedMode() const override
+	{
+		switch(Metadata->GetDispatchedMode())
+		{
+			default:
+			case IMetaDataDecoderOutput::EDispatchedMode::OnReceive:
+			{
+				return FElectraBinarySample::EDispatchedMode::OnReceive;
+			}
+			case IMetaDataDecoderOutput::EDispatchedMode::OnStart:
+			{
+				return FElectraBinarySample::EDispatchedMode::OnStart;
+			}
+		}
+	}
+	
+	virtual EOrigin GetOrigin() const override
+	{
+		switch(Metadata->GetOrigin())
+		{
+			default:
+			case IMetaDataDecoderOutput::EOrigin::TimedMetadata:		
+			{
+				return FElectraBinarySample::EOrigin::TimedMetadata;
+			}
+			case IMetaDataDecoderOutput::EOrigin::EventStream:		
+			{
+				return FElectraBinarySample::EOrigin::EventStream;
+			}
+			case IMetaDataDecoderOutput::EOrigin::InbandEventStream:	
+			{
+				return FElectraBinarySample::EOrigin::InbandEventStream;
+			}
+		}
+	}
+
+	virtual FMediaTimeStamp GetTime() const override
+	{ 
+		FDecoderTimeStamp ts = Metadata->GetTime(); 
+		return FMediaTimeStamp(ts.Time, ts.SequenceIndex);
+	}
+	
+	virtual FTimespan GetDuration() const override
+	{
+		FTimespan Duration = Metadata->GetDuration();
+		// A zero duration might cause the metadata sample fall through the cracks later
+		// so set it to a short 1ms instead.
+		if (Duration.IsZero())
+		{
+			Duration = FTimespan::FromMilliseconds(1);
+		}
+		return Duration;
+	}
+
+	IMetaDataDecoderOutputPtr Metadata;
+};
+
+//-----------------------------------------------------------------------------
+
+
 Electra::FVariantValue FElectraPlayerPlugin::FPlayerAdapterDelegate::QueryOptions(EOptionType Type, const Electra::FVariantValue & Param)
 {
-	if (TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin())
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
 	{
 		FScopeLock lock(&PinnedHost->CallbackPointerLock);
 		if (PinnedHost->OptionInterface)
@@ -105,17 +180,19 @@ Electra::FVariantValue FElectraPlayerPlugin::FPlayerAdapterDelegate::QueryOption
 			{
 				case EOptionType::MaxVerticalStreamResolution:
 				{
-					return FVariantValue((int64)PinnedHost->OptionInterface->GetMediaOption(TEXT("MaxResolutionForMediaStreaming"), (int64)0));
+					static const FName MaxResolutionOptionKey = TEXT("MaxResolutionForMediaStreaming");
+					return FVariantValue((int64)PinnedHost->OptionInterface->GetMediaOption(MaxResolutionOptionKey, (int64)0));
 				}
 
 				case EOptionType::MaxBandwidthForStreaming:
 				{
-					return FVariantValue((int64)PinnedHost->OptionInterface->GetMediaOption(TEXT("ElectraMaxStreamingBandwidth"), (int64)0));
+					static const FName MaxBandwidthOptionKey = TEXT("ElectraMaxStreamingBandwidth");
+					return FVariantValue((int64)PinnedHost->OptionInterface->GetMediaOption(MaxBandwidthOptionKey, (int64)0));
 				}
 
 				case EOptionType::PlayListData:
 				{
-					const FName PlaylistOptionKey = TEXT("ElectraGetPlaylistData");
+					static const FName PlaylistOptionKey = TEXT("ElectraGetPlaylistData");
 					if (PinnedHost->OptionInterface->HasMediaOption(PlaylistOptionKey))
 					{
 						check(Param.IsType(FVariantValue::EDataType::TypeFString));
@@ -126,7 +203,7 @@ Electra::FVariantValue FElectraPlayerPlugin::FPlayerAdapterDelegate::QueryOption
 
 				case EOptionType::LicenseKeyData:
 				{
-					const FName LicenseKeyDataOptionKey = TEXT("ElectraGetLicenseKeyData");
+					static const FName LicenseKeyDataOptionKey = TEXT("ElectraGetLicenseKeyData");
 					if (PinnedHost->OptionInterface->HasMediaOption(LicenseKeyDataOptionKey))
 					{
 						check(Param.IsType(FVariantValue::EDataType::TypeFString));
@@ -137,7 +214,7 @@ Electra::FVariantValue FElectraPlayerPlugin::FPlayerAdapterDelegate::QueryOption
 
 				case EOptionType::PlaystartPosFromSeekPositions:
 				{
-					const FName PlaystartOptionKey = TEXT("ElectraGetPlaystartPosFromSeekPositions");
+					static const FName PlaystartOptionKey = TEXT("ElectraGetPlaystartPosFromSeekPositions");
 					if (PinnedHost->OptionInterface->HasMediaOption(PlaystartOptionKey))
 					{
 						check(Param.IsType(FVariantValue::EDataType::TypeSharedPointer));
@@ -169,7 +246,8 @@ Electra::FVariantValue FElectraPlayerPlugin::FPlayerAdapterDelegate::QueryOption
 
 void FElectraPlayerPlugin::FPlayerAdapterDelegate::SendMediaEvent(EPlayerEvent Event)
 {
-	if (TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin())
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
 	{
 		FScopeLock lock(&PinnedHost->CallbackPointerLock);
 		if (PinnedHost->EventSink)
@@ -182,31 +260,34 @@ void FElectraPlayerPlugin::FPlayerAdapterDelegate::SendMediaEvent(EPlayerEvent E
 
 void FElectraPlayerPlugin::FPlayerAdapterDelegate::OnVideoFlush()
 {
-	if (TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin())
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
 	{
 		TRange<FTimespan> AllTime(FTimespan::MinValue(), FTimespan::MaxValue());
 		TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe> FlushSample;
 		while (PinnedHost->GetSamples().FetchVideo(AllTime, FlushSample))
-			;
+		{ }
 	}
 }
 
 
 void FElectraPlayerPlugin::FPlayerAdapterDelegate::OnAudioFlush()
 {
-	if (TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin())
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
 	{
 		TRange<FTimespan> AllTime(FTimespan::MinValue(), FTimespan::MaxValue());
 		TSharedPtr<IMediaAudioSample, ESPMode::ThreadSafe> FlushSample;
 		while (PinnedHost->GetSamples().FetchAudio(AllTime, FlushSample))
-			;
+		{ }
 	}
 }
 
 
 void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentVideoFrame(const FVideoDecoderOutputPtr & InVideoFrame)
 {
-	if (TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin())
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
 	{
 		FElectraTextureSampleRef TextureSample = PinnedHost->OutputTexturePool.AcquireShared();
 		TextureSample->Initialize(InVideoFrame.Get());
@@ -217,7 +298,8 @@ void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentVideoFrame(const FVide
 
 void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentAudioFrame(const IAudioDecoderOutputPtr& InAudioFrame)
 {
-	if (TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin())
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
 	{
 		TSharedRef<FElectraPlayerAudioSample, ESPMode::ThreadSafe> AudioSample = PinnedHost->OutputAudioPool.AcquireShared();
 		AudioSample->Initialize(InAudioFrame);
@@ -225,10 +307,23 @@ void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentAudioFrame(const IAudi
 	}
 }
 
+void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentMetadataSample(const IMetaDataDecoderOutputPtr& InMetadataFrame)
+{
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
+	{
+		// Create a binary media sample of our extended format and pass it up.
+		TSharedRef<FElectraBinarySample, ESPMode::ThreadSafe> MetaDataSample = MakeShared<FElectraBinarySample, ESPMode::ThreadSafe>();
+		MetaDataSample->Metadata = InMetadataFrame;
+		PinnedHost->MediaSamples->AddMetadata(MetaDataSample);
+	}
+}
+
 
 bool FElectraPlayerPlugin::FPlayerAdapterDelegate::CanReceiveVideoSamples(int32 NumFrames)
 {
-	if (TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin())
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
 	{
 		return PinnedHost->MediaSamples->CanReceiveVideoSamples(NumFrames);
 	}
@@ -238,7 +333,8 @@ bool FElectraPlayerPlugin::FPlayerAdapterDelegate::CanReceiveVideoSamples(int32 
 
 bool FElectraPlayerPlugin::FPlayerAdapterDelegate::CanReceiveAudioSamples(int32 NumFrames)
 {
-	if (TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin())
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
 	{
 		return PinnedHost->MediaSamples->CanReceiveAudioSamples(NumFrames);
 	}
@@ -247,7 +343,8 @@ bool FElectraPlayerPlugin::FPlayerAdapterDelegate::CanReceiveAudioSamples(int32 
 
 void FElectraPlayerPlugin::FPlayerAdapterDelegate::PrepareForDecoderShutdown()
 {
-	if (TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin())
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
 	{
 		PinnedHost->OutputTexturePool.PrepareForDecoderShutdown();
 	}
@@ -262,7 +359,8 @@ FString FElectraPlayerPlugin::FPlayerAdapterDelegate::GetVideoAdapterName() cons
 
 IElectraPlayerResourceDelegate* FElectraPlayerPlugin::FPlayerAdapterDelegate::GetResourceDelegate() const
 {
-	if (TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin())
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
 	{
 		return PinnedHost->PlayerResourceDelegate.Get();
 	}
@@ -317,8 +415,21 @@ bool FElectraPlayerPlugin::Open(const FString& Url, const IMediaOptions* Options
 	if (InPlayerOptions)
 	{
 		LocalPlaystartOptions.TimeOffset = InPlayerOptions->SeekTime;
-		LocalPlaystartOptions.AudioTrackIndex = InPlayerOptions->Tracks.Audio;
+		LocalPlaystartOptions.InitialAudioTrackAttributes.TrackIndexOverride = InPlayerOptions->Tracks.Audio;
 	}
+	FString InitialAudioLanguage = Options->GetMediaOption(TEXT("InitialAudioLanguage"), FString());
+	if (InitialAudioLanguage.Len())
+	{
+		LocalPlaystartOptions.InitialAudioTrackAttributes.Language_ISO639 = InitialAudioLanguage;
+		UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: Asking for initial audio language \"%s\""), this, *InitialAudioLanguage);
+	}
+	bool bNoPreloading = Options->GetMediaOption(TEXT("ElectraNoPreloading"), (bool)false);
+	if (bNoPreloading)
+	{
+		LocalPlaystartOptions.bDoNotPreload = true;
+		UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: No preloading after opening media"), this);
+	}
+
 
 	// Set up options to initialize the internal player with.
 	Electra::FParamDict PlayerOptions;
@@ -373,18 +484,6 @@ bool FElectraPlayerPlugin::Open(const FString& Url, const IMediaOptions* Options
 	{
 		PlayerOptions.Set("seekable_range_live_end_offset_conservative", Electra::FVariantValue(bUseConservativeLiveEdgeDistance));
 		UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: Using conservative live edge for distance calculation"), this);
-	}
-	bool bDontAllowInsecureForMediaSegments = Options->GetMediaOption(TEXT("ElectraDontAllowInsecureForEncryptedMediaSegments"), (bool)false);
-	if (bDontAllowInsecureForMediaSegments)
-	{
-		PlayerOptions.Set("dont_use_insecure_for_media_segments", Electra::FVariantValue(bDontAllowInsecureForMediaSegments));
-		UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: Do not allow downgrade to http for encrypted media segments"), this);
-	}
-	bool bDontAllowInsecureForInitSegments = Options->GetMediaOption(TEXT("ElectraDontAllowInsecureForInitSegments"), (bool)false);
-	if (bDontAllowInsecureForInitSegments)
-	{
-		PlayerOptions.Set("dont_use_insecure_for_init_segments", Electra::FVariantValue(bDontAllowInsecureForInitSegments));
-		UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: Do not allow downgrade to http for init segments"), this);
 	}
 	bool bThrowErrorWhenRebuffering = Options->GetMediaOption(TEXT("ElectraThrowErrorWhenRebuffering"), (bool)false);
 	if (bThrowErrorWhenRebuffering)

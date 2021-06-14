@@ -1187,6 +1187,7 @@ public:
 	/** Returns the maximum number of texture samplers used by any shader in this shader map. */
 	uint32 GetMaxTextureSamplers() const;
 
+	void GetOutdatedTypes(TArray<const FShaderType*>& OutdatedShaderTypes, TArray<const FShaderPipelineType*>& OutdatedShaderPipelineTypes, TArray<const FVertexFactoryType*>& OutdatedFactoryTypes) const;
 	void SaveShaderStableKeys(EShaderPlatform TargetShaderPlatform, const struct FStableShaderKeyAndValue& SaveKeyVal);
 #endif
 
@@ -1694,6 +1695,7 @@ public:
 	virtual bool IsUsingAlphaToCoverage() const { return false; }
 	virtual bool IsUsingPreintegratedGFForSimpleIBL() const { return false; }
 	virtual bool IsUsingHQForwardReflections() const { return false; }
+	virtual bool GetForwardBlendsSkyLightCubemaps() const { return false; }
 	virtual bool IsUsingPlanarForwardReflections() const { return false; }
 	virtual bool IsNonmetal() const { return false; }
 	virtual bool UseLmDirectionality() const { return true; }
@@ -1752,6 +1754,7 @@ public:
 	virtual bool HasMaterialLayers() const { return false; }
 	virtual bool CastsRayTracedShadows() const { return true; }
 	virtual EMaterialShadingRate GetShadingRate() const { return MSR_1x1; }
+	virtual bool ShouldWriteDepthToTranslucentMaterial() const { return false; }
 	/**
 	 * Should shaders compiled for this material be saved to disk?
 	 */
@@ -1918,6 +1921,8 @@ public:
 	ENGINE_API bool TryGetShaders(const FMaterialShaderTypes& InTypes, const FVertexFactoryType* InVertexFactoryType, FMaterialShaders& OutShaders) const;
 
 	ENGINE_API bool HasShaders(const FMaterialShaderTypes& InTypes, const FVertexFactoryType* InVertexFactoryType) const;
+
+	ENGINE_API bool ShouldCacheShaders(const FMaterialShaderTypes& InTypes, const FVertexFactoryType* InVertexFactoryType) const;
 
 	ENGINE_API void SubmitCompileJobs(EShaderCompileJobPriority Priority) const;
 
@@ -2551,6 +2556,7 @@ public:
 	ENGINE_API virtual bool IsUsingAlphaToCoverage() const override;
 	ENGINE_API virtual bool IsUsingPreintegratedGFForSimpleIBL() const override;
 	ENGINE_API virtual bool IsUsingHQForwardReflections() const override;
+	ENGINE_API virtual bool GetForwardBlendsSkyLightCubemaps() const override;
 	ENGINE_API virtual bool IsUsingPlanarForwardReflections() const override;
 	ENGINE_API virtual bool IsNonmetal() const override;
 	ENGINE_API virtual bool UseLmDirectionality() const override;
@@ -2605,6 +2611,7 @@ public:
 	ENGINE_API virtual bool HasMaterialLayers() const override;
 	ENGINE_API virtual bool CastsRayTracedShadows() const override;
 	ENGINE_API  virtual UMaterialInterface* GetMaterialInterface() const override;
+	ENGINE_API virtual bool ShouldWriteDepthToTranslucentMaterial() const override;
 	/**
 	 * Should shaders compiled for this material be saved to disk?
 	 */

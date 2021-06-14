@@ -2,7 +2,11 @@
 
 #include "DisjunctiveNormalFormFilter.h"
 
-#include "ConjunctionFilter.h"
+#include "Data/Filters/ConjunctionFilter.h"
+
+#include "Misc/ITransaction.h"
+#include "ScopedTransaction.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace
 {
@@ -55,31 +59,81 @@ namespace
 	}
 }
 
+void UDisjunctiveNormalFormFilter::MarkTransactional()
+{
+	SetFlags(RF_Transactional);
+	for (UConjunctionFilter* Child : Children)
+	{
+		Child->MarkTransactional();
+	}
+}
+
 UConjunctionFilter* UDisjunctiveNormalFormFilter::CreateChild()
 {
-	UConjunctionFilter* Child = NewObject<UConjunctionFilter>(this);
+	UConjunctionFilter* Child;
 
-	// Set Child parent
-	Child->SetParentFilter(this);
-
-	if (EditorFilterBehavior != EEditorFilterBehavior::Mixed)
 	{
-		Child->SetEditorFilterBehavior(EditorFilterBehavior, false); // Set Filter Result of parent
-	}
+		FScopedTransaction Transaction(FText::FromString("Add filter row"));
+		Modify();
+		
+		Child = NewObject<UConjunctionFilter>(this, UConjunctionFilter::StaticClass(), NAME_None, RF_Transactional);
+		Children.Add(Child);
 
-	Children.Add(Child);
+		OnFilterModified.Broadcast(EFilterChangeType::RowAdded);
+		
+		bHasJustCreatedNewChild = true;
+	}
+	// OnObjectTransacted will be triggered twice when a ConjunctionFilter is created, this scope ignores the second call
+	bHasJustCreatedNewChild = false;
+	
+	
 	return Child;
 }
 
 void UDisjunctiveNormalFormFilter::RemoveConjunction(UConjunctionFilter* Child)
 {
+	FScopedTransaction Transaction(FText::FromString("Remove filter row"));
+	Modify();
+	
 	const bool bRemovedChild = Children.RemoveSingle(Child) != 0;
-	check(bRemovedChild);
+	if (ensure(bRemovedChild))
+	{
+		Child->OnRemoved();
+		OnFilterModified.Broadcast(EFilterChangeType::RowRemoved);
+	}
 }
 
 const TArray<UConjunctionFilter*>& UDisjunctiveNormalFormFilter::GetChildren() const
 {
 	return Children;
+}
+
+void UDisjunctiveNormalFormFilter::PostInitProperties()
+{
+	Super::PostInitProperties();
+
+	if (!HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
+	{
+		OnObjectTransactedHandle = FCoreUObjectDelegates::OnObjectTransacted.AddLambda([this](UObject* ModifiedObject, const FTransactionObjectEvent& TransactionInfo)
+		{	
+			if (IsValid(ModifiedObject) && ModifiedObject->IsIn(this) && ModifiedObject != this && !bHasJustCreatedNewChild)
+			{
+				const bool bModifiedChildren = Cast<UConjunctionFilter>(ModifiedObject) && TransactionInfo.GetChangedProperties().Contains(UConjunctionFilter::GetChildrenMemberName());
+				OnFilterModified.Broadcast(bModifiedChildren ? EFilterChangeType::RowChildFilterAddedOrRemoved : EFilterChangeType::FilterPropertyModified);
+			}
+		});
+	}
+}
+
+void UDisjunctiveNormalFormFilter::BeginDestroy()
+{
+	if (OnObjectTransactedHandle.IsValid())
+	{
+		FCoreUObjectDelegates::OnObjectTransacted.Remove(OnObjectTransactedHandle);
+		OnObjectTransactedHandle.Reset();
+	}
+
+	Super::BeginDestroy();
 }
 
 EFilterResult::Type UDisjunctiveNormalFormFilter::IsActorValid(const FIsActorValidParams& Params) const
@@ -98,14 +152,18 @@ EFilterResult::Type UDisjunctiveNormalFormFilter::IsPropertyValid(const FIsPrope
 	});
 }
 
-TArray<UEditorFilter*> UDisjunctiveNormalFormFilter::GetEditorChildren()
+EFilterResult::Type UDisjunctiveNormalFormFilter::IsDeletedActorValid(const FIsDeletedActorValidParams& Params) const
 {
-	TArray<UEditorFilter*> EditorFilterChildren;
-
-	for (UConjunctionFilter* ChildFilter : Children)
+	return ExecuteOrChain(Children, [&Params](UConjunctionFilter* Child)
 	{
-		EditorFilterChildren.Add(ChildFilter);
-	}
+		return Child->IsDeletedActorValid(Params);
+	});
+}
 
-	return EditorFilterChildren;
+EFilterResult::Type UDisjunctiveNormalFormFilter::IsAddedActorValid(const FIsAddedActorValidParams& Params) const
+{
+	return ExecuteOrChain(Children, [&Params](UConjunctionFilter* Child)
+	{
+		return Child->IsAddedActorValid(Params);
+	});
 }

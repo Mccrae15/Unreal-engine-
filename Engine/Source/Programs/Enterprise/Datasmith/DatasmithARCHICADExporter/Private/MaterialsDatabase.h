@@ -2,9 +2,9 @@
 
 #pragma once
 
-#include "AddonTools.h"
+#include "Utils/AddonTools.h"
 
-#include <map>
+#include "Map.h"
 
 class IDatasmithBaseMaterialElement;
 
@@ -37,15 +37,18 @@ class FMaterialKey
 	GS::Int32 ACTextureIndex;
 	ESided	  Sided;
 
-	// less operator needed for use as map key
-	bool operator<(const FMaterialKey& InOther) const
+	// Equality operator needed for use as FMap key
+	bool operator==(const FMaterialKey& InOther) const
 	{
-		return ACMaterialIndex < InOther.ACMaterialIndex ||
-			   (ACMaterialIndex == InOther.ACMaterialIndex &&
-				(ACTextureIndex < InOther.ACTextureIndex ||
-				 (ACTextureIndex == InOther.ACTextureIndex && Sided < InOther.Sided)));
+		return ACMaterialIndex == InOther.ACMaterialIndex && ACTextureIndex == InOther.ACTextureIndex &&
+			   Sided == InOther.Sided;
 	}
 };
+
+inline uint32 GetTypeHash(const FMaterialKey& A)
+{
+	return FCrc::TypeCrc32(A.ACMaterialIndex, FCrc::TypeCrc32(A.ACTextureIndex, FCrc::TypeCrc32(A.Sided, 0)));
+}
 
 // Materials database
 class FMaterialsDatabase
@@ -58,38 +61,29 @@ class FMaterialsDatabase
 		// Constructor
 		FMaterialSyncData() {}
 
-		void Reset()
-		{
-			bUsed = false;
-			bMaterialChanged = false;
-			bReallyUsed = false;
-		}
-
 		// Return the Datasmith Id (Name) {Material GUID + Texture GUID + "_S"}
 		const FString& GetDatasmithId() const { return DatasmithId; }
 
 		// Return the Datasmith Label (Displayable name) {Material name + Texture name + "_S"}
 		const FString& GetDatasmithLabel() const { return DatasmithLabel; }
 
-		bool	 bIsInitialized = false;
-		GS::Guid MaterialId; // Guid (real or simulated)
-		GS::Guid TextureId; // Guid (MD5 content computed)
-		ESided	 Side = kSingleSide; // If this material must be double sided
-		FString	 DatasmithId;
-		FString	 DatasmithLabel;
+		TSharedPtr< IDatasmithUEPbrMaterialElement > Element;
 
-		int32 MaterialIndex = kInvalidMaterialIndex; // AC Material Index
-		int32 TextureIndex = kInvalidMaterialIndex; // AC Texture Index
+		bool			   bIsInitialized = false;
+		UInt64			   LastModificationStamp = 0;
+		GS::Guid		   MaterialId; // Guid (real or simulated)
+		FString			   DatasmithId;
+		FString			   DatasmithLabel;
+		bool			   bHasTexture = false;
+		bool			   bIsDuplicate = false;
+		bool			   bIdIsSynthetized = false;
+		API_AttributeIndex MaterialIndex = kInvalidMaterialIndex;
 
-		bool										bUsed = true; // True if this material is used
-		bool										bReallyUsed = false;
-		bool										bHasTexture = false; // True if this material has texture
-		double										CosAngle = 1.0; // Texture's angle cosinus
-		double										SinAngle = 0.0; // Texture's angle sinus
-		double										InvXSize = 1.0; // Used to compute uv
-		double										InvYSize = 1.0; // Used to compute uv
-		bool										bMaterialChanged = false;
-		TSharedPtr< IDatasmithBaseMaterialElement > Element;
+		void Init(const FSyncContext& SyncContext, const FMaterialKey& MaterialKey);
+
+		bool CheckModify(const FMaterialKey& MaterialKey);
+
+		void Update(const FSyncContext& SyncContext, const FMaterialKey& MaterialKey);
 	};
 
 	// Constructor
@@ -98,6 +92,12 @@ class FMaterialsDatabase
 	// Destructor
 	~FMaterialsDatabase();
 
+	// Return true if at least one material have been modified
+	bool CheckModify();
+
+	// Scan all material and update modified ones
+	void UpdateModified(const FSyncContext& SyncContext);
+
 	// Reset
 	void Clear();
 
@@ -105,11 +105,12 @@ class FMaterialsDatabase
 										 GS::Int32 inACTextureIndex, ESided InSided);
 
   private:
-	typedef std::map< FMaterialKey, FMaterialSyncData > MapSyncData; // Map Material key to Material sync data
+	typedef TMap< FMaterialKey, TUniquePtr< FMaterialSyncData > > MapSyncData; // Map Material key to Material sync data
 
-	void InitMaterial(const FSyncContext& SyncContext, const FMaterialKey& MaterialKey, FMaterialSyncData* Material);
+	typedef TSet< FString > SetMaterialsNames;
 
-	MapSyncData MapMaterials;
+	MapSyncData		  MapMaterials;
+	SetMaterialsNames MaterialsNamesSet;
 };
 
 END_NAMESPACE_UE_AC

@@ -4,7 +4,9 @@
 
 #include "DisplayClusterConfigurationTypes.h"
 #include "DisplayClusterConfiguratorStyle.h"
+#include "DisplayClusterProjectionStrings.h"
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
+#include "DisplayClusterConfiguratorPropertyUtils.h"
 #include "ClusterConfiguration/DisplayClusterConfiguratorClusterUtils.h"
 #include "Views/DragDrop/DisplayClusterConfiguratorValidatedDragDropOp.h"
 #include "Views/DragDrop/DisplayClusterConfiguratorViewportDragDropOp.h"
@@ -15,6 +17,7 @@
 #include "ScopedTransaction.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
+#include "ISinglePropertyView.h"
 
 #define LOCTEXT_NAMESPACE "FDisplayClusterConfiguratorTreeItemViewport"
 
@@ -31,7 +34,11 @@ void FDisplayClusterConfiguratorTreeItemViewport::SetVisible(bool bIsVisible)
 
 	// Use SaveToTransactionBuffer to avoid marking the package as dirty
 	SaveToTransactionBuffer(Viewport, false);
-	Viewport->bIsVisible = bIsVisible;
+
+	const TSharedPtr<ISinglePropertyView> PropertyView = DisplayClusterConfiguratorPropertyUtils::GetPropertyView(
+		Viewport, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, bIsVisible));
+
+	PropertyView->GetPropertyHandle()->SetValue(bIsVisible);
 }
 
 void FDisplayClusterConfiguratorTreeItemViewport::SetEnabled(bool bIsEnabled)
@@ -40,7 +47,37 @@ void FDisplayClusterConfiguratorTreeItemViewport::SetEnabled(bool bIsEnabled)
 
 	// Use SaveToTransactionBuffer to avoid marking the package as dirty
 	SaveToTransactionBuffer(Viewport, false);
-	Viewport->bIsEnabled = bIsEnabled;
+
+	const TSharedPtr<ISinglePropertyView> PropertyView = DisplayClusterConfiguratorPropertyUtils::GetPropertyView(
+		Viewport, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, bIsEnabled));
+	
+	PropertyView->GetPropertyHandle()->SetValue(bIsEnabled);
+}
+
+void FDisplayClusterConfiguratorTreeItemViewport::OnSelection()
+{
+	FDisplayClusterConfiguratorTreeItemCluster::OnSelection();
+
+	UDisplayClusterConfigurationViewport* Viewport = GetObjectChecked<UDisplayClusterConfigurationViewport>();
+
+	TArray<FString> AssociatedComponents;
+	if (Viewport->ProjectionPolicy.Parameters.Contains(DisplayClusterProjectionStrings::cfg::simple::Screen))
+	{
+		AssociatedComponents.Add(Viewport->ProjectionPolicy.Parameters[DisplayClusterProjectionStrings::cfg::simple::Screen]);
+	}
+	else if (Viewport->ProjectionPolicy.Parameters.Contains(DisplayClusterProjectionStrings::cfg::mesh::Component))
+	{
+		AssociatedComponents.Add(Viewport->ProjectionPolicy.Parameters[DisplayClusterProjectionStrings::cfg::mesh::Component]);
+	}
+	else if (Viewport->ProjectionPolicy.Parameters.Contains(DisplayClusterProjectionStrings::cfg::camera::Component))
+	{
+		AssociatedComponents.Add(Viewport->ProjectionPolicy.Parameters[DisplayClusterProjectionStrings::cfg::camera::Component]);
+	}
+
+	if (AssociatedComponents.Num())
+	{
+		ToolkitPtr.Pin()->SelectAncillaryComponents(AssociatedComponents);
+	}
 }
 
 TSharedRef<SWidget> FDisplayClusterConfiguratorTreeItemViewport::GenerateWidgetForColumn(const FName& ColumnName, TSharedPtr<ITableRow> TableRow, const TAttribute<FText>& FilterText, FIsSelected InIsSelected)
@@ -279,7 +316,11 @@ FReply FDisplayClusterConfiguratorTreeItemViewport::OnVisibilityButtonClicked()
 
 	// Use SaveToTransactionBuffer to avoid marking the package as dirty
 	SaveToTransactionBuffer(Viewport, false);
-	Viewport->bIsVisible = !Viewport->bIsVisible;
+
+	const TSharedPtr<ISinglePropertyView> PropertyView = DisplayClusterConfiguratorPropertyUtils::GetPropertyView(
+		Viewport, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, bIsVisible));
+
+	PropertyView->GetPropertyHandle()->SetValue(!Viewport->bIsVisible);
 	return FReply::Handled();
 }
 
@@ -305,7 +346,11 @@ FReply FDisplayClusterConfiguratorTreeItemViewport::OnEnabledButtonClicked()
 
 	// Use SaveToTransactionBuffer to avoid marking the package as dirty
 	SaveToTransactionBuffer(Viewport, false);
-	Viewport->bIsEnabled = !Viewport->bIsEnabled;
+
+	const TSharedPtr<ISinglePropertyView> PropertyView = DisplayClusterConfiguratorPropertyUtils::GetPropertyView(
+		Viewport, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, bIsEnabled));
+
+	PropertyView->GetPropertyHandle()->SetValue(!Viewport->bIsEnabled);
 	return FReply::Handled();
 }
 

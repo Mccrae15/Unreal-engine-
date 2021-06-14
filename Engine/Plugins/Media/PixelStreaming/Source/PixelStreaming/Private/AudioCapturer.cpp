@@ -25,8 +25,6 @@ DEFINE_LOG_CATEGORY(LogAudioCapturer);
 		};                       \
 	}
 
-const int FAudioCapturer::SampleRate;
-const int FAudioCapturer::NumChannels;
 
 void FAudioCapturer::OnNewSubmixBuffer(const USoundSubmix* OwningSubmix, float* AudioData, int32 NumSamples, int32 InNumChannels, const int32 InSampleRate, double AudioClock)
 {
@@ -250,7 +248,7 @@ int32 FAudioCapturer::InitRecording()
 	{
 		FScopeLock Lock(&DeviceBufferCS);
 		// #Audio : Allow dynamic values for samplerate and/or channels ,
-		// or receive those from UE4 ?
+		// or receive those from UnrealEngine ?
 		DeviceBuffer->SetRecordingSampleRate(SampleRate);
 		DeviceBuffer->SetRecordingChannels(NumChannels);
 	}

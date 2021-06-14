@@ -590,6 +590,11 @@ bool UGameViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 		return true;
 	}
 
+	if (EventArgs.Key == EKeys::LeftMouseButton && EventArgs.Event == EInputEvent::IE_Pressed)
+	{
+		GEngine->SetFlashIndicatorLatencyMarker(GFrameCounter);
+	}
+
 	if (IgnoreInput())
 	{
 		return ViewportConsole ? ViewportConsole->InputKey(ControllerId, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.IsGamepad()) : false;
@@ -2614,7 +2619,7 @@ void UGameViewportClient::DrawTitleSafeArea( UCanvas* Canvas )
 		TileItem.Size = FVector2D(SafeZone.Right, HeightOfSides);
 		Canvas->DrawItem(TileItem);
 	}
-	else if (!FSlateApplication::Get().GetCustomSafeZone().GetDesiredSize().IsZero())
+	else if (FSlateApplication::Get().IsCustomSafeZoneSet())
 	{
 		ULevelEditorPlaySettings* PlaySettings = GetMutableDefault<ULevelEditorPlaySettings>();
 		PlaySettings->CalculateCustomUnsafeZones(PlaySettings->CustomUnsafeZoneStarts, PlaySettings->CustomUnsafeZoneDimensions, PlaySettings->DeviceToEmulate, FVector2D(Width, Height));

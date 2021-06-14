@@ -2,7 +2,9 @@
 
 #include "Blueprints/DisplayClusterBlueprint.h"
 #include "Blueprints/DisplayClusterBlueprintGeneratedClass.h"
+#include "Containers/Set.h"
 #include "DisplayClusterRootActor.h"
+#include "EngineAnalytics.h"
 #include "IDisplayClusterConfiguration.h"
 #include "Misc/DisplayClusterLog.h"
 
@@ -25,8 +27,93 @@ void UDisplayClusterBlueprint::GetReparentingRules(TSet<const UClass*>& AllowedC
 {
 	AllowedChildrenOfClasses.Add(ADisplayClusterRootActor::StaticClass());
 }
-
 #endif
+
+void UDisplayClusterBlueprint::UpdateConfigExportProperty()
+{
+	bool bConfigExported = false;
+
+	if (UDisplayClusterConfigurationData* Config = GetOrLoadConfig())
+	{
+		Config->Meta.ExportAssetPath = GetPathName();
+
+		FString PrettyConfig;
+
+		bConfigExported = IDisplayClusterConfiguration::Get().ConfigAsString(Config, PrettyConfig);
+
+		if (bConfigExported)
+		{
+			// We cache a somewhat minified version of the config so that the context view of the asset registry data is less bloated.
+
+			ConfigExport.Empty(PrettyConfig.Len());
+
+			for (auto CharIt = PrettyConfig.CreateConstIterator(); CharIt; ++CharIt)
+			{
+				const TCHAR Char = *CharIt;
+
+				// Remove tabs, carriage returns and newlines.
+				if ((Char == TCHAR('\t')) || (Char == TCHAR('\r')) || (Char == TCHAR('\n')))
+				{
+					continue;
+				}
+
+				ConfigExport.AppendChar(Char);
+			}
+		}
+	}
+
+	if (!bConfigExported)
+	{
+		ConfigExport = TEXT("");
+	}
+}
+
+namespace DisplayClusterBlueprint
+{
+	void SendAnalytics(const FString& EventName, const UDisplayClusterConfigurationData* const ConfigData)
+	{
+		if (!FEngineAnalytics::IsAvailable())
+		{
+			return;
+		}
+
+		// Gather attributes related to this config
+		TArray<FAnalyticsEventAttribute> EventAttributes;
+
+		if (ConfigData)
+		{
+			if (ConfigData->Cluster)
+			{
+				// Number of Nodes
+				EventAttributes.Add(FAnalyticsEventAttribute(TEXT("NumNodes"), ConfigData->Cluster->Nodes.Num()));
+
+				// Number of Viewports
+				TSet<FString> UniquelyNamedViewports;
+
+				for (auto NodesIt = ConfigData->Cluster->Nodes.CreateConstIterator(); NodesIt; ++NodesIt)
+				{
+					for (auto ViewportsIt = ConfigData->Cluster->Nodes.CreateConstIterator(); ViewportsIt; ++ViewportsIt)
+					{
+						UniquelyNamedViewports.Add(ViewportsIt->Key);
+					}
+				}
+
+				// Number of uniquely named viewports
+				EventAttributes.Add(FAnalyticsEventAttribute(TEXT("NumUniquelyNamedViewports"), UniquelyNamedViewports.Num()));
+			}
+		}
+
+		FEngineAnalytics::GetProvider().RecordEvent(EventName, EventAttributes);
+	}
+}
+
+void UDisplayClusterBlueprint::PreSave(const class ITargetPlatform* TargetPlatform)
+{
+	Super::PreSave(TargetPlatform);
+
+	UpdateConfigExportProperty();
+	DisplayClusterBlueprint::SendAnalytics(TEXT("Usage.nDisplay.ConfigSaved"), ConfigData);
+}
 
 UDisplayClusterBlueprintGeneratedClass* UDisplayClusterBlueprint::GetGeneratedClass() const
 {
@@ -35,47 +122,57 @@ UDisplayClusterBlueprintGeneratedClass* UDisplayClusterBlueprint::GetGeneratedCl
 
 UDisplayClusterConfigurationData* UDisplayClusterBlueprint::GetOrLoadConfig()
 {
-	if (ConfigData)
+	if (GeneratedClass)
 	{
-		return ConfigData;
+		if (ADisplayClusterRootActor* CDO = Cast<ADisplayClusterRootActor>(GeneratedClass->ClassDefaultObject))
+		{
+			ConfigData = CDO->GetConfigData();
+		}
 	}
 	
-	if (!ensure(PathToConfig.IsEmpty()))
-	{
-		UE_LOG(LogDisplayClusterBlueprint, Error, TEXT("GetOrLoadConfig - ConfigData object not exported and no PathToConfig set."));
-		return nullptr;
-	}
-	
-	ConfigData = IDisplayClusterConfiguration::Get().LoadConfig(PathToConfig);
 	return ConfigData;
 }
 
-void UDisplayClusterBlueprint::SetConfigData(UDisplayClusterConfigurationData* InConfigData)
+void UDisplayClusterBlueprint::SetConfigData(UDisplayClusterConfigurationData* InConfigData, bool bForceRecreate)
 {
 #if WITH_EDITOR
 	Modify();
 #endif
-	
-	if (InConfigData)
-	{
-		InConfigData->Rename(nullptr, this, REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
-		InConfigData->SetFlags(RF_Public);
-	}
 
-	if (ConfigData && ConfigData != InConfigData)
+	if (GeneratedClass)
 	{
-		// Makes sure the old data won't be exported and the rename will call modify. Probably not necessary.
-		ConfigData->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+		if (ADisplayClusterRootActor* CDO = Cast<ADisplayClusterRootActor>(GeneratedClass->ClassDefaultObject))
+		{
+			CDO->UpdateConfigDataInstance(InConfigData, bForceRecreate);
+			GetOrLoadConfig();
+		}
 	}
 	
-	ConfigData = InConfigData;
-
 #if WITH_EDITORONLY_DATA
-	PathToConfig = InConfigData ? InConfigData->PathToConfig : "";
+	if(InConfigData)
+	{
+		InConfigData->SaveConfig();
+	}
+#endif
+}
+
+const FString& UDisplayClusterBlueprint::GetConfigPath() const
+{
+	static FString EmptyString;
+#if WITH_EDITORONLY_DATA
+	return ConfigData ? ConfigData->PathToConfig : EmptyString;
+#else
+	return EmptyString;
 #endif
 }
 
 void UDisplayClusterBlueprint::SetConfigPath(const FString& InPath)
 {
-	PathToConfig = InPath;
+#if WITH_EDITORONLY_DATA
+	if(UDisplayClusterConfigurationData* LoadedConfigData = GetOrLoadConfig())
+	{
+		LoadedConfigData->PathToConfig = InPath;
+		LoadedConfigData->SaveConfig();
+	}
+#endif
 }

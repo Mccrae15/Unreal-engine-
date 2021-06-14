@@ -4,8 +4,7 @@
 
 #include "DMXProtocolBlueprintLibrary.h"
 #include "DMXProtocolConstants.h"
-#include "IO/DMXInputPort.h"
-#include "IO/DMXOutputPort.h"
+#include "IO/DMXPortManager.h"
 #include "Interfaces/IDMXProtocol.h"
 #include "IO/DMXPortManager.h"
 
@@ -83,8 +82,18 @@ void UDMXProtocolSettings::PostInitProperties()
 		Attribute.CleanupKeywords();
 	}
 
-	bOverrideSendDMXEnabled = bDefaultSendDMXEnabled;
-	bOverrideReceiveDMXEnabled = bDefaultReceiveDMXEnabled;
+	// Parse command line options for send and receive dmx
+	if (FParse::Bool(FCommandLine::Get(), TEXT("DEFAULTSENDDMXENABLED="), bDefaultSendDMXEnabled))
+	{
+		UE_LOG(LogDMXProtocol, Log, TEXT("Overridden Default Send DMX Enabled from command line, set to %s."), bDefaultSendDMXEnabled ? TEXT("True") : TEXT("False"));
+	}
+	OverrideSendDMXEnabled(bDefaultSendDMXEnabled);
+
+	if (FParse::Bool(FCommandLine::Get(), TEXT("DEFAULTRECEIVEDMXENABLED="), bDefaultReceiveDMXEnabled))
+	{
+		UE_LOG(LogDMXProtocol, Log, TEXT("Overridden Default Receive DMX Enabled from command line, set to %s."), bDefaultReceiveDMXEnabled ? TEXT("True") : TEXT("False"));
+	}
+	OverrideReceiveDMXEnabled(bDefaultReceiveDMXEnabled);	
 }
 
 #if WITH_EDITOR
@@ -111,6 +120,10 @@ void UDMXProtocolSettings::PostEditChangeProperty(FPropertyChangedEvent& Propert
 void UDMXProtocolSettings::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedChainEvent)
 {
 	const FName PropertyName = PropertyChangedChainEvent.GetPropertyName();
+	const FProperty* Property = PropertyChangedChainEvent.Property;
+	const UScriptStruct* InputPortConfigStruct = FDMXInputPortConfig::StaticStruct();
+	const UScriptStruct* OutputPortConfigStruct = FDMXOutputPortConfig::StaticStruct();
+	const UStruct* PropertyOwnerStruct = Property ? Property->GetOwnerStruct() : nullptr;
 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, FixtureCategories))
 	{
@@ -140,13 +153,34 @@ void UDMXProtocolSettings::PostEditChangeChainProperty(FPropertyChangedChainEven
 	}
 	else if	(
 		PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, InputPortConfigs) ||
-		PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, OutputPortConfigs))
+		PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, OutputPortConfigs) ||
+		(InputPortConfigStruct && InputPortConfigStruct == PropertyOwnerStruct) ||
+		(OutputPortConfigStruct && OutputPortConfigStruct == PropertyOwnerStruct))
 	{
+		// If a new config was added, create a guid for that. We cannot do that in the ctor because the engine
+		// expects identical default values for its structs, FGuid::NewGuid as a default doesn't work with that.
+		if (PropertyChangedChainEvent.ChangeType == EPropertyChangeType::ArrayAdd)
+		{
+			for (FDMXInputPortConfig& Config : InputPortConfigs)
+			{
+				if (!Config.GetPortGuid().IsValid())
+				{
+					Config = FDMXInputPortConfig(FGuid::NewGuid());
+				}
+			}
+
+			for (FDMXOutputPortConfig& Config : OutputPortConfigs)
+			{
+				if (!Config.GetPortGuid().IsValid())
+				{
+					Config = FDMXOutputPortConfig(FGuid::NewGuid());
+				}
+			}
+		}
+
 		FDMXPortManager::Get().UpdateFromProtocolSettings();
-
-		OnPortConfigsChanged.Broadcast();
 	}
-
+	
 	Super::PostEditChangeChainProperty(PropertyChangedChainEvent);
 }
 #endif // WITH_EDITOR
@@ -164,4 +198,3 @@ void UDMXProtocolSettings::OverrideReceiveDMXEnabled(bool bEnabled)
 
 	OnSetReceiveDMXEnabled.Broadcast(bEnabled);
 }
-

@@ -8,6 +8,7 @@
 #include "UObject/GCObject.h"
 
 #include "TickableEditorObject.h"
+#include "EditorUndoClient.h"
 #include "NiagaraEditorCommon.h"
 #include "NiagaraScript.h"
 
@@ -24,10 +25,11 @@ struct FEdGraphEditAction;
 class FNiagaraMessageLogViewModel;
 class FNiagaraStandaloneScriptViewModel;
 class FNiagaraScriptToolkitParameterPanelViewModel;
+class FNiagaraScriptToolkitParameterDefinitionsPanelViewModel;
 class SNiagaraSelectedObjectsDetails;
 
 /** Viewer/editor for a DataTable */
-class FNiagaraScriptToolkit : public FAssetEditorToolkit, public FGCObject, public FTickableEditorObject
+class FNiagaraScriptToolkit : public FAssetEditorToolkit, public FGCObject, public FTickableEditorObject, public FEditorUndoClient
 {
 public:
 	FNiagaraScriptToolkit();
@@ -62,6 +64,13 @@ public:
 	*/
 	void UpdateModuleStats();
 
+	//~ Begin FEditorUndoClient Interface
+	virtual bool MatchesContext(const FTransactionContext& InContext, const TArray<TPair<UObject*, FTransactionObjectEvent>>& TransactionObjects) const override;
+	virtual void PostUndo(bool bSuccess) override;
+	virtual void PostRedo(bool bSuccess) override { PostUndo(bSuccess); }
+	// End of FEditorUndoClient
+
+
 	//~ FTickableEditorObject interface
 	virtual void Tick(float DeltaTime) override;
 	virtual bool IsTickable() const override;
@@ -90,6 +99,7 @@ private:
 	/** Spawns the tab with the parameter view. */
 	TSharedRef<SDockTab> SpawnTabScriptParameters(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTabScriptParameters2(const FSpawnTabArgs& Args);
+	TSharedRef<SDockTab> SpawnTabParameterDefinitions(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTabStats(const FSpawnTabArgs& Args);
 
 	/** Spawns the tab with the version management. */
@@ -154,6 +164,9 @@ private:
 	/** The Parameter Panel displaying graph variables */
 	TSharedPtr<FNiagaraScriptToolkitParameterPanelViewModel> ParameterPanelViewModel;
 
+	/** The Parameter Definitions Panel displaying included libraries */
+	TSharedPtr<FNiagaraScriptToolkitParameterDefinitionsPanelViewModel> ParameterDefinitionsPanelViewModel;
+
 	/** The selection displayed by the details tab. */
 	TSharedPtr<FNiagaraObjectSelection> DetailsScriptSelection;
 
@@ -167,6 +180,7 @@ private:
 	static const FName SelectedDetailsTabId;
 	static const FName ParametersTabId;
 	static const FName ParametersTabId2;
+	static const FName ParameterDefinitionsTabId;
 	static const FName StatsTabId;
 	static const FName MessageLogTabID;
 	static const FName VersioningTabID;
@@ -189,4 +203,8 @@ private:
 	TSharedPtr<class IDetailsView> DetailsView;
 	UNiagaraVersionMetaData* VersionMetadata = nullptr;
 	FText GetGraphEditorDisplayName() const;
+
+private:
+	void RefreshDetailsPanel();
+
 };

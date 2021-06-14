@@ -119,7 +119,7 @@ struct FNDIExportProxy : public FNiagaraDataInterfaceProxy
 
 		// Ensure our buffer if big enough to hold all the data
 		const int32 AllocationRounding = 64;
-		const int32 DataBufferNumInstances = FMath::Max(Context.ComputeInstanceData->SimStageData.Last().DestinationNumInstances, Context.ComputeInstanceData->SimStageData.Last().SourceNumInstances);
+		const int32 DataBufferNumInstances = Context.ComputeInstanceData->Context->CurrentMaxInstances_RT;
 		int32 NumInstances;
 		if (InstanceData->AllocationMode == ENDIExport_GPUAllocationMode::PerParticle)
 		{
@@ -246,7 +246,7 @@ public:
 			if (InstanceData->WeakCallbackHandler.IsExplicitlyNull())
 			{
 				WriteBufferSize = 0;
-				RHICmdList.SetUAVParameter(Context.Shader.GetComputeShader(), WriteBufferParam.GetUAVIndex(), Context.Batcher->GetEmptyRWBufferFromPool(RHICmdList, PF_R32_UINT));
+				RHICmdList.SetUAVParameter(Context.Shader.GetComputeShader(), WriteBufferParam.GetUAVIndex(), Context.Batcher->GetEmptyUAVFromPool(RHICmdList, PF_R32_UINT, ENiagaraEmptyUAVType::Buffer));
 			}
 			else
 			{

@@ -4,6 +4,64 @@
 
 #include "CoreMinimal.h"
 
+//
+// Windows only include
+//
+#if (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
+
+#pragma warning(push)
+#pragma warning(disable: 4005)
+
+THIRD_PARTY_INCLUDES_START
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Windows/PreWindowsApi.h"
+#include <d3d11.h>
+#include <mfobjects.h>
+#include <mftransform.h>
+#include <mfapi.h>
+#include <mferror.h>
+#include <mfidl.h>
+#include <codecapi.h>
+#include <shlwapi.h>
+#include <mfreadwrite.h>
+#include <d3d11_1.h>
+#include <d3d12.h>
+#include <dxgi1_4.h>
+#include "Windows/PostWindowsApi.h"
+#include "Windows/HideWindowsPlatformTypes.h"
+THIRD_PARTY_INCLUDES_END
+
+#endif // PLATFORM_WINDOWS
+
+//
+// XboxOne only includes
+//
+#if (PLATFORM_XBOXONE && WITH_LEGACY_XDK)
+
+#pragma warning(push)
+#pragma warning(disable: 4005)
+
+THIRD_PARTY_INCLUDES_START
+#include "XboxCommonAllowPlatformTypes.h"
+#include "XboxCommonPreApi.h"
+#include <d3d11_x.h>
+#include <d3d12_x.h>
+#include <d3dx12_x.h>
+#include <mfobjects.h>
+#include <mftransform.h>
+#include <mfapi.h>
+#include <mferror.h>
+#include <mfidl.h>
+#include <codecapi.h>
+#include <mfreadwrite.h>
+#include "XboxCommonPostApi.h"
+#include "XboxCommonHidePlatformTypes.h"
+THIRD_PARTY_INCLUDES_END
+
+#endif  // (PLATFORM_XBOXONE && WITH_LEGACY_XDK)
+
+#define WMFMEDIA_SUPPORTED_PLATFORM (PLATFORM_WINDOWS && (WINVER >= 0x0600 /*Vista*/) && !UE_SERVER)
+
 #if PLATFORM_WINDOWS
 struct ID3D11DeviceChild;
 #endif
@@ -18,7 +76,18 @@ namespace AVEncoder
 		YUV420P,				// Planar YUV420 format in CPU memory
 		D3D11_R8G8B8A8_UNORM,	//
 		D3D12_R8G8B8A8_UNORM,	//
-		CUDA_R8G8B8A8_UNORM
+		CUDA_R8G8B8A8_UNORM,
+		VULKAN_R8G8B8A8_UNORM,
+	};
+
+	enum class EH264Profile
+	{
+		UNKNOWN,
+		CONSTRAINED_BASELINE,
+		BASELINE,
+		MAIN,
+		CONSTRAINED_HIGH,
+		HIGH,
 	};
 
 	inline FString ToString(EVideoFrameFormat Format)
@@ -33,6 +102,8 @@ namespace AVEncoder
 			return FString("EVideoFrameFormat::D3D12_R8G8B8A8_UNORM");
 		case EVideoFrameFormat::CUDA_R8G8B8A8_UNORM:
 			return FString("EVideoFrameFormat::CUDA_R8G8B8A8_UNORM");
+		case EVideoFrameFormat::VULKAN_R8G8B8A8_UNORM:
+			return FString("EVideoFrameFormat::VULKAN_R8G8B8A8_UNORM");
 		case EVideoFrameFormat::Undefined:
 		default:
 			return FString("EVideoFrameFormat::Undefined");
@@ -47,7 +118,7 @@ namespace AVEncoder
 		VP8,
 	};
 
-
+	// TODO: make enums
 	const uint32 H264Profile_ConstrainedBaseline = 1 << 0;
 	const uint32 H264Profile_Baseline = 1 << 1;
 	const uint32 H264Profile_Main = 1 << 2;
@@ -62,8 +133,6 @@ namespace AVEncoder
 		// release a cloned copy
 		virtual void ReleaseClone() const = 0;
 
-		int64			PTS = TimeStampNone;	// presentation timestamp (within TimeBase)
-		int64			DTS = TimeStampNone;	// decode timestamp (within TimeBase)
 		const uint8*	Data = nullptr;			// pointer to encoded data
 		uint32			DataSize = 0;			// number of bytes of encoded data
 		bool			IsKeyFrame = false;		// whether or not packet represents a key frame

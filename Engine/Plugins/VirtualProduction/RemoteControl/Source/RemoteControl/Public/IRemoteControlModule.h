@@ -11,11 +11,12 @@
 
 REMOTECONTROL_API DECLARE_LOG_CATEGORY_EXTERN(LogRemoteControl, Log, All);
 
-class IRemoteControlReplicator;
 class IStructDeserializerBackend;
 class IStructSerializerBackend;
 class URemoteControlPreset;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 struct FExposedProperty;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 struct FRemoteControlProperty;
 
 /**
@@ -26,7 +27,12 @@ struct FRemoteControlProperty;
 DECLARE_DELEGATE_RetVal_TwoParams(FString /*Value*/, FEntityMetadataInitializer, URemoteControlPreset* /*Preset*/, const FGuid& /*EntityId*/);
 
 /**
- * Deserialize payload type. It using for replication
+ * Delegate called after a property has been modified through SetObjectProperties..
+ */
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnPostPropertyModifiedRemotely, const FRCObjectReference& /*ObjectRef*/);
+
+/**
+ * Deserialize payload type for interception purposes
  */
 enum class ERCPayloadType : uint8
 {
@@ -51,6 +57,11 @@ struct FRCCallReference
 
 	TWeakObjectPtr<UObject> Object; 
 	TWeakObjectPtr<UFunction> Function;
+	
+	friend uint32 GetTypeHash(const FRCCallReference& CallRef)
+	{
+		return CallRef.IsValid() ? HashCombine(GetTypeHash(CallRef.Object), GetTypeHash(CallRef.Function)) : 0;
+	}
 };
 
 /**
@@ -128,6 +139,11 @@ struct FRCObjectReference
 		return LHS.Object == RHS.Object && LHS.Property == RHS.Property && LHS.ContainerAdress == RHS.ContainerAdress;
 	}
 
+	friend uint32 GetTypeHash(const FRCObjectReference& ObjectReference)
+	{
+		return HashCombine(GetTypeHash(ObjectReference.Object), ObjectReference.PropertyPathInfo.PathHash);
+	}
+
 	/** Type of access on this object (read, write) */
 	ERCAccess Access = ERCAccess::NO_ACCESS;
 
@@ -167,19 +183,23 @@ public:
 
 	/** Delegate triggered when a preset has been registered */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPresetRegistered, FName /*PresetName*/);
+	UE_DEPRECATED(4.27, "OnPresetUnregistered is deprecated.")
 	virtual FOnPresetRegistered& OnPresetRegistered() = 0;
 
 	/** Delegate triggered when a preset has been unregistered */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPresetUnregistered, FName /*PresetName*/);
+	UE_DEPRECATED(4.27, "OnPresetUnregistered is deprecated.")
 	virtual FOnPresetUnregistered& OnPresetUnregistered() = 0;
 
 	/**
 	 * Register the preset with the module, enabling using the preset remotely using its name.
 	 * @return whether registration was successful.
 	 */
+	UE_DEPRECATED(4.27, "RegisterPreset is deprecated.")
 	virtual bool RegisterPreset(FName Name, URemoteControlPreset* Preset) = 0;
 
 	/** Unregister a preset */
+	UE_DEPRECATED(4.27, "UnregisterPreset is deprecated.")
 	virtual void UnregisterPreset(FName Name) = 0;
 
 	/**
@@ -200,9 +220,11 @@ public:
 	 * This is a thin wrapper around UObject::ProcessEvent
 	 * This expects that the caller has already validated the call as it will assert otherwise.
 	 * @param InCall the remote call structure to call.
+	 * @param InPayloadType the payload type archive.
+	 * @param InInterceptPayload the payload reference archive for the interception.
 	 * @return true if the call was allowed and done.
 	 */
-	virtual bool InvokeCall(FRCCall& InCall) = 0;
+	virtual bool InvokeCall(FRCCall& InCall, ERCPayloadType InPayloadType = ERCPayloadType::Json, const TArray<uint8>& InInterceptPayload = TArray<uint8>()) = 0;
 
 	/**
 	 * Resolve a remote object reference to a property
@@ -227,18 +249,6 @@ public:
 	virtual bool ResolveObjectProperty(ERCAccess AccessType, UObject* Object, FRCFieldPathInfo PropertyPath, FRCObjectReference& OutObjectRef, FString* OutErrorText = nullptr) = 0;
 
 	/**
-	 * Registers a remote control replicator for bypassing the payload to replicator instead applying directly
-	 * @param InReplicator Instance of the replicator class.
-	 */
-	virtual void RegisterReplicator(TSharedRef<IRemoteControlReplicator> InReplicator) = 0;
-
-	/**
-	 * remove replicator by given name
-	 * @param ReplicatorName replicator name.
-	 */
-	virtual void UnregisterReplicator(FName ReplicatorName) = 0;
-
-	/**
 	 * Serialize the Object Reference into the specified backend.
 	 * @param ObjectAccess the object reference to serialize, it should be a read access reference.
 	 * @param Backend the struct serializer backend to use to serialize the object properties.
@@ -251,31 +261,37 @@ public:
 	 * @param ObjectAccess the object reference to deserialize into, it should be a write access reference. if the object is WRITE_TRANSACTION_ACCESS, the setting will be wrapped in a transaction.
 	 * @param Backend the struct deserializer backend to use to deserialize the object properties.
 	 * @param InPayloadType the payload type archive.
-	 * @param InReplicatePayload the payload reference archive for the replication.
+	 * @param InInterceptPayload the payload reference archive for the interception.
 	 * @return true if the deserialization succeeded
 	 */
-	virtual bool SetObjectProperties(const FRCObjectReference& ObjectAccess, IStructDeserializerBackend& Backend, ERCPayloadType InPayloadType = ERCPayloadType::Json, const TArray<uint8>& InReplicatePayload = TArray<uint8>()) = 0;
+	virtual bool SetObjectProperties(const FRCObjectReference& ObjectAccess, IStructDeserializerBackend& Backend, ERCPayloadType InPayloadType = ERCPayloadType::Json, const TArray<uint8>& InInterceptPayload = TArray<uint8>()) = 0;
 
 	/**
 	 * Reset the property or the object the Object Reference is pointing to
 	 * @param ObjectAccess the object reference to reset, it should be a write access reference
-	 * @param bReplicate replication flag, if that is set to true it should follow the replication path
+	 * @param bAllowIntercept interception flag, if that is set to true it should follow the interception path
 	 * @return true if the reset succeeded.
 	 */
-	virtual bool ResetObjectProperties(const FRCObjectReference& ObjectAccess, const bool bReplicate = false) = 0;
+	virtual bool ResetObjectProperties(const FRCObjectReference& ObjectAccess, const bool bAllowIntercept = false) = 0;
 
 	/**
 	 * Resolve the underlying function from a preset.
 	 * @return the underlying function and objects that the property is exposed on.
 	 */
+	UE_DEPRECATED(4.27, "This function is deprecated, please resolve directly on the preset.")
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	virtual TOptional<struct FExposedFunction> ResolvePresetFunction(const FResolvePresetFieldArgs& Args) const = 0;
-
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	
 	/**
 	 * Resolve the underlying property from a preset.
 	 * @return the underlying property and objects that the property is exposed on.
 	 */
+	UE_DEPRECATED(4.27, "This function is deprecated, please resolve directly on the preset.")
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	virtual TOptional<struct FExposedProperty> ResolvePresetProperty(const FResolvePresetFieldArgs& Args) const = 0;
-
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	
 	/**
 	 * Get a preset using its name.
 	 * @arg PresetName name of the preset to resolve.
@@ -319,4 +335,14 @@ public:
 	 * @param MetadataKey The metadata entry to unregister.
 	 */
 	virtual void UnregisterDefaultEntityMetadata(FName MetadataKey) = 0;
+
+	/**
+	 * Returns whether the property can be modified through SetObjectProperties when running without an editor.
+	 */
+	virtual bool PropertySupportsRawModificationWithoutEditor(FProperty* Property) const = 0;
+
+	/**
+	 * Returns the delegate called after a property is modified remotely.
+	 */
+	virtual FOnPostPropertyModifiedRemotely& OnPostPropertyModifiedRemotely() = 0;
 };

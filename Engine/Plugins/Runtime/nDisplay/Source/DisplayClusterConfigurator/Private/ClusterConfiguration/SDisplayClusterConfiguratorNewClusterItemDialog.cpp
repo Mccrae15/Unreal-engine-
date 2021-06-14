@@ -35,6 +35,8 @@ void SDisplayClusterConfiguratorNewClusterItemDialog::Construct(const FArguments
 	ParentWindow = InArgs._ParentWindow;
 	OnPresetChanged = InArgs._OnPresetChanged;
 	FooterContent = InArgs._FooterContent;
+	MaxWindowWidth = InArgs._MaxWindowWidth;
+	MaxWindowHeight = InArgs._MaxWindowHeight;
 
 	if (!FooterContent.IsValid())
 	{
@@ -248,6 +250,8 @@ void SDisplayClusterConfiguratorNewClusterItemDialog::Construct(const FArguments
 			.Padding(2)
 			[
 				SAssignNew(DetailsBox, SBox)
+				.MaxDesiredHeight(this, &SDisplayClusterConfiguratorNewClusterItemDialog::GetDetailsMaxDesiredSize)
+				.WidthOverride(InArgs._MaxWindowWidth - 10)
 			]
 
 			+SVerticalBox::Slot()
@@ -382,6 +386,13 @@ void SDisplayClusterConfiguratorNewClusterItemDialog::OnSelectedPresetChanged(TS
 	{
 		OnPresetChanged.ExecuteIfBound(SelectedPreset->Size);
 	}
+}
+
+FOptionalSize SDisplayClusterConfiguratorNewClusterItemDialog::GetDetailsMaxDesiredSize() const
+{
+	// The maximum size of the details panel box is dynamically computed as the max window size minus the size of all
+	// other elements on the window, including any footer content.
+	return MaxWindowHeight - 128 - FooterContent->GetTickSpaceGeometry().GetLocalSize().Y;
 }
 
 #undef LOCTEXT_NAMESPACE

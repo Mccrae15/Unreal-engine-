@@ -14,10 +14,14 @@
 #include "Utilities/UtilsMPEGVideo.h"
 #include "DecoderErrors_Apple.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "ElectraPlayerPrivate.h"
 #include "MediaVideoDecoderOutputApple.h"
 #include "Renderer/RendererVideo.h"
 
 #include <VideoToolbox/VideoToolbox.h>
+
+DECLARE_CYCLE_STAT(TEXT("FVideoDecoderH264::Decode()"), STAT_ElectraPlayer_VideoH264Decode, STATGROUP_ElectraPlayer);
+DECLARE_CYCLE_STAT(TEXT("FVideoDecoderH264::ConvertOutput()"), STAT_ElectraPlayer_VideoH264ConvertOutput, STATGROUP_ElectraPlayer);
 
 namespace Electra
 {
@@ -49,7 +53,7 @@ public:
 	virtual void SetReadyBufferListener(IDecoderOutputBufferListener* Listener) override;
 
 	virtual void SetRenderer(TSharedPtr<IMediaRenderer, ESPMode::ThreadSafe> InRenderer) override;
-    
+
     virtual void SetResourceDelegate(const TSharedPtr<IVideoDecoderResourceDelegate, ESPMode::ThreadSafe>& ResourceDelegate) override;
 
 	virtual IAccessUnitBufferInterface::EAUpushResult AUdataPushAU(FAccessUnit* AccessUnit) override;
@@ -244,7 +248,7 @@ private:
 	IPlayerSessionServices*								PlayerSessionServices;
 
 	TSharedPtr<IMediaRenderer, ESPMode::ThreadSafe>		Renderer;
-    
+
     TWeakPtr<IVideoDecoderResourceDelegate, ESPMode::ThreadSafe> ResourceDelegate;
 
 	FAccessUnitBuffer									AccessUnitBuffer;
@@ -1293,7 +1297,10 @@ FVideoDecoderH264::EDecodeResult FVideoDecoderH264::Decode(FAccessUnit* AccessUn
  */
 void FVideoDecoderH264::WorkerThread()
 {
+	LLM_SCOPE(ELLMTag::ElectraPlayer);
+
 	bool bDone  = false;
+    bool bGotLastSequenceAU = false;
 
 	bError = false;
 
@@ -1315,6 +1322,8 @@ void FVideoDecoderH264::WorkerThread()
 		// Notify optional buffer listener that we will now be needing an AU for our input buffer.
 		if (!bError && InputBufferListener && AccessUnitBuffer.Num() == 0)
 		{
+			SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+			CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
 			FAccessUnitBufferInfo	sin;
 			IAccessUnitBufferListener::FBufferStats	stats;
 			AccessUnitBuffer.GetStats(sin);
@@ -1385,10 +1394,14 @@ void FVideoDecoderH264::WorkerThread()
 					ReplayAccessUnitBuffer.Flush();
 				}
 
-				bool bStreamFormatChanged = CurrentStreamFormatInfo.IsDifferentFrom(AccessUnit);
+				bool bStreamFormatChanged = CurrentStreamFormatInfo.IsDifferentFrom(AccessUnit) || bGotLastSequenceAU;
 				bool bNeedNewDecoder = false;
+                bGotLastSequenceAU = AccessUnit->bIsLastInPeriod;
 				if (bStreamFormatChanged || !DecoderHandle)
 				{
+					SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+					CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
+
 					CMFormatDescriptionRef NewFormatDescr = nullptr;
 					if (CreateFormatDescription(NewFormatDescr, AccessUnit))
 					{
@@ -1484,6 +1497,9 @@ void FVideoDecoderH264::WorkerThread()
 		// Flush?
 		if (FlushDecoderSignal.IsSignaled())
 		{
+			SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264Decode);
+			CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264Decode);
+
 			// Have to destroy the decoder!
 			InternalDecoderDestroy();
 			FlushPendingImages();
@@ -1514,6 +1530,9 @@ void FVideoDecoderH264::WorkerThread()
  */
 void FVideoDecoderH264::ProcessOutput(bool bFlush)
 {
+	SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_VideoH264ConvertOutput);
+	CSV_SCOPED_TIMING_STAT(ElectraPlayer, VideoH264ConvertOutput);
+
 	// Pull any frames we can get from in-PTS-order array...
 	while(1)
 	{

@@ -14,6 +14,7 @@
 #include "NiagaraDataSet.h"
 #include "NiagaraScriptExecutionParameterStore.h"
 #include "NiagaraScriptHighlight.h"
+#include "NiagaraParameterDefinitionsSubscriber.h"
 
 #include "NiagaraScript.generated.h"
 
@@ -74,6 +75,14 @@ enum class ENiagaraScriptLibraryVisibility : uint8
 
 	/** The script is never visible to the user. This is useful to "soft deprecate" assets that should not be shown to a user, but should also not generate errors for existing usages. */
 	Hidden UMETA(DisplayName = "Hidden")
+};
+
+UENUM()
+enum class ENiagaraScriptTemplateSpecification : uint8
+{
+	None,
+	Template,
+	Behavior UMETA(DisplayName = "Behavior Example")
 };
 
 USTRUCT()
@@ -397,6 +406,9 @@ public:
 	UPROPERTY()
 	uint32 bReadsSignificanceIndex : 1;
 
+	UPROPERTY()
+	uint32 bNeedsGPUContextInit : 1;
+
 	void SerializeData(FArchive& Ar, bool bDDCData);
 	
 	bool IsValid() const;
@@ -432,6 +444,10 @@ public:
 	/** Used to break up scripts of the same Usage type in UI display.*/
 	UPROPERTY(EditAnywhere, Category = Script)
 	FText Category;
+
+	/** If true, this script will be added to a 'Suggested' category at the top of menus during searches */
+	UPROPERTY(AssetRegistrySearchable, EditAnywhere, Category = Script)
+	bool bSuggested = false;
 	
 	/** Array of Ids of dependencies provided by this module to other modules on the stack (e.g. 'ProvidesNormalizedAge') */
 	UPROPERTY(EditAnywhere, Category = Script)
@@ -499,21 +515,32 @@ public:
 	UPROPERTY()
 	mutable FNiagaraVMExecutableDataId LastGeneratedVMId;
 
-	TArray<ENiagaraParameterScope> GetUnsupportedParameterScopes() const;
-	TArray<ENiagaraScriptUsage> GetSupportedUsageContexts() const;
-	
-private:
+	/** Reference to a python script that is executed when the user updates from a previous version to this version. */
+	UPROPERTY()
+	ENiagaraPythonUpdateScriptReference UpdateScriptExecution = ENiagaraPythonUpdateScriptReference::None;
 
+	/** Python script to run when updating to this script version. */
+	UPROPERTY()
+	FString PythonUpdateScript;
+
+	/** Asset reference to a python script to run when updating to this script version. */
+	UPROPERTY()
+	FFilePath ScriptAsset;
+
+	/** Subscriptions to parameter definitions for this script version */
+	UPROPERTY()
+	TArray<FParameterDefinitionsSubscription> ParameterDefinitionsSubscriptions;
+	TArray<ENiagaraScriptUsage> GetSupportedUsageContexts() const;
+
+private:
 	friend class UNiagaraScript;
 
 	/** 'Source' data/graphs for this script */
 	UPROPERTY()
 	class UNiagaraScriptSourceBase*	Source = nullptr;
+
 #endif	
 };
-
-
-struct FVersionedNiagaraScript;
 
 /** Runtime script for a Niagara system */
 UCLASS(MinimalAPI)
@@ -522,6 +549,7 @@ class UNiagaraScript : public UNiagaraScriptBase
 	GENERATED_UCLASS_BODY()
 public:
 	UNiagaraScript();
+	~UNiagaraScript();
 
 #if WITH_EDITORONLY_DATA
 	/** If true then this script asset uses active version control to track changes. */
@@ -586,6 +614,9 @@ private:
 	/** Contains all of the versioned script data. */
 	UPROPERTY()
 	TArray<FVersionedNiagaraScriptData> VersionData;
+
+	/** Editor time adapters to a specific VersionData and this Script ptr to handle synchronizing changes made by parameter definitions. */
+	TArray<struct FVersionedNiagaraScript> VersionedScriptAdapters;
 #endif
 
 public:
@@ -829,7 +860,7 @@ public:
 	NIAGARA_API bool DidScriptCompilationSucceed(bool bGPUScript) const;
 
 	template<typename T>
-	TOptional<T> GetCompilerTag(const FNiagaraVariableBase& InVar) const
+	TOptional<T> GetCompilerTag(const FNiagaraVariableBase& InVar, const FNiagaraParameterStore* FallbackParameterStore = nullptr) const
 	{
 		for (const FNiagaraCompilerTag& Tag : CachedScriptVM.CompileTags)
 		{
@@ -842,6 +873,11 @@ public:
 				else if (const int32* Offset = RapidIterationParameters.FindParameterOffset(FNiagaraVariableBase(Tag.Variable.GetType(), *Tag.StringValue)))
 				{
 					return TOptional<T>(*(T*)RapidIterationParameters.GetParameterData(*Offset));
+				}
+				else if (FallbackParameterStore)
+				{
+					if (const int32* OffsetAlternate = FallbackParameterStore->FindParameterOffset(FNiagaraVariableBase(Tag.Variable.GetType(), *Tag.StringValue)))
+						return TOptional<T>(*(T*)FallbackParameterStore->GetParameterData(*OffsetAlternate));
 				}
 			}
 		}
@@ -899,7 +935,7 @@ public:
 
 	NIAGARA_API FString GetFriendlyName() const;
 
-	NIAGARA_API void SyncAliases(const TMap<FString, FString>& RenameMap);
+	NIAGARA_API void SyncAliases(const FNiagaraAliasContext& ResolveAliasesContext);
 #endif
 	
 	UFUNCTION()
@@ -921,8 +957,6 @@ public:
 
 	bool UsesCollection(const class UNiagaraParameterCollection* Collection)const;
 	
-	virtual ~UNiagaraScript();
-
 	NIAGARA_API const FNiagaraScriptExecutionParameterStore* GetExecutionReadyParameterStore(ENiagaraSimTarget SimTarget);
 	void InvalidateExecutionReadyParameterStores();
 
@@ -1037,41 +1071,88 @@ private:
 
 	/** Flag used to guarantee that the RT isn't accessing the FNiagaraScriptResource before cleanup. */
 	FThreadSafeBool ReleasedByRT;
-};
 
-/** Struct combining a script with a specific version.*/
-USTRUCT()
-struct NIAGARA_API FVersionedNiagaraScriptWeakPtr
-{
-	GENERATED_USTRUCT_BODY()
-	
+	private :
+
 #if WITH_EDITORONLY_DATA
-	UPROPERTY()
-	TWeakObjectPtr<UNiagaraScript> Script;
-
-	UPROPERTY()
-	FGuid Version;
-
-	FVersionedNiagaraScript Pin();
+		void ComputeVMCompilationId_EmitterShared(FNiagaraVMExecutableDataId& Id, UNiagaraEmitter* Emitter, UNiagaraSystem* EmitterOwner, ENiagaraRendererSourceDataMode InSourceMode) const;
 #endif
 };
 
-/** Struct combining a script with a specific version.*/
-USTRUCT()
-struct NIAGARA_API FVersionedNiagaraScript
-{
-	GENERATED_USTRUCT_BODY()
-	
-#if WITH_EDITORONLY_DATA
-	UPROPERTY()
-	UNiagaraScript* Script = nullptr;
+// Forward decl FVersionedNiagaraScriptWeakPtr to suport FVersionedNiagaraScript::ToWeakPtr().
+struct FVersionedNiagaraScriptWeakPtr;
 
-	UPROPERTY()
-	FGuid Version;
+/** Struct combining a script with a specific version.*/
+struct NIAGARA_API FVersionedNiagaraScript : public INiagaraParameterDefinitionsSubscriber
+{
+#if WITH_EDITORONLY_DATA
+public:
+	FVersionedNiagaraScript() //@todo(ng) refactor to never allow constructing with null script
+		: Script(nullptr)
+		, Version(FGuid())
+	{};
+
+	FVersionedNiagaraScript(UNiagaraScript* InScript)
+		: Script(InScript)
+		, Version(FGuid())
+	{
+	};
+
+	FVersionedNiagaraScript(UNiagaraScript* InScript, const FGuid& InVersion)
+		: Script(InScript)
+		, Version(InVersion)
+	{
+	};
+
+	//~ Begin INiagaraParameterDefinitionsSubscriber Interface
+	virtual const TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() const override { return GetScriptData()->ParameterDefinitionsSubscriptions; };
+	virtual TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() override { return GetScriptData()->ParameterDefinitionsSubscriptions; };
+
+	/** Get all UNiagaraScriptSourceBase of this subscriber. */
+	virtual TArray<UNiagaraScriptSourceBase*> GetAllSourceScripts() override;
+
+	/** Get the path to the UObject of this subscriber. */
+	virtual FString GetSourceObjectPathName() const override;
+	//~ End INiagaraParameterDefinitionsSubscriber Interface
 
 	FVersionedNiagaraScriptWeakPtr ToWeakPtr();
 	FVersionedNiagaraScriptData* GetScriptData() const;
+
+public:
+	UNiagaraScript* Script = nullptr;
+
+	FGuid Version;
 #endif
 };
 
+/** Struct combining a script with a specific version.*/
+struct NIAGARA_API FVersionedNiagaraScriptWeakPtr : public INiagaraParameterDefinitionsSubscriber
+{
+#if WITH_EDITORONLY_DATA
+public:
+	FVersionedNiagaraScriptWeakPtr(UNiagaraScript* InScript, const FGuid& InVersion)
+		: Script(InScript)
+		, Version(InVersion)
+	{
+	};
 
+	//~ Begin INiagaraParameterDefinitionsSubscriber Interface
+	virtual const TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() const override { return Pin().GetScriptData()->ParameterDefinitionsSubscriptions; };
+	virtual TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() override { return Pin().GetScriptData()->ParameterDefinitionsSubscriptions; };
+
+	/** Get all UNiagaraScriptSourceBase of this subscriber. */
+	virtual TArray<UNiagaraScriptSourceBase*> GetAllSourceScripts() override;
+
+	/** Get the path to the UObject of this subscriber. */
+	virtual FString GetSourceObjectPathName() const override;
+	//~ End INiagaraParameterDefinitionsSubscriber Interface
+
+	const FVersionedNiagaraScript Pin() const;
+	FVersionedNiagaraScript Pin();
+
+public:
+	TWeakObjectPtr<UNiagaraScript> Script;
+
+	FGuid Version;
+#endif
+};

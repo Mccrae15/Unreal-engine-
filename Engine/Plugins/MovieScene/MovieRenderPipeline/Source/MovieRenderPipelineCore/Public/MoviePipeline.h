@@ -31,7 +31,7 @@ class UMoviePipelineExecutorShot;
 class UMoviePipelineSetting;
 class UTexture;
 
-typedef TTuple<TFuture<bool>, FString, UMoviePipelineExecutorShot*, FMoviePipelinePassIdentifier> FMoviePipelineOutputFuture;
+typedef TTuple<TFuture<bool>, MoviePipeline::FMoviePipelineOutputFutureData> FMoviePipelineOutputFuture;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FMoviePipelineFinishedNative, UMoviePipeline*, bool);
 DECLARE_MULTICAST_DELEGATE_OneParam(FMoviePipelineWorkFinishedNative, FMoviePipelineOutputData);
@@ -175,7 +175,7 @@ public:
 #if WITH_EDITOR
 	void AddFrameToOutputMetadata(const FString& ClipName, const FString& ImageSequenceFileName, const FMoviePipelineFrameOutputState& FrameOutputState, const FString& Extension, const bool bHasAlpha);
 #endif
-	void AddOutputFuture(TFuture<bool>&& OutputFuture, const FString& InFilePath, const FMoviePipelinePassIdentifier InPassIdentifier);
+	void AddOutputFuture(TFuture<bool>&& OutputFuture, const MoviePipeline::FMoviePipelineOutputFutureData& InData);
 
 	void ProcessOutstandingFinishedFrames();
 	void ProcessOutstandingFutures();
@@ -284,6 +284,8 @@ private:
 	/** Flush any async resources in the engine that need to be finalized before submitting anything to the GPU, ie: Streaming Levels and Shaders */
 	void FlushAsyncEngineSystems();
 
+	/** If the log verbosity is high enough, prints out the files specified in the shot output data. */
+	void PrintVerboseLogForFiles(const TArray<FMoviePipelineShotOutputData>& InOutputData) const;
 
 	/** Tell our submixes to start capturing the data they are generating. Should only be called once output frames are being produced. */
 	void StartAudioRecording();

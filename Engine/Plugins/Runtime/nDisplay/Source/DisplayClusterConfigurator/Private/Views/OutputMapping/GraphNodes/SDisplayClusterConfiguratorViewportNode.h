@@ -13,6 +13,7 @@ class IDisplayClusterConfiguratorTreeItem;
 class SImage;
 class UDisplayClusterConfigurationViewport;
 class UDisplayClusterConfiguratorViewportNode;
+class UTexture;
 
 class SDisplayClusterConfiguratorViewportNode
 	: public SDisplayClusterConfiguratorBaseNode
@@ -21,8 +22,6 @@ public:
 	SLATE_BEGIN_ARGS(SDisplayClusterConfiguratorViewportNode)
 	{}
 	SLATE_END_ARGS()
-
-	~SDisplayClusterConfiguratorViewportNode();
 	
 	void Construct(const FArguments& InArgs,
 		UDisplayClusterConfiguratorViewportNode* InViewportNode,
@@ -30,17 +29,18 @@ public:
 
 	//~ Begin SGraphNode interface
 	virtual void UpdateGraphNode() override;
-	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter) override;
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty = true) override;
 	//~ End of SGraphNode interface
 
 	//~ Begin SDisplayClusterConfiguratorBaseNode interface
 	virtual bool IsNodeVisible() const override;
-	virtual int32 GetNodeLayerIndex() const override { return DefaultZOrder; }
-	virtual bool CanNodeOverlapSiblings() const override { return false; }
 	virtual bool CanNodeBeSnapAligned() const override { return true; }
+	virtual bool CanNodeBeResized() const { return !IsViewportLocked(); }
+	virtual float GetNodeMinimumSize() const override;
+	virtual float GetNodeMaximumSize() const override;
+	virtual bool IsAspectRatioFixed() const override;
 	//~ End of SDisplayClusterConfiguratorBaseNode interface
-
-	void SetPreviewTexture(UTexture* InTexture);
 
 private:
 	FSlateColor GetBackgroundColor() const;
@@ -51,15 +51,14 @@ private:
 	FText GetPositionAndSizeText() const;
 	FMargin GetBackgroundPosition() const;
 	FMargin GetAreaResizeHandlePosition() const;
-	EVisibility GetAreaResizeHandleVisibility() const;
-	bool IsAspectRatioFixed() const;
 	bool IsViewportLocked() const;
 	EVisibility GetLockIconVisibility() const;
+
+	void UpdatePreviewTexture();
 
 private:
 	FSlateBrush BackgroundActiveBrush;
 	TSharedPtr<SImage> BackgroundImage;
 
-public:
-	static const int32 DefaultZOrder;
+	UTexture* CachedTexture;
 };

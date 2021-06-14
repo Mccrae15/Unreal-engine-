@@ -181,7 +181,13 @@ void UNiagaraParameterCollectionInstance::Tick(UWorld* World)
 void UNiagaraParameterCollectionInstance::SyncWithCollection()
 {
 	FNiagaraParameterStore OldStore = ParameterStorage;
-	ParameterStorage.Empty(false);
+	ParameterStorage.Empty(Collection == nullptr);
+
+	if (Collection == nullptr)
+	{
+		OverridenParameters.Empty();
+		return;
+	}
 
 	for (FNiagaraVariable& Param : Collection->GetParameters())
 	{
@@ -240,6 +246,17 @@ void UNiagaraParameterCollectionInstance::SetOverridesParameter(const FNiagaraVa
 	}
 }
 
+#if WITH_EDITORONLY_DATA
+void UNiagaraParameterCollectionInstance::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	if (PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UNiagaraParameterCollectionInstance, Collection))
+	{
+		SetParent(Collection);
+	}
+}
+#endif
 //Blueprint Accessors
 bool UNiagaraParameterCollectionInstance::GetBoolParameter(const FString& InVariableName)
 {

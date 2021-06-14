@@ -3,7 +3,7 @@
 #include "DMXEditor.h"
 #include "DMXEditorLog.h"
 #include "DMXEditorModule.h"
-#include "DMXEditorTabs.h"
+#include "DMXEditorTabNames.h"
 #include "DMXEditorUtils.h"
 #include "DMXFixtureTypeSharedData.h"
 #include "DMXFixturePatchSharedData.h"
@@ -134,7 +134,6 @@ void FDMXEditor::CreateDefaultCommands()
 	FDMXEditorCommands::Register();
 
 	FDMXEditorModule& DMXEditorModule = FModuleManager::LoadModuleChecked<FDMXEditorModule>("DMXEditor");
-	ToolkitCommands->Append(DMXEditorModule.GetsSharedDMXEditorCommands());
 
 	ToolkitCommands->MapAction(
 		FDMXEditorCommands::Get().AddNewEntityFixtureType,
@@ -178,11 +177,11 @@ bool FDMXEditor::InvokeEditorTabFromEntityType(TSubclassOf<UDMXEntity> InEntityC
 	FName TargetTabId = NAME_None;
 	if (InEntityClass->IsChildOf(UDMXEntityFixtureType::StaticClass()))
 	{
-		TargetTabId = FDMXEditorTabs::DMXFixtureTypesEditorTabId;
+		TargetTabId = FDMXEditorTabNames::DMXFixtureTypesEditor;
 	}
 	else if (InEntityClass->IsChildOf(UDMXEntityFixturePatch::StaticClass()))
 	{
-		TargetTabId = FDMXEditorTabs::DMXFixturePatchEditorTabId;
+		TargetTabId = FDMXEditorTabNames::DMXFixturePatchEditor;
 	}
 	else
 	{

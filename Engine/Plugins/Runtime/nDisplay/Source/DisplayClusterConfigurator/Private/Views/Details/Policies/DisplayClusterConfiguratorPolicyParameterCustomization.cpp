@@ -5,22 +5,24 @@
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
 #include "DisplayClusterConfigurationTypes.h"
 #include "DisplayClusterConfiguratorUtils.h"
+#include "DisplayClusterConfiguratorPropertyUtils.h"
 #include "Views/Details/Widgets/SDisplayClusterConfigurationSearchableComboBox.h"
 
 #include "DisplayClusterRootActor.h"
+#include "DisplayClusterProjectionStrings.h"
 #include "Blueprints/DisplayClusterBlueprint.h"
 #include "Misc/DisplayClusterHelpers.h"
+#include "Misc/DisplayClusterTypesConverter.h"
 
 #include "EditorDirectories.h"
 #include "IDesktopPlatform.h"
 #include "DesktopPlatformModule.h"
-#include "DisplayClusterProjectionStrings.h"
 #include "IDetailChildrenBuilder.h"
 #include "IDetailGroup.h"
 #include "IPropertyUtilities.h"
 #include "PropertyHandle.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Misc/DisplayClusterTypesConverter.h"
+#include "Components/StaticMeshComponent.h"
 
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
@@ -28,6 +30,8 @@
 #include "Widgets/Input/SCheckBox.h"
 
 #define LOCTEXT_NAMESPACE "FDisplayClusterConfiguratorPolicyParameterCustomization"
+
+FLinearColor OrangeLabelBackgroundColor(0.8f, 0.3f, 0.0f);
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 // Policy Parameter Configuration
@@ -38,15 +42,15 @@ FPolicyParameterInfo::FPolicyParameterInfo(
 	const FString& InKey,
 	UDisplayClusterBlueprint* InBlueprint,
 	UDisplayClusterConfigurationViewport* InConfigurationViewport,
+	const TSharedPtr<IPropertyHandle>& InParametersHandle,
 	const FString* InInitialValue)
 {
 	ParamDisplayName = InDisplayName;
 	ParamKey = InKey;
 	BlueprintOwnerPtr = InBlueprint;
 	ConfigurationViewportPtr = InConfigurationViewport;
-
+	ParametersHandle = InParametersHandle;
 	BlueprintEditorPtrCached = FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(InBlueprint);
-	check(BlueprintEditorPtrCached);
 
 	if (InInitialValue)
 	{
@@ -64,13 +68,15 @@ FText FPolicyParameterInfo::GetOrAddCustomParameterValueText() const
 	UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get();
 	check(ConfigurationViewport != nullptr);
 
-	FString& ParameterValue = ConfigurationViewport->ProjectionPolicy.Parameters.FindOrAdd(GetParameterKey());
-	if (ParameterValue.IsEmpty() && InitialValue.IsValid())
+	FString* ParameterValue = ConfigurationViewport->ProjectionPolicy.Parameters.Find(GetParameterKey());
+	if (ParameterValue == nullptr)
 	{
-		ParameterValue = *InitialValue;
+		UpdateCustomParameterValueText(InitialValue.IsValid() ? *InitialValue : TEXT(""), false);
+		ParameterValue = ConfigurationViewport->ProjectionPolicy.Parameters.Find(GetParameterKey());
 	}
+	check(ParameterValue)
 	
-	return FText::FromString(ParameterValue);
+	return FText::FromString(*ParameterValue);
 }
 
 bool FPolicyParameterInfo::IsParameterAlreadyAdded() const
@@ -81,17 +87,25 @@ bool FPolicyParameterInfo::IsParameterAlreadyAdded() const
 	return ConfigurationViewport->ProjectionPolicy.Parameters.Contains(GetParameterKey());
 }
 
-void FPolicyParameterInfo::UpdateCustomParameterValueText(const FString& NewValue)
+void FPolicyParameterInfo::UpdateCustomParameterValueText(const FString& NewValue, bool bNotify) const
 {
 	UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get();
 	check(ConfigurationViewport != nullptr);
 	ConfigurationViewport->Modify();
-	ConfigurationViewport->ProjectionPolicy.Parameters.Add(GetParameterKey(), NewValue);
-	
-	if (FDisplayClusterConfiguratorBlueprintEditor* BlueprintEditor = FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(BlueprintOwnerPtr.Get()))
+
+	FStructProperty* StructProperty = FindFProperty<FStructProperty>(ConfigurationViewport->GetClass(), GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, ProjectionPolicy));
+	check(StructProperty);
+
+	uint8* MapContainer = StructProperty->ContainerPtrToValuePtr<uint8>(ConfigurationViewport);
+	DisplayClusterConfiguratorPropertyUtils::AddKeyValueToMap(MapContainer, ParametersHandle, GetParameterKey(), NewValue);
+
+	if (bNotify)
 	{
-		BlueprintEditor->ClusterChanged(true);
-		BlueprintEditor->RefreshDisplayClusterPreviewActor();
+		if (FDisplayClusterConfiguratorBlueprintEditor* BlueprintEditor = FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(BlueprintOwnerPtr.Get()))
+		{
+			BlueprintEditor->ClusterChanged(true);
+			BlueprintEditor->RefreshDisplayClusterPreviewActor();
+		}
 	}
 }
 
@@ -102,7 +116,8 @@ EVisibility FPolicyParameterInfo::IsParameterVisible() const
 
 FPolicyParameterInfoCombo::FPolicyParameterInfoCombo(const FString& InDisplayName, const FString& InKey,
 	UDisplayClusterBlueprint* InBlueprint, UDisplayClusterConfigurationViewport* InConfigurationViewport,
-	const TArray<FString>& InValues, const FString* InInitialItem, bool bSort) : FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InInitialItem)
+	const TSharedPtr<IPropertyHandle>& InParametersHandle,
+	const TArray<FString>& InValues, const FString* InInitialItem, bool bSort) : FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InParametersHandle, InInitialItem)
 {
 	for (const FString& Value : InValues)
 	{
@@ -168,22 +183,30 @@ FPolicyParameterInfoComponentCombo::FPolicyParameterInfoComponentCombo(
 	const FString& InKey,
 	UDisplayClusterBlueprint* InBlueprint,
 	UDisplayClusterConfigurationViewport* InConfigurationViewport,
-	TSubclassOf<UActorComponent> InComponentClass) : FPolicyParameterInfoCombo(InDisplayName, InKey, InBlueprint, InConfigurationViewport, {}, nullptr)
+	const TSharedPtr<IPropertyHandle>& InParametersHandle,
+	const TArray<TSubclassOf<UActorComponent>>& InComponentClasses) : FPolicyParameterInfoCombo(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InParametersHandle, {}, nullptr)
 {
-	ComponentType = InComponentClass;
-	ADisplayClusterRootActor* RootActor = CastChecked<ADisplayClusterRootActor>(BlueprintEditorPtrCached->GetPreviewActor());
-	CreateParameterValues(RootActor);
+	ComponentTypes = InComponentClasses;
+	if (BlueprintEditorPtrCached)
+	{
+		// BlueprintEditorPtrCached can be null when remote control is interfacing with the world instance details panel. At this stage
+		// there isn't a blueprint editor available. Normally this customization is hidden here but remote control seems to trigger it.
+		
+		ADisplayClusterRootActor* RootActor = CastChecked<ADisplayClusterRootActor>(BlueprintEditorPtrCached->GetPreviewActor());
+		CreateParameterValues(RootActor);
+	}
 }
 
 void FPolicyParameterInfoComponentCombo::CreateParameterValues(ADisplayClusterRootActor* RootActor)
 {
-	if (ComponentType)
+	for (const TSubclassOf<UActorComponent>& ComponentType : ComponentTypes)
 	{
 		TArray<UActorComponent*> ActorComponents;
 		RootActor->GetComponents(ComponentType, ActorComponents);
 		for (UActorComponent* ActorComponent : ActorComponents)
 		{
-			if (ActorComponent->GetName().EndsWith(FDisplayClusterConfiguratorUtils::GetImplSuffix()))
+			if (ActorComponent->GetName().EndsWith(FDisplayClusterConfiguratorUtils::GetImplSuffix()) ||
+				(ActorComponent->IsA<UStaticMeshComponent>() && ActorComponent->IsVisualizationComponent()))
 			{
 				// Ignore the default impl subobjects.
 				continue;
@@ -197,8 +220,9 @@ void FPolicyParameterInfoComponentCombo::CreateParameterValues(ADisplayClusterRo
 
 FPolicyParameterInfoText::FPolicyParameterInfoText(const FString& InDisplayName, const FString& InKey,
 	UDisplayClusterBlueprint* InBlueprint,
-	UDisplayClusterConfigurationViewport* InConfigurationViewport) :
-	FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport)
+	UDisplayClusterConfigurationViewport* InConfigurationViewport,
+	const TSharedPtr<IPropertyHandle>& InParametersHandle) :
+	FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InParametersHandle)
 {
 }
 
@@ -224,8 +248,9 @@ void FPolicyParameterInfoText::CreateCustomRowWidget(IDetailChildrenBuilder& InD
 }
 
 FPolicyParameterInfoBool::FPolicyParameterInfoBool(const FString& InDisplayName, const FString& InKey,
-	UDisplayClusterBlueprint* InBlueprint, UDisplayClusterConfigurationViewport* InConfigurationViewport) :
-	FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport)
+	UDisplayClusterBlueprint* InBlueprint, UDisplayClusterConfigurationViewport* InConfigurationViewport,
+	const TSharedPtr<IPropertyHandle>& InParametersHandle) :
+	FPolicyParameterInfo(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InParametersHandle)
 {
 }
 
@@ -388,8 +413,9 @@ void FPolicyParameterInfoFloatReference::OnValueCommitted(float NewValue, ETextC
 
 FPolicyParameterInfoMatrix::FPolicyParameterInfoMatrix(const FString& InDisplayName, const FString& InKey,
                                                        UDisplayClusterBlueprint* InBlueprint,
-                                                       UDisplayClusterConfigurationViewport* InConfigurationViewport):
-	FPolicyParameterInfoFloatReference(InDisplayName, InKey, InBlueprint, InConfigurationViewport),
+                                                       UDisplayClusterConfigurationViewport* InConfigurationViewport,
+														const TSharedPtr<IPropertyHandle>& InParametersHandle):
+	FPolicyParameterInfoFloatReference(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InParametersHandle),
 	CachedTranslationX(MakeShared<float>()),
 	CachedTranslationY(MakeShared<float>()),
 	CachedTranslationZ(MakeShared<float>()),
@@ -422,7 +448,8 @@ FPolicyParameterInfoMatrix::FPolicyParameterInfoMatrix(const FString& InDisplayN
 
 
 void FPolicyParameterInfoMatrix::CreateCustomRowWidget(IDetailChildrenBuilder& InDetailWidgetRow)
-{	IDetailGroup& Group = InDetailWidgetRow.AddGroup(*GetParameterKey(), GetParameterDisplayName());
+{
+	IDetailGroup& Group = InDetailWidgetRow.AddGroup(*GetParameterKey(), GetParameterDisplayName());
 	Group.HeaderRow()
 	[
 		SNew(STextBlock)
@@ -550,11 +577,116 @@ void FPolicyParameterInfoMatrix::FormatTextAndUpdateParameter()
 	UpdateCustomParameterValueText(MatrixString);
 }
 
+FPolicyParameterInfo4x4Matrix::FPolicyParameterInfo4x4Matrix(const FString& InDisplayName, const FString& InKey,
+	UDisplayClusterBlueprint* InBlueprint, UDisplayClusterConfigurationViewport* InConfigurationViewport,
+	const TSharedPtr<IPropertyHandle>& InParametersHandle) :
+	FPolicyParameterInfoFloatReference(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InParametersHandle),
+	A(MakeShared<float>()), B(MakeShared<float>()), C(MakeShared<float>()), D(MakeShared<float>()), E(MakeShared<float>())
+	, F(MakeShared<float>()), G(MakeShared<float>()), H(MakeShared<float>()), I(MakeShared<float>()), J(MakeShared<float>())
+	, K(MakeShared<float>()), L(MakeShared<float>()), M(MakeShared<float>()), N(MakeShared<float>()), O(MakeShared<float>())
+	, P(MakeShared<float>())
+{
+	const FText TextValue = GetOrAddCustomParameterValueText();
+	const FMatrix Matrix = DisplayClusterTypesConverter::template FromString<FMatrix>(TextValue.ToString());
+	*A = Matrix.M[0][0];
+	*B = Matrix.M[0][1];
+	*C = Matrix.M[0][2];
+	*D = Matrix.M[0][3];
+
+	*E = Matrix.M[1][0];
+	*F = Matrix.M[1][1];
+	*G = Matrix.M[1][2];
+	*H = Matrix.M[1][3];
+
+	*I = Matrix.M[2][0];
+	*J = Matrix.M[2][1];
+	*K = Matrix.M[2][2];
+	*L = Matrix.M[2][3];
+
+	*M = Matrix.M[3][0];
+	*N = Matrix.M[3][1];
+	*O = Matrix.M[3][2];
+	*P = Matrix.M[3][3];
+}
+
+void FPolicyParameterInfo4x4Matrix::CreateCustomRowWidget(IDetailChildrenBuilder& InDetailWidgetRow)
+{
+	IDetailGroup& Group = InDetailWidgetRow.AddGroup(*GetParameterKey(), GetParameterDisplayName());
+	Group.HeaderRow()
+	[
+		SNew(STextBlock)
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+		.Text(GetParameterDisplayName())
+		.Visibility(this, &FPolicyParameterInfo4x4Matrix::IsParameterVisible)
+	]
+	.Visibility(MakeAttributeRaw(this, &FPolicyParameterInfo4x4Matrix::IsParameterVisible));
+	
+	CustomizeRow(LOCTEXT("RowX", "X"), A, B, C, D, Group.AddWidgetRow());
+	CustomizeRow(LOCTEXT("RowY", "Y"), E, F, G, H, Group.AddWidgetRow());
+	CustomizeRow(LOCTEXT("RowZ", "Z"), I, J, K, L, Group.AddWidgetRow());
+	CustomizeRow(LOCTEXT("RowW", "W"), M, N, O, P, Group.AddWidgetRow());
+	
+	Group.ToggleExpansion(true);
+}
+
+void FPolicyParameterInfo4x4Matrix::CustomizeRow(const FText& InHeaderText, TSharedRef<float>& InX, TSharedRef<float>& InY,
+		TSharedRef<float>& InZ, TSharedRef<float>& InW, FDetailWidgetRow& InDetailWidgetRow)
+{
+	InDetailWidgetRow
+	.Visibility(MakeAttributeRaw(this, &FPolicyParameterInfo4x4Matrix::IsParameterVisible))
+	.NameContent()
+	[
+		SNew(STextBlock)
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+		.Text(InHeaderText)
+	]
+	.ValueContent()
+	.MinDesiredWidth(375.0f)
+	.MaxDesiredWidth(375.0f)
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.Padding(FMargin(0.0f, 2.0f, 3.0f, 2.0f))
+		[
+			MakeFloatInputWidget(InX, LOCTEXT("MatrixX", "X"), false, FLinearColor::White, SNumericEntryBox<float>::RedLabelBackgroundColor)
+		]
+		+ SHorizontalBox::Slot()
+		.Padding(FMargin(0.0f, 2.0f, 3.0f, 2.0f))
+		[
+			MakeFloatInputWidget(InY, LOCTEXT("MatrixY", "Y"), false, FLinearColor::White, SNumericEntryBox<float>::GreenLabelBackgroundColor)
+		]
+		+ SHorizontalBox::Slot()
+		.Padding(FMargin(0.0f, 2.0f, 3.0f, 2.0f))
+		[
+			MakeFloatInputWidget(InZ, LOCTEXT("MatrixZ", "Z"), false, FLinearColor::White, SNumericEntryBox<float>::BlueLabelBackgroundColor)
+		]
+		+ SHorizontalBox::Slot()
+		.Padding(FMargin(0.0f, 2.0f, 3.0f, 2.0f))
+		[
+			MakeFloatInputWidget(InW, LOCTEXT("MatrixW", "W"), false, FLinearColor::White, OrangeLabelBackgroundColor)
+		]
+	];
+}
+
+void FPolicyParameterInfo4x4Matrix::FormatTextAndUpdateParameter()
+{
+	const FPlane PlaneX(*A, *B, *C, *D);
+	const FPlane PlaneY(*E, *F, *G, *H);
+	const FPlane PlaneZ(*I, *J, *K, *L);
+	const FPlane PlaneW(*M, *N, *O, *P);
+	
+	const FMatrix Matrix(PlaneX, PlaneY, PlaneZ, PlaneW);
+
+	const FString MatrixString = DisplayClusterTypesConverter::template ToString(Matrix);
+	UpdateCustomParameterValueText(MatrixString);
+}
+
 
 FPolicyParameterInfoRotator::FPolicyParameterInfoRotator(const FString& InDisplayName, const FString& InKey,
-	UDisplayClusterBlueprint* InBlueprint,
-	UDisplayClusterConfigurationViewport* InConfigurationViewport) :
-	FPolicyParameterInfoFloatReference(InDisplayName, InKey, InBlueprint, InConfigurationViewport),
+                                                         UDisplayClusterBlueprint* InBlueprint,
+                                                         UDisplayClusterConfigurationViewport* InConfigurationViewport,
+                                                         const TSharedPtr<IPropertyHandle>& InParametersHandle) :
+	FPolicyParameterInfoFloatReference(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InParametersHandle),
 	CachedRotationYaw(MakeShared<float>()),
 	CachedRotationPitch(MakeShared<float>()),
 	CachedRotationRoll(MakeShared<float>())
@@ -609,8 +741,9 @@ void FPolicyParameterInfoRotator::FormatTextAndUpdateParameter()
 }
 
 FPolicyParameterInfoFrustumAngle::FPolicyParameterInfoFrustumAngle(const FString& InDisplayName, const FString& InKey,
-	UDisplayClusterBlueprint* InBlueprint, UDisplayClusterConfigurationViewport* InConfigurationViewport) :
-	FPolicyParameterInfoFloatReference(InDisplayName, InKey, InBlueprint, InConfigurationViewport),
+	UDisplayClusterBlueprint* InBlueprint, UDisplayClusterConfigurationViewport* InConfigurationViewport,
+	const TSharedPtr<IPropertyHandle>& InParametersHandle) :
+	FPolicyParameterInfoFloatReference(InDisplayName, InKey, InBlueprint, InConfigurationViewport, InParametersHandle),
 	CachedAngleL(MakeShared<float>()),
 	CachedAngleR(MakeShared<float>()),
 	CachedAngleT(MakeShared<float>()),
@@ -675,7 +808,7 @@ void FPolicyParameterInfoFrustumAngle::CreateCustomRowWidget(IDetailChildrenBuil
 		+ SHorizontalBox::Slot()
 		.Padding(FMargin(0.0f, 2.0f, 3.0f, 2.0f))
 		[
-			MakeFloatInputWidget(CachedAngleB, LOCTEXT("AngleB", "B"), true, FLinearColor::White, FLinearColor(0.8f, 0.3f, 0.0f) /* Orange */)
+			MakeFloatInputWidget(CachedAngleB, LOCTEXT("AngleB", "B"), true, FLinearColor::White, OrangeLabelBackgroundColor)
 		]
 	];
 }

@@ -16,7 +16,8 @@ class UDisplayClusterConfiguratorHostNode final
 	GENERATED_BODY()
 
 public:
-	virtual void Initialize(const FString& InNodeName, UObject* InObject, const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit) override;
+	virtual void Initialize(const FString& InNodeName, int32 InNodeZIndex, UObject* InObject, const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit) override;
+	virtual void Cleanup() override;
 
 	//~ Begin EdGraphNode Interface
 	virtual TSharedPtr<SGraphNode> CreateVisualWidget() override;
@@ -41,6 +42,9 @@ public:
 	virtual bool IsNodeEnabled() const override;
 	virtual bool IsNodeAutoPositioned() const { return !CanUserMoveNode(); }
 	virtual bool IsNodeAutosized() const override { return !CanUserResizeNode(); }
+	virtual bool CanNodeOverlapSiblings() const override { return false; }
+	virtual bool CanNodeEncroachChildBounds() const { return false; }
+
 	virtual void DeleteObject() override;
 
 protected:

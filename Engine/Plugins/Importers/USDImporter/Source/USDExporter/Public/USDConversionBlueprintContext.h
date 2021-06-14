@@ -18,6 +18,7 @@ class AInstancedFoliageActor;
 class ALandscapeProxy;
 class UCineCameraComponent;
 class UDirectionalLightComponent;
+class UHierarchicalInstancedStaticMeshComponent;
 class ULevelExporterUSDOptions;
 class ULightComponentBase;
 class UMeshComponent;
@@ -45,14 +46,23 @@ class USDEXPORTER_API UUsdConversionBlueprintContext : public UObject
 {
 	GENERATED_BODY()
 
+	virtual ~UUsdConversionBlueprintContext();
+
 private:
 	/** Stage to use when converting components */
     UE::FUsdStage Stage;
+
+	/**
+	 * Whether we will erase our current stage from the stage cache when we Cleanup().
+	 * This is true if we were the ones that put the stage in the cache in the first place.
+	 */
+	bool bEraseFromStageCache = false;
 
 public:
     /**
      * Opens or creates a USD stage using `StageRootLayerPath` as root layer, creating the root layer if needed.
      * All future conversions will fetch prims and get/set USD data to/from this stage.
+	 * Note: You must remember to call Cleanup() when done, or else this object will permanently hold a reference to the opened stage!
      */
 	UFUNCTION( BlueprintCallable, Category = "Export context" )
 	void SetStageRootLayer( FFilePath StageRootLayerPath );
@@ -75,6 +85,13 @@ public:
 	 */
 	UFUNCTION( BlueprintCallable, Category = "Export context" )
 	FFilePath GetEditTarget();
+
+	/**
+	 * Discards the currently opened stage. This is critical when using this class via scripting: The C++ destructor will
+	 * not be called when the python object runs out of scope, so we would otherwise keep a strong reference to the stage
+	 */
+	UFUNCTION( BlueprintCallable, Category = "Export context" )
+	void Cleanup();
 
 public:
 	// Note: We use FLT_MAX on these functions because Usd.TimeCode.Default().GetValue() is actually a nan, and nan arguments are automatically sanitized to 0.0f.
@@ -103,13 +120,16 @@ public:
 	bool ConvertSceneComponent( const USceneComponent* Component, const FString& PrimPath );
 
 	UFUNCTION( BlueprintCallable, Category = "Component conversion" )
+	bool ConvertHismComponent( const UHierarchicalInstancedStaticMeshComponent* Component, const FString& PrimPath, float TimeCode = 3.402823466e+38F );
+
+	UFUNCTION( BlueprintCallable, Category = "Component conversion" )
 	bool ConvertMeshComponent( const UMeshComponent* Component, const FString& PrimPath );
 
 	UFUNCTION( BlueprintCallable, Category = "Component conversion" )
 	bool ConvertCineCameraComponent( const UCineCameraComponent* Component, const FString& PrimPath );
 
 	UFUNCTION( BlueprintCallable, Category = "Component conversion" )
-	bool ConvertInstancedFoliageActor( const AInstancedFoliageActor* Actor, const FString& PrimPath, ULevel* InstancesLevel=nullptr, float TimeCode = 3.402823466e+38F );
+	bool ConvertInstancedFoliageActor( const AInstancedFoliageActor* Actor, const FString& PrimPath, float TimeCode = 3.402823466e+38F );
 
 	UFUNCTION( BlueprintCallable, Category = "Component conversion" )
 	bool ConvertLandscapeProxyActorMesh( const ALandscapeProxy* Actor, const FString& PrimPath, int32 LowestLOD, int32 HighestLOD, float TimeCode = 3.402823466e+38F );

@@ -4,6 +4,7 @@
 
 #include "CoreTypes.h"
 #include "Containers/UnrealString.h"
+#include "Logging/LogVerbosity.h"
 
 /** Helper functions used by FOutputDevice derived classes **/
 struct CORE_API FOutputDeviceHelper
@@ -13,7 +14,11 @@ struct CORE_API FOutputDeviceHelper
 	 * @param Verbosity verbosity enum
 	 * @returns String representation of the verbosity enum
 	 */
-	static const TCHAR* VerbosityToString(ELogVerbosity::Type Verbosity);
+	UE_DEPRECATED(4.27, "VerbosityToString has moved to LogVerbosity.h and been renamed to ToString.")
+	inline static const TCHAR* VerbosityToString(ELogVerbosity::Type Verbosity)
+	{
+		return ToString(Verbosity);
+	}
 
 	/**
 	 * Formats a log line with date, time, category and verbosity prefix

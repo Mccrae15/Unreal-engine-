@@ -22,6 +22,7 @@ enum class EStackParameterBehavior;
 class UNiagaraClipboardFunctionInput;
 class UNiagaraClipboardFunction;
 class UNiagaraScriptVariable;
+class FNiagaraPlaceholderDataInterfaceHandle;
 
 /** Represents a single module input in the module stack view model. */
 UCLASS()
@@ -140,7 +141,7 @@ public:
 	void GetAvailableDynamicInputs(TArray<UNiagaraScript*>& AvailableDynamicInputs, bool bIncludeNonLibraryInputs = false);
 
 	/** Sets the dynamic input script for this input. */
-	void SetDynamicInput(UNiagaraScript* DynamicInput, FString SuggestedName = FString());
+	void SetDynamicInput(UNiagaraScript* DynamicInput, FString SuggestedName = FString(), const FGuid& InScriptVersion = FGuid());
 
 	/** Gets the expression providing the value for this input, if one is available. */
 	FText GetCustomExpressionText() const;
@@ -174,9 +175,6 @@ public:
 
 	/** Resets the value and handle of this input to the value and handle defined in the module. */
 	void Reset();
-
-	/** Checks if any data needs a fixup after the module definition changed. */
-	void ApplyModuleChanges();
 
 	/** Determine if this field is editable */
 	bool IsEditable() const;
@@ -247,6 +245,8 @@ public:
 	/** Gets whether or not this input is filtered from search results and appearing in stack due to visibility metadata*/
 	bool GetShouldPassFilterForVisibleCondition() const;
 
+	void ChangeScriptVersion(FGuid NewScriptVersion);
+
 	const UNiagaraClipboardFunctionInput* ToClipboardFunctionInput(UObject* InOuter) const;
 
 	void SetValueFromClipboardFunctionInput(const UNiagaraClipboardFunctionInput& ClipboardFunctionInput);
@@ -268,6 +268,7 @@ protected:
 	bool UpdateRapidIterationParametersForAffectedScripts(const uint8* Data);
 	bool RemoveRapidIterationParametersForAffectedScripts();
 	FString ResolveDisplayNameArgument(const FString& InArg) const;
+	FStackIssueFixDelegate GetUpgradeDynamicInputVersionFix();
 
 private:
 	struct FInputValues
@@ -347,8 +348,6 @@ private:
 
 	TArray<UNiagaraStackFunctionInput*> GetChildInputs() const;
 
-	void ResetDataInterfaceOverride();
-
 private:
 	/** The module function call which owns this input entry. NOTE: This input might not be an input to the module function
 		call, it may be an input to a dynamic input function call which is owned by the module. */
@@ -399,6 +398,8 @@ private:
 
 	/** Pointers and handles to the various values this input can have. */
 	FInputValues InputValues;
+
+	TSharedPtr<FNiagaraPlaceholderDataInterfaceHandle> PlaceholderDataInterfaceHandle;
 
 	/** A cached pointer to the override node for this input if it exists.  This value is cached here since the
 	  * UI reads this value every frame due to attribute updates. */

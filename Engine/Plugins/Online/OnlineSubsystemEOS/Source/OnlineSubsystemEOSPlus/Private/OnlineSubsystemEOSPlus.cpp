@@ -21,13 +21,21 @@ FText FOnlineSubsystemEOSPlus::GetOnlineServiceName() const
 
 bool FOnlineSubsystemEOSPlus::Init()
 {
-#if PLATFORM_DESKTOP
+	// Get name of Base OSS from config
 	FString BaseOSSName;
 	GConfig->GetString(TEXT("[OnlineSubsystemEOSPlus]"), TEXT("BaseOSSName"), BaseOSSName, GEngineIni);
-	BaseOSS = BaseOSSName.IsEmpty() ? IOnlineSubsystem::GetByPlatform() : IOnlineSubsystem::Get(FName(*BaseOSSName));
-#else
-	BaseOSS = IOnlineSubsystem::GetByPlatform();
-#endif
+	if (BaseOSSName.IsEmpty())
+	{
+		// Load the native platform OSS name
+		GConfig->GetString(TEXT("OnlineSubsystem"), TEXT("NativePlatformService"), BaseOSSName, GEngineIni);
+	}
+	if (BaseOSSName.IsEmpty())
+	{
+		UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemEOSPlus::Init() failed to find the native OSS!"));
+		return false;
+	}
+
+	BaseOSS = IOnlineSubsystem::Get(FName(*BaseOSSName));
 	if (BaseOSS == nullptr)
 	{
 		UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemEOSPlus::Init() failed to get the platform OSS"));
@@ -40,6 +48,7 @@ bool FOnlineSubsystemEOSPlus::Init()
 		BaseOSS = nullptr;
 		return false;
 	}
+
 	EosOSS = IOnlineSubsystem::Get(EOS_SUBSYSTEM);
 	if (EosOSS == nullptr)
 	{
@@ -51,14 +60,14 @@ bool FOnlineSubsystemEOSPlus::Init()
 	AchievementsInterfacePtr = MakeShareable(new FOnlineAchievementsEOSPlus(this));
 	UserInterfacePtr = MakeShareable(new FOnlineUserEOSPlus(this));
 	SessionInterfacePtr = MakeShareable(new FOnlineSessionEOSPlus(this));
+	LeaderboardsInterfacePtr = MakeShareable(new FOnlineLeaderboardsEOSPlus(this));
 
 	return true;
 }
 
-bool FOnlineSubsystemEOSPlus::Shutdown()
+void FOnlineSubsystemEOSPlus::PreUnload()
 {
-	BaseOSS = nullptr;
-	EosOSS = nullptr;
+	//EOSPlus will be shutdown after its component subsystems, so we need to delete the references to their interfaces beforehand to avoid errors
 
 #define DESTRUCT_INTERFACE(Interface) \
 	if (Interface.IsValid()) \
@@ -71,8 +80,15 @@ bool FOnlineSubsystemEOSPlus::Shutdown()
 	DESTRUCT_INTERFACE(AchievementsInterfacePtr);
 	DESTRUCT_INTERFACE(UserInterfacePtr);
 	DESTRUCT_INTERFACE(SessionInterfacePtr);
+	DESTRUCT_INTERFACE(LeaderboardsInterfacePtr);
 
 #undef DESTRUCT_INTERFACE
+}
+
+bool FOnlineSubsystemEOSPlus::Shutdown()
+{
+	BaseOSS = nullptr;
+	EosOSS = nullptr;
 
 	return true;
 }
@@ -114,7 +130,7 @@ IOnlineEntitlementsPtr FOnlineSubsystemEOSPlus::GetEntitlementsInterface() const
 
 IOnlineLeaderboardsPtr FOnlineSubsystemEOSPlus::GetLeaderboardsInterface() const
 {
-	return BaseOSS != nullptr ? BaseOSS->GetLeaderboardsInterface() : nullptr;
+	return LeaderboardsInterfacePtr;
 }
 
 IOnlineVoicePtr FOnlineSubsystemEOSPlus::GetVoiceInterface() const
@@ -154,7 +170,7 @@ IOnlinePurchasePtr FOnlineSubsystemEOSPlus::GetPurchaseInterface() const
 
 IOnlineEventsPtr FOnlineSubsystemEOSPlus::GetEventsInterface() const
 {
-	return BaseOSS != nullptr ? BaseOSS->GetEventsInterface() : nullptr;
+	return StatsInterfacePtr;
 }
 
 IOnlineAchievementsPtr FOnlineSubsystemEOSPlus::GetAchievementsInterface() const
@@ -200,4 +216,28 @@ IOnlineTurnBasedPtr FOnlineSubsystemEOSPlus::GetTurnBasedInterface() const
 IOnlineTournamentPtr FOnlineSubsystemEOSPlus::GetTournamentInterface() const
 {
 	return BaseOSS != nullptr ? BaseOSS->GetTournamentInterface() : nullptr;
+}
+
+bool FOnlineSubsystemEOSPlus::IsLocalPlayer(const FUniqueNetId& UniqueId) const
+{
+	if (!IsDedicated())
+	{
+		if (UserInterfacePtr.IsValid())
+		{
+			FUniqueNetIdEOSPlusPtr NetIdPlus = UserInterfacePtr->GetNetIdPlus(UniqueId.ToString());
+			if (NetIdPlus.IsValid())
+			{
+				for (int32 LocalUserNum = 0; LocalUserNum < MAX_LOCAL_PLAYERS; LocalUserNum++)
+				{
+					FUniqueNetIdPtr LocalUniqueId = UserInterfacePtr->GetUniquePlayerId(LocalUserNum);
+					if (LocalUniqueId.IsValid() && *NetIdPlus == *LocalUniqueId)
+					{
+						return true;
+					}
+				}
+			}
+		}
+	}
+
+	return false;
 }

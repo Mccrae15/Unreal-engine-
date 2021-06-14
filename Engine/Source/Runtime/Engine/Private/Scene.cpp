@@ -588,6 +588,9 @@ FPostProcessSettings::FPostProcessSettings()
 	PathTracingMaxBounces = 32;
 	PathTracingSamplesPerPixel = 16384;
 	PathTracingFilterWidth = 3.0f;
+	PathTracingEnableEmissive = 1;
+	PathTracingMaxPathExposure = 30.0f;
+	PathTracingEnableDenoiser = 1;
 	
 	bMobileHQGaussian = false;
 
@@ -783,6 +786,9 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_PathTracingMaxBounces(Settings.bOverride_PathTracingMaxBounces)
 	, bOverride_PathTracingSamplesPerPixel(Settings.bOverride_PathTracingSamplesPerPixel)
 	, bOverride_PathTracingFilterWidth(Settings.bOverride_PathTracingFilterWidth)
+	, bOverride_PathTracingEnableEmissive(Settings.bOverride_PathTracingEnableEmissive)
+	, bOverride_PathTracingMaxPathExposure(Settings.bOverride_PathTracingMaxPathExposure)
+	, bOverride_PathTracingEnableDenoiser(Settings.bOverride_PathTracingEnableDenoiser)
 
 	, bMobileHQGaussian(Settings.bMobileHQGaussian)
 	, BloomMethod(Settings.BloomMethod)
@@ -966,6 +972,9 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, PathTracingMaxBounces(Settings.PathTracingMaxBounces)
 	, PathTracingSamplesPerPixel(Settings.PathTracingSamplesPerPixel)
 	, PathTracingFilterWidth(Settings.PathTracingFilterWidth)
+	, PathTracingEnableEmissive(Settings.PathTracingEnableEmissive)
+	, PathTracingMaxPathExposure(Settings.PathTracingMaxPathExposure)
+	, PathTracingEnableDenoiser(Settings.PathTracingEnableDenoiser)
 
 	, LPVFadeRange(Settings.LPVFadeRange)
 	, LPVDirectionalOcclusionFadeRange(Settings.LPVDirectionalOcclusionFadeRange)

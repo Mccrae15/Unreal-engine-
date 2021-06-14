@@ -54,6 +54,21 @@ DECLARE_STATS_GROUP(TEXT("Command List Markers"), STATGROUP_CommandListMarkers, 
 
 DECLARE_GPU_DRAWCALL_STAT_EXTERN(VirtualTextureUpdate);
 
+/** Hair strands persitent information per view. Used for GPU->CPU feedback */
+struct FHairStrandsViewData
+{
+	FRHIGPUBufferReadback* GetBuffer() const { return VoxelPageAllocationCountReadback; }
+	bool IsReady() const				{ return VoxelPageAllocationCountReadback->IsReady(); }
+	bool IsInit() const					{ return VoxelPageAllocationCountReadback != nullptr; }
+	void Init();
+	void Release();
+
+	float VoxelWorldSize		= 0; // Voxel size used during the last frame allocation
+	uint32 AllocatedPageCount	= 0; // Number of voxels allocated last frame
+
+	// Buffer used for reading back the number of voxels allocated on the GPU
+	FRHIGPUBufferReadback* VoxelPageAllocationCountReadback = nullptr;
+};
 
 /** Mobile only. Information used to determine whether static meshes will be rendered with CSM shaders or not. */
 class FMobileCSMVisibilityInfo
@@ -1228,6 +1243,7 @@ public:
 	uint32 bUsesSceneDepth : 1;
 	uint32 bCustomDepthStencilValid : 1;
 	uint32 bUsesCustomDepthStencilInTranslucentMaterials : 1;
+	uint32 bShouldRenderDepthToTranslucency : 1;
 
 	/** Whether fog should only be computed on rendered opaque pixels or not. */
 	uint32 bFogOnlyOnRenderedOpaque : 1;
@@ -1733,7 +1749,7 @@ public:
 	static FSceneRenderer* CreateSceneRenderer(const FSceneViewFamily* InViewFamily, FHitProxyConsumer* HitProxyConsumer);
 
 	/** Setups FViewInfo::ViewRect according to ViewFamilly's ScreenPercentageInterface. */
-	void PrepareViewRectsForRendering();
+	void PrepareViewRectsForRendering(FRHICommandListImmediate& RHICmdList);
 
 #if WITH_MGPU
 	/** Setups each FViewInfo::GPUMask. */
@@ -2206,6 +2222,7 @@ private:
 	bool bIsFullPrepassEnabled;
 	bool bShouldRenderVelocities;
 	bool bShouldRenderHZB;
+	bool bShouldRenderDepthToTranslucency;
 	static FGlobalDynamicIndexBuffer DynamicIndexBuffer;
 	static FGlobalDynamicVertexBuffer DynamicVertexBuffer;
 	static TGlobalResource<FGlobalDynamicReadBuffer> DynamicReadBuffer;

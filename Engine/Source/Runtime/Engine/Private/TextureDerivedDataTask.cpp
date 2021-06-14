@@ -422,8 +422,38 @@ FTextureCacheDerivedDataWorker::FTextureCacheDerivedDataWorker(
 	TextureData.Init(Texture, BuildSettingsPerLayer.GetData(), bAllowAsyncLoading);
 	if (Texture.CompositeTexture && Texture.CompositeTextureMode != CTM_Disabled)
 	{
-		const FIntPoint CompositeSourceSize = Texture.CompositeTexture->Source.GetLogicalSize();
-		if (FMath::IsPowerOfTwo(CompositeSourceSize.X) && FMath::IsPowerOfTwo(CompositeSourceSize.Y))
+		bool bMatchingBlocks = Texture.CompositeTexture->Source.GetNumBlocks() == Texture.Source.GetNumBlocks();
+		bool bMatchingAspectRatio = true;
+		bool bOnlyPowerOfTwoSize = true;
+		if (bMatchingBlocks)
+		{
+			for (int32 BlockIdx = 0; BlockIdx < Texture.Source.GetNumBlocks(); ++BlockIdx)
+			{
+				FTextureSourceBlock TextureBlock;
+				Texture.Source.GetBlock(BlockIdx, TextureBlock);
+				FTextureSourceBlock CompositeTextureBlock;
+				Texture.CompositeTexture->Source.GetBlock(BlockIdx, CompositeTextureBlock);
+
+				bMatchingBlocks = bMatchingBlocks && TextureBlock.BlockX == CompositeTextureBlock.BlockX && TextureBlock.BlockY == CompositeTextureBlock.BlockY;
+				bMatchingAspectRatio = bMatchingAspectRatio && TextureBlock.SizeX * CompositeTextureBlock.SizeY == TextureBlock.SizeY * CompositeTextureBlock.SizeX;
+				bOnlyPowerOfTwoSize = bOnlyPowerOfTwoSize && FMath::IsPowerOfTwo(TextureBlock.SizeX) && FMath::IsPowerOfTwo(TextureBlock.SizeY);
+			}
+		}
+
+		if (!bMatchingBlocks)
+		{
+			UE_LOG(LogTexture, Warning, TEXT("Issue while building %s : Composite texture resolution/UDIMs do not match. Composite texture will be ignored"), *Texture.GetPathName());
+		}
+		else if (!bOnlyPowerOfTwoSize)
+		{
+			UE_LOG(LogTexture, Warning, TEXT("Issue while building %s : Some blocks (UDIMs) have a non power of two size. Composite texture will be ignored"), *Texture.GetPathName());
+		}
+		else if (!bMatchingAspectRatio)
+		{
+			UE_LOG(LogTexture, Warning, TEXT("Issue while building %s : Some blocks (UDIMs) have mismatched aspect ratio. Composite texture will be ignored"), *Texture.GetPathName());
+		}
+
+		if (bMatchingBlocks && bMatchingAspectRatio && bOnlyPowerOfTwoSize)
 		{
 			CompositeTextureData.Init(*Texture.CompositeTexture, BuildSettingsPerLayer.GetData(), bAllowAsyncLoading);
 		}

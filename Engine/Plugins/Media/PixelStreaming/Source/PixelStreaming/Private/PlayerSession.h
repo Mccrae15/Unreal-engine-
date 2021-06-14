@@ -33,10 +33,14 @@ public:
 	bool IsQualityController() const;
 	void SetQualityController(bool bControlsQuality);
 
-	void SendMessage(PixelStreamingProtocol::EToPlayerMsg Type, const FString& Descriptor);
+	void SendKeyFrame();
 
-	void SendFreezeFrame(const TArray64<uint8>& JpegBytes);
-	void SendUnfreezeFrame();
+	bool SendMessage(PixelStreamingProtocol::EToPlayerMsg Type, const FString& Descriptor) const;
+
+	void SendQualityControlStatus() const;
+	void SendFreezeFrame(const TArray64<uint8>& JpegBytes) const;
+	void SendUnfreezeFrame() const;
+	void SendInitialSettings() const;
 
 private:
 	//
@@ -63,10 +67,12 @@ private:
 	virtual void OnMessage(const webrtc::DataBuffer& Buffer) override;
 
 private:
+	size_t SerializeToBuffer(rtc::CopyOnWriteBuffer& Buffer, size_t Pos, const void* Data, size_t DataSize) const;
+
 	FStreamer& Streamer;
 	FPlayerId PlayerId;
 	bool bOriginalQualityController;
-	TAtomic<FPixelStreamingVideoEncoder*> VideoEncoder{ nullptr };
+	FPixelStreamingVideoEncoder* VideoEncoder = nullptr;
 	rtc::scoped_refptr<webrtc::PeerConnectionInterface> PeerConnection;
 	rtc::scoped_refptr<webrtc::DataChannelInterface> DataChannel;
 	FThreadSafeBool bDisconnecting = false;

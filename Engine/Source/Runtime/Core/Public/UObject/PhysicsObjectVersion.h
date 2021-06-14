@@ -39,6 +39,18 @@ struct CORE_API FPhysicsObjectVersion
 		// Add centrifugal forces for cloth
 		ChaosClothAddfictitiousforces,
 
+		// Added the Long Range Attachment stiffness weight map
+		ChaosClothAddTetherStiffnessWeightMap,
+
+		// Fix corrupted LOD transition maps
+		ChaosClothFixLODTransitionMaps,
+
+		// Convex structure data is now an index-based half-edge structure
+		ChaosConvexUsesHalfEdges,
+
+		// Convex structure data has a list of unique edges (half of the half edges)
+		ChaosConvexHasUniqueEdgeSet,
+
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1

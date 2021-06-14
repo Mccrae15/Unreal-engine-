@@ -18,6 +18,7 @@
 #include "StaticMeshOperations.h"
 
 #if WITH_EDITOR
+#include "Editor.h"
 #include "IMessageLogListing.h"
 #include "Logging/TokenizedMessage.h"
 #include "MessageLogModule.h"
@@ -1773,6 +1774,9 @@ TOptional<FMeshDescription> FWireTranslatorImpl::MeshDagNodeWithExternalMesher(A
 {
 	LocalSession->ClearData();
 
+	// Wire unit is cm
+	LocalSession->SetSceneUnit(0.01);
+
 	FString Filename = DagNode.name();
 
 	EAliasObjectReference ObjectReference = EAliasObjectReference::LocalReference;
@@ -1806,6 +1810,9 @@ TOptional<FMeshDescription> FWireTranslatorImpl::MeshDagNodeWithExternalMesher(A
 TOptional<FMeshDescription> FWireTranslatorImpl::MeshDagNodeWithExternalMesher(TSharedRef<BodyData> Body, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters)
 {
 	LocalSession->ClearData();
+
+	// Wire unit is cm
+	LocalSession->SetSceneUnit(0.01);
 
 	EAliasObjectReference ObjectReference = EAliasObjectReference::LocalReference;
 	if (MeshParameters.bIsSymmetric)
@@ -2023,17 +2030,16 @@ FDatasmithWireTranslator::FDatasmithWireTranslator()
 
 void FDatasmithWireTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCapabilities)
 {
-
-	if (ICADInterfacesModule::GetAvailability() == ECADInterfaceAvailability::Unavailable)
+#if WITH_EDITOR
+	if (GIsEditor && !GEditor->PlayWorld && !GIsPlayInEditorWorld)
 	{
-		UE_LOG(LogDatasmithWireTranslator, Warning, TEXT(CAD_INTERFACE_UNAVAILABLE));
-	}
-
 #ifdef USE_OPENMODEL
-	if (FPlatformProcess::GetDllHandle(TEXT("libalias_api.dll")))
-	{
-		OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("wire"), TEXT("AliasStudio, Model files") });
-		return;
+		if (FPlatformProcess::GetDllHandle(TEXT("libalias_api.dll")))
+		{
+			OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("wire"), TEXT("AliasStudio, Model files") });
+			return;
+		}
+#endif
 	}
 #endif
 

@@ -567,7 +567,7 @@ void FD3D12CommandContext::RHISetGraphicsPipelineState(FRHIGraphicsPipelineState
 		StateCache.SetDepthBounds(0.0f, 1.0f);
 	}
 
-	if (GRHISupportsPipelineVariableRateShading)
+	if (GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled)
 	{
 		StateCache.SetShadingRate(GraphicsPipelineState->PipelineStateInitializer.ShadingRate, VRSRB_Passthrough);
 	}
@@ -1184,9 +1184,10 @@ void FD3D12CommandContext::SetRenderTargetsAndClear(const FRHISetRenderTargetsIn
 	}
 
 #if PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING
-	if (GRHISupportsAttachmentVariableRateShading && CommandListHandle.GraphicsCommandList5())
+	// If we support tier 2, we will support tier 1.
+	if (GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled && CommandListHandle.GraphicsCommandList5() != nullptr)
 	{
-		if (RenderTargetsInfo.ShadingRateTexture != nullptr)
+		if (GRHISupportsAttachmentVariableRateShading && GRHIAttachmentVariableRateShadingEnabled)
 		{
 			VRSCombiners[1] = ConvertShadingRateCombiner(RenderTargetsInfo.ShadingRateTextureCombiner); // Combiner 1 is used to mix rates from a texture and the previous combiner
 			if (RenderTargetsInfo.ShadingRateTexture != nullptr)
@@ -1199,6 +1200,12 @@ void FD3D12CommandContext::SetRenderTargetsAndClear(const FRHISetRenderTargetsIn
 				CommandListHandle.GraphicsCommandList5()->RSSetShadingRateImage(nullptr);
 			}
 		}
+		else
+		{
+			// Ensure this is set appropriate if image-based VRS not supported or not enabled.
+			VRSCombiners[1] = D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
+		}
+
 		CommandListHandle.GraphicsCommandList5()->RSSetShadingRate(VRSShadingRate, VRSCombiners);
 	}
 #endif
@@ -1975,12 +1982,17 @@ void FD3D12CommandContext::RHISetShadingRate(EVRSShadingRate ShadingRate, EVRSRa
  void FD3D12CommandContext::SetShadingRate(EVRSShadingRate ShadingRate, EVRSRateCombiner Combiner)
  {
  #if PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING
- 	if (GRHISupportsPipelineVariableRateShading && CommandListHandle.GraphicsCommandList5())
+ 	if (GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled && CommandListHandle.GraphicsCommandList5())
  	{
  		VRSCombiners[0] = ConvertShadingRateCombiner(Combiner);	// Combiner 0 is used to mix per draw and per VS/GS rates
  		VRSShadingRate = static_cast<D3D12_SHADING_RATE>(ShadingRate);
  		CommandListHandle.GraphicsCommandList5()->RSSetShadingRate(VRSShadingRate, VRSCombiners);
  	}
+	else
+	{
+		// Ensure we're at a reasonable default in the case we're not supporting VRS.
+		VRSCombiners[0] = VRSCombiners[1] = D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
+	}
  #endif
 }
 
@@ -2030,7 +2042,8 @@ void FD3D12CommandContext::RHIWaitForTemporalEffect(const FName& InEffectName)
 #endif // WITH_MGPU
 }
 
-void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHITexture*> InTextures)
+template <typename TD3D12Resource, typename TCopyFunction>
+void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<TD3D12Resource*> InResources, const TCopyFunction& InCopyFunction)
 {
 #if WITH_MGPU
 	check(IsDefaultContext());
@@ -2041,14 +2054,7 @@ void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName,
 	}
 
 	const uint32 GPUIndex = GetGPUIndex();
-	TArray<FD3D12TextureBase*, TInlineAllocator<MAX_NUM_GPUS>> SrcTextures, DstTextures;
-	const int32 NumTextures = InTextures.Num();
-	for (int32 i = 0; i < NumTextures; i++)
-	{
-		SrcTextures.Emplace(RetrieveTextureBase(InTextures[i]));
-		const uint32 NextSiblingGPUIndex = AFRUtils::GetNextSiblingGPUIndex(GPUIndex);
-		DstTextures.Emplace(RetrieveTextureBase(InTextures[i], NextSiblingGPUIndex));
-	}
+	const uint32 NextSiblingGPUIndex = AFRUtils::GetNextSiblingGPUIndex(GPUIndex);
 
 	FD3D12Device* Device = GetParentDevice();
 	FD3D12Adapter* Adapter = Device->GetParentAdapter();
@@ -2056,11 +2062,12 @@ void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName,
 
 #if USE_COPY_QUEUE_FOR_RESOURCE_SYNC
 
-	for (int32 i = 0; i < NumTextures; i++)
+	for (TD3D12Resource* SrcResource : InResources)
 	{
 		// Resources must be in the COMMON state before using on the copy queue.
-		FD3D12DynamicRHI::TransitionResource(CommandListHandle, SrcTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-		FD3D12DynamicRHI::TransitionResource(CommandListHandle, DstTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+		TD3D12Resource* DstResource = SrcResource->GetLinkedObject(NextSiblingGPUIndex);
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, SrcResource->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, DstResource->GetResource(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 	}
 	CommandListHandle.FlushResourceBarriers();
 
@@ -2077,10 +2084,11 @@ void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName,
 	FD3D12CommandListHandle hCopyCommandList = CopyCommandListManager.ObtainCommandList(*CopyCommandAllocator);
 	hCopyCommandList.SetCurrentOwningContext(this);
 
-	for (int32 i = 0; i < NumTextures; i++)
+	for (TD3D12Resource* SrcResource : InResources)
 	{
 		// NB: We do not increment numCopies here because the main context isn't doing any work.
-		hCopyCommandList->CopyResource(DstTextures[i]->GetResource()->GetResource(), SrcTextures[i]->GetResource()->GetResource());
+		TD3D12Resource* DstResource = SrcResource->GetLinkedObject(NextSiblingGPUIndex);
+		InCopyFunction(hCopyCommandList, DstResource, SrcResource);
 	}
 	hCopyCommandList.Close();
 
@@ -2092,17 +2100,19 @@ void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName,
 
 #else
 
-	for (int32 i = 0; i < NumTextures; i++)
+	for (TD3D12Resource* SrcResource : InResources)
 	{
-		FD3D12DynamicRHI::TransitionResource(CommandListHandle, SrcTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-		FD3D12DynamicRHI::TransitionResource(CommandListHandle, DstTextures[i]->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+		TD3D12Resource* DstResource = SrcResource->GetLinkedObject(NextSiblingGPUIndex);;
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, SrcResource->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+		FD3D12DynamicRHI::TransitionResource(CommandListHandle, DstResource->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 	}
 	CommandListHandle.FlushResourceBarriers();
 
-	for (int32 i = 0; i < NumTextures; i++)
+	for (TD3D12Resource* SrcResource : InResources)
 	{
 		numCopies++;
-		CommandListHandle->CopyResource(DstTextures[i]->GetResource()->GetResource(), SrcTextures[i]->GetResource()->GetResource());
+		TD3D12Resource* DstResource = SrcResource->GetLinkedObject(NextSiblingGPUIndex);;
+		InCopyFunction(CommandListHandle, DstResource, SrcResource);
 	}
 
 	FlushCommands();
@@ -2112,3 +2122,46 @@ void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName,
 #endif // USE_COPY_QUEUE_FOR_RESOURCE_SYNC
 #endif // WITH_MGPU
 }
+
+void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHITexture*> InTextures)
+{
+#if WITH_MGPU
+	FMemMark Mark(FMemStack::Get());
+	TArray<FD3D12TextureBase*, TMemStackAllocator<>> Resources;
+	Resources.Reserve(InTextures.Num());
+	for (FRHITexture* Texture : InTextures)
+	{
+		Resources.Emplace(RetrieveTextureBase(Texture));
+	}
+	auto CopyFunction = [](FD3D12CommandListHandle& CommandList, FD3D12TextureBase* Dst, FD3D12TextureBase* Src)
+	{
+		CommandList->CopyResource(Dst->GetResource()->GetResource(), Src->GetResource()->GetResource());
+	};
+	RHIBroadcastTemporalEffect(InEffectName, MakeArrayView(Resources), CopyFunction);
+#endif // WITH_MGPU
+}
+
+void FD3D12CommandContext::RHIBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<FRHIVertexBuffer*> InBuffers)
+{
+#if WITH_MGPU
+	FMemMark Mark(FMemStack::Get());
+	TArray<FD3D12Buffer*, TMemStackAllocator<>> Resources;
+	Resources.Reserve(InBuffers.Num());
+	for (auto* Buffer : InBuffers)
+	{
+		Resources.Emplace(RetrieveObject<FD3D12Buffer>(Buffer));
+	}
+	auto CopyFunction = [](FD3D12CommandListHandle& CommandList, FD3D12Buffer* Dst, FD3D12Buffer* Src)
+	{
+		CommandList->CopyBufferRegion(
+			Dst->GetResource()->GetResource(),
+			Dst->ResourceLocation.GetOffsetFromBaseOfResource(),
+			Src->GetResource()->GetResource(),
+			Src->ResourceLocation.GetOffsetFromBaseOfResource(),
+			Src->ResourceLocation.GetSize()
+		);
+	};
+	RHIBroadcastTemporalEffect(InEffectName, MakeArrayView(Resources), CopyFunction);
+#endif // WITH_MGPU
+}
+

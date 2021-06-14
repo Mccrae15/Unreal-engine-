@@ -52,7 +52,6 @@ public:
 	virtual TSharedRef<SWidget> CreateScriptScratchPad(UNiagaraScratchPadViewModel& ScriptScratchPadViewModel) const = 0;
 	virtual TSharedRef<SWidget> CreateCurveOverview(TSharedRef<FNiagaraSystemViewModel> SystemViewModel) const = 0;
 	virtual FLinearColor GetColorForExecutionCategory(FName ExecutionCategory) const = 0;
-	virtual FLinearColor GetColorForParameterScope(ENiagaraParameterScope ParameterScope) const = 0;
 };
 
 /** Niagara Editor module */
@@ -137,9 +136,6 @@ public:
 		EnqueueObjectForDeferredDestructionInternal(ObjectInContainer);
 	}
 
-	/** Lookup a parameter scope info by name. Returns nullptr if the parameter scope info registered name cannot be found. */
-	static const FNiagaraParameterScopeInfo* FindParameterScopeInfo(const FName& ParameterScopeInfoName);
-
 	FORCEINLINE INiagaraStackObjectIssueGenerator* FindStackObjectIssueGenerator(FName StructName)
 	{
 		if (INiagaraStackObjectIssueGenerator** FoundGenerator = StackIssueGenerators.Find(StructName))
@@ -152,6 +148,14 @@ public:
 #if WITH_NIAGARA_DEBUGGER
 	TSharedPtr<FNiagaraDebugger> GetDebugger(){ return Debugger; }
 #endif
+
+	const TSet<FName>& GetReservedLibraryParameterNames() const;
+	void AddReservedLibraryParameterName(const FName& ParameterName);
+	void RemoveReservedLibraryParameterName(const FName& ParameterName);
+
+	NIAGARAEDITOR_API void GetTargetSystemAndEmitterForDataInterface(UNiagaraDataInterface* InDataInterface, UNiagaraSystem*& OutOwningSystem, UNiagaraEmitter*& OutOwningEmitter);
+	NIAGARAEDITOR_API void GetDataInterfaceFeedbackSafe(UNiagaraDataInterface* InDataInterface, TArray<FNiagaraDataInterfaceError>& OutErrors, TArray<FNiagaraDataInterfaceFeedback>& Warnings, TArray<FNiagaraDataInterfaceFeedback>& Info);
+
 
 private:
 	class FDeferredDestructionContainerBase
@@ -202,9 +206,6 @@ private:
 
 	bool DeferredDestructObjects(float InDeltaTime);
 
-	/** Register a parameter scope info to lookup by name. */
-	static void RegisterParameterScopeInfo(const FName& ParameterScopeInfoName, const FNiagaraParameterScopeInfo& ParameterScopeInfo);
-
 	void RegisterStackIssueGenerator(FName StructName, INiagaraStackObjectIssueGenerator* Generator)
 	{
 		StackIssueGenerators.Add(StructName) = Generator;
@@ -242,7 +243,7 @@ private:
 	FDelegateHandle PreviewPlatformChangedHandle;
 
 	USequencerSettings* SequencerSettings;
-	
+
 	TSharedPtr<INiagaraEditorWidgetProvider> WidgetProvider;
 
 	TSharedPtr<FNiagaraScriptMergeManager> ScriptMergeManager;
@@ -274,9 +275,10 @@ private:
 
 	TArray<TSharedRef<const FDeferredDestructionContainerBase>> EnqueuedForDeferredDestruction;
 
-	static TArray<TPair<FName, FNiagaraParameterScopeInfo>> RegisteredParameterScopeInfos;
-
 	TMap<FName, INiagaraStackObjectIssueGenerator*> StackIssueGenerators;
+
+	// Parameter library assets reserve the name/type pairs of their parameters engine-wide.
+	mutable TSet<FName> ReservedLibraryParameterNames;
 
 #if NIAGARA_PERF_BASELINES
 	void GeneratePerfBaselines(TArray<UNiagaraEffectType*>& BaselinesToGenerate);

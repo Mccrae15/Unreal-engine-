@@ -85,6 +85,8 @@ public:
 	FDelegateHandle RegisterPrecompiler(FOnPrecompile PreCompiler);
 	void UnregisterPrecompiler(FDelegateHandle DelegateHandle);
 
+	void OnAssetLoaded(UObject* Asset);
+
 #endif
 
 #if NIAGARA_PERF_BASELINES
@@ -132,6 +134,7 @@ public:
 
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_ExecutionCount() { return Engine_ExecutionCount; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Emitter_NumParticles() { return Engine_Emitter_NumParticles; }
+	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Emitter_SimulationPosition() { return Engine_Emitter_SimulationPosition; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Emitter_TotalSpawnedParticles() { return Engine_Emitter_TotalSpawnedParticles; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Emitter_SpawnCountScale() { return Engine_Emitter_SpawnCountScale; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Emitter_InstanceSeed() { return Engine_Emitter_InstanceSeed; }
@@ -155,6 +158,7 @@ public:
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_SimulationTarget() { return Emitter_SimulationTarget; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_ScriptUsage() { return ScriptUsage; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_ScriptContext() { return ScriptContext; }
+	FORCEINLINE static const FNiagaraVariable&  GetVar_FunctionDebugState() { return FunctionDebugState; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_InterpSpawnStartDt() { return Emitter_InterpSpawnStartDt; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_SpawnGroup() { return Emitter_SpawnGroup; }
 
@@ -248,6 +252,7 @@ private:
 
 	static FNiagaraVariable Engine_ExecutionCount;
 	static FNiagaraVariable Engine_Emitter_NumParticles;
+	static FNiagaraVariable Engine_Emitter_SimulationPosition;
 	static FNiagaraVariable Engine_Emitter_TotalSpawnedParticles;
 	static FNiagaraVariable Engine_Emitter_SpawnCountScale;
 	static FNiagaraVariable Engine_System_TickCount;
@@ -314,6 +319,7 @@ private:
 
 	static FNiagaraVariable ScriptUsage;
 	static FNiagaraVariable ScriptContext;
+	static FNiagaraVariable FunctionDebugState;
 	static FNiagaraVariable DataInstance_Alive;
 	static FNiagaraVariable Translator_BeginDefaults;
 	static FNiagaraVariable Translator_CallID;

@@ -17,6 +17,45 @@ class FDMXSignal;
 class IDMXSender;
 
 
+/** Helper to determine how DMX should be communicated (loopback, send) */
+struct FDMXOutputPortCommunicationDeterminator
+{
+	FDMXOutputPortCommunicationDeterminator()
+		: bLoopbackToEngine(false)
+		, bReceiveEnabled(true)
+		, bSendEnabled(true)
+		, bHasValidSender(false)
+	{}
+
+	/** Set the variable from the port config in project settings */
+	FORCEINLINE void SetLoopbackToEngine(bool bInLoopbackToEngine) { bLoopbackToEngine = bInLoopbackToEngine; }
+
+	/** Sets if receive is enabled */
+	FORCEINLINE void SetReceiveEnabled(bool bInReceiveEnabled) { bReceiveEnabled = bInReceiveEnabled; }
+
+	/** Sets if send is enabled */
+	FORCEINLINE void SetSendEnabled(bool bInSendEnabled) { bSendEnabled = bInSendEnabled; }
+
+	/** Sets if there is a valid sender obj */
+	FORCEINLINE void SetHasValidSender(bool bInHasValidSender) { bHasValidSender = bInHasValidSender; }
+
+	/** Determinates if loopback to engine is needed. If true, loopback is needed */
+	FORCEINLINE bool NeedsLoopbackToEngine() const { return bLoopbackToEngine || !bReceiveEnabled || !bSendEnabled; }
+
+	/** Determinates if loopback to engine is needed. If true, loopback is needed */
+	FORCEINLINE bool NeedsSendDMX() const { return bSendEnabled && bHasValidSender; }
+
+	/** Determinates if loopback to engine is needed. If true, loopback is needed */
+	FORCEINLINE bool IsSendDMXEnabled() const { return bSendEnabled; }
+
+private:
+	bool bLoopbackToEngine;
+	bool bReceiveEnabled;
+	bool bSendEnabled;
+	bool bHasValidSender;
+};
+
+
 /**
  * Higher level abstraction of a DMX input hiding networking specific and protocol specific complexity.
  *
@@ -29,24 +68,21 @@ class IDMXSender;
 class DMXPROTOCOL_API FDMXOutputPort
 	: public FDMXPort
 {
-	// Friend Raw Listener so it can add and remove themselves to the port
+	// Friend DMXPortManager so it can create instances and unregister void instances
 	friend FDMXPortManager;
 
-	// Friend Raw Listener so it can add and remove themselves to the port
+	// Friend Raw Listener so it can add and remove itself to the port
 	friend FDMXRawListener;
 
 protected:
-	/** Creates an output port that is not tied to a specific config. Hidden on purpose, use FDMXPortManager to create instances */
-	static FDMXOutputPortSharedRef Create();
-
 	/** Creates an output port tied to a specific config. Hidden on purpose, use FDMXPortManager to create instances */
-	static FDMXOutputPortSharedRef CreateFromConfig(const FDMXOutputPortConfig& OutputPortConfig);
+	static FDMXOutputPortSharedRef CreateFromConfig(FDMXOutputPortConfig& OutputPortConfig);
 
 public:
 	virtual ~FDMXOutputPort();
 
 	/** Updates the Port to use the config of the OutputPortConfig */
-	void UpdateFromConfig(const FDMXOutputPortConfig& OutputPortConfig);
+	void UpdateFromConfig(FDMXOutputPortConfig& OutputPortConfig);
 
 public:
 	// ~Begin DMXPort Interface 
@@ -80,7 +116,7 @@ protected:
 
 public:
 	/** Sends DMX over the port */
-	void SendDMX(int32 UniverseID, const TMap<int32, uint8>& ChannelToValueMap);
+	void SendDMX(int32 LocalUniverseID, const TMap<int32, uint8>& ChannelToValueMap);
 
 	/** DEPRECATED 4.27. Sends DMX over the port with an extern (remote) Universe ID. Soly here to support legacy functions that would send to an extern universe  */
 	UE_DEPRECATED(4.27, "Use SenDMX instead. SendDMXToRemoteUniverse only exists to support deprecated blueprint nodes.")
@@ -88,6 +124,9 @@ public:
 
 	/** Clears all buffers */
 	void ClearBuffers();
+
+	/** Returns true if the port loopsback to engine */
+	bool IsLoopbackToEngine() const;
 
 	/** 
 	 * Game-Thread only: Gets the last signal received in specified local universe. 
@@ -103,9 +142,6 @@ public:
 	UE_DEPRECATED(4.27, "Use GameThreadGetDMXSignal instead. GameThreadGetDMXSignalFromRemoteUniverse only exists to support deprecated blueprint nodes.")
 	bool GameThreadGetDMXSignalFromRemoteUniverse(FDMXSignalSharedPtr& OutDMXSignal, int32 RemoteUniverseID, bool bEvenIfNotLoopbackToEngine = false);
 
-	/** Returns true if send DMX is enabled */
-	FORCEINLINE bool IsSendDMXEnabled() const { return bSendDMXEnabled; }
-
 	/** Returns the Destination Address */
 	FORCEINLINE const FString& GetDestinationAddress() const { return DestinationAddress; }
 
@@ -119,25 +155,16 @@ protected:
 	/** The DMX sender, or nullptr if not registered */
 	TSharedPtr<IDMXSender> DMXSender;
 
-	/** According to DMXProtocolSettings, true if DMX should be sent */
-	bool bSendDMXEnabled;
-
-	/** According to DMXProtocolSettings, true if DMX should be received */
-	bool bReceiveDMXEnabled;
-	
 	/** The Destination Address to send to, can be irrelevant, e.g. for art-net broadcast */
 	FString DestinationAddress;
 
-	/** If true, the port should be input to the engine */
-	bool bLoopbackToEngine;
+	/** Helper to determine how dmx should be communicated (loopback, send) */
+	FDMXOutputPortCommunicationDeterminator CommunicationDeterminator;
 
 	/** Priority on which packets are being sent */
 	int32 Priority;
 		
 private:
-	/** Map of Universe Inputs with their Universes */
-	TMap<int32, TSet<TSharedRef<FDMXTickedUniverseListener>>> LocalUniverseToListenerGroupMap;
-
 	/** Map of latest Singals per Universe */
 	TMap<int32, FDMXSignalSharedPtr> ExternUniverseToLatestSignalMap;
 
@@ -146,6 +173,10 @@ private:
 
 	/** True if the port is registered with it its protocol */
 	bool bRegistered;
+
+private:
+	/** Returns the port config that corresponds to the guid of this port. */
+	FDMXOutputPortConfig* FindOutputPortConfigChecked() const;
 
 	/** The unique identifier of this port, shared with the port config this was constructed from. Should not be changed after construction. */
 	FGuid PortGuid;

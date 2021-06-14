@@ -8,15 +8,15 @@ public class AVEncoder : ModuleRules
 {
 	public AVEncoder(ReadOnlyTargetRules Target) : base(Target)
 	{
-        // Without these two compilation fails on VS2017 with D8049: command line is too long to fit in debug record.
-        bLegacyPublicIncludePaths = false;
-        DefaultBuildSettings = BuildSettingsVersion.V2;
+		// Without these two compilation fails on VS2017 with D8049: command line is too long to fit in debug record.
+		bLegacyPublicIncludePaths = false;
+		DefaultBuildSettings = BuildSettingsVersion.V2;
 
-        // PCHUsage = PCHUsageMode.NoPCHs;
+		// PCHUsage = PCHUsageMode.NoPCHs;
 
-        // PrecompileForTargets = PrecompileTargetsType.None;
+		// PrecompileForTargets = PrecompileTargetsType.None;
 
-        PublicIncludePaths.AddRange(new string[] {
+		PublicIncludePaths.AddRange(new string[] {
 			// ... add public include paths required here ...
 		});
 
@@ -25,8 +25,7 @@ public class AVEncoder : ModuleRules
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
-			"Engine",
-			"nvEncode"
+			"Engine"
 		});
 
 		PublicDependencyModuleNames.AddRange(new string[] {
@@ -40,25 +39,47 @@ public class AVEncoder : ModuleRules
 			// ... add any modules that your module loads dynamically here ...
 		});
 
-		if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32)
+		string EngineSourceDirectory = Path.GetFullPath(Target.RelativeEnginePath);
+
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows) || Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			// d3d to be able to use NVENC
-			PublicSystemLibraries.AddRange(new string[] {
-				"dxgi.lib",
-				"d3d11.lib",
-				"d3d12.lib",
-				"mfplat.lib",
-				"mfuuid.lib"
+			PrivateDependencyModuleNames.AddRange(new string[] {
+				"nvEncode",
+				"Amf"
 			});
-			PublicDefinitions.Add("WITH_CUDA=0");
+
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
+			PrivateIncludePathModuleNames.Add("VulkanRHI");
+
+			PrivateIncludePaths.Add(Path.Combine(EngineSourceDirectory, "Source/Runtime/VulkanRHI/Private"));
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "Vulkan");
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Linux)
+
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
 		{
-			PrivateDependencyModuleNames.Add("CUDA");			
+			PublicDependencyModuleNames.Add("D3D12RHI");
+
+			if (Target.Platform != UnrealTargetPlatform.XboxOne)
+			{
+				// d3d to be able to use NVENC
+				PublicSystemLibraries.AddRange(new string[] {
+					"dxgi.lib",
+					"d3d11.lib",
+					"d3d12.lib",
+					"mfplat.lib",
+					"mfuuid.lib"
+				});
+				
+				PrivateIncludePaths.Add(Path.Combine(EngineSourceDirectory, "Source/Runtime/VulkanRHI/Private/Windows"));
+			}
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Mac)
+		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			// PublicFrameworks.AddRange(new string[] { "CoreAudio", "AudioUnit", "AudioToolbox" });
+			PrivateDependencyModuleNames.Add("CUDA");
+			PrivateIncludePaths.Add(Path.Combine(EngineSourceDirectory, "Source/Runtime/VulkanRHI/Private/Linux"));
 		}
+
+		// TEMPORARY: set this to zero for all platforms until CUDA TPS review clears
+		PublicDefinitions.Add("WITH_CUDA=0");
 	}
 }

@@ -321,6 +321,7 @@ void FD3D12CommandContext::OpenCommandList()
 	numDispatches = 0;
 	numClears = 0;
 	numBarriers = 0;
+	numPendingBarriers = 0;
 	numCopies = 0;
 	otherWorkCounter = 0;
 }
@@ -343,12 +344,13 @@ FD3D12CommandListHandle FD3D12CommandContext::FlushCommands(bool WaitForCompleti
 		if (ExtraAction == FCEA_StartProfilingGPU)
 		{
 			GetCommandListManager().StartTrackingCommandListTime();
+			bHasProfileGPUAction = true;
 		}
 		else if (ExtraAction == FCEA_EndProfilingGPU)
 		{
 			GetCommandListManager().EndTrackingCommandListTime();
+			bHasProfileGPUAction = true;
 		}
-		bHasProfileGPUAction = true;
 	}
 #endif
 

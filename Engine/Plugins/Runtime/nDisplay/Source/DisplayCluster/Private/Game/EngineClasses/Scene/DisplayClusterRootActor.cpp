@@ -13,9 +13,8 @@
 #include "Components/DisplayClusterSyncTickComponent.h"
 
 #include "Components/DisplayClusterRootComponent.h"
-#include "Components/DisplayClusterICVFX_CineCameraComponent.h"
+#include "Components/DisplayClusterICVFXCameraComponent.h"
 #include "CineCameraComponent.h"
-#include "Components/DisplayClusterICVFX_RefCineCameraComponent.h"
 #include "Components/DisplayClusterSceneComponentSyncThis.h"
 
 #include "Config/IPDisplayClusterConfigManager.h"
@@ -25,6 +24,8 @@
 #include "DisplayClusterConfigurationTypes.h"
 
 #include "DisplayClusterPlayerInput.h"
+#include "Blueprints/DisplayClusterBlueprint.h"
+#include "Blueprints/DisplayClusterBlueprintGeneratedClass.h"
 
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
@@ -38,23 +39,30 @@
 #include "Misc/DisplayClusterLog.h"
 #include "Misc/DisplayClusterStrings.h"
 
+#include "Render/Viewport/DisplayClusterViewportManager.h"
 
 ADisplayClusterRootActor::ADisplayClusterRootActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, bExitOnEsc(true)
 	, OperationMode(EDisplayClusterOperationMode::Disabled)
 {
 	// Root component
-	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("RootComponent"));
-
+	/*
+	 * We HAVE to store the root component in our own UPROPERTY marked visible.
+	 * Live link has a property which maintains a component reference. Live link sets this
+	 * through their details panel automatically, which unreal validates in
+	 * FComponentReferenceCustomization::IsComponentReferenceValid.
+	 *
+	 * Unreal won't allow native components that don't have CPF_Edit to be set. Luckily
+	 * they search the owning class for a property containing the component.
+	 */
+	{
+		DisplayClusterRootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("RootComponent"));
+		SetRootComponent(DisplayClusterRootComponent);
+	}
 	// A helper component to trigger nDisplay Tick() during Tick phase
 	SyncTickComponent = CreateDefaultSubobject<UDisplayClusterSyncTickComponent>(TEXT("DisplayClusterSyncTick"));
 
-	// A ICVFX Stage settings
-	StageSettings = CreateDefaultSubobject<UDisplayClusterConfigurationICVFX_StageSettings>(TEXT("StageSettings"));
-
-	// A render frame settings (allow control whole cluster rendering)
-	RenderFrameSettings = CreateDefaultSubobject<UDisplayClusterConfigurationRenderFrame>(TEXT("RenderFrameSettings"));
+	ViewportManager = MakeUnique<FDisplayClusterViewportManager>();
 
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.TickGroup = ETickingGroup::TG_PostUpdateWork;
@@ -84,10 +92,24 @@ bool ADisplayClusterRootActor::IsRunningGameOrPIE() const
 		return World && World->IsPlayInEditor();
 #else
 		return true;
-#endif;
+#endif
 	}
 
 	return true;
+}
+
+const FDisplayClusterConfigurationICVFX_StageSettings& ADisplayClusterRootActor::GetStageSettings() const
+{
+	check(CurrentConfigData);
+
+	return CurrentConfigData->StageSettings;
+}
+
+const FDisplayClusterConfigurationRenderFrame& ADisplayClusterRootActor::GetRenderFrameSettings() const 
+{ 
+	check(CurrentConfigData);
+
+	return CurrentConfigData->RenderFrameSettings;
 }
 
 void ADisplayClusterRootActor::InitializeFromConfig(UDisplayClusterConfigurationData* ConfigData)
@@ -138,19 +160,58 @@ void ADisplayClusterRootActor::ApplyConfigDataToComponents()
 	}
 }
 
-void ADisplayClusterRootActor::UpdateConfigDataInstance(UDisplayClusterConfigurationData* InConfigData)
+UDisplayClusterConfigurationViewport* ADisplayClusterRootActor::GetViewportConfiguration(const FString& ClusterNodeID, const FString& ViewportID)
 {
-	if (InConfigData == nullptr)
+	if (CurrentConfigData)
+	{
+		return CurrentConfigData->GetViewportConfiguration(ClusterNodeID, ViewportID);
+	}
+
+	return nullptr;
+}
+
+void ADisplayClusterRootActor::UpdateConfigDataInstance(UDisplayClusterConfigurationData* ConfigDataTemplate, bool bForceRecreate)
+{
+	if (ConfigDataTemplate == nullptr)
 	{
 		CurrentConfigData = nullptr;
+		ConfigDataName = TEXT("");
 	}
 	else
 	{
-		if (CurrentConfigData != InConfigData)
+		if (CurrentConfigData == nullptr)
 		{
-		CurrentConfigData = InConfigData;
-		ConfigDataName = CurrentConfigData->GetFName();
+			// Only create config data once. Do not create in constructor as default sub objects or individual properties won't sync
+			// properly with instanced values.
+
+			const EObjectFlags CommonFlags = RF_Public | RF_Transactional;
+			
+			CurrentConfigData = NewObject<UDisplayClusterConfigurationData>(
+				this,
+				UDisplayClusterConfigurationData::StaticClass(),
+				NAME_None,
+				IsTemplate() ? RF_ArchetypeObject | CommonFlags : CommonFlags,
+				ConfigDataTemplate);
+			
+			if (CurrentConfigData->Cluster == nullptr)
+			{
+				CurrentConfigData->Cluster = NewObject<UDisplayClusterConfigurationCluster>(
+					CurrentConfigData,
+					UDisplayClusterConfigurationCluster::StaticClass(),
+					NAME_None,
+					IsTemplate() ? RF_ArchetypeObject | CommonFlags : CommonFlags);
+			}
 		}
+		else if (bForceRecreate)
+		{
+			UEngine::FCopyPropertiesForUnrelatedObjectsParams Params;
+			Params.bAggressiveDefaultSubobjectReplacement = true;
+			Params.bNotifyObjectReplacement = false;
+			Params.bDoDelta = false;
+			UEngine::CopyPropertiesForUnrelatedObjects(ConfigDataTemplate, CurrentConfigData, Params);
+		}
+
+		ConfigDataName = CurrentConfigData->GetFName();
 	}
 }
 
@@ -169,8 +230,58 @@ UDisplayClusterConfigurationData* ADisplayClusterRootActor::GetDefaultConfigData
 	return nullptr;
 }
 
+UDisplayClusterConfigurationData* ADisplayClusterRootActor::GetConfigData() const
+{
+	return CurrentConfigData;
+}
+
+bool ADisplayClusterRootActor::IsInnerFrustumEnabled(const FString& InnerFrustumID) const
+{
+	if (EnableInnerFrustum)
+	{
+		// add more GUI rules here
+		return true;
+	}
+
+	return false;
+}
+
+int ADisplayClusterRootActor::GetInnerFrustumPriority(const FString& InnerFrustumID) const
+{
+	int Order = 100000;
+	for (const FDisplayClusterComponentRef& It : InnerFrustumPriority)
+	{
+		if (It.Name.Compare(InnerFrustumID, ESearchCase::IgnoreCase) == 0)
+		{
+			return Order;
+		}
+		Order--;
+	}
+
+	return -1;
+}
+
+const FOpenColorIODisplayConfiguration* ADisplayClusterRootActor::GetViewportOCIO(const FString& ViewportID) const
+{
+	if (bEnableOuterViewportOCIO)
+	{
+		for (const FDisplayClusterConfigurationOCIOProfile& ConfigurationOCIOProfileIt : OuterViewportOCIOConfigurations)
+		{
+			for (const FString& ObjectIt : ConfigurationOCIOProfileIt.ApplyOCIOToObjects)
+			{
+				if (ObjectIt.Equals(ViewportID, ESearchCase::IgnoreCase))
+				{
+					return &ConfigurationOCIOProfileIt.OCIOConfiguration;
+				}
+			}
+		}
+	}
+
+	return nullptr;
+}
+
 template <typename TComp>
-void ImplCollectAllDescendantsClidren(TSet<FPrimitiveComponentId>& OutPrimitives, TComp* pComp)
+void ImplCollectChildrenVisualizationComponent(TSet<FPrimitiveComponentId>& OutPrimitives, TComp* pComp)
 {
 #if WITH_EDITOR
 	USceneComponent* SceneComp = Cast<USceneComponent>(pComp);
@@ -181,7 +292,7 @@ void ImplCollectAllDescendantsClidren(TSet<FPrimitiveComponentId>& OutPrimitives
 		for (USceneComponent* ChildIt : Childrens)
 		{
 			// Hide attached visualization components
-			if (ChildIt->IsVisualizationComponent())
+			if (ChildIt->IsVisualizationComponent() || ChildIt->bHiddenInGame)
 			{
 				UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(ChildIt);
 				if (PrimComp)
@@ -195,7 +306,7 @@ void ImplCollectAllDescendantsClidren(TSet<FPrimitiveComponentId>& OutPrimitives
 }
 
 template <typename TComp>
-void ADisplayClusterRootActor::GetTypedPrimitives(TSet<FPrimitiveComponentId>& OutPrimitives, const TArray<FString>* InCompNames) const
+void ADisplayClusterRootActor::GetTypedPrimitives(TSet<FPrimitiveComponentId>& OutPrimitives, const TArray<FString>* InCompNames, bool bCollectChildrenVisualizationComponent) const
 {
 	TArray<TComp*> TypedComponents;
 	GetComponents<TComp>(TypedComponents, true);
@@ -217,7 +328,10 @@ void ADisplayClusterRootActor::GetTypedPrimitives(TSet<FPrimitiveComponentId>& O
 							OutPrimitives.Add(PrimComp->ComponentId);
 						}
 
-						ImplCollectAllDescendantsClidren(OutPrimitives, CompIt);
+						if (bCollectChildrenVisualizationComponent)
+						{
+							ImplCollectChildrenVisualizationComponent(OutPrimitives, CompIt);
+						}
 						break;
 					}
 				}
@@ -230,7 +344,10 @@ void ADisplayClusterRootActor::GetTypedPrimitives(TSet<FPrimitiveComponentId>& O
 					OutPrimitives.Add(PrimComp->ComponentId);
 				}
 
-				ImplCollectAllDescendantsClidren(OutPrimitives, CompIt);
+				if (bCollectChildrenVisualizationComponent)
+				{
+					ImplCollectChildrenVisualizationComponent(OutPrimitives, CompIt);
+				}
 			}
 
 		}
@@ -239,20 +356,25 @@ void ADisplayClusterRootActor::GetTypedPrimitives(TSet<FPrimitiveComponentId>& O
 
 bool ADisplayClusterRootActor::FindPrimitivesByName(const TArray<FString>& InNames, TSet<FPrimitiveComponentId>& OutPrimitives)
 {
-	GetTypedPrimitives<UActorComponent>(OutPrimitives, &InNames);
+	GetTypedPrimitives<UActorComponent>(OutPrimitives, &InNames, false);
 
 	return true;
 }
 
+// Gather components no rendered in game
 bool ADisplayClusterRootActor::GetHiddenInGamePrimitives(TSet<FPrimitiveComponentId>& OutPrimitives)
 {
-	// Gather components no rendered in game
+	check(IsInGameThread());
 	FScopeLock Lock(&InternalsSyncScope);
 
 	OutPrimitives.Empty();
 
+#if WITH_EDITOR
+
 	if (CurrentConfigData)
 	{
+		//@todo: Add more rules to hide components used in config
+		// Hide all static meshes assigned into configuration:
 		TArray<FString> WarpMeshNames;
 		CurrentConfigData->GetReferencedMeshNames(WarpMeshNames);
 		if (WarpMeshNames.Num() > 0)
@@ -261,42 +383,49 @@ bool ADisplayClusterRootActor::GetHiddenInGamePrimitives(TSet<FPrimitiveComponen
 		}
 	}
 
-	GetTypedPrimitives<UDisplayClusterCameraComponent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterSceneComponent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterICVFX_CineCameraComponent>(OutPrimitives);
-	GetTypedPrimitives<UCineCameraComponent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterICVFX_RefCineCameraComponent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterMeshComponent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterOriginComponent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterSceneComponent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterPreviewComponent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterRootComponent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterSceneComponentSync>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterSceneComponentSyncParent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterSceneComponentSyncThis>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterScreenComponent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterSyncTickComponent>(OutPrimitives);
-	GetTypedPrimitives<UDisplayClusterXformComponent>(OutPrimitives);
-
-#if WITH_EDITOR
+	// Hide all visualization components from RootActor
 	{
-		/* Find visual "_impl" components. */
-		
 		TArray<UPrimitiveComponent*> PrimitiveComponents;
-		
 		GetComponents<UPrimitiveComponent>(PrimitiveComponents);
-		for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
+		for (UPrimitiveComponent* CompIt : PrimitiveComponents)
 		{
-			if (PrimComp->GetOuter() &&
-				PrimComp->GetOuter()->IsA<UDisplayClusterSceneComponent>() &&
-				PrimComp->GetName().EndsWith(TEXT("_impl")))
+			if (CompIt->IsVisualizationComponent() || CompIt->bHiddenInGame)
 			{
-				OutPrimitives.Add(PrimComp->ComponentId);
+				OutPrimitives.Add(CompIt->ComponentId);
+			}
+
+			ImplCollectChildrenVisualizationComponent(OutPrimitives, CompIt);
+		}
+	}
+
+	// Hide all visualization components from preview scene
+	UWorld* CurrentWorld = GetWorld();
+	if (CurrentWorld)
+	{
+		// Iterate over all actors, looking for editor components.
+		for (const TWeakObjectPtr<AActor>& WeakActor : FActorRange(CurrentWorld))
+		{
+			if (AActor* Actor = WeakActor.Get())
+			{
+				// do not render hiiden in game actors on preview
+				bool bActorHideInGame = Actor->IsHidden();
+
+				TArray<UPrimitiveComponent*> PrimitiveComponents;
+				Actor->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+				for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
+				{
+					if (PrimComp->IsVisualizationComponent() || bActorHideInGame || PrimComp->bHiddenInGame)
+					{
+						OutPrimitives.Add(PrimComp->ComponentId);
+					}
+
+					ImplCollectChildrenVisualizationComponent(OutPrimitives, PrimComp);
+				}
 			}
 		}
 	}
 #endif
-	
+
 	return OutPrimitives.Num() > 0;
 }
 
@@ -315,6 +444,11 @@ void ADisplayClusterRootActor::InitializeRootActor()
 	{
 		// Attempt load from embedded data.
 		UpdateConfigDataInstance(GetDefaultConfigDataFromAsset());
+	}
+
+	if (ViewportManager.IsValid() == false)
+	{
+		ViewportManager = MakeUnique<FDisplayClusterViewportManager>();
 	}
 
 	// Packaged, PIE and -game runtime
@@ -345,6 +479,8 @@ void ADisplayClusterRootActor::InitializeRootActor()
 	// Initialize from file property by default in Editor
 	else
 	{
+		UpdatePreviewConfiguration_Editor();
+
 		if (CurrentConfigData)
 		{
 			ResetHierarchyMap();
@@ -359,6 +495,7 @@ void ADisplayClusterRootActor::InitializeRootActor()
 bool ADisplayClusterRootActor::BuildHierarchy()
 {
 	check(CurrentConfigData);
+	check(IsInGameThread());
 
 	if (!IsBlueprint())
 	{
@@ -388,24 +525,37 @@ bool ADisplayClusterRootActor::BuildHierarchy()
 			SetDefaultCamera(DefaultCamId);
 		}
 	}
-
-	// If no default camera set, try to set the first one
-	if (!DefaultCameraComponent.IsDefinedSceneComponent())
+	else
 	{
-		TMap<FString, UDisplayClusterCameraComponent*> Cameras;
-		GetTypedComponents<UDisplayClusterCameraComponent>(Cameras, CameraComponents);
-		if (Cameras.Num() > 0)
+		// Default camera must be defined
+		if (GetDefaultCamera() == nullptr)
 		{
-			// There is no guarantee that default camera is the first one listed in a config file
-			SetDefaultCamera(Cameras.CreateConstIterator()->Key);
-		}
-		else
-		{
-			UE_LOG(LogDisplayClusterGame, Error, TEXT("No cameras found"));
-			return false;
+			bHasRerunConstructionScripts = true;
 		}
 	}
-	
+
+	// Only check for the default camera if the construction scripts have been run, since camera components created in the blueprint editor
+	// won't have been created before then
+	if (bHasRerunConstructionScripts)
+	{
+		// If no default camera set, try to set the first one
+		if (DefaultCameraComponent.IsDefinedSceneComponent() == false)
+		{
+			TMap<FString, UDisplayClusterCameraComponent*> Cameras;
+			GetTypedComponents<UDisplayClusterCameraComponent>(Cameras, CameraComponents);
+			if (Cameras.Num() > 0)
+			{
+				// There is no guarantee that default camera is the first one listed in a config file
+				SetDefaultCamera(Cameras.CreateConstIterator()->Key);
+			}
+			else
+			{
+				UE_LOG(LogDisplayClusterGame, Error, TEXT("No cameras found"));
+				return false;
+			}
+		}
+	}
+
 	return true;
 }
 
@@ -497,22 +647,29 @@ void ADisplayClusterRootActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 void ADisplayClusterRootActor::Tick(float DeltaSeconds)
 {
+	// Update saved DeltaSeconds for root actor
+	LastDeltaSecondsValue = DeltaSeconds;
+
 	if (OperationMode == EDisplayClusterOperationMode::Cluster ||
 		OperationMode == EDisplayClusterOperationMode::Editor)
 	{
 		UWorld* const CurWorld = GetWorld();
-		if (CurWorld)
+		if (CurWorld && CurrentConfigData)
 		{
 			APlayerController* const CurPlayerController = CurWorld->GetFirstPlayerController();
 			if (CurPlayerController)
 			{
-				APlayerCameraManager* const CurPlayerCameraManager = CurPlayerController->PlayerCameraManager;
-				if (CurPlayerCameraManager)
+				// Depending on the flag state the DCRA follows or not the current player's camera
+				if (CurrentConfigData->bFollowLocalPlayerCamera)
 				{
-					SetActorLocationAndRotation(CurPlayerCameraManager->GetCameraLocation(), CurPlayerCameraManager->GetCameraRotation());
+					APlayerCameraManager* const CurPlayerCameraManager = CurPlayerController->PlayerCameraManager;
+					if (CurPlayerCameraManager)
+					{
+						SetActorLocationAndRotation(CurPlayerCameraManager->GetCameraLocation(), CurPlayerCameraManager->GetCameraRotation());
+					}
 				}
 
-				if (bExitOnEsc)
+				if (CurrentConfigData->bExitOnEsc)
 				{
 					if (CurPlayerController->WasInputKeyJustPressed(EKeys::Escape))
 					{
@@ -569,13 +726,37 @@ void ADisplayClusterRootActor::BeginDestroy()
 	BeginDestroy_Editor();
 #endif
 
+	if (ViewportManager.IsValid())
+	{
+		// remove runtime data, when actor destroyed
+		ViewportManager.Reset();
+	}
+
 	ResetHierarchyMap();
 	Super::BeginDestroy();
+}
+
+void ADisplayClusterRootActor::Destroyed()
+{
+#if WITH_EDITOR
+	Destroyed_Editor();
+#endif
+
+	if (ViewportManager.IsValid())
+	{
+		// remove runtime data, when actor destroyed
+		ViewportManager.Reset();
+	}
+
+	ResetHierarchyMap();
+	Super::Destroyed();
 }
 
 void ADisplayClusterRootActor::RerunConstructionScripts()
 {
 	Super::RerunConstructionScripts();
+
+	bHasRerunConstructionScripts = true;
 
 #if WITH_EDITOR
 	RerunConstructionScripts_Editor();
@@ -624,11 +805,25 @@ void ADisplayClusterRootActor::GetAllCameras(TMap<FString, UDisplayClusterCamera
 
 UDisplayClusterCameraComponent* ADisplayClusterRootActor::GetDefaultCamera() const
 {
-	return Cast<UDisplayClusterCameraComponent>(DefaultCameraComponent.GetOrFindSceneComponent());
+	check(IsInGameThread());
+
+	FScopeLock Lock(&InternalsSyncScope);
+
+	USceneComponent* SceneComponent = DefaultCameraComponent.GetOrFindSceneComponent();
+	if (SceneComponent)
+	{
+		UDisplayClusterCameraComponent* CameraComponent = static_cast<UDisplayClusterCameraComponent*>(SceneComponent);
+
+		return CameraComponent;
+	}
+
+	return nullptr;
 }
 
 void ADisplayClusterRootActor::SetDefaultCamera(const FString& CameraId)
 {
+	check(IsInGameThread());
+
 	FScopeLock Lock(&InternalsSyncScope);
 
 	UDisplayClusterCameraComponent* NewDefaultCamera = GetCameraById(CameraId);

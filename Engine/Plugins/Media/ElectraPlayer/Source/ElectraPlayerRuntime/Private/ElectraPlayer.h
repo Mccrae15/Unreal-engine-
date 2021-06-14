@@ -17,6 +17,9 @@ class FVideoDecoderOutput;
 using FVideoDecoderOutputPtr = TSharedPtr<FVideoDecoderOutput, ESPMode::ThreadSafe>;
 class IAudioDecoderOutput;
 using IAudioDecoderOutputPtr = TSharedPtr<IAudioDecoderOutput, ESPMode::ThreadSafe>;
+class IMetaDataDecoderOutput;
+using IMetaDataDecoderOutputPtr = TSharedPtr<IMetaDataDecoderOutput, ESPMode::ThreadSafe>;
+
 
 namespace Electra
 {
@@ -119,6 +122,20 @@ public:
 	void NotifyOfOptionChange() override;
 
 private:
+	DECLARE_DELEGATE_TwoParams(FOnMediaPlayerEventReceivedDelegate, TSharedPtrTS<IAdaptiveStreamingPlayerAEMSEvent> /*InEvent*/, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode /*InDispatchMode*/);
+	class FAEMSEventReceiver : public IAdaptiveStreamingPlayerAEMSReceiver
+	{
+	public:
+		virtual ~FAEMSEventReceiver() = default;
+		FOnMediaPlayerEventReceivedDelegate& GetEventReceivedDelegate()
+		{ return EventReceivedDelegate; }
+	private:
+		virtual void OnMediaPlayerEventReceived(TSharedPtrTS<IAdaptiveStreamingPlayerAEMSEvent> InEvent, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode InDispatchMode) override
+		{ EventReceivedDelegate.ExecuteIfBound(InEvent, InDispatchMode); }
+		FOnMediaPlayerEventReceivedDelegate EventReceivedDelegate;
+	};
+
+
 	struct FPlayerMetricEventBase
 	{
 		enum class EType
@@ -240,6 +257,8 @@ private:
 
 	void PlatformNotifyOfOptionChange();
 
+	void OnMediaPlayerEventReceived(TSharedPtrTS<IAdaptiveStreamingPlayerAEMSEvent> InEvent, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode InDispatchMode);
+
 	// Methods from IAdaptiveStreamingPlayerMetrics
 	virtual void ReportOpenSource(const FString& URL) override
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_OpenSource>(URL)); }
@@ -301,6 +320,7 @@ private:
 	bool MediaStateOnPause();
 	void MediaStateOnEndReached();
 	void MediaStateOnSeekFinished();
+	void TriggerFirstSeekIfNecessary();
 
 	TSharedPtr<FTrackMetadata, ESPMode::ThreadSafe> GetTrackStreamMetadata(EPlayerTrackType TrackType, int32 TrackIndex) const;
 
@@ -312,7 +332,10 @@ private:
 	int32											NumTracksVideo;
 	int32											SelectedQuality;
 	int32											SelectedVideoTrackIndex;
-	int32											SelectedAudioTrackIndex;
+	mutable int32									SelectedAudioTrackIndex;
+	mutable bool									bAudioTrackIndexDirty;
+
+	bool											bInitialSeekPerformed;
 
 	FIntPoint										LastPresentedFrameDimension;
 
@@ -332,7 +355,7 @@ private:
 	TAtomic<EPlayerState>							State;
 	TAtomic<EPlayerStatus>							Status;
 
-	TAtomic<bool>									bCloseInProgress;
+	TAtomic<bool>									bPlayerHasClosed;
 	TAtomic<bool>									bHasPendingError;
 
 	bool											bAllowKillAfterCloseEvent;
@@ -340,6 +363,7 @@ private:
 	/** Queued events */
 	TQueue<IElectraPlayerAdapterDelegate::EPlayerEvent>	DeferredEvents;
 	TQueue<TSharedPtrTS<FPlayerMetricEventBase>>	DeferredPlayerEvents;
+	TSharedPtrTS<FAEMSEventReceiver>				MediaPlayerEventReceiver;
 
 	/** The URL of the currently opened media. */
 	FString											MediaUrl;

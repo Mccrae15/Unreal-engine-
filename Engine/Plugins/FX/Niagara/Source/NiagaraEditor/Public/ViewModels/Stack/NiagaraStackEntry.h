@@ -21,6 +21,7 @@ enum class EStackIssueSeverity : uint8
 	Error = 0,
 	Warning, 
 	Info,
+	CustomNote,
 	None
 };
 
@@ -90,7 +91,8 @@ public:
 		const FText DropMessage;
 	};
 
-	DECLARE_MULTICAST_DELEGATE(FOnStructureChanged);
+	DECLARE_MULTICAST_DELEGATE(FOnExpansionChanged);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnStructureChanged, ENiagaraStructureChangedFlags);
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDataObjectModified, TArray<UObject*>, ENiagaraDataObjectChange);
 	DECLARE_MULTICAST_DELEGATE(FOnRequestFullRefresh);
 	DECLARE_MULTICAST_DELEGATE(FOnRequestFullRefreshDeferred);
@@ -302,6 +304,8 @@ public:
 		}
 	}
 
+	FOnExpansionChanged& OnExpansionChanged();
+
 	FOnStructureChanged& OnStructureChanged();
 
 	FOnDataObjectModified& OnDataObjectModified();
@@ -364,6 +368,8 @@ public:
 
 	bool HasIssuesOrAnyChildHasIssues() const;
 
+	int32 GetTotalNumberOfCustomNotes() const;
+	
 	int32 GetTotalNumberOfInfoIssues() const;
 
 	int32 GetTotalNumberOfWarningIssues() const;
@@ -443,7 +449,9 @@ protected:
 	virtual void FinalizeInternal();
 
 private:
-	void ChildStructureChanged();
+	void ChildStructureChanged(ENiagaraStructureChangedFlags Info);
+
+	void ChildExpansionChanged();
 	
 	void ChildDataObjectModified(TArray<UObject*> ChangedObjects, ENiagaraDataObjectChange ChangeType);
 
@@ -460,6 +468,27 @@ private:
 	void IssueModified();
 
 	void InvalidateFilteredChildren();
+
+	struct FCollectedIssueData
+	{
+		FCollectedIssueData()
+			: TotalNumberOfInfoIssues(0)
+			, TotalNumberOfWarningIssues(0)
+			, TotalNumberOfErrorIssues(0)
+			, TotalNumberOfCustomNotes(0)
+		{
+		}
+
+		bool HasAnyIssues() const { return TotalNumberOfInfoIssues > 0 || TotalNumberOfWarningIssues > 0 || TotalNumberOfErrorIssues > 0 || TotalNumberOfCustomNotes > 0; }
+
+		int32 TotalNumberOfInfoIssues;
+		int32 TotalNumberOfWarningIssues;
+		int32 TotalNumberOfErrorIssues;
+		int32 TotalNumberOfCustomNotes;
+		TArray<UNiagaraStackEntry*> ChildrenWithIssues;
+	};
+
+	const FCollectedIssueData& GetCollectedIssueData() const;
 	
 	TWeakPtr<FNiagaraSystemViewModel> SystemViewModel;
 	TWeakPtr<FNiagaraEmitterViewModel> EmitterViewModel;
@@ -469,6 +498,8 @@ private:
 
 	FString StackEditorDataKey;
 
+	FOnExpansionChanged ExpansionChangedDelegate;
+	
 	FOnStructureChanged StructureChangedDelegate;
 
 	FOnDataObjectModified DataObjectModifiedDelegate;
@@ -503,8 +534,6 @@ private:
 	
 	TArray<FStackIssue> StackIssues;
 
-	TArray<UNiagaraStackEntry*> ChildrenWithIssues;
-
 	bool bIsFinalized;
 
 	bool bIsSearchResult;
@@ -515,7 +544,5 @@ private:
 
 	TOptional<FText> AlternateDisplayName;
 
-	int32 TotalNumberOfInfoIssues;
-	int32 TotalNumberOfWarningIssues;
-	int32 TotalNumberOfErrorIssues;
+	mutable TOptional<FCollectedIssueData> CachedCollectedIssueData;
 };

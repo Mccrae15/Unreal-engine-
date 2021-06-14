@@ -6,9 +6,12 @@
 #include "INiagaraCompiler.h"
 #include "ViewModels/TNiagaraViewModelManager.h"
 #include "EditorUndoClient.h"
+#include "NiagaraParameterDefinitionsSubscriberViewModel.h"
 
 class UNiagaraScript;
 class UNiagaraScriptSource;
+class UNiagaraScriptVariable;
+class UNiagaraParameterDefinitions;
 class INiagaraParameterCollectionViewModel;
 class FNiagaraScriptGraphViewModel;
 class FNiagaraScriptInputCollectionViewModel;
@@ -19,13 +22,23 @@ class FNiagaraObjectSelection;
 
 
 /** A view model for Niagara scripts which manages other script related view models. */
-class FNiagaraScriptViewModel : public TSharedFromThis<FNiagaraScriptViewModel>, public FEditorUndoClient, public TNiagaraViewModelManager<UNiagaraScript, FNiagaraScriptViewModel>
+class FNiagaraScriptViewModel
+	: public TSharedFromThis<FNiagaraScriptViewModel>
+	, public FEditorUndoClient
+	, public TNiagaraViewModelManager<UNiagaraScript, FNiagaraScriptViewModel>
+	, public INiagaraParameterDefinitionsSubscriberViewModel
 {
 public:
-	FNiagaraScriptViewModel(TAttribute<FText> DisplayName, ENiagaraParameterEditMode InParameterEditMode);
+	FNiagaraScriptViewModel(TAttribute<FText> DisplayName, ENiagaraParameterEditMode InParameterEditMode, bool bInIsForDataProcessingOnly);
 
 	virtual ~FNiagaraScriptViewModel();
 
+	//~ Begin NiagaraParameterDefinitionsSubscriberViewModel Interface
+protected:
+	virtual INiagaraParameterDefinitionsSubscriber* GetParameterDefinitionsSubscriber() override { checkf(false, TEXT("Tried to modify parameter libraries for script viewmodel; this is only a valid operation for standalone script viewmodel and scratchpad scriptviewmodel!")); return nullptr; };
+	//~ End NiagaraParameterDefinitionsSubscriberViewModel Interface
+
+public:
 	NIAGARAEDITOR_API FText GetDisplayName() const;
 
 	NIAGARAEDITOR_API const TArray<FVersionedNiagaraScriptWeakPtr>& GetScripts() const;
@@ -73,6 +86,7 @@ public:
 
 	/** If this is editing a standalone script, returns the script being edited.*/
 	virtual FVersionedNiagaraScript GetStandaloneScript();
+	//const UNiagaraScript* GetStandaloneScript() const;
 
 private:
 	/** Handles the selection changing in the graph view model. */
@@ -131,4 +145,7 @@ protected:
 	TArray<FString> CompileErrors;
 	TArray<FString> CompilePaths;
 	TArray<TPair<ENiagaraScriptUsage, FGuid>> CompileTypes;
+
+	/** Whether or not this view model is going to be used for data processing only and will not be shown in the UI. */
+	bool bIsForDataProcessingOnly;
 };

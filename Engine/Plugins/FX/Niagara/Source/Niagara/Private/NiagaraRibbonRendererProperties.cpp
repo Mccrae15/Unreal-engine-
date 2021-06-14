@@ -20,9 +20,9 @@ TArray<TWeakObjectPtr<UNiagaraRibbonRendererProperties>> UNiagaraRibbonRendererP
 
 
 FNiagaraRibbonShapeCustomVertex::FNiagaraRibbonShapeCustomVertex()
-	: Position(0, 0)
-	, Normal(0, 0)
-	, TextureV(0)
+	: Position(0.0f)
+	, Normal(0.0f)
+	, TextureV(0.0f)
 {
 }
 
@@ -40,6 +40,7 @@ FNiagaraRibbonUVSettings::FNiagaraRibbonUVSettings()
 
 UNiagaraRibbonRendererProperties::UNiagaraRibbonRendererProperties()
 	: Material(nullptr)
+	, MaterialUserParamBinding(FNiagaraTypeDefinition(UMaterialInterface::StaticClass()))
 	, FacingMode(ENiagaraRibbonFacingMode::Screen)
 #if WITH_EDITORONLY_DATA
 	, UV0TilingDistance_DEPRECATED(0.0f)
@@ -50,6 +51,7 @@ UNiagaraRibbonRendererProperties::UNiagaraRibbonRendererProperties()
 	, UV1AgeOffsetMode_DEPRECATED(ENiagaraRibbonAgeOffsetMode::Scale)
 #endif
 	, Shape(ENiagaraRibbonShapeMode::Plane)
+	, bEnableAccurateGeometry(false)
 	, WidthSegmentationCount(1)
 	, MultiPlaneCount(2)
 	, TubeSubdivisions(3)
@@ -60,9 +62,6 @@ UNiagaraRibbonRendererProperties::UNiagaraRibbonRendererProperties()
 	, TessellationAngle(15)
 	, bScreenSpaceTessellation(true)
 {
-	FNiagaraTypeDefinition MaterialDef(UMaterialInterface::StaticClass());
-	MaterialUserParamBinding.Parameter.SetType(MaterialDef);
-
 	AttributeBindings.Reserve(19);
 	AttributeBindings.Add(&PositionBinding);
 	AttributeBindings.Add(&ColorBinding);

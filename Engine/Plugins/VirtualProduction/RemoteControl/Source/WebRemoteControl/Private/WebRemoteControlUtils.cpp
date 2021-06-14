@@ -91,7 +91,7 @@ namespace RemotePayloadSerializer
 
 	void SerializeWrappedCallResponse(int32 RequestId, TUniquePtr<FHttpServerResponse> Response, FMemoryWriter& Writer)
 	{
-		FRCJsonStructSerializerBackend Backend(Writer, EStructSerializerBackendFlags::Default);
+		FRCJsonStructSerializerBackend Backend(Writer, FRCJsonStructSerializerBackend::DefaultSerializerFlags);
 		TSharedPtr<TJsonWriter<ANSICHAR>> JsonWriter = TJsonWriter<ANSICHAR>::Create(&Writer);
 		TArray<FString>* ContentTypeHeaders = Response->Headers.Find(TEXT("Content-Type"));
 		const bool bIsBinaryData = ContentTypeHeaders && ContentTypeHeaders->Contains(TEXT("image/png"));
@@ -127,7 +127,7 @@ namespace RemotePayloadSerializer
 	{
 		TArray<uint8> WorkingBuffer;
 		FMemoryWriter TemporaryBufferWriter(WorkingBuffer);
-		FRCJsonStructSerializerBackend TemporaryBackend(TemporaryBufferWriter, EStructSerializerBackendFlags::Default);
+		FRCJsonStructSerializerBackend TemporaryBackend(TemporaryBufferWriter, FRCJsonStructSerializerBackend::DefaultSerializerFlags);
 
 		int32 ColonPosition = -1;
 		int32 LastBracketPosition = -1;
@@ -178,7 +178,7 @@ namespace RemotePayloadSerializer
 			{
 				FMemoryReader Reader(CallRequest.TCHARBody);
 				Reader.Seek(ParametersDelimiters.BlockStart);
-				Reader.SetLimitSize(ParametersDelimiters.BlockEnd + 1);
+				Reader.SetLimitSize(ParametersDelimiters.BlockEnd);
 
 				FJsonStructDeserializerBackend Backend(Reader);
 				if (!FStructDeserializer::Deserialize((void*)OutCall.ParamStruct.GetStructMemory(), *const_cast<UStruct*>(OutCall.ParamStruct.GetStruct()), Backend, FStructDeserializerPolicies()))
@@ -221,7 +221,7 @@ namespace RemotePayloadSerializer
 		}
 
 		// write the param struct
-		FRCJsonStructSerializerBackend Backend(Writer, EStructSerializerBackendFlags::Default);
+		FRCJsonStructSerializerBackend Backend(Writer, FRCJsonStructSerializerBackend::DefaultSerializerFlags);
 		FStructSerializerPolicies Policies;
 
 		if (bOnlyReturn)

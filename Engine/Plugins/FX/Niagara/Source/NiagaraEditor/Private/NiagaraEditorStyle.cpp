@@ -127,6 +127,86 @@ TSharedRef< FSlateStyleSet > FNiagaraEditorStyle::Create()
 
 	Style->Set("NiagaraEditor.NewAssetDialog.SubBorder", new BOX_CORE_BRUSH("Common/GroupBorderLight", FMargin(4.0f / 16.0f)));
 
+	// Action Menu
+	FTextBlockStyle ActionMenuHeadingText = FTextBlockStyle(NormalText)
+		.SetColorAndOpacity(FSlateColor::UseForeground())
+		.SetHighlightColor(FLinearColor(0.02f, 0.3f, 0.0f))
+		.SetFont(DEFAULT_FONT("Bold", 10));
+
+	FTextBlockStyle ActionMenuActionText = FTextBlockStyle(NormalText)
+		.SetColorAndOpacity(FSlateColor::UseForeground())
+		.SetHighlightColor(FLinearColor(0.02f, 0.3f, 0.0f))
+		.SetFont(DEFAULT_FONT("Regular", 9));
+
+	FTextBlockStyle ActionMenuSourceText = FTextBlockStyle(NormalText)
+		.SetColorAndOpacity(FSlateColor::UseForeground())
+		.SetFont(DEFAULT_FONT("Regular", 7));
+
+	FTextBlockStyle ActionMenuFilterText = FTextBlockStyle(NormalText)
+        .SetColorAndOpacity(FSlateColor::UseForeground())
+		.SetHighlightColor(FLinearColor(0.02f, 0.3f, 0.0f))
+		.SetShadowOffset(FVector2D(1.f, 1.f))
+        .SetFont(DEFAULT_FONT("Bold", 9));
+        
+	FTextBlockStyle TemplateTabText = FTextBlockStyle(NormalText)
+		.SetColorAndOpacity(FSlateColor::UseForeground())
+		.SetHighlightColor(FLinearColor(0.02f, 0.3f, 0.0f))
+		.SetFont(DEFAULT_FONT("Bold", 11));
+
+	const FCheckBoxStyle NiagaraGraphActionMenuFilterCheckBox = FCheckBoxStyle()
+            .SetCheckBoxType(ESlateCheckBoxType::ToggleButton)
+            .SetUncheckedImage( FSlateNoResource() )
+            .SetUncheckedHoveredImage( BOX_BRUSH("Common/RoundedSelection_16x", 4.0f/16.0f, FLinearColor(0.7f, 0.7f, 0.7f) ))
+            .SetUncheckedPressedImage( BOX_BRUSH("Common/RoundedSelection_16x", 4.0f/16.0f, FLinearColor(0.8f, 0.8f, 0.8f) ))
+            .SetCheckedImage( BOX_BRUSH("Common/RoundedSelection_16x",  4.0f/16.0f, FLinearColor(0.9f, 0.9f, 0.9f) ))
+            .SetCheckedHoveredImage( BOX_BRUSH("Common/RoundedSelection_16x",  4.0f/16.0f, FLinearColor(1.f, 1.f, 1.f) ))
+            .SetCheckedPressedImage( BOX_BRUSH("Common/RoundedSelection_16x",  4.0f/16.0f, FLinearColor(1.f, 1.f, 1.f) ));
+
+	const FTableRowStyle ActionMenuRowStyle = FTableRowStyle()
+            .SetEvenRowBackgroundBrush(FSlateNoResource())
+            .SetEvenRowBackgroundHoveredBrush(IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(1.0f, 1.0f, 1.0f, 0.1f)))
+            .SetOddRowBackgroundBrush(FSlateNoResource())
+            .SetOddRowBackgroundHoveredBrush(IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(1.0f, 1.0f, 1.0f, 0.1f)))
+            .SetSelectorFocusedBrush(BORDER_BRUSH("Common/Selector", FMargin(4.f / 16.f), FCoreStyle::Get().GetSlateColor("SelectorColor")))
+            .SetActiveBrush(IMAGE_BRUSH("Common/Selection", Icon8x8, FCoreStyle::Get().GetSlateColor("SelectionColor")))
+            .SetActiveHoveredBrush(IMAGE_BRUSH("Common/Selection", Icon8x8, FCoreStyle::Get().GetSlateColor("SelectionColor")))
+			// note: inactive brush is used for selections that don't have keyboard focus. SelectionColor_Inactive would be gray. We use the normal SelectionColor here
+            .SetInactiveBrush(IMAGE_BRUSH("Common/Selection", Icon8x8, FCoreStyle::Get().GetSlateColor("SelectionColor")))
+            .SetInactiveHoveredBrush(IMAGE_BRUSH("Common/Selection", Icon8x8, FCoreStyle::Get().GetSlateColor("SelectionColor")))
+            .SetActiveHighlightedBrush(IMAGE_BRUSH("Common/Selection", Icon8x8, FCoreStyle::Get().GetSlateColor("HighlightColor")))
+            .SetInactiveHighlightedBrush(IMAGE_BRUSH("Common/Selection", Icon8x8, FSlateColor(FLinearColor(.1f, .1f, .1f))))
+            .SetTextColor(FCoreStyle::Get().GetSlateColor("DefaultForeground"))
+            .SetSelectedTextColor(FCoreStyle::Get().GetSlateColor("InvertedForeground"))
+            .SetDropIndicator_Above(BOX_BRUSH("Common/DropZoneIndicator_Above", FMargin(10.0f / 16.0f, 10.0f / 16.0f, 0, 0), FCoreStyle::Get().GetColor("SelectorColor")))
+            .SetDropIndicator_Onto(BOX_BRUSH("Common/DropZoneIndicator_Onto", FMargin(4.0f / 16.0f), FCoreStyle::Get().GetColor("SelectorColor")))
+            .SetDropIndicator_Below(BOX_BRUSH("Common/DropZoneIndicator_Below", FMargin(10.0f / 16.0f, 0, 0, 10.0f / 16.0f), FCoreStyle::Get().GetColor("SelectorColor")));
+	
+	Style->Set("ActionMenu.Row", ActionMenuRowStyle);
+	
+	Style->Set("ActionMenu.HeadingTextBlock", ActionMenuHeadingText);
+
+	Style->Set("ActionMenu.ActionTextBlock", ActionMenuActionText);
+
+	Style->Set("GraphActionMenu.ActionSourceTextBlock", ActionMenuSourceText);
+
+	Style->Set("GraphActionMenu.ActionFilterTextBlock", ActionMenuFilterText);
+
+	Style->Set("GraphActionMenu.TemplateTabTextBlock", TemplateTabText);
+	
+	Style->Set( "GraphActionMenu.FilterCheckBox", NiagaraGraphActionMenuFilterCheckBox );
+
+	//Parameters panel
+	const FTableRowStyle TreeViewStyle = FEditorStyle::GetWidgetStyle<FTableRowStyle>("DetailsView.TreeView.TableRow");
+	FTableRowStyle ParameterPanelRowStyle = FTableRowStyle(TreeViewStyle)
+		.SetTextColor(FLinearColor::White)
+		.SetSelectedTextColor(FLinearColor::White);
+	Style->Set("NiagaraEditor.Parameters.TableRow", ParameterPanelRowStyle);
+	
+	const FTextBlockStyle CategoryTextStyle = FEditorStyle::GetWidgetStyle<FTextBlockStyle>("DetailsView.CategoryTextStyle");
+	FTextBlockStyle ParameterSectionStyle = FTextBlockStyle(CategoryTextStyle)
+		.SetColorAndOpacity(FLinearColor::White);
+	Style->Set("NiagaraEditor.Parameters.HeaderText", ParameterSectionStyle);
+	
 	// Emitter Header
 	FTextBlockStyle HeadingText = FTextBlockStyle(NormalText)
 		.SetFont(DEFAULT_FONT("Regular", 14));
@@ -240,6 +320,8 @@ TSharedRef< FSlateStyleSet > FNiagaraEditorStyle::Create()
 	// Toolbar Icons
 	Style->Set("NiagaraEditor.Apply", new IMAGE_BRUSH("Icons/icon_Niagara_Apply_40x", Icon40x40));
 	Style->Set("NiagaraEditor.Apply.Small", new IMAGE_BRUSH("Icons/icon_Niagara_Apply_40x", Icon20x20));
+	Style->Set("NiagaraEditor.ApplyScratchPadChanges", new IMAGE_PLUGIN_BRUSH("Icons/Commands/icon_ApplyScratchPadChanges_40x", Icon40x40));
+	Style->Set("NiagaraEditor.ApplyScratchPadChanges.Small", new IMAGE_PLUGIN_BRUSH("Icons/Commands/icon_ApplyScratchPadChanges_40x", Icon20x20));
 	Style->Set("NiagaraEditor.Compile", new IMAGE_BRUSH("Icons/icon_compile_40x", Icon40x40));
 	Style->Set("NiagaraEditor.Compile.Small", new IMAGE_BRUSH("Icons/icon_compile_40x", Icon20x20));
 	Style->Set("NiagaraEditor.AddEmitter", new IMAGE_BRUSH("Icons/icon_AddObject_40x", Icon40x40));
@@ -250,6 +332,7 @@ TSharedRef< FSlateStyleSet > FNiagaraEditorStyle::Create()
 	Style->Set("NiagaraEditor.LockToChanges.Small", new IMAGE_BRUSH("Icons/icon_levels_LockedReadOnly_40x", Icon20x20));
 	Style->Set("NiagaraEditor.SimulationOptions", new IMAGE_PLUGIN_BRUSH("Icons/Commands/icon_simulationOptions_40x", Icon40x40));
 	Style->Set("NiagaraEditor.SimulationOptions.Small", new IMAGE_PLUGIN_BRUSH("Icons/Commands/icon_simulationOptions_40x", Icon20x20));
+	Style->Set("NiagaraEditor.DebugOptions", new IMAGE_CORE_BRUSH("Icons/icon_tab_DebugTools_40x", Icon40x40));
 
 	Style->Set("Niagara.CompileStatus.Unknown", new IMAGE_BRUSH("Icons/CompileStatus_Working", Icon40x40));
 	Style->Set("Niagara.CompileStatus.Unknown.Small", new IMAGE_BRUSH("Icons/CompileStatus_Working", Icon20x20));
@@ -271,6 +354,11 @@ TSharedRef< FSlateStyleSet > FNiagaraEditorStyle::Create()
 	Style->Set("NiagaraEditor.Module.AddPin", new IMAGE_PLUGIN_BRUSH("Icons/PlusSymbol_12x", Icon12x12, FLinearColor::Gray));
 	Style->Set("NiagaraEditor.Module.RemovePin", new IMAGE_PLUGIN_BRUSH("Icons/MinusSymbol_12x", Icon12x12, FLinearColor::Gray));
 	Style->Set("NiagaraEditor.Scratch", new IMAGE_PLUGIN_BRUSH("Icons/Scratch", Icon16x16, FLinearColor::Yellow));
+	Style->Set("NiagaraEditor.Message.CustomNote", new IMAGE_PLUGIN_BRUSH("Icons/icon_custom_note_16x", Icon16x16));
+
+	// Overview debug icons
+	Style->Set("NiagaraEditor.Overview.DebugActive", new IMAGE_PLUGIN_BRUSH("Icons/OverviewDebugActive", Icon16x16));
+	Style->Set("NiagaraEditor.Overview.DebugInactive", new IMAGE_PLUGIN_BRUSH("Icons/OverviewDebugInactive", Icon16x16));
 	
 	// Emitter details customization
 	Style->Set("NiagaraEditor.MaterialWarningBorder", new BOX_CORE_BRUSH("Common/GroupBorderLight", FMargin(4.0f / 16.0f)));
@@ -281,6 +369,7 @@ TSharedRef< FSlateStyleSet > FNiagaraEditorStyle::Create()
 	Style->Set("NiagaraEditor.AssetColors.Script", FLinearColor(1.0f, 1.0f, 0.0f));
 	Style->Set("NiagaraEditor.AssetColors.ParameterCollection", FLinearColor(1.0f, 1.0f, 0.3f));
 	Style->Set("NiagaraEditor.AssetColors.ParameterCollectionInstance", FLinearColor(1.0f, 1.0f, 0.7f));
+	Style->Set("NiagaraEditor.AssetColors.ParameterDefinitions", FLinearColor(0.57f, 0.82f, 0.06f));
 
 	// Script factory thumbnails
 	Style->Set("NiagaraEditor.Thumbnails.DynamicInputs", new IMAGE_BRUSH("Icons/NiagaraScriptDynamicInputs_64x", Icon64x64));
@@ -310,6 +399,9 @@ TSharedRef< FSlateStyleSet > FNiagaraEditorStyle::Create()
 		.SetColorAndOpacity(FLinearColor(0.72f, 0.72f, 0.72f))
 		.SetHighlightColor(FLinearColor(1, 1, 1)));
 
+	// Separator in the action menus
+	Style->Set( "MenuSeparator", new BOX_BRUSH( "MenuSeparator", 1/4.0f, FLinearColor(1,1,1,0.2f) ) );
+	
 	const FString SmallRoundedButtonStart(TEXT("Common/SmallRoundedButtonLeft"));
 	const FString SmallRoundedButtonMiddle(TEXT("Common/SmallRoundedButtonCentre"));
 	const FString SmallRoundedButtonEnd(TEXT("Common/SmallRoundedButtonRight"));

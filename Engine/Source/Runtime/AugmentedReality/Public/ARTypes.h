@@ -55,6 +55,9 @@ enum class EARCaptureType : uint8
 
 	/** Capture detailed information about the scene with all surfaces like walls, floors and so on*/
 	SceneUnderstanding,
+
+	/** Capture a mesh around the player's hands */
+	HandMesh,
 };
 
 
@@ -199,6 +202,18 @@ enum class EARObjectClassification : uint8
 	/** A window */
 	Window,
 	// Add other types here...
+};
+
+/** Indicates how the spatial mesh should be visualized */
+UENUM(BlueprintType)
+enum class EARSpatialMeshUsageFlags : uint8
+{
+	/** Not applicable to scene understanding. */
+	NotApplicable = 0,
+	/** This mesh should have a visible material applied to it. */
+	Visible = 1 << 0,
+	/** This mesh should be used when placing objects on real world surfaces.  This must be set to use physics with this mesh. */
+	Collision = 1 << 1
 };
 
 /** Describes the potential spaces in which the join transform can be defined with AR pose tracking */

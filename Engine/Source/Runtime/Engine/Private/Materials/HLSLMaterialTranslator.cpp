@@ -938,8 +938,10 @@ bool FHLSLMaterialTranslator::Translate()
 			}
 		}
 
-		bool bDBufferAllowed = IsUsingDBuffers(Platform);
-		bool bDBufferBlendMode = IsDBufferDecalBlendMode((EDecalBlendMode)Material->GetDecalBlendMode());
+		const bool bDBufferSupported = IsUsingDBuffers(Platform);
+		const bool bDBufferFallback = IsMobilePlatform(Platform); // Mobile doesn't support DBuffer but has runtime path to convert to something usable.
+		const bool bDBufferAllowed = bDBufferSupported || bDBufferFallback;
+		const bool bDBufferBlendMode = IsDBufferDecalBlendMode((EDecalBlendMode)Material->GetDecalBlendMode());
 
 		if (bDBufferBlendMode && !bDBufferAllowed)
 		{
@@ -1370,14 +1372,17 @@ void FHLSLMaterialTranslator::GetMaterialEnvironment(EShaderPlatform InPlatform,
 			}
 		}
 
-		if(ShadingModels.HasShadingModel(MSM_SingleLayerWater) && 
-			(IsSwitchPlatform(Platform) || IsVulkanMobileSM5Platform(Platform) || FDataDrivenShaderPlatformInfo::GetRequiresDisableForwardLocalLights(Platform)))
+		if (ShadingModels.HasShadingModel(MSM_SingleLayerWater) &&
+			(IsVulkanMobileSM5Platform(Platform) || FDataDrivenShaderPlatformInfo::GetRequiresDisableForwardLocalLights(Platform)))
 		{
 			OutEnvironment.SetDefine(TEXT("DISABLE_FORWARD_LOCAL_LIGHTS"), TEXT("1"));
 		}
 
 		// This is to have switch use the simple single layer water shading similar to mobile: no dynamic lights, only sun and sky, no distortion, no colored transmittance on background, no custom depth read.
-		const bool bSingleLayerWaterUsesSimpleShading = (IsSwitchPlatform(InPlatform) || IsVulkanMobileSM5Platform(InPlatform)) && IsForwardShadingEnabled(InPlatform);
+		bool bSingleLayerWaterUsesSimpleShading = IsVulkanMobileSM5Platform(InPlatform);
+		bSingleLayerWaterUsesSimpleShading = bSingleLayerWaterUsesSimpleShading || FDataDrivenShaderPlatformInfo::GetWaterUsesSimpleForwardShading(InPlatform);
+		bSingleLayerWaterUsesSimpleShading = bSingleLayerWaterUsesSimpleShading && IsForwardShadingEnabled(InPlatform);
+
 		if (ShadingModels.HasShadingModel(MSM_SingleLayerWater) && bSingleLayerWaterUsesSimpleShading)
 		{
 			OutEnvironment.SetDefine(TEXT("SINGLE_LAYER_WATER_SIMPLE_FORWARD"), TEXT("1"));
@@ -4552,8 +4557,9 @@ int32 FHLSLMaterialTranslator::TextureSample(
 		if (SamplerSource != SSM_FromTextureAsset)
 		{
 			// VT doesn't care if the shared sampler is wrap or clamp this is handled in the shader explicitly by our code so we still inherit this from the texture
-			TextureName += FString::Printf(TEXT("Material.VirtualTexturePhysical_%d, GetMaterialSharedSampler(Material.VirtualTexturePhysical_%dSampler, View.SharedBilinearClampedSampler)")
-				, VirtualTextureIndex, VirtualTextureIndex);
+			const TCHAR* SharedSamplerName = (MipValueMode == TMVM_MipLevel) ? TEXT("View.SharedBilinearClampedSampler") : TEXT("View.SharedBilinearAnisoClampedSampler");
+			TextureName += FString::Printf(TEXT("Material.VirtualTexturePhysical_%d, GetMaterialSharedSampler(Material.VirtualTexturePhysical_%dSampler, %s)")
+				, VirtualTextureIndex, VirtualTextureIndex, SharedSamplerName);
 		}
 		else
 		{
@@ -4708,16 +4714,23 @@ int32 FHLSLMaterialTranslator::TextureSample(
 
 int32 FHLSLMaterialTranslator::TextureProperty(int32 TextureIndex, EMaterialExposedTextureProperty Property)
 {
-	EMaterialValueType TextureType = GetParameterType(TextureIndex);
-
-	if(TextureType != MCT_Texture2D && TextureType != MCT_TextureVirtual && TextureType != MCT_VolumeTexture)
+	const EMaterialValueType TextureType = GetParameterType(TextureIndex);
+	if (TextureType != MCT_Texture2D &&
+		TextureType != MCT_TextureVirtual &&
+		TextureType != MCT_VolumeTexture &&
+		TextureType != MCT_Texture2DArray)
 	{
-		return Errorf(TEXT("Texture size only available for Texture2D, TextureVirtual, and VolumeTexture, not %s"),DescribeType(TextureType));
+		return Errorf(TEXT("Texture size only available for Texture2D, TextureVirtual, Texture2DArray, and VolumeTexture, not %s"),DescribeType(TextureType));
 	}
 		
-	auto TextureExpression = (FMaterialUniformExpressionTexture*) (*CurrentScopeChunks)[TextureIndex].UniformExpression.GetReference();
+	FMaterialUniformExpressionTexture* TextureExpression = (*CurrentScopeChunks)[TextureIndex].UniformExpression->GetTextureUniformExpression();
+	if (!TextureExpression)
+	{
+		return Errorf(TEXT("Expected a texture expression"));
+	}
 
-	return AddUniformExpression(new FMaterialUniformExpressionTextureProperty(TextureExpression, Property), (TextureType == MCT_VolumeTexture ? MCT_Float3 : MCT_Float2), TEXT(""));
+	const EMaterialValueType ValueType = (TextureType == MCT_VolumeTexture || TextureType == MCT_Texture2DArray) ? MCT_Float3 : MCT_Float2;
+	return AddUniformExpression(new FMaterialUniformExpressionTextureProperty(TextureExpression, Property), ValueType, TEXT(""));
 }
 
 int32 FHLSLMaterialTranslator::TextureDecalMipmapLevel(int32 TextureSizeInput)
@@ -4781,7 +4794,11 @@ int32 FHLSLMaterialTranslator::PixelDepth()
 	{
 		return Errorf(TEXT("Invalid node used in hull/domain shader input!"));
 	}
-	return AddInlinedCodeChunk(MCT_Float, TEXT("GetScreenPosition(Parameters).w"));		
+	if (Material->IsTranslucencyWritingVelocity())
+	{
+		return Errorf(TEXT("Translucenct material with 'Output Velocity' enabled will write to depth buffer, therefore cannot read from depth buffer at the same time."));
+	}
+	return AddInlinedCodeChunk(MCT_Float, TEXT("GetPixelDepth(Parameters)"));
 }
 
 /** Calculate screen aligned UV coordinates from an offset fraction or texture coordinate */
@@ -7420,7 +7437,7 @@ int32 FHLSLMaterialTranslator::CustomExpression( class UMaterialExpressionCustom
 		}
 		Code.ReplaceInline(TEXT("\n"), TEXT("\r\n"), ESearchCase::CaseSensitive);
 
-		FString ParametersType = ShaderFrequency == SF_Vertex ? TEXT("Vertex") : (ShaderFrequency == SF_Domain ? TEXT("Tessellation") : TEXT("Pixel"));
+		FString ParametersType = ShaderFrequency == SF_Vertex ? TEXT("Vertex") : ((ShaderFrequency == SF_Domain || ShaderFrequency == SF_Hull) ? TEXT("Tessellation") : TEXT("Pixel"));
 
 		FMaterialCustomExpressionEntry& Entry = CustomExpressions.AddDefaulted_GetRef();
 		CustomEntry = &Entry;
@@ -7524,6 +7541,11 @@ int32 FHLSLMaterialTranslator::CustomExpression( class UMaterialExpressionCustom
 	}
 
 	check(CustomEntry);
+	if (!CustomEntry->OutputCodeIndex.IsValidIndex(OutputIndex))
+	{
+		return Errorf(TEXT("Invalid custom expression OutputIndex %d"), OutputIndex);
+	}
+
 	int32 Result = CustomEntry->OutputCodeIndex[OutputIndex];
 	if (Custom->IsResultMaterialAttributes(OutputIndex))
 	{

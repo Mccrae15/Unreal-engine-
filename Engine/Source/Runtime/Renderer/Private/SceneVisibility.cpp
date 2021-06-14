@@ -1634,7 +1634,10 @@ static int32 OcclusionCull(FRHICommandListImmediate& RHICmdList, const FScene* S
 	
 	// Disable HZB on OpenGL platforms to avoid rendering artifacts
 	// It can be forced on by setting HZBOcclusion to 2
-	bool bHZBOcclusion = (!IsOpenGLPlatform(GShaderPlatformForFeatureLevel[Scene->GetFeatureLevel()]) && !IsSwitchPlatform(GShaderPlatformForFeatureLevel[Scene->GetFeatureLevel()]) && GHZBOcclusion) || (GHZBOcclusion == 2);
+	bool bHZBOcclusion = !IsOpenGLPlatform(GShaderPlatformForFeatureLevel[Scene->GetFeatureLevel()]);
+	bHZBOcclusion = bHZBOcclusion && GHZBOcclusion;
+	bHZBOcclusion = bHZBOcclusion && FDataDrivenShaderPlatformInfo::GetSupportsHZBOcclusion(GShaderPlatformForFeatureLevel[Scene->GetFeatureLevel()]);
+	bHZBOcclusion = bHZBOcclusion || (GHZBOcclusion == 2);
 
 	// Use precomputed visibility data if it is available.
 	if (View.PrecomputedVisibilityData)
@@ -1930,6 +1933,7 @@ struct FRelevancePacket
 	bool bTranslucentSurfaceLighting;
 	bool bUsesSceneDepth;
 	bool bUsesCustomDepthStencil;
+	bool bShouldRenderDepthToTranslucency;
 	bool bSceneHasSkyMaterial;
 	bool bHasSingleLayerWaterMaterial;
 	bool bHasTranslucencySeparateModulation;
@@ -1966,6 +1970,7 @@ struct FRelevancePacket
 		, bTranslucentSurfaceLighting(false)
 		, bUsesSceneDepth(false)
 		, bUsesCustomDepthStencil(false)
+		, bShouldRenderDepthToTranslucency(false)
 		, bSceneHasSkyMaterial(false)
 		, bHasSingleLayerWaterMaterial(false)
 		, bHasTranslucencySeparateModulation(false)
@@ -2092,6 +2097,7 @@ struct FRelevancePacket
 			bSceneHasSkyMaterial |= ViewRelevance.bUsesSkyMaterial;
 			bHasSingleLayerWaterMaterial |= ViewRelevance.bUsesSingleLayerWaterMaterial;
 			bHasTranslucencySeparateModulation |= ViewRelevance.bSeparateTranslucencyModulate;
+			bShouldRenderDepthToTranslucency |= ViewRelevance.bShouldRenderDepthToTranslucency;
 
 			if (ViewRelevance.bRenderCustomDepth)
 			{
@@ -2467,6 +2473,7 @@ struct FRelevancePacket
 		WriteView.bHasDistortionPrimitives |= bHasDistortionPrimitives;
 		WriteView.bHasCustomDepthPrimitives |= bHasCustomDepthPrimitives;
 		WriteView.bUsesCustomDepthStencilInTranslucentMaterials |= bUsesCustomDepthStencil;
+		WriteView.bShouldRenderDepthToTranslucency |= bShouldRenderDepthToTranslucency;
 		DirtyIndirectLightingCacheBufferPrimitives.AppendTo(WriteView.DirtyIndirectLightingCacheBufferPrimitives);
 
 		WriteView.MeshDecalBatches.Append(MeshDecalBatches);
@@ -3185,10 +3192,17 @@ void FSceneRenderer::PreVisibilityFrameSetup(FRHICommandListImmediate& RHICmdLis
 		{
 			float EffectivePrimaryResolutionFraction = float(View.ViewRect.Width()) / float(View.GetSecondaryViewRectSize().X);
 
+			bool bIsMobileTAA = IsMobilePlatform(View.GetShaderPlatform()) && !SupportsGen4TAA(View.GetShaderPlatform());
+
 			// Compute number of TAA samples.
 			int32 TemporalAASamples = CVarTemporalAASamplesValue;
 			{
-				if (bTemporalUpsampling)
+				if (bIsMobileTAA)
+				{
+					// Only support 2 samples for mobile temporal AA.
+					TemporalAASamples = 2;
+				}
+				else if(bTemporalUpsampling)
 				{
 					// When doing TAA upsample with screen percentage < 100%, we need extra temporal samples to have a
 					// constant temporal sample density for final output pixels to avoid output pixel aligned converging issues.
@@ -3218,7 +3232,15 @@ void FSceneRenderer::PreVisibilityFrameSetup(FRHICommandListImmediate& RHICmdLis
 
 			// Choose sub pixel sample coordinate in the temporal sequence.
 			float SampleX, SampleY;
-			if (View.PrimaryScreenPercentageMethod == EPrimaryScreenPercentageMethod::TemporalUpscale)
+			if (bIsMobileTAA)
+			{
+				float SamplesX[] = { -8.0f / 16.0f, 0.0 / 16.0f };
+				float SamplesY[] = { /* - */ 0.0f / 16.0f, 8.0 / 16.0f };
+				check(TemporalAASamples == UE_ARRAY_COUNT(SamplesX));
+				SampleX = SamplesX[TemporalSampleIndex];
+				SampleY = SamplesY[TemporalSampleIndex];
+			}
+			else if (View.PrimaryScreenPercentageMethod == EPrimaryScreenPercentageMethod::TemporalUpscale)
 			{
 				// Uniformly distribute temporal jittering in [-.5; .5], because there is no longer any alignement of input and output pixels.
 				SampleX = Halton(TemporalSampleIndex + 1, 2) - 0.5f;

@@ -769,7 +769,13 @@ FSceneView::FSceneView(const FSceneViewInitOptions& InitOptions)
 	// OpenGL Gamma space output in GLSL flips Y when rendering directly to the back buffer (so not needed on PC, as we never render directly into the back buffer)
 	auto ShaderPlatform = GShaderPlatformForFeatureLevel[FeatureLevel];
 	bool bUsingMobileRenderer = FSceneInterface::GetShadingPath(FeatureLevel) == EShadingPath::Mobile;
-	bool bPlatformRequiresReverseCulling = ((IsOpenGLPlatform(ShaderPlatform) || IsSwitchPlatform(ShaderPlatform)) && bUsingMobileRenderer && !IsPCPlatform(ShaderPlatform) && !IsVulkanMobilePlatform(ShaderPlatform));
+
+	bool bPlatformRequiresReverseCulling = IsOpenGLPlatform(ShaderPlatform);
+	bPlatformRequiresReverseCulling = bPlatformRequiresReverseCulling || FDataDrivenShaderPlatformInfo::GetRequiresReverseCullingOnMobile(ShaderPlatform);
+	bPlatformRequiresReverseCulling = bPlatformRequiresReverseCulling && bUsingMobileRenderer;
+	bPlatformRequiresReverseCulling = bPlatformRequiresReverseCulling && !IsPCPlatform(ShaderPlatform);
+	bPlatformRequiresReverseCulling = bPlatformRequiresReverseCulling && !IsVulkanMobilePlatform(ShaderPlatform);
+
 	static auto* MobileHDRCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileHDR"));
 	check(MobileHDRCvar);
 	const bool bSkipPostprocessing = MobileHDRCvar->GetValueOnAnyThread() == 0;
@@ -1574,6 +1580,20 @@ void FSceneView::OverridePostProcessSettings(const FPostProcessSettings& Src, fl
 			Dest.PathTracingFilterWidth = Src.PathTracingFilterWidth;
 		}
 
+		if (Src.bOverride_PathTracingEnableEmissive)
+		{
+			Dest.PathTracingEnableEmissive = Src.PathTracingEnableEmissive;
+		}
+
+		if (Src.bOverride_PathTracingMaxPathExposure)
+		{
+			Dest.PathTracingMaxPathExposure = Src.PathTracingMaxPathExposure;
+		}
+
+		if (Src.bOverride_PathTracingEnableDenoiser)
+		{
+			Dest.PathTracingEnableDenoiser = Src.PathTracingEnableDenoiser;
+		}
 
 		if (Src.bOverride_DepthOfFieldBladeCount)
 		{

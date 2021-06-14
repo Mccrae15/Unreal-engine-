@@ -14,8 +14,6 @@
 #include "IDatasmithSceneElements.h"
 #include "DatasmithSceneFactory.h"
 #include "DatasmithTranslator.h"
-#include "MasterMaterials/DatasmithMasterMaterialManager.h"
-#include "MaterialSelectors/DatasmithRuntimeRevitMaterialSelector.h"
 
 #include "Async/Async.h"
 #include "Math/BoxSphereBounds.h"
@@ -35,16 +33,12 @@ const TCHAR* EmptyScene = TEXT("Nothing Loaded");
 // Use to force sequential update of game content
 std::atomic_bool ADatasmithRuntimeActor::bImportingScene(false);
 
-TSharedPtr<FDatasmithMasterMaterialSelector> ADatasmithRuntimeActor::ExistingRevitSelector;
-TSharedPtr<FDatasmithMasterMaterialSelector> ADatasmithRuntimeActor::RuntimeRevitSelector;
 TUniquePtr<DatasmithRuntime::FTranslationThread> ADatasmithRuntimeActor::TranslationThread;
 TArray<TStrongObjectPtr<UDatasmithOptionsBase>> DatasmithRuntime::FTranslationThread::AllOptions;
 FDatasmithTessellationOptions* DatasmithRuntime::FTranslationThread::TessellationOptions = nullptr;
 
 void ADatasmithRuntimeActor::OnStartupModule(bool bCADRuntimeSupported)
 {
-	RuntimeRevitSelector = MakeShared< FDatasmithRuntimeRevitMaterialSelector >();
-
 	using namespace DatasmithRuntime;
 
 #if PLATFORM_WINDOWS && PLATFORM_64BITS
@@ -63,8 +57,6 @@ void ADatasmithRuntimeActor::OnStartupModule(bool bCADRuntimeSupported)
 
 void ADatasmithRuntimeActor::OnShutdownModule()
 {
-	ExistingRevitSelector.Reset();
-	RuntimeRevitSelector.Reset();
 	DatasmithRuntime::FTranslationThread::AllOptions.Empty();
 	DatasmithRuntime::FTranslationThread::TessellationOptions = nullptr;
 	TranslationThread.Reset();
@@ -76,11 +68,7 @@ ADatasmithRuntimeActor::ADatasmithRuntimeActor()
 	, bReceivingStarted(false)
 	, bReceivingEnded(false)
 {
-	if (!RuntimeRevitSelector.IsValid())
-	{
-	}
-
-	RootComponent = NewObject< USceneComponent >( this, USceneComponent::StaticClass(), TEXT("DatasmithRuntimeComponent"), RF_Transactional );
+	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("DatasmithRuntimeComponent"));
 	AddInstanceComponent( RootComponent );
 	RootComponent->SetMobility(EComponentMobility::Movable);
 	RootComponent->Bounds = DefaultBounds;
@@ -127,7 +115,6 @@ void ADatasmithRuntimeActor::Tick(float DeltaTime)
 			}
 			else
 			{
-				EnableSelector(true);
 				bBuilding = true;
 
 				SceneImporter->IncrementalUpdate(SceneElement.ToSharedRef(), UpdateContext);
@@ -160,6 +147,8 @@ void ADatasmithRuntimeActor::BeginPlay()
 
 void ADatasmithRuntimeActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	Reset();
+
 	// Unregister to DirectLink
 	DirectLinkHelper->UnregisterDestination();
 	DirectLinkHelper.Reset();
@@ -199,7 +188,6 @@ void ADatasmithRuntimeActor::OnNewScene(const DirectLink::FSceneIdentifier& Scen
 
 void ADatasmithRuntimeActor::OnAddElement(DirectLink::FSceneGraphId ElementId, TSharedPtr<IDatasmithElement> Element)
 {
-	UE_LOG(LogDatasmithRuntime, Log, TEXT("ADatasmithRuntimeActor::OnAddElement"));
 	Progress += ElementDeltaStep;
 	if (bNewScene == false)
 	{
@@ -210,32 +198,30 @@ void ADatasmithRuntimeActor::OnAddElement(DirectLink::FSceneGraphId ElementId, T
 void ADatasmithRuntimeActor::OnRemovedElement(DirectLink::FSceneGraphId ElementId)
 {
 	Progress += ElementDeltaStep;
-	UE_LOG(LogDatasmithRuntime, Log, TEXT("ADatasmithRuntimeActor::OnRemovedElement"));
 	UpdateContext.Deletions.Add(ElementId);
 }
 
 void ADatasmithRuntimeActor::OnChangedElement(DirectLink::FSceneGraphId ElementId, TSharedPtr<IDatasmithElement> Element)
 {
 	Progress += ElementDeltaStep;
-	UE_LOG(LogDatasmithRuntime, Log, TEXT("ADatasmithRuntimeActor::OnUpdateElement"));
 	UpdateContext.Updates.Add(Element);
 }
 
 bool ADatasmithRuntimeActor::IsConnected()
 {
-	return DirectLinkHelper->IsConnected();
+	return DirectLinkHelper.IsValid() ? DirectLinkHelper->IsConnected() : false;
 }
 
 FString ADatasmithRuntimeActor::GetSourceName()
 {
-	return DirectLinkHelper->GetSourceName();
+	return DirectLinkHelper.IsValid() ? DirectLinkHelper->GetSourceName() : FString();
 }
 
 bool ADatasmithRuntimeActor::OpenConnectionWithIndex(int32 SourceIndex)
 {
 	using namespace DatasmithRuntime;
 
-	if (DirectLinkHelper->CanConnect())
+	if (DirectLinkHelper.IsValid() && DirectLinkHelper->CanConnect())
 	{
 		const TArray<FDatasmithRuntimeSourceInfo>& SourcesList = FDestinationProxy::GetListOfSources();
 
@@ -258,7 +244,7 @@ int32 ADatasmithRuntimeActor::GetSourceIndex()
 {
 	using namespace DatasmithRuntime;
 
-	if (DirectLinkHelper->IsConnected())
+	if (DirectLinkHelper.IsValid() && DirectLinkHelper->IsConnected())
 	{
 		const TArray<FDatasmithRuntimeSourceInfo>& SourcesList = FDestinationProxy::GetListOfSources();
 
@@ -276,7 +262,7 @@ int32 ADatasmithRuntimeActor::GetSourceIndex()
 
 void ADatasmithRuntimeActor::CloseConnection()
 {
-	if (DirectLinkHelper->IsConnected())
+	if (DirectLinkHelper.IsValid() && DirectLinkHelper->IsConnected())
 	{
 		DirectLinkHelper->CloseConnection();
 		Reset();
@@ -301,11 +287,12 @@ void ADatasmithRuntimeActor::ApplyNewScene()
 
 	UE_LOG(LogDatasmithRuntime, Log, TEXT("ADatasmithRuntimeActor::ApplyNewScene"));
 
-	Reset();
+	SceneImporter->Reset(true);
 
-	EnableSelector(true);
+	RootComponent->Bounds = DefaultBounds;
 
 	bBuilding = true;
+	Progress = 0.f;
 	LoadedScene = SceneElement->GetName();
 	SceneImporter->StartImport( SceneElement.ToSharedRef(), ImportOptions );
 
@@ -319,11 +306,6 @@ void ADatasmithRuntimeActor::Reset()
 	// Reset called while importing a scene, update flag accordingly
 	if (bBuilding || bReceivingStarted)
 	{
-		if (bBuilding)
-		{
-			EnableSelector(false);
-		}
-
 		bImportingScene = false;
 	}
 
@@ -341,8 +323,6 @@ void ADatasmithRuntimeActor::OnImportEnd()
 {
 	Translator.Reset();
 
-	EnableSelector(false);
-
 	bBuilding = false;
 
 	// Allow any other DatasmithRuntime actors to import concurrently
@@ -350,22 +330,6 @@ void ADatasmithRuntimeActor::OnImportEnd()
 
 	bReceivingStarted = false;
 	bReceivingEnded = false;
-}
-
-
-void ADatasmithRuntimeActor::EnableSelector(bool bEnable)
-{
-	if (bEnable)
-	{
-		// Overwrite Revit material selector with the one of DatasmithRuntime
-		ExistingRevitSelector = FDatasmithMasterMaterialManager::Get().GetSelector(TEXT("Revit"));
-		FDatasmithMasterMaterialManager::Get().RegisterSelector(TEXT("Revit"), RuntimeRevitSelector);
-	}
-	else
-	{
-		// Restore Revit material selector
-		FDatasmithMasterMaterialManager::Get().RegisterSelector(TEXT("Revit"), ExistingRevitSelector);
-	}
 }
 
 bool ADatasmithRuntimeActor::LoadFile(const FString& FilePath)
@@ -380,6 +344,21 @@ bool ADatasmithRuntimeActor::LoadFile(const FString& FilePath)
 	while (bReceivingStarted || bImportingScene)
 	{
 		FPlatformProcess::SleepNoStats(0.1f);
+	}
+
+	// Temporarily manually disable load of ifc, gltf, PlmXml, Rhino and wire files
+	FString Extension = FPaths::GetExtension(FilePath);
+	bool bUnsupported = Extension.Equals(TEXT("3dm"), ESearchCase::IgnoreCase)
+						|| Extension.Equals(TEXT("ifc"), ESearchCase::IgnoreCase)
+						|| Extension.Equals(TEXT("glb"), ESearchCase::IgnoreCase)
+						|| Extension.Equals(TEXT("gltf"), ESearchCase::IgnoreCase)
+						|| Extension.Equals(TEXT("xml"), ESearchCase::IgnoreCase)
+						|| Extension.Equals(TEXT("plmxml"), ESearchCase::IgnoreCase)
+						|| Extension.Equals(TEXT("wire"), ESearchCase::IgnoreCase);
+	if (bUnsupported)
+	{
+		UE_LOG(LogDatasmithRuntime, Log, TEXT("Extension %s is not supported yet."), *Extension);
+		return false;
 	}
 
 #if WITH_EDITOR
@@ -438,14 +417,14 @@ namespace DatasmithRuntime
 		FDatasmithTranslatableSceneSource TranslatableSceneSource(Source);
 		if (!TranslatableSceneSource.IsTranslatable())
 		{
-			RuntimeActor->LoadedScene = TEXT("Loading failed");
+			RuntimeActor->LoadedScene = Source.GetSourceFileExtension() + TEXT(" file format is not supported");
 			return false;
 		}
 
 		TSharedPtr<IDatasmithTranslator> Translator = TranslatableSceneSource.GetTranslator();
 		if (!Translator.IsValid())
 		{
-			RuntimeActor->LoadedScene = TEXT("Loading failed");
+			RuntimeActor->LoadedScene = Source.GetSourceFileExtension() + TEXT(" file format is not supported");
 			return false;
 		}
 

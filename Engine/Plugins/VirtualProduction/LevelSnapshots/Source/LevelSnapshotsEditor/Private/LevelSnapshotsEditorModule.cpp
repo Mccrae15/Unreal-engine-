@@ -2,25 +2,28 @@
 
 #include "LevelSnapshotsEditorModule.h"
 
-#include "LevelSnapshotsEditorProjectSettings.h"
+#include "Settings/LevelSnapshotsEditorProjectSettings.h"
+#include "Settings/LevelSnapshotsEditorDataManagementSettings.h"
 #include "NegatableFilter.h"
-#include "NegatableFilterDetailsCustomization.h"
 #include "LevelSnapshotsEditorCommands.h"
 #include "LevelSnapshotsEditorStyle.h"
+#include "LevelSnapshotsEditorFunctionLibrary.h"
 #include "LevelSnapshotsEditorData.h"
+#include "LevelSnapshotsFunctionLibrary.h"
 #include "LevelSnapshotsUserSettings.h"
+#include "SLevelSnapshotsEditorCreationForm.h"
 #include "Toolkits/LevelSnapshotsEditorToolkit.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
-#include "FileHelpers.h"
 #include "AssetTypeActions/AssetTypeActions_LevelSnapshot.h"
 #include "IAssetTools.h"
 #include "ISettingsModule.h"
 #include "LevelEditor.h"
-#include "LevelSnapshotsFunctionLibrary.h"
-#include "Editor/MainFrame/Private/Menus/SettingsMenu.h"
 #include "ToolMenus.h"
-#include "ToolMenuSection.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Misc/ScopeExit.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "FLevelSnapshotsEditorModule"
 
@@ -38,23 +41,15 @@ void FLevelSnapshotsEditorModule::StartupModule()
 	FLevelSnapshotsEditorStyle::Initialize();
 	FLevelSnapshotsEditorCommands::Register();
 	
-	RegisterMenus();
-	
-	if (RegisterProjectSettings() && ProjectSettingObjectPtr->bEnableLevelSnapshotsToolbarButton)
-	{
-		RegisterEditorToolbar();
-	}
-
-	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	PropertyModule.RegisterCustomClassLayout( UNegatableFilter::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateLambda( []()
-	{
-		return MakeShared<FNegatableFilterDetailsCustomization>();
-	}));
+	// add the menu subsection
+	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FLevelSnapshotsEditorModule::PostEngineInit);
 }
 
 void FLevelSnapshotsEditorModule::ShutdownModule()
 {
 	UToolMenus::UnregisterOwner(this);
+
+	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
 
 	FLevelSnapshotsEditorStyle::Shutdown();
 
@@ -67,33 +62,118 @@ void FLevelSnapshotsEditorModule::ShutdownModule()
 	ISettingsModule& SettingsModule = FModuleManager::LoadModuleChecked<ISettingsModule>("Settings");
 	{
 		SettingsModule.UnregisterSettings("Project", "Plugins", "Level Snapshots");
+		SettingsModule.UnregisterSettings("Project", "Plugins", "Level Snapshots Data Management");
 	}
 }
 
-void FLevelSnapshotsEditorModule::RegisterMenus()
+bool FLevelSnapshotsEditorModule::GetUseCreationForm() const
 {
-	FToolMenuOwnerScoped OwnerScoped(this);
-	UToolMenu* Menu = UToolMenus::Get()->RegisterMenu("MainFrame.MainMenu.Window");
-	FToolMenuSection& Section = Menu->AddSection("ExperimentalTabSpawners", NSLOCTEXT("LevelSnapshots", "ExperimentalTabSpawnersHeading", "Experimental"), FToolMenuInsert("WindowGlobalTabSpawners", EToolMenuInsertType::After));
-	Section.AddMenuEntry("OpenLevelSnapshotsEditor", NSLOCTEXT("LevelSnapshots", "LevelSnapshotsEditor", "Level Snapshots Editor"), FText(), FSlateIcon(), FUIAction(FExecuteAction::CreateRaw(this, &FLevelSnapshotsEditorModule::OpenSnapshotsEditor)));
+	if (ensureMsgf(ProjectSettingsObjectPtr.IsValid(), 
+		TEXT("ProjectSettingsObjectPtr was not valid. Returning false for bUseCreationForm. Check to ensure that Project Settings have been registered for LevelSnapshots.")))
+	{
+		return ProjectSettingsObjectPtr.Get()->bUseCreationForm;
+	}
+	
+	return false;
+}
+
+void FLevelSnapshotsEditorModule::SetUseCreationForm(bool bInUseCreationForm)
+{
+	if (ensureMsgf(ProjectSettingsObjectPtr.IsValid(),
+		TEXT("ProjectSettingsObjectPtr was not valid. Returning false for bUseCreationForm. Check to ensure that Project Settings have been registered for LevelSnapshots.")))
+	{
+		ProjectSettingsObjectPtr.Get()->bUseCreationForm = bInUseCreationForm;
+	}
+}
+
+void FLevelSnapshotsEditorModule::PostEngineInit()
+{
+	RegisterMenuItem();
+
+	if (RegisterProjectSettings() && ProjectSettingsObjectPtr->bEnableLevelSnapshotsToolbarButton)
+	{
+		RegisterEditorToolbar();
+	}
+}
+
+void FLevelSnapshotsEditorModule::RegisterMenuItem()
+{
+	if (FSlateApplication::IsInitialized())
+	{
+		if (IsRunningGame())
+		{
+			return;
+		}
+		
+		TSharedRef<FUICommandList> MenuItemCommandList = MakeShareable(new FUICommandList);
+
+		MenuItemCommandList->MapAction(
+			FLevelSnapshotsEditorCommands::Get().OpenLevelSnapshotsEditorMenuItem,
+			FExecuteAction::CreateRaw(this, &FLevelSnapshotsEditorModule::OpenSnapshotsEditor)
+		);
+		
+		TSharedPtr<FExtender> NewMenuExtender = MakeShareable(new FExtender);
+		NewMenuExtender->AddMenuExtension("ExperimentalTabSpawners", 
+		                                  EExtensionHook::After, 
+		                                  MenuItemCommandList, 
+		                                  FMenuExtensionDelegate::CreateLambda([this] (FMenuBuilder& MenuBuilder)
+		                                  {
+			                                  MenuBuilder.AddMenuEntry(FLevelSnapshotsEditorCommands::Get().OpenLevelSnapshotsEditorMenuItem);
+		                                  }));
+	
+		// Get the Level Editor so we can insert our item into the Level Editor menu subsection
+		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+
+		LevelEditorModule.GetMenuExtensibilityManager()->AddExtender(NewMenuExtender);
+	}
 }
 
 bool FLevelSnapshotsEditorModule::RegisterProjectSettings()
 {
 	ISettingsModule& SettingsModule = FModuleManager::LoadModuleChecked<ISettingsModule>("Settings");
 	{
-		LevelSnapshotsProjectSettingsPtr = SettingsModule.RegisterSettings("Project", "Plugins", "Level Snapshots",
+		// User Project Settings
+		ProjectSettingsSectionPtr = SettingsModule.RegisterSettings("Project", "Plugins", "Level Snapshots",
 			NSLOCTEXT("LevelSnapshots", "LevelSnapshotsSettingsCategoryDisplayName", "Level Snapshots"),
-			NSLOCTEXT("LevelSnapshots", "LevelSnapshotsSettingsDescription", "Configure the Level Snapshots settings"),
+			NSLOCTEXT("LevelSnapshots", "LevelSnapshotsSettingsDescription", "Configure the Level Snapshots user settings"),
 			GetMutableDefault<ULevelSnapshotsEditorProjectSettings>());
 
-		if (LevelSnapshotsProjectSettingsPtr.IsValid())
+		if (ProjectSettingsSectionPtr.IsValid() && ProjectSettingsSectionPtr->GetSettingsObject().IsValid())
 		{
-			ProjectSettingObjectPtr = Cast<ULevelSnapshotsEditorProjectSettings>(LevelSnapshotsProjectSettingsPtr->GetSettingsObject());
+			ProjectSettingsObjectPtr = Cast<ULevelSnapshotsEditorProjectSettings>(ProjectSettingsSectionPtr->GetSettingsObject());
+
+			ProjectSettingsSectionPtr->OnModified().BindRaw(this, &FLevelSnapshotsEditorModule::HandleModifiedProjectSettings);
+		}
+
+		// Data Management Project Settings
+		DataMangementSettingsSectionPtr = SettingsModule.RegisterSettings("Project", "Plugins", "Level Snapshots Data Management",
+			NSLOCTEXT("LevelSnapshots", "LevelSnapshotsDataManagementSettingsCategoryDisplayName", "Level Snapshots Data Management"),
+			NSLOCTEXT("LevelSnapshots", "LevelSnapshotsDataManagementSettingsDescription", "Configure the Level Snapshots path and data settings"),
+			GetMutableDefault<ULevelSnapshotsEditorDataManagementSettings>());
+
+		if (DataMangementSettingsSectionPtr.IsValid() && DataMangementSettingsSectionPtr->GetSettingsObject().IsValid())
+		{
+			DataMangementSettingsObjectPtr = Cast<ULevelSnapshotsEditorDataManagementSettings>(DataMangementSettingsSectionPtr->GetSettingsObject());
+
+			DataMangementSettingsSectionPtr->OnModified().BindRaw(this, &FLevelSnapshotsEditorModule::HandleModifiedProjectSettings);
 		}
 	}
 
-	return ProjectSettingObjectPtr.IsValid();
+	return ProjectSettingsObjectPtr.IsValid();
+}
+
+bool FLevelSnapshotsEditorModule::HandleModifiedProjectSettings()
+{
+	if (ensureMsgf(DataMangementSettingsObjectPtr.IsValid(),
+		TEXT("ProjectSettingsObjectPtr was not valid. Check to ensure that Project Settings have been registered for LevelSnapshots.")))
+	{
+		DataMangementSettingsObjectPtr->ValidateRootLevelSnapshotSaveDirAsGameContentRelative();
+		DataMangementSettingsObjectPtr->SanitizeAllProjectSettingsPaths(true);
+		
+		DataMangementSettingsObjectPtr.Get()->SaveConfig();
+	}
+	
+	return true;
 }
 
 void FLevelSnapshotsEditorModule::RegisterEditorToolbar()
@@ -133,7 +213,7 @@ void FLevelSnapshotsEditorModule::MapEditorToolbarActions()
 	);
 
 	EditorToolbarButtonCommandList->MapAction(
-		FLevelSnapshotsEditorCommands::Get().OpenLevelSnapshotsEditor,
+		FLevelSnapshotsEditorCommands::Get().OpenLevelSnapshotsEditorToolbarButton,
 		FExecuteAction::CreateRaw(this, &FLevelSnapshotsEditorModule::OpenSnapshotsEditor)
 	);
 
@@ -146,11 +226,11 @@ void FLevelSnapshotsEditorModule::MapEditorToolbarActions()
 void FLevelSnapshotsEditorModule::CreateEditorToolbarButton(FToolBarBuilder& Builder)
 {
 	Builder.AddToolBarButton(
-		FUIAction(FExecuteAction::CreateStatic(&FLevelSnapshotsEditorModule::CallTakeSnapshot)),
+		FUIAction(FExecuteAction::CreateRaw(this, &FLevelSnapshotsEditorModule::BuildPathsToSaveSnapshotWithOptionalForm)),
 		NAME_None,
 		NSLOCTEXT("LevelSnapshots", "LevelSnapshots", "Level Snapshots"), // Set Text under image
 		NSLOCTEXT("LevelSnapshots", "LevelSnapshotsToolbarButtonTooltip", "Take snapshot with optional form"), //  Set tooltip
-		FSlateIcon(FLevelSnapshotsEditorStyle::GetStyleSetName(), "LevelSnapshots.ToolbarButton") // Set image
+		FSlateIcon(FLevelSnapshotsEditorStyle::GetStyleSetName(), "LevelSnapshots.ToolbarButton", "LevelSnapshots.ToolbarButton.Small") // Set image
 	);
 	
 	Builder.AddComboButton(
@@ -171,42 +251,137 @@ TSharedRef<SWidget> FLevelSnapshotsEditorModule::FillEditorToolbarComboButtonMen
 	MenuBuilder.AddMenuEntry(FLevelSnapshotsEditorCommands::Get().UseCreationFormToggle);
 	MenuBuilder.EndSection();
 	MenuBuilder.AddMenuSeparator();
-	MenuBuilder.AddMenuEntry(FLevelSnapshotsEditorCommands::Get().OpenLevelSnapshotsEditor);
+	MenuBuilder.AddMenuEntry(FLevelSnapshotsEditorCommands::Get().OpenLevelSnapshotsEditorToolbarButton);
 	MenuBuilder.AddMenuEntry(FLevelSnapshotsEditorCommands::Get().LevelSnapshotsSettings);
 
 	// Create the widget so it can be attached to the combo button
 	return MenuBuilder.MakeWidget();
 }
 
-void FLevelSnapshotsEditorModule::CallTakeSnapshot()
+void FLevelSnapshotsEditorModule::BuildPathsToSaveSnapshotWithOptionalForm() const
+{	
+	check(ProjectSettingsObjectPtr.IsValid());
+	check(DataMangementSettingsObjectPtr.IsValid());
+
+	// Creation Form
+
+	if (ProjectSettingsObjectPtr.Get()->bUseCreationForm)
+	{
+		TSharedRef<SWidget> CreationForm = 
+			FLevelSnapshotsEditorCreationForm::MakeAndShowCreationWindow(
+				FCloseCreationFormDelegate::CreateRaw(this, &FLevelSnapshotsEditorModule::HandleFormReply), 
+				ProjectSettingsObjectPtr.Get(), DataMangementSettingsObjectPtr.Get());
+	}
+	else
+	{
+		TakeAndSaveSnapshot(FText::GetEmpty());
+	}
+}
+
+void FLevelSnapshotsEditorModule::HandleFormReply(bool bWasCreateSnapshotPressed, FText InDescription) const
+{
+	if (bWasCreateSnapshotPressed)
+	{
+		TakeAndSaveSnapshot(InDescription, true);
+	}
+}
+
+void FLevelSnapshotsEditorModule::TakeAndSaveSnapshot(const FText& InDescription, const bool bShouldUseOverrides) const
 {
 	if (!ensure(GEditor))
 	{
 		return;
 	}
-	UWorld* World = GEditor->GetEditorWorldContext().World();
-	if (!ensure(World))
+	UWorld* World = ULevelSnapshotsEditorData::GetEditorWorld();
+	if (!ensure(World && ProjectSettingsObjectPtr.IsValid()))
 	{
 		return;
 	}
+	ULevelSnapshotsEditorDataManagementSettings* DataManagementSettings = DataMangementSettingsObjectPtr.Get();
+
+
+	// Notify the user that a snapshot is being created
+	FNotificationInfo Notification(NSLOCTEXT("LevelSnapshots", "NotificationFormatText_CreatingSnapshot", "Creating Level Snapshot"));
+	Notification.Image = FLevelSnapshotsEditorStyle::GetBrush(TEXT("LevelSnapshots.ToolbarButton"));
+	Notification.bUseThrobber = true;
+	Notification.bUseSuccessFailIcons = true;
+	Notification.ExpireDuration = 2.f;
+	Notification.bFireAndForget = false;
+
+	TSharedPtr<SNotificationItem> NotificationItem = FSlateNotificationManager::Get().AddNotification(Notification);
+	NotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
+	ON_SCOPE_EXIT
+	{
+		NotificationItem->ExpireAndFadeout();
+	};
+
 	
-	ULevelSnapshot* Snapshot = ULevelSnapshotsFunctionLibrary::TakeLevelSnapshot(World, "NewSnapshot");
+	DataManagementSettings->ValidateRootLevelSnapshotSaveDirAsGameContentRelative();
+	DataManagementSettings->SanitizeAllProjectSettingsPaths(true);
+
+	const FText& NewSnapshotDir = ULevelSnapshotsEditorDataManagementSettings::ParseTokensInText(FText::FromString(
+		bShouldUseOverrides && DataManagementSettings->IsPathOverridden() ? 
+		DataManagementSettings->GetSaveDirOverride() : DataManagementSettings->LevelSnapshotSaveDir), World->GetName());
+	const FText& NewSnapshotName = ULevelSnapshotsEditorDataManagementSettings::ParseTokensInText(FText::FromString(
+		bShouldUseOverrides && DataManagementSettings->IsNameOverridden() ?
+		DataManagementSettings->GetNameOverride() : DataManagementSettings->DefaultLevelSnapshotName), World->GetName());
+
+	const FString& ValidatedName = FPaths::MakeValidFileName(NewSnapshotName.ToString());
+	const FString& PathToSavePackage = FPaths::Combine(DataManagementSettings->RootLevelSnapshotSaveDir.Path, NewSnapshotDir.ToString(), ValidatedName);
+
+
+	// Take snapshot
+	UPackage* Package = CreatePackage(*PathToSavePackage);
+	ULevelSnapshot* Snapshot = ULevelSnapshotsFunctionLibrary::TakeLevelSnapshot_Internal(World, *ValidatedName, Package, InDescription.ToString());
 	if (!ensure(Snapshot))
 	{
 		return;
 	}
-	// "Tricks" FEditorFileUtils::SaveAssetsAs into putting the snapshot into a non-transient package
-	Snapshot->SetFlags(RF_Transient);
+	Snapshot->SetFlags(RF_Public | RF_Standalone);
+
 	
-	TArray<UObject*> SavedAssets;
-	FEditorFileUtils::SaveAssetsAs({ Snapshot }, SavedAssets);
+	// Take screenshot before we save
+	const FString& PackageFileName = FPackageName::LongPackageNameToFilename(PathToSavePackage, FPackageName::GetAssetPackageExtension());
+	const bool bPathIsValid = FPaths::ValidatePath(PackageFileName);
+	if (bPathIsValid)
+	{
+		ULevelSnapshotsEditorFunctionLibrary::GenerateThumbnailForSnapshotAsset(Snapshot);
+	}
+
+	
+	// Notify the user of the outcome
+	if (bPathIsValid && UPackage::SavePackage(Package, Snapshot, RF_Public | RF_Standalone, *PackageFileName))
+	{
+		// If successful
+		NotificationItem->SetText(
+			FText::Format(
+				NSLOCTEXT("LevelSnapshots", "NotificationFormatText_CreateSnapshotSuccess", "Successfully created Level Snapshot \"{0}\""), NewSnapshotName));
+		NotificationItem->SetCompletionState(SNotificationItem::CS_Success);
+	}
+	else
+	{
+		NotificationItem->SetText(
+			FText::Format(
+				NSLOCTEXT("LevelSnapshots", "NotificationFormatText_CreateSnapshotSuccess", "Failed to create Level Snapshot \"{0}\". Check the file name."), NewSnapshotName));
+		NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
+	}
+}
+
+void FLevelSnapshotsEditorModule::OpenLevelSnapshotsDialogWithAssetSelected(const FAssetData& InAssetData)
+{
+	OpenSnapshotsEditor();
+
+	if (SnapshotEditorToolkit.IsValid())
+	{
+		SnapshotEditorToolkit.Pin()->OpenLevelSnapshotsDialogWithAssetSelected(InAssetData);
+	}
 }
 
 void FLevelSnapshotsEditorModule::OpenSnapshotsEditor()
 {
 	if (SnapshotEditorToolkit.IsValid())
 	{
-		SnapshotEditorToolkit.Pin()->ShowEditor();
+		SnapshotEditorToolkit.Pin()->BringToolkitToFront();
 	}
 	else
 	{
@@ -217,7 +392,7 @@ void FLevelSnapshotsEditorModule::OpenSnapshotsEditor()
 
 void FLevelSnapshotsEditorModule::OpenLevelSnapshotsSettings()
 {
-	FSettingsMenu::OpenSettings("Project", "Plugins", "Level Snapshots");
+	FModuleManager::LoadModuleChecked<ISettingsModule>("Settings").ShowViewer("Project", "Plugins", "Level Snapshots");
 }
 
 ULevelSnapshotsEditorData* FLevelSnapshotsEditorModule::AllocateTransientPreset()

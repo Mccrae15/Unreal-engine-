@@ -627,13 +627,18 @@ bool MovieSceneToolHelpers::SetTakeNumber(const UMovieSceneSection* Section, uin
 	return FMovieSceneToolsModule::Get().SetTakeNumber(Section, InTakeNumber);
 }
 
-int32 MovieSceneToolHelpers::FindAvailableRowIndex(UMovieSceneTrack* InTrack, UMovieSceneSection* InSection)
+int32 MovieSceneToolHelpers::FindAvailableRowIndex(UMovieSceneTrack* InTrack, UMovieSceneSection* InSection, const TArray<UMovieSceneSection*>& SectionsToDisregard)
 {
 	for (int32 RowIndex = 0; RowIndex <= InTrack->GetMaxRowIndex(); ++RowIndex)
 	{
 		bool bFoundIntersect = false;
 		for (UMovieSceneSection* Section : InTrack->GetAllSections())
 		{
+			if (SectionsToDisregard.Contains(Section))
+			{
+				continue;
+			}
+	
 			if (!Section->HasStartFrame() || !Section->HasEndFrame() || !InSection->HasStartFrame() || !InSection->HasEndFrame())
 			{
 				bFoundIntersect = true;
@@ -653,6 +658,30 @@ int32 MovieSceneToolHelpers::FindAvailableRowIndex(UMovieSceneTrack* InTrack, UM
 	}
 
 	return InTrack->GetMaxRowIndex() + 1;
+}
+
+
+bool MovieSceneToolHelpers::OverlapsSection(UMovieSceneTrack* InTrack, UMovieSceneSection* InSection, const TArray<UMovieSceneSection*>& SectionsToDisregard)
+{
+	for (UMovieSceneSection* Section : InTrack->GetAllSections())
+	{
+		if (SectionsToDisregard.Contains(Section))
+		{
+			continue;
+		}
+	
+		if (!Section->HasStartFrame() || !Section->HasEndFrame() || !InSection->HasStartFrame() || !InSection->HasEndFrame())
+		{
+			return true;
+		}
+
+		if (Section != InSection && Section->GetRange().Overlaps(InSection->GetRange()))
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 TSharedRef<SWidget> MovieSceneToolHelpers::MakeEnumComboBox(const UEnum* InEnum, TAttribute<int32> InCurrentValue, SEnumComboBox::FOnEnumSelectionChanged InOnSelectionChanged)
@@ -1086,9 +1115,24 @@ bool ImportFBXProperty(FString NodeName, FString AnimatedPropertyName, FGuid Obj
 	return false;
 }
 
-void MovieSceneToolHelpers::CameraAdded(UMovieScene* OwnerMovieScene, FGuid CameraGuid, FFrameNumber FrameNumber)
-{
 
+void MovieSceneToolHelpers::LockCameraActorToViewport(const TSharedPtr<ISequencer>& Sequencer, ACameraActor* CameraActor)
+{
+	Sequencer->SetPerspectiveViewportCameraCutEnabled(false);
+
+	// Lock the viewport to this camera
+	if (CameraActor && CameraActor->GetLevel())
+	{
+		GCurrentLevelEditingViewportClient->SetCinematicActorLock(nullptr);
+		GCurrentLevelEditingViewportClient->SetActorLock(CameraActor);
+		GCurrentLevelEditingViewportClient->bLockedCameraView = true;
+		GCurrentLevelEditingViewportClient->UpdateViewForLockedActor();
+		GCurrentLevelEditingViewportClient->Invalidate();
+	}
+}
+
+void MovieSceneToolHelpers::CreateCameraCutSectionForCamera(UMovieScene* OwnerMovieScene, FGuid CameraGuid, FFrameNumber FrameNumber)
+{
 	// If there's a cinematic shot track, no need to set this camera to a shot
 	UMovieSceneTrack* CinematicShotTrack = OwnerMovieScene->FindMasterTrack(UMovieSceneCinematicShotTrack::StaticClass());
 	if (CinematicShotTrack)
@@ -1669,7 +1713,7 @@ static bool ImportFBXTransformToChannels(FString NodeName, FFrameNumber StartFra
 	FRichCurve Scale[3];
 	FTransform DefaultTransform;
 	const bool bUseSequencerCurve = true;
-	CurveAPI.GetConvertedTransformCurveData(NodeName, Translation[0], Translation[1], Translation[2], EulerRotation[0], EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2], DefaultTransform, true);
+	CurveAPI.GetConvertedTransformCurveData(NodeName, Translation[0], Translation[1], Translation[2], EulerRotation[0], EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2], DefaultTransform, true, ImportFBXSettings->ImportUniformScale);
 
 
 	FVector Location = DefaultTransform.GetLocation(), Rotation = DefaultTransform.GetRotation().Euler(), Scale3D = DefaultTransform.GetScale3D();
@@ -1855,6 +1899,7 @@ static void PrepForInsertReplaceAnimation(bool bInsert, const FFBXNodeAndChannel
 	}
 
 	FFrameNumber Diff = EndFrame - StartFrame;
+	FrameToInsertOrReplace += StartFrame;
 	if (bInsert)
 	{
 		for (FMovieSceneChannel* Channel : Channels)
@@ -2421,7 +2466,6 @@ bool MovieSceneToolHelpers::ImportFBXIntoChannelsWithDialog(const TSharedRef<ISe
 	return true;
 
 }
-
 bool ImportFBXTransform(FString NodeName, FGuid ObjectBinding, UnFbx::FFbxCurvesAPI& CurveAPI, UMovieSceneSequence* InSequence)
 {
 	UMovieScene* MovieScene = InSequence->GetMovieScene();
@@ -2434,7 +2478,7 @@ bool ImportFBXTransform(FString NodeName, FGuid ObjectBinding, UnFbx::FFbxCurves
 	FRichCurve Scale[3];
 	FTransform DefaultTransform;
 	const bool bUseSequencerCurve = true;
-	CurveAPI.GetConvertedTransformCurveData(NodeName, Translation[0], Translation[1], Translation[2], EulerRotation[0], EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2], DefaultTransform, bUseSequencerCurve);
+	CurveAPI.GetConvertedTransformCurveData(NodeName, Translation[0], Translation[1], Translation[2], EulerRotation[0], EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2], DefaultTransform, bUseSequencerCurve, ImportFBXSettings->ImportUniformScale);
 
  	UMovieScene3DTransformTrack* TransformTrack = MovieScene->FindTrack<UMovieScene3DTransformTrack>(ObjectBinding); 
 	if (!TransformTrack)
@@ -2794,11 +2838,16 @@ void ImportFBXCamera(UnFbx::FFbxImporter* FbxImporter, UMovieSceneSequence* InSe
 
 	UMovieScene* MovieScene = InSequence->GetMovieScene();
 
+	TArray<FbxCamera*> AllCameras;
+	MovieSceneToolHelpers::GetCameras(FbxImporter->Scene->GetRootNode(), AllCameras);
+
+	if (AllCameras.Num() == 0)
+	{
+		return;
+	}
+
 	if (bCreateCameras)
 	{
-		TArray<FbxCamera*> AllCameras;
-		MovieSceneToolHelpers::GetCameras(FbxImporter->Scene->GetRootNode(), AllCameras);
-
 		UWorld* World = GCurrentLevelEditingViewportClient ? GCurrentLevelEditingViewportClient->GetWorld() : nullptr;
 
 		// Find unmatched cameras

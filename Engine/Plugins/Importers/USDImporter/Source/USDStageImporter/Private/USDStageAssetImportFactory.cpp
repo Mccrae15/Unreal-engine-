@@ -37,7 +37,7 @@ UUsdStageAssetImportFactory::UUsdStageAssetImportFactory(const FObjectInitialize
 
 	for ( const FString& Extension : UnrealUSDWrapper::GetAllSupportedFileFormats() )
 	{
-		Formats.Add(FString::Printf(TEXT("%s; Universal Scene Descriptor files"), *Extension));
+		Formats.Add(FString::Printf(TEXT("%s; Universal Scene Description files"), *Extension));
 	}
 }
 
@@ -54,6 +54,11 @@ UClass* UUsdStageAssetImportFactory::ResolveSupportedClass()
 UObject* UUsdStageAssetImportFactory::FactoryCreateFile(UClass* InClass, UObject* InParent, FName InName, EObjectFlags Flags, const FString& Filename, const TCHAR* Parms, FFeedbackContext* Warn, bool& bOutOperationCanceled)
 {
 	UObject* ImportedObject = nullptr;
+
+	if ( AssetImportTask && IsAutomatedImport() )
+	{
+		ImportContext.ImportOptions = Cast<UUsdStageImportOptions>( AssetImportTask->Options );
+	}
 
 	const FString InitialPackagePath = InParent ? InParent->GetName() : TEXT( "/Game/" );
 	const bool bIsReimport = false;

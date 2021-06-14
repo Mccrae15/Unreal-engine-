@@ -279,6 +279,8 @@ FSceneViewState::~FSceneViewState()
 	DestroyRenderResource(AOScreenGridResources);
 	AOScreenGridResources = NULL;
 	DestroyLightPropagationVolume();
+
+	HairStrandsViewData.Release();
 }
 
 #if WITH_EDITOR
@@ -2926,7 +2928,7 @@ void FScene::AddWindSource(UWindDirectionalSourceComponent* WindComponent)
 	{
 		return;
 	}
-
+	ensure(IsInGameThread());
 	WindComponents_GameThread.Add(WindComponent);
 
 	FWindSourceSceneProxy* SceneProxy = WindComponent->CreateSceneProxy();
@@ -2942,6 +2944,7 @@ void FScene::AddWindSource(UWindDirectionalSourceComponent* WindComponent)
 
 void FScene::RemoveWindSource(UWindDirectionalSourceComponent* WindComponent)
 {
+	ensure(IsInGameThread());
 	WindComponents_GameThread.Remove(WindComponent);
 
 	FWindSourceSceneProxy* SceneProxy = WindComponent->SceneProxy;
@@ -2958,6 +2961,39 @@ void FScene::RemoveWindSource(UWindDirectionalSourceComponent* WindComponent)
 				delete SceneProxy;
 			});
 	}
+}
+
+void FScene::UpdateWindSource(UWindDirectionalSourceComponent* WindComponent)
+{
+	// Recreate the scene proxy without touching WindComponents_GameThread
+	// so that this function is kept thread safe when iterating in parallel
+	// over components (unlike AddWindSource and RemoveWindSource)
+	FWindSourceSceneProxy* const OldSceneProxy = WindComponent->SceneProxy;
+	if (OldSceneProxy)
+	{
+		WindComponent->SceneProxy = nullptr;
+
+		ENQUEUE_RENDER_COMMAND(FRemoveWindSourceCommand)(
+			[Scene = this, OldSceneProxy](FRHICommandListImmediate& RHICmdList)
+			{
+				Scene->WindSources.Remove(OldSceneProxy);
+
+				delete OldSceneProxy;
+			});
+	}
+
+	if (WindComponent->IsActive())
+	{
+		FWindSourceSceneProxy* const NewSceneProxy = WindComponent->CreateSceneProxy();
+		WindComponent->SceneProxy = NewSceneProxy;
+
+		ENQUEUE_RENDER_COMMAND(FAddWindSourceCommand)(
+			[Scene = this, NewSceneProxy](FRHICommandListImmediate& RHICmdList)
+			{
+				Scene->WindSources.Add(NewSceneProxy);
+			});
+	}
+
 }
 
 const TArray<FWindSourceSceneProxy*>& FScene::GetWindSources_RenderThread() const
@@ -3736,15 +3772,13 @@ struct FPrimitiveArraySortKey
 	}
 };
 
-static bool ShouldPrimitiveOutputVelocity(const FPrimitiveSceneProxy* Proxy)
+static bool ShouldPrimitiveOutputVelocity(const FPrimitiveSceneProxy* Proxy, const FStaticShaderPlatform ShaderPlatform)
 {
 	bool bShouldPrimitiveOutputVelocity = Proxy->IsMovable() || (!!CVarWPOPrimitivesOutputVelocity.GetValueOnRenderThread() && Proxy->IsUsingWPOMaterial());
 
-	FSceneInterface& Scene = Proxy->GetScene();
+	bool bPlatformSupportsVelocityRendering = PlatformSupportsVelocityRendering(ShaderPlatform);
 
-	bShouldPrimitiveOutputVelocity &= SupportsDesktopTemporalAA(Scene.GetShaderPlatform());
-
-	return bShouldPrimitiveOutputVelocity;
+	return bPlatformSupportsVelocityRendering && bShouldPrimitiveOutputVelocity;
 }
 
 void FScene::UpdateAllPrimitiveSceneInfos(FRHICommandListImmediate& RHICmdList, bool bAsyncCreateLPIs)
@@ -3882,26 +3916,25 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRHICommandListImmediate& RHICmdList, 
 
 			for (int CheckIndex = StartIndex; CheckIndex < RemovedLocalPrimitiveSceneInfos.Num(); CheckIndex++)
 			{
-				checkfSlow(RemovedLocalPrimitiveSceneInfos[CheckIndex]->PackedIndex >= Primitives.Num() - RemovedLocalPrimitiveSceneInfos.Num(), TEXT("Removed item should be at the end"));
+				checkf(RemovedLocalPrimitiveSceneInfos[CheckIndex]->PackedIndex >= Primitives.Num() - RemovedLocalPrimitiveSceneInfos.Num(), TEXT("Removed item should be at the end"));
 			}
 
-			for (int RemoveIndex = StartIndex; RemoveIndex < RemovedLocalPrimitiveSceneInfos.Num(); RemoveIndex++)
-			{
-				int SourceIndex = RemovedLocalPrimitiveSceneInfos[RemoveIndex]->PackedIndex;
-				check(SourceIndex >= (Primitives.Num() - RemovedLocalPrimitiveSceneInfos.Num() + StartIndex));
-				Primitives.Pop();
-				PrimitiveTransforms.Pop();
-				PrimitiveSceneProxies.Pop();
-				PrimitiveBounds.Pop();
-				PrimitiveFlagsCompact.Pop();
-				PrimitiveVisibilityIds.Pop();
-				PrimitiveOcclusionFlags.Pop();
-				PrimitiveComponentIds.Pop();
-				PrimitiveVirtualTextureFlags.Pop();
-				PrimitiveVirtualTextureLod.Pop();
-				PrimitiveOcclusionBounds.Pop();
-				PrimitivesNeedingStaticMeshUpdate.RemoveAt(PrimitivesNeedingStaticMeshUpdate.Num() - 1);
-			}
+			//Remove all items from the location of StartIndex to the end of the arrays.
+			int RemoveCount = RemovedLocalPrimitiveSceneInfos.Num() - StartIndex;
+			int SourceIndex = Primitives.Num() - RemoveCount;
+
+			Primitives.RemoveAt(SourceIndex, RemoveCount);
+			PrimitiveTransforms.RemoveAt(SourceIndex, RemoveCount);
+			PrimitiveSceneProxies.RemoveAt(SourceIndex, RemoveCount);
+			PrimitiveBounds.RemoveAt(SourceIndex, RemoveCount);
+			PrimitiveFlagsCompact.RemoveAt(SourceIndex, RemoveCount);
+			PrimitiveVisibilityIds.RemoveAt(SourceIndex, RemoveCount);
+			PrimitiveOcclusionFlags.RemoveAt(SourceIndex, RemoveCount);
+			PrimitiveComponentIds.RemoveAt(SourceIndex, RemoveCount);
+			PrimitiveVirtualTextureFlags.RemoveAt(SourceIndex, RemoveCount);
+			PrimitiveVirtualTextureLod.RemoveAt(SourceIndex, RemoveCount);
+			PrimitiveOcclusionBounds.RemoveAt(SourceIndex, RemoveCount);
+			PrimitivesNeedingStaticMeshUpdate.RemoveAt(SourceIndex, RemoveCount);
 
 			CheckPrimitiveArrays();
 
@@ -3912,7 +3945,7 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRHICommandListImmediate& RHICmdList, 
 				int32 PrimitiveIndex = PrimitiveSceneInfo->PackedIndex;
 				PrimitiveSceneInfo->PackedIndex = INDEX_NONE;
 
-				if (ShouldPrimitiveOutputVelocity(PrimitiveSceneInfo->Proxy))
+				if (ShouldPrimitiveOutputVelocity(PrimitiveSceneInfo->Proxy, GetShaderPlatform()))
 				{
 					// Remove primitive's motion blur information.
 					VelocityData.RemoveFromScene(PrimitiveSceneInfo->PrimitiveComponentId);
@@ -4116,7 +4149,7 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRHICommandListImmediate& RHICmdList, 
 				FPrimitiveSceneInfo* PrimitiveSceneInfo = AddedLocalPrimitiveSceneInfos[AddIndex];
 				int32 PrimitiveIndex = PrimitiveSceneInfo->PackedIndex;
 
-				if (ShouldPrimitiveOutputVelocity(PrimitiveSceneInfo->Proxy))
+				if (ShouldPrimitiveOutputVelocity(PrimitiveSceneInfo->Proxy, GetShaderPlatform()))
 				{
 					// We must register the initial LocalToWorld with the velocity state. 
 					// In the case of a moving component with MarkRenderStateDirty() called every frame, UpdateTransform will never happen.
@@ -4184,7 +4217,7 @@ void FScene::UpdateAllPrimitiveSceneInfos(FRHICommandListImmediate& RHICmdList, 
 			// (note that the octree update relies on the bounds not being modified yet).
 			PrimitiveSceneInfo->RemoveFromScene(bUpdateStaticDrawLists);
 
-			if (ShouldPrimitiveOutputVelocity(PrimitiveSceneInfo->Proxy))
+			if (ShouldPrimitiveOutputVelocity(PrimitiveSceneInfo->Proxy, GetShaderPlatform()))
 			{
 				VelocityData.UpdateTransform(PrimitiveSceneInfo, LocalToWorld, PrimitiveSceneProxy->GetLocalToWorld());
 			}
@@ -4424,6 +4457,7 @@ public:
 
 	virtual void AddWindSource(class UWindDirectionalSourceComponent* WindComponent) override {}
 	virtual void RemoveWindSource(class UWindDirectionalSourceComponent* WindComponent) override {}
+	virtual void UpdateWindSource(class UWindDirectionalSourceComponent* WindComponent) override {}
 	virtual const TArray<class FWindSourceSceneProxy*>& GetWindSources_RenderThread() const override
 	{
 		static TArray<class FWindSourceSceneProxy*> NullWindSources;

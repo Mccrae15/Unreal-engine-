@@ -346,6 +346,7 @@ namespace AutomationTool
             this.DeviceUsername = InParams.DeviceUsername;
             this.DevicePassword = InParams.DevicePassword;
             this.CrashReporter = InParams.CrashReporter;
+            this.CrashReporterUrl = InParams.CrashReporterUrl;
 			this.ClientConfigsToBuild = InParams.ClientConfigsToBuild;
 			this.ServerConfigsToBuild = InParams.ServerConfigsToBuild;
 			this.NumClients = InParams.NumClients;
@@ -865,6 +866,7 @@ namespace AutomationTool
 			this.DeviceUsername = ParseParamValueIfNotSpecified(Command, DeviceUsername, "deviceuser", String.Empty);
 			this.DevicePassword = ParseParamValueIfNotSpecified(Command, DevicePassword, "devicepass", String.Empty);
 			this.CrashReporter = GetParamValueIfNotSpecified(Command, CrashReporter, this.CrashReporter, "crashreporter");
+			this.CrashReporterUrl = Command.ParseParamValue("CrashReporterUrl", "");
 			this.SpecifiedArchitecture = ParseParamValueIfNotSpecified(Command, SpecifiedArchitecture, "specifiedarchitecture", String.Empty);
 			this.UbtArgs = ParseParamValueIfNotSpecified(Command, UbtArgs, "ubtargs", String.Empty);
 			this.AdditionalPackageOptions = ParseParamValueIfNotSpecified(Command, AdditionalPackageOptions, "AdditionalPackageOptions", String.Empty);
@@ -1163,6 +1165,12 @@ namespace AutomationTool
 		/// </summary>
 		[Help("CrashReporter", "true if we should build crash reporter")]
 		public bool CrashReporter { private set; get; }
+		
+		/// <summary>
+		/// Shared: Data router url for the deployed crash report client.
+		/// </summary>
+		[Help("CrashReporterUrl", "Data router url where crash reports are submitted to.")]
+		public string CrashReporterUrl { private set; get; }
 
 		/// <summary>
 		/// Shared: Determines if the build is going to use cooked data, commandline: -cook, -cookonthefly
@@ -2065,6 +2073,33 @@ namespace AutomationTool
 			}
 		}
 
+		private void SelectDefaultEditorTarget(List<string> AvailableEditorTargets, ref string EditorTarget)
+		{
+			string DefaultEditorTarget;
+
+			if (EngineConfigs[BuildHostPlatform.Current.Platform].GetString("/Script/BuildSettings.BuildSettings", "DefaultEditorTarget", out DefaultEditorTarget))
+			{
+				if (!AvailableEditorTargets.Contains(DefaultEditorTarget))
+				{
+					throw new AutomationException(string.Format("A default editor target '{0}' was specified in engine.ini but does not exist", DefaultEditorTarget));
+				}
+
+				EditorTarget = DefaultEditorTarget;
+			}
+			else
+			{
+				if (AvailableEditorTargets.Count > 1)
+				{
+					throw new AutomationException("Project contains multiple editor targets but no DefaultEditorTarget is set in the [/Script/BuildSettings.BuildSettings] section of DefaultEngine.ini");
+				}
+
+				if (AvailableEditorTargets.Count > 0)
+				{
+					EditorTarget = AvailableEditorTargets.First();
+				}
+			}
+		}
+
 		private void AutodetectSettings(bool bReset)
 		{
 			if (bReset)
@@ -2175,15 +2210,7 @@ namespace AutomationTool
 				}
 
 				// Find the editor target name
-				List<SingleTargetProperties> EditorTargets = Properties.Targets.Where(x => x.Rules.Type == TargetType.Editor).ToList();
-				if (EditorTargets.Count == 1)
-				{
-					EditorTarget = EditorTargets[0].TargetName;
-				}
-				else if (EditorTargets.Count > 1)
-				{
-					throw new AutomationException("There can be only one Editor target per project.");
-				}
+				SelectDefaultEditorTarget(TargetNamesOfType(TargetType.Editor), ref EditorTarget);
 			}
 			else if (!CommandUtils.IsNullOrEmpty(Properties.Targets))
 			{
@@ -2204,35 +2231,33 @@ namespace AutomationTool
 				{
 					if (AvailableGameTargets.Count > 1)
 					{
-						throw new AutomationException("There can be only one Game target per project.");
+						string TargetMessage = "";
+						List<SingleTargetProperties> Targets = DetectedTargets.FindAll(Target => Target.Rules.Type == TargetType.Game);
+						foreach (SingleTargetProperties Target in Targets)
+						{
+							// search the list of script files to see if we can find a likely source for this class
+							// {TargetName}.Target.cs is expected to contain a definition for a class {TargetName}Target
+							// So we can do an imperfect reverse-lookup, and try to find a source file that has the expected pattern.
+
+							List<FileReference> PossibleScriptFiles = Properties.TargetScripts.FindAll(File => String.Equals(File.GetFileNameWithoutAnyExtensions(), Target.TargetName));
+
+							if (PossibleScriptFiles.Count > 0)
+							{
+								TargetMessage += $"Target \"{Target.TargetName}\" from class {Target.TargetClassName}, which may be defined in:\n {String.Join(", or\n", PossibleScriptFiles)}\n";
+							}
+							else
+							{
+								TargetMessage += $"Target \"{Target.TargetName}\" from class {Target.TargetClassName}, source file undetermined.\n";
+							}
+						}
+
+						throw new AutomationException("More than one Game project found for project: \n" + TargetMessage);
 					}
 
 					GameTarget = AvailableGameTargets.First();
 				}
 
-				if (AvailableEditorTargets.Count > 0)
-				{
-					string DefaultEditorTarget;
-
-					if (EngineConfigs[BuildHostPlatform.Current.Platform].GetString("/Script/BuildSettings.BuildSettings", "DefaultEditorTarget", out DefaultEditorTarget))
-					{
-						if (!AvailableEditorTargets.Contains(DefaultEditorTarget))
-						{
-							throw new AutomationException(string.Format("A default editor target '{0}' was specified in engine.ini but does not exist", DefaultEditorTarget));
-						}
-
-						EditorTarget = DefaultEditorTarget;
-					}
-					else
-					{
-						if (AvailableEditorTargets.Count > 1)
-						{
-							throw new AutomationException("Project contains multiple editor targets but no DefaultEditorTarget is set in the [/Script/BuildSettings.BuildSettings] section of DefaultEngine.ini");
-						}
-
-						EditorTarget = AvailableEditorTargets.First();
-					}
-				}
+				SelectDefaultEditorTarget(AvailableEditorTargets, ref EditorTarget);
 
 				if (AvailableServerTargets.Count > 0 && (DedicatedServer || Cook || CookOnTheFly)) // only if server is needed
 				{

@@ -16,6 +16,7 @@ class FNiagaraSystemInstance;
 class FNiagaraSystemSimulation;
 class NiagaraEmitterInstanceBatcher;
 class FNiagaraGPUSystemTick;
+class FNiagaraSystemGpuComputeProxy;
 
 struct FNiagaraSystemInstanceFinalizeRef
 {
@@ -94,6 +95,8 @@ public:
 		None
 	};
 
+	ENiagaraSystemInstanceState SystemInstanceState = ENiagaraSystemInstanceState::None;
+
 	FORCEINLINE bool GetAreDataInterfacesInitialized() const { return bDataInterfacesInitialized; }
 
 	/** Creates a new Niagara system instance. */
@@ -115,7 +118,7 @@ public:
 	void OnPooledReuse(UWorld& NewWorld);
 
 	void SetPaused(bool bInPaused);
-	FORCEINLINE bool IsPaused()const { return bPaused; }
+	FORCEINLINE bool IsPaused() const { return (SystemInstanceState == ENiagaraSystemInstanceState::PendingSpawnPaused) || (SystemInstanceState == ENiagaraSystemInstanceState::Paused); }
 
 	void SetSolo(bool bInSolo);
 
@@ -221,6 +224,7 @@ public:
 	FORCEINLINE UNiagaraSystem* GetSystem() const { return Asset.Get(); }
 	FORCEINLINE USceneComponent* GetAttachComponent() { return AttachComponent.Get(); }
 	FORCEINLINE FNiagaraUserRedirectionParameterStore* GetOverrideParameters() { return OverrideParameters; }
+	FORCEINLINE const FNiagaraUserRedirectionParameterStore* GetOverrideParameters() const { return OverrideParameters; }
 	FORCEINLINE TArray<TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> > &GetEmitters() { return Emitters; }
 	FORCEINLINE const TArray<TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> >& GetEmitters() const { return Emitters; }
 	FORCEINLINE const FBox& GetLocalBounds() const { return LocalBounds;  }
@@ -232,7 +236,7 @@ public:
 
 	FORCEINLINE bool NeedsGPUTick() const { return ActiveGPUEmitterCount > 0 /*&& Component->IsRegistered()*/ && !IsComplete();}
 
-	struct FNiagaraComputeSharedContext* GetComputeSharedContext() { check(SharedContext.Get()); return SharedContext.Get(); }
+	FNiagaraSystemGpuComputeProxy* GetSystemGpuComputeProxy() { return SystemGpuComputeProxy.Get(); }
 
 	/** Gets a multicast delegate which is called after this instance has finished ticking for the frame on the game thread */
 	FORCEINLINE void SetOnPostTick(const FOnPostTick& InPostTickDelegate) { OnPostTickDelegate = InPostTickDelegate; }
@@ -276,12 +280,10 @@ public:
 	bool UsesCollection(const UNiagaraParameterCollection* Collection) const;
 #endif
 
-	FORCEINLINE bool IsPendingSpawn() const { return bPendingSpawn; }
-	FORCEINLINE void SetPendingSpawn(bool bInValue) { bPendingSpawn = bInValue; }
+	FORCEINLINE bool IsPendingSpawn() const { return (SystemInstanceState == ENiagaraSystemInstanceState::PendingSpawn) || (SystemInstanceState == ENiagaraSystemInstanceState::PendingSpawnPaused); }
 
 	FORCEINLINE float GetAge() const { return Age; }
 	FORCEINLINE int32 GetTickCount() const { return TickCount; }
-	FORCEINLINE bool RequiresGpuBufferReset() const { return bHasSimulationReset && (TickCount == 1); }
 
 	FORCEINLINE float GetLastRenderTime() const { return LastRenderTime; }
 	FORCEINLINE void SetLastRenderTime(float TimeSeconds) { LastRenderTime = TimeSeconds; }
@@ -494,11 +496,8 @@ private:
 	uint32 bSolo : 1;
 	uint32 bForceSolo : 1;
 
-	uint32 bPendingSpawn : 1;
 	uint32 bNotifyOnCompletion : 1;
 
-	/** If this system is paused. When paused it will not tick and never complete etc. */
-	uint32 bPaused : 1;
 	/** If this system has emitters that will run GPU Simulations */
 	uint32 bHasGPUEmitters : 1;
 	/** The system contains data interfaces that can have tick group prerequisites. */
@@ -512,9 +511,6 @@ private:
 
 	/** True if the system instance is pooled. Prevents unbinding of parameters on completing the system */
 	uint32 bPooled : 1;
-
-	/** Will be set to true when the the simulation needs a full reset from ResetInternal() */
-	uint32 bHasSimulationReset : 1;
 
 #if WITH_EDITOR
 	uint32 bNeedsUIResync : 1;
@@ -545,6 +541,7 @@ private:
 	ENiagaraExecutionState ActualExecutionState;
 
 	NiagaraEmitterInstanceBatcher* Batcher = nullptr;
+	TUniquePtr<FNiagaraSystemGpuComputeProxy> SystemGpuComputeProxy;
 
 	/** Tag we feed into crash reporter for this instance. */
 	mutable FString CrashReporterTag;
@@ -559,7 +556,6 @@ public:
 	// Transient data that is accumulated during tick.
 	uint32 TotalGPUParamSize = 0;
 	uint32 ActiveGPUEmitterCount = 0;
-	TUniquePtr<FNiagaraComputeSharedContext, FNiagaraComputeSharedContextDeleter> SharedContext;
 
 	int32 GPUDataInterfaceInstanceDataSize = 0;
 	bool GPUParamIncludeInterpolation = false;

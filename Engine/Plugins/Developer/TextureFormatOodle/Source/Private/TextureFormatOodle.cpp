@@ -412,7 +412,8 @@ public:
 			RDOLambda = 0;
 		}
 			
-		OodleTex_EncodeEffortLevel EffortLevel = OodleTex_EncodeEffortLevel_Default;
+		// "Normal" is medium quality/speed
+		OodleTex_EncodeEffortLevel EffortLevel = OodleTex_EncodeEffortLevel_Normal;
 		// EffortLevel might be set to faster modes for previewing vs cooking or something
 		//	but I don't see people setting that per-Texture or in lod groups or any of that
 		//  it's more about cook mode (fast vs final bake)
@@ -840,6 +841,10 @@ static void TFO_InstallPlugins()
 
 	OodleJobifyUserPointer = nullptr;
 	OodleJobifyNumThreads = FTaskGraphInterface::Get().GetNumWorkerThreads();
+
+	// @@ TEMP @todo clamp OodleJobifyNumThreads to avoid int overflow
+	if ( OodleJobifyNumThreads > 16 ) OodleJobifyNumThreads = 16;
+
 	OodleTex_Plugins_SetJobSystemAndCount(TFO_RunJob, TFO_WaitJob, OodleJobifyNumThreads);
 
 	OodleTex_Plugins_SetAssertion(TFO_OodleAssert);

@@ -6,6 +6,7 @@
 #include "WorldSnapshotData.h"
 
 #include "Serialization/ArchiveSerializedPropertyChain.h"
+#include "UObject/UnrealType.h"
 
 FTakeWorldObjectSnapshotArchive FTakeWorldObjectSnapshotArchive::MakeArchiveForSavingWorldObject(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InOriginalObject)
 {
@@ -15,8 +16,7 @@ FTakeWorldObjectSnapshotArchive FTakeWorldObjectSnapshotArchive::MakeArchiveForS
 
 FTakeWorldObjectSnapshotArchive::FTakeWorldObjectSnapshotArchive(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InOriginalObject)
 	:
-	Super(InObjectData, InSharedData, false),
-	OriginalObject(InOriginalObject)
+	Super(InObjectData, InSharedData, false, InOriginalObject)
 {}
 
 bool FTakeWorldObjectSnapshotArchive::ShouldSkipProperty(const FProperty* InProperty) const
@@ -38,7 +38,13 @@ bool FTakeWorldObjectSnapshotArchive::ShouldSkipProperty(const FProperty* InProp
 			return InProperty->HasAnyPropertyFlags(CPF_Deprecated | CPF_Transient);
 		}
 
-		UObject* OriginalContainer = OriginalObject;
+		// Always save object properties regardless whether different from CDO or not ... this makes restoring easier: see FApplySnapshotDataArchiveV2::ApplyToExistingWorldObject
+		if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(InProperty))
+		{
+			return false;
+		}
+		
+		UObject* OriginalContainer = GetSerializedObject();
 		UObject* ClassDefaultContainer = OriginalContainer->GetClass()->GetDefaultObject(); 
 		for (int32 ArrayDim = 0; ArrayDim < InProperty->ArrayDim; ++ArrayDim)
 		{

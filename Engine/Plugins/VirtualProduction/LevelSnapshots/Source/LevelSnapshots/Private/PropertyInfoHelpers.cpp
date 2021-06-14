@@ -22,14 +22,21 @@ bool FPropertyInfoHelpers::IsPropertyCollection(const FProperty* Property)
 
 bool FPropertyInfoHelpers::IsPropertyInContainer(const FProperty* Property)
 {
-	if (!ensure(Property))
+	if (ensure(Property))
 	{
-		return false;
+		return IsPropertyInCollection(Property) || IsPropertyInStruct(Property);
 	}
-	
-	const FProperty* ParentProperty = GetParentProperty(Property);
+	return false;
+}
 
-	return ParentProperty && IsPropertyContainer(ParentProperty);
+bool FPropertyInfoHelpers::IsPropertyInCollection(const FProperty* Property)
+{
+	if (ensure(Property))
+	{
+		const FProperty* ParentProperty = GetParentProperty(Property);
+		return ParentProperty && IsPropertyCollection(ParentProperty);
+	}
+	return false;
 }
 
 bool FPropertyInfoHelpers::IsPropertyInStruct(const FProperty* Property)
@@ -39,9 +46,14 @@ bool FPropertyInfoHelpers::IsPropertyInStruct(const FProperty* Property)
 		return false;
 	}
 
-	FProperty* ParentProperty = GetParentProperty(Property);
+	// Parent struct could be FProperty or UScriptStruct
 
-	return ParentProperty && ParentProperty->IsA(FStructProperty::StaticClass());
+	if (FProperty* ParentProperty = GetParentProperty(Property))
+	{
+		return ParentProperty->IsA(FStructProperty::StaticClass());
+	}
+
+	return IsValid(Property->GetOwner<UScriptStruct>());
 }
 
 bool FPropertyInfoHelpers::IsPropertyInMap(const FProperty* Property)
@@ -76,14 +88,14 @@ bool FPropertyInfoHelpers::AreNumericPropertiesNearlyEqual(const FNumericPropert
 	{
 		const float ValueA = FloatProperty->GetFloatingPointPropertyValue(ValuePtrA); 
 		const float ValueB = FloatProperty->GetFloatingPointPropertyValue(ValuePtrB);
-		return FMath::IsNearlyEqual(ValueA, ValueB);
+		return FMath::IsNearlyEqual(ValueA, ValueB, KINDA_SMALL_NUMBER);
 	}
 	
 	if (const FDoubleProperty* DoubleProperty = CastField<FDoubleProperty>(NumericProperty))
 	{
 		const double ValueA = DoubleProperty->GetFloatingPointPropertyValue(ValuePtrA);
 		const double ValueB = DoubleProperty->GetFloatingPointPropertyValue(ValuePtrB);
-		return FMath::IsNearlyEqual(ValueA, ValueB);
+		return FMath::IsNearlyEqual(ValueA, ValueB, static_cast<double>(KINDA_SMALL_NUMBER));
 	}
 	
 	// Not a float or double? Then some kind of integer (byte, int8, int16, int32, int64, uint8, uint16 ...). Enums are bytes.

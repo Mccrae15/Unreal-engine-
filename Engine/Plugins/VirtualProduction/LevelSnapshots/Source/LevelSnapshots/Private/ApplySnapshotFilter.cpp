@@ -2,12 +2,19 @@
 
 #include "ApplySnapshotFilter.h"
 
-#include "LevelSnapshot.h"
+#include "IPropertyComparer.h"
+#include "CustomSerialization/CustomSerializationDataManager.h"
+#include "Data/LevelSnapshot.h"
+#include "Data/PropertySelection.h"
 #include "LevelSnapshotFilters.h"
 #include "LevelSnapshotsLog.h"
+#include "LevelSnapshotsModule.h"
+#include "PropertyComparisonParams.h"
+#include "Restorability/SnapshotRestorability.h"
 
 #include "Components/ActorComponent.h"
 #include "GameFramework/Actor.h"
+#include "Modules/ModuleManager.h"
 
 namespace
 {
@@ -29,7 +36,7 @@ namespace
 		}
 
 		UActorComponent* SnapshotComponent = *PossibleResult;
-		if (SnapshotComponent->GetClass() != WorldComponent->GetClass())
+		if (!ensure(SnapshotComponent->GetClass() == WorldComponent->GetClass()))
 		{
 			UE_LOG(LogLevelSnapshots, Error, TEXT("Snapshot component called  %s of snapshot actor called %s has class %s while world component called %s in world actor called %s had class %s. Components are expected to not change classes. Did you change the class of a component?"),
                 *SnapshotComponent->GetName(),
@@ -53,20 +60,23 @@ FApplySnapshotFilter FApplySnapshotFilter::Make(ULevelSnapshot* Snapshot, AActor
 
 void FApplySnapshotFilter::ApplyFilterToFindSelectedProperties(FPropertySelectionMap& MapToAddTo)
 {
-	if (EnsureParametersAreValid() && ULevelSnapshot::IsActorDesirableForCapture(WorldActor))
+	if (EnsureParametersAreValid() && FSnapshotRestorability::IsActorDesirableForCapture(WorldActor) && EFilterResult::CanInclude(Filter->IsActorValid({ DeserializedSnapshotActor, WorldActor })))
 	{
 		FilterActorPair(MapToAddTo);
 		AnalyseComponentProperties(MapToAddTo);
 	}
 }
 
-FApplySnapshotFilter::FPropertyContainerContext::FPropertyContainerContext(FPropertySelection& SelectionToAddTo, UStruct* ContainerClass, void* SnapshotContainer, void* WorldContainer, TArray<FString> AuthoredPathInformation)
+FApplySnapshotFilter::FPropertyContainerContext::FPropertyContainerContext(
+	FPropertySelection& SelectionToAddTo, UStruct* ContainerClass, void* SnapshotContainer, void* WorldContainer, const TArray<FString>& AuthoredPathInformation, const FLevelSnapshotPropertyChain& PropertyChain, UClass* RootClass)
 	:
 	SelectionToAddTo(SelectionToAddTo),
 	ContainerClass(ContainerClass),
 	SnapshotContainer(SnapshotContainer),
 	WorldContainer(WorldContainer),
-	AuthoredPathInformation(AuthoredPathInformation)
+	AuthoredPathInformation(AuthoredPathInformation),
+	PropertyChain(PropertyChain),
+	RootClass(RootClass)
 {}
 
 FApplySnapshotFilter::FApplySnapshotFilter(ULevelSnapshot* Snapshot, AActor* DeserializedSnapshotActor, AActor* WorldActor, const ULevelSnapshotFilter* Filter)
@@ -85,8 +95,10 @@ bool FApplySnapshotFilter::EnsureParametersAreValid() const
 	{
 		return false;
 	}
-	
-	if (!ensure(WorldActor->GetClass() == DeserializedSnapshotActor->GetClass()))
+
+	UClass* WorldClass = WorldActor->GetClass();
+	UClass* DeserializedClass = DeserializedSnapshotActor->GetClass();
+	if (!ensure(WorldClass == DeserializedClass))
 	{
 		UE_LOG(
             LogLevelSnapshots,
@@ -109,7 +121,7 @@ void FApplySnapshotFilter::AnalyseComponentProperties(FPropertySelectionMap& Map
 	DeserializedSnapshotActor->GetComponents(SnapshotComponents);
 	for (UActorComponent* WorldComp : WorldComponents)
 	{
-		if (!ULevelSnapshot::IsComponentDesirableForCapture(WorldComp))
+		if (!FSnapshotRestorability::IsComponentDesirableForCapture(WorldComp))
 		{
 			UE_LOG(LogLevelSnapshots, Verbose, TEXT("Skipping world component '%s' of world actor '%s'"), *WorldComp->GetName(), *WorldActor->GetName());
 			continue;
@@ -117,7 +129,7 @@ void FApplySnapshotFilter::AnalyseComponentProperties(FPropertySelectionMap& Map
 		
 		if (UActorComponent* SnapshotMatchedComp = TryFindMatchingComponent(DeserializedSnapshotActor, SnapshotComponents, WorldActor, WorldComp))
 		{
-			FilterComponentPair(MapToAddTo, SnapshotMatchedComp, WorldComp);
+			FilterSubobjectPair(MapToAddTo, SnapshotMatchedComp, WorldComp);
 		}
 	}
 }
@@ -130,26 +142,41 @@ void FApplySnapshotFilter::FilterActorPair(FPropertySelectionMap& MapToAddTo)
         DeserializedSnapshotActor->GetClass(),
         DeserializedSnapshotActor,
         WorldActor,
-        {}
+        {},
+        FLevelSnapshotPropertyChain(),
+        WorldActor->GetClass()
         );
 	
-	AnalyseProperties(ActorContext);
-	MapToAddTo.AddObjectProperties(WorldActor, ActorSelection.SelectedPropertyPaths);
+	AnalyseRootProperties(ActorContext, DeserializedSnapshotActor, WorldActor);
+	const EFilterObjectPropertiesResult FilterResult = FindAndFilterCustomSubobjectPairs(MapToAddTo, DeserializedSnapshotActor, WorldActor);
+	
+	ActorSelection.SetHasCustomSerializedSubobjects(FilterResult == EFilterObjectPropertiesResult::HasCustomSubobjects);
+	MapToAddTo.AddObjectProperties(WorldActor, ActorSelection);
 }
 
-void FApplySnapshotFilter::FilterComponentPair(FPropertySelectionMap& MapToAddTo, UActorComponent* SnapshotComponent, UActorComponent* WorldComponent)
+bool FApplySnapshotFilter::FilterSubobjectPair(FPropertySelectionMap& MapToAddTo, UObject* SnapshotSubobject, UObject* WorldSubobject)
 {
-	FPropertySelection ComponentSelection;
+	FPropertySelection SubobjectSelection;
 	FPropertyContainerContext ComponentContext(
-		ComponentSelection,
-        SnapshotComponent->GetClass(),
-        SnapshotComponent,
-        WorldComponent,
-        { WorldComponent->GetName() }
+		SubobjectSelection,
+        SnapshotSubobject->GetClass(),
+        SnapshotSubobject,
+        WorldSubobject,
+        { WorldSubobject->GetName() },
+        FLevelSnapshotPropertyChain(),
+		WorldSubobject->GetClass()
         );
+	
+	AnalyseRootProperties(ComponentContext, SnapshotSubobject, WorldSubobject);
+	const EFilterObjectPropertiesResult FilterResult = FindAndFilterCustomSubobjectPairs(MapToAddTo, SnapshotSubobject, WorldSubobject);
 
-	AnalyseProperties(ComponentContext);
-	MapToAddTo.AddObjectProperties(WorldComponent, ComponentSelection.SelectedPropertyPaths);
+	if (ensureMsgf(MapToAddTo.GetSelectedProperties(WorldSubobject) == nullptr, TEXT("Object %s was analysed more than once. Most likely an ICustomObjectSnapshotSerializer implementation returned the same object pair more than once or returned an object pair that was already discovered by the standard system, e.g. UPROPERTY(EditAnywhere, Instanced) UObject* Object."), *WorldSubobject->GetName()))
+	{
+		SubobjectSelection.SetHasCustomSerializedSubobjects(FilterResult == EFilterObjectPropertiesResult::HasCustomSubobjects);
+		return MapToAddTo.AddObjectProperties(WorldSubobject, SubobjectSelection);
+	}
+
+	return false;
 }
 
 void FApplySnapshotFilter::FilterStructPair(FPropertyContainerContext& Parent, FStructProperty* StructProperty)
@@ -158,14 +185,91 @@ void FApplySnapshotFilter::FilterStructPair(FPropertyContainerContext& Parent, F
         StructProperty->Struct,
         StructProperty->ContainerPtrToValuePtr<uint8>(Parent.SnapshotContainer),
         StructProperty->ContainerPtrToValuePtr<uint8>(Parent.WorldContainer),
-        Parent.AuthoredPathInformation
+        Parent.AuthoredPathInformation,
+        Parent.PropertyChain.MakeAppended(StructProperty),
+        Parent.RootClass
         );
 	StructContext.AuthoredPathInformation.Add(StructProperty->GetAuthoredName());
-	
-	AnalyseProperties(StructContext);
+	AnalyseStructProperties(StructContext);
 }
 
-void FApplySnapshotFilter::AnalyseProperties(FPropertyContainerContext& ContainerContext)
+FApplySnapshotFilter::EFilterObjectPropertiesResult FApplySnapshotFilter::FindAndFilterCustomSubobjectPairs(FPropertySelectionMap& MapToAddTo, UObject* SnapshotOwner, UObject* WorldOwner)
+{
+	FLevelSnapshotsModule& LevelSnapshots = FModuleManager::Get().GetModuleChecked<FLevelSnapshotsModule>("LevelSnapshots");
+	TSharedPtr<ICustomObjectSnapshotSerializer> ExternalSerializer = LevelSnapshots.GetCustomSerializerForClass(SnapshotOwner->GetClass());
+	if (!ExternalSerializer.IsValid())
+	{
+		return EFilterObjectPropertiesResult::HasOnlyNormalProperties;
+	}
+
+	const FCustomSerializationData* SerializationData = Snapshot->GetSerializedData().GetCustomSubobjectData_ForActorOrSubobject(WorldOwner);
+	if (!SerializationData)
+	{
+		UE_LOG(LogLevelSnapshots, Warning, TEXT("Custom ICustomObjectSnapshotSerializer is registered for class %s but no data was saved for it."), *WorldOwner->GetClass()->GetName());
+		return EFilterObjectPropertiesResult::HasOnlyNormalProperties;
+	}
+
+	const FCustomSerializationDataReader SubobjectDataReader(
+			FCustomSerializationDataGetter_ReadOnly::CreateLambda([SerializationData]() -> const FCustomSerializationData* { return SerializationData; }),
+			Snapshot->GetSerializedData()
+			);
+	bool bAtLeastOneSubobjectWasAdded = false;
+	for (int32 i = 0; i < SubobjectDataReader.GetNumSubobjects(); ++i)
+	{	
+		TSharedPtr<ISnapshotSubobjectMetaData> SubobjectMetadata = SubobjectDataReader.GetSubobjectMetaData(i);
+		UObject* SnapshotSubobject = ExternalSerializer->FindOrRecreateSubobjectInSnapshotWorld(SnapshotOwner, *SubobjectMetadata, SubobjectDataReader);
+		UObject* EditorSubobject = ExternalSerializer->FindSubobjectInEditorWorld(WorldOwner, *SubobjectMetadata, SubobjectDataReader);
+		
+		// External modules implement this: must be validated
+		if (!SnapshotSubobject || !EditorSubobject)
+		{
+			UE_CLOG(SnapshotSubobject && !EditorSubobject, LogLevelSnapshots, Warning, TEXT("Restoring missing subobjects is not supported"));
+			continue;
+		}
+
+		if (ensureAlwaysMsgf(SnapshotSubobject->IsIn(SnapshotOwner) && EditorSubobject->IsIn(WorldOwner), TEXT("Your interface must return subobjects")))
+		{
+			bAtLeastOneSubobjectWasAdded |= FilterSubobjectPair(MapToAddTo, SnapshotSubobject, EditorSubobject);
+		}
+	}
+
+	return bAtLeastOneSubobjectWasAdded ? EFilterObjectPropertiesResult::HasCustomSubobjects : EFilterObjectPropertiesResult::HasOnlyNormalProperties;
+}
+
+void FApplySnapshotFilter::AnalyseRootProperties(FPropertyContainerContext& ContainerContext, UObject* SnapshotObject, UObject* WorldObject)
+{
+	FLevelSnapshotsModule& Module = FModuleManager::Get().GetModuleChecked<FLevelSnapshotsModule>("LevelSnapshots");
+	const FPropertyComparerArray PropertyComparers = Module.GetPropertyComparerForClass(ContainerContext.RootClass);
+	
+	for (TFieldIterator<FProperty> FieldIt(ContainerContext.ContainerClass); FieldIt; ++FieldIt)
+	{
+		// Ask external modules about the property
+		const FPropertyComparisonParams Params { ContainerContext.RootClass, *FieldIt, ContainerContext.SnapshotContainer, ContainerContext.WorldContainer, SnapshotObject, WorldObject, DeserializedSnapshotActor, WorldActor} ;
+		const IPropertyComparer::EPropertyComparison ComparisonResult = Module.ShouldConsiderPropertyEqual(PropertyComparers, Params);
+
+		bool bSkipEqualityTest = false;
+		switch (ComparisonResult)
+		{
+		case IPropertyComparer::EPropertyComparison::TreatEqual:
+			continue;
+
+		case IPropertyComparer::EPropertyComparison::TreatUnequal:
+			bSkipEqualityTest = true;
+
+		default:
+			break;
+		}
+		
+		const ECheckSubproperties CheckSubpropertyBehaviour = AnalyseProperty(ContainerContext, *FieldIt, bSkipEqualityTest);
+		if (!bSkipEqualityTest && CheckSubpropertyBehaviour == ECheckSubproperties::CheckSubproperties)
+		{
+			HandleStructProperties(ContainerContext, *FieldIt);
+			// TODO: To analyse subobjects, you'd add another utility function here
+		}
+	}
+}
+
+void FApplySnapshotFilter::AnalyseStructProperties(FPropertyContainerContext& ContainerContext)
 {
 	for (TFieldIterator<FProperty> FieldIt(ContainerContext.ContainerClass); FieldIt; ++FieldIt)
 	{
@@ -186,20 +290,12 @@ void FApplySnapshotFilter::HandleStructProperties(FPropertyContainerContext& Con
 	}
 }
 
-FApplySnapshotFilter::ECheckSubproperties FApplySnapshotFilter::AnalyseProperty(FPropertyContainerContext& ContainerContext, FProperty* PropertyInCommon)
+FApplySnapshotFilter::ECheckSubproperties FApplySnapshotFilter::AnalyseProperty(FPropertyContainerContext& ContainerContext, FProperty* PropertyInCommon, bool bSkipEqualityTest)
 {
 	check(ContainerContext.WorldContainer);
 	check(ContainerContext.SnapshotContainer); 
 
-	// Only show editable or visible properties
-	const bool bHasRequiredFlags = bAllowNonEditableProperties || PropertyInCommon->HasAnyPropertyFlags(CPF_Edit | CPF_BlueprintVisible);
-	const bool bHasForbiddenFlags = PropertyInCommon->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated);
-	if (!bHasRequiredFlags || bHasForbiddenFlags)
-	{
-		return SkipSubproperties;
-	}
-
-	if (!bAllowUnchangedProperties && Snapshot->AreSnapshotAndOriginalPropertiesEquivalent(PropertyInCommon, ContainerContext.SnapshotContainer, ContainerContext.WorldContainer, DeserializedSnapshotActor, WorldActor))
+	if (!bSkipEqualityTest && !bAllowUnchangedProperties && Snapshot->AreSnapshotAndOriginalPropertiesEquivalent(PropertyInCommon, ContainerContext.SnapshotContainer, ContainerContext.WorldContainer, DeserializedSnapshotActor, WorldActor))
 	{
 		return SkipSubproperties;
 	}
@@ -213,9 +309,7 @@ FApplySnapshotFilter::ECheckSubproperties FApplySnapshotFilter::AnalyseProperty(
 						
 	if (bIsPropertyValid)
 	{
-		// TODO: Track the path to the property (similar to AuthoredPathInformation) instead TFieldPath; TFieldPath gives insufficient info to identify struct members, e.g. Script/MyFooStruct:FooProperty.
-		TArray<TFieldPath<FProperty>>& SelectedProperties = ContainerContext.SelectionToAddTo.SelectedPropertyPaths;
-		SelectedProperties.Add(PropertyInCommon);
+		ContainerContext.SelectionToAddTo.AddProperty(ContainerContext.PropertyChain.MakeAppended(PropertyInCommon));
 		return CheckSubproperties;
 	}
 	return SkipSubproperties;

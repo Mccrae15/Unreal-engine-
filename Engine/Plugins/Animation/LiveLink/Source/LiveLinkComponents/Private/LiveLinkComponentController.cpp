@@ -13,6 +13,7 @@
 #include "UObject/UObjectIterator.h"
 
 #if WITH_EDITOR
+#include "Editor.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Kismet2/ComponentEditorUtils.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -29,18 +30,23 @@ ULiveLinkComponentController::ULiveLinkComponentController()
 	PrimaryComponentTick.bStartWithTickEnabled = true;
 	PrimaryComponentTick.TickGroup = ETickingGroup::TG_PrePhysics;
 	bTickInEditor = true;
+
+#if WITH_EDITOR
+	FEditorDelegates::EndPIE.AddUObject(this, &ULiveLinkComponentController::OnEndPIE);
+#endif //WITH_EDITOR
+}
+
+ULiveLinkComponentController::~ULiveLinkComponentController()
+{
+#if WITH_EDITOR
+	FEditorDelegates::EndPIE.RemoveAll(this);
+#endif //WITH_EDITOR
 }
 
 void ULiveLinkComponentController::OnSubjectRoleChanged()
 {
 	//Whenever the subject role is changed, we start from clean controller map. Cleanup the ones currently active
-	for (TPair<TSubclassOf<ULiveLinkRole>, ULiveLinkControllerBase*>& ControllerPair : ControllerMap)
-	{
-		if (ControllerPair.Value)
-		{
-			ControllerPair.Value->Cleanup();
-		}
-	}
+	CleanupControllersInMap();
 
 	if (SubjectRepresentation.Role == nullptr)
 	{
@@ -48,6 +54,7 @@ void ULiveLinkComponentController::OnSubjectRoleChanged()
 	}
 	else
 	{
+		UActorComponent* DesiredActorComponent = nullptr;
 		TArray<TSubclassOf<ULiveLinkRole>> SelectedRoleHierarchy = GetSelectedRoleHierarchyClasses(SubjectRepresentation.Role);
 		ControllerMap.Empty(SelectedRoleHierarchy.Num());
 		for (const TSubclassOf<ULiveLinkRole>& RoleClass : SelectedRoleHierarchy)
@@ -59,8 +66,31 @@ void ULiveLinkComponentController::OnSubjectRoleChanged()
 
 				TSubclassOf<ULiveLinkControllerBase> SelectedControllerClass = GetControllerClassForRoleClass(RoleClass);
 				SetControllerClassForRole(RoleClass, SelectedControllerClass);
+
+				//Keep track of the most specific available component in the hierarchy
+				if (SelectedControllerClass)
+				{
+					if (AActor* Actor = GetOwner())
+					{
+						TSubclassOf<UActorComponent> DesiredClass = SelectedControllerClass.GetDefaultObject()->GetDesiredComponentClass();
+						if (UActorComponent* ActorComponent = Actor->GetComponentByClass(DesiredClass))
+						{
+							DesiredActorComponent = ActorComponent;
+						}
+					}
+				}
 			}
 		}
+
+		//After creating the controller hierarchy, update component to control to the highest in the hierarchy.
+#if WITH_EDITOR
+		if (ComponentToControl.ComponentProperty == NAME_None && DesiredActorComponent != nullptr)
+		{
+			AActor* Actor = GetOwner();
+			check(Actor);
+			ComponentToControl = FComponentEditorUtils::MakeComponentReference(Actor, DesiredActorComponent);
+		}
+#endif
 	}
 }
 
@@ -117,16 +147,18 @@ void ULiveLinkComponentController::OnRegister()
 	bIsDirty = true;
 }
 
+#if WITH_EDITOR
+void ULiveLinkComponentController::OnEndPIE(bool bIsSimulating)
+{
+	// Cleanup each controller when PIE session is ending
+	CleanupControllersInMap();
+}
+#endif //WITH_EDITOR
+
 void ULiveLinkComponentController::DestroyComponent(bool bPromoteChildren /*= false*/)
 {
-	//Whenever the subject role is changed, we start from clean controller map. Cleanup the ones currently active
-	for (TPair<TSubclassOf<ULiveLinkRole>, ULiveLinkControllerBase*>& ControllerPair : ControllerMap)
-	{
-		if (ControllerPair.Value)
-		{
-			ControllerPair.Value->Cleanup();
-		}
-	}
+	// Cleanup each controller before this component is destroyed
+	CleanupControllersInMap();
 
 	Super::DestroyComponent(bPromoteChildren);
 }
@@ -163,6 +195,7 @@ void ULiveLinkComponentController::TickComponent(float DeltaTime, ELevelTick Tic
 			if (bIsDirty)
 			{
 				Controller->SetAttachedComponent(ComponentToControl.GetComponent(GetOwner()));
+				Controller->SetSelectedSubject(SubjectRepresentation);
 				Controller->OnEvaluateRegistered();
 			}
 			
@@ -309,6 +342,18 @@ TSubclassOf<ULiveLinkControllerBase> ULiveLinkComponentController::GetController
 	}
 
 	return SelectedControllerClass;
+}
+
+void ULiveLinkComponentController::CleanupControllersInMap()
+{
+	//Cleanup the currently active controllers in the map
+	for (TPair<TSubclassOf<ULiveLinkRole>, ULiveLinkControllerBase*>& ControllerPair : ControllerMap)
+	{
+		if (ControllerPair.Value)
+		{
+			ControllerPair.Value->Cleanup();
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

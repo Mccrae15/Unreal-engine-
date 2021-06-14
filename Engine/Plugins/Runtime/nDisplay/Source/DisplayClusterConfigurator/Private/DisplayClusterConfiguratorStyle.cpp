@@ -61,6 +61,7 @@ const FSlateBrush* FDisplayClusterConfiguratorStyle::GetBrush(FName PropertyName
 #define BORDER_BRUSH( RelativePath, ... ) FSlateBorderBrush( Style->RootToContentDir( RelativePath, TEXT(".png") ), __VA_ARGS__ )
 
 const FVector2D Icon128x128(128.0f, 128.0f);
+const FVector2D Icon64x64(64.0f, 64.0f);
 const FVector2D Icon40x40(40.0f, 40.0f);
 const FVector2D Icon20x20(20.0f, 20.0f);
 const FVector2D Icon16x16(16.0f, 16.0f);
@@ -75,6 +76,9 @@ TSharedRef< FSlateStyleSet > FDisplayClusterConfiguratorStyle::Create()
 	{
 		Style->SetContentRoot(FPaths::Combine(Plugin->GetBaseDir(), TEXT("Resources")));
 	}
+
+	Style->Set("ClassIcon.DisplayClusterRootActor", new IMAGE_BRUSH("RootActor/nDisplay_x16", Icon16x16));
+	Style->Set("ClassThumbnail.DisplayClusterRootActor", new IMAGE_BRUSH("RootActor/nDisplay_x64", Icon64x64));
 
 	// Tabs
 	Style->Set("DisplayClusterConfigurator.Tabs.General", new IMAGE_BRUSH("Tabs/General_16x", Icon16x16));
@@ -110,9 +114,11 @@ TSharedRef< FSlateStyleSet > FDisplayClusterConfiguratorStyle::Create()
 	Style->Set("ClassIcon.DisplayClusterScreenComponent", new IMAGE_BRUSH(TEXT("TreeItems/SceneComponentScreen_16x"), Icon16x16));
 	Style->Set("ClassThumbnail.DisplayClusterScreenComponent", new IMAGE_BRUSH(TEXT("TreeItems/SceneComponentScreen_16x"), Icon16x16));
 	
-	Style->Set("ClassIcon.DisplayClusterCameraComponent", new IMAGE_BRUSH(TEXT("TreeItems/SceneComponentCamera_16x"), Icon16x16));
-	Style->Set("ClassThumbnail.DisplayClusterCameraComponent", new IMAGE_BRUSH(TEXT("TreeItems/SceneComponentCamera_16x"), Icon16x16));
+	Style->Set("ClassIcon.DisplayClusterCameraComponent", new IMAGE_BRUSH(TEXT("Components/ViewOrigin/nDisplayViewOrigin_x16"), Icon16x16));
+	Style->Set("ClassThumbnail.DisplayClusterCameraComponent", new IMAGE_BRUSH(TEXT("Components/ViewOrigin/nDisplayViewOrigin_x64"), Icon64x64));
 	
+	Style->Set("ClassIcon.DisplayClusterICVFXCameraComponent", new IMAGE_BRUSH(TEXT("Components/ICVFXCamera/nDisplayCamera_x16"), Icon16x16));
+
 	Style->Set("ClassIcon.DisplayClusterMeshComponent", new IMAGE_BRUSH(TEXT("TreeItems/SceneComponentMesh_16x"), Icon16x16));
 	Style->Set("ClassThumbnail.DisplayClusterMeshComponent", new IMAGE_BRUSH(TEXT("TreeItems/SceneComponentMesh_16x8"), Icon16x16));
 	
@@ -121,14 +127,6 @@ TSharedRef< FSlateStyleSet > FDisplayClusterConfiguratorStyle::Create()
 	Style->Set("DisplayClusterConfigurator.TreeItems.ClusterNode", new IMAGE_BRUSH("TreeItems/Viewport_16x", Icon16x16));
 	Style->Set("DisplayClusterConfigurator.TreeItems.Viewport", new IMAGE_BRUSH("TreeItems/SceneComponentScreen_16x", Icon16x16));
 	Style->Set("DisplayClusterConfigurator.TreeItems.Postprocess", new IMAGE_BRUSH("TreeItems/Postprocess_12x", Icon12x12));
-
-	// Input
-	Style->Set("DisplayClusterConfigurator.TreeItems.InputContainer",      new IMAGE_BRUSH("TreeItems/InputContainer_16x", Icon16x16));
-	Style->Set("DisplayClusterConfigurator.TreeItems.InputDeviceAnalog",   new IMAGE_BRUSH("TreeItems/InputDeviceAnalog_16x", Icon16x16));
-	Style->Set("DisplayClusterConfigurator.TreeItems.InputDeviceButton",   new IMAGE_BRUSH("TreeItems/InputDeviceButton_16x", Icon16x16));
-	Style->Set("DisplayClusterConfigurator.TreeItems.InputDeviceKeyboard", new IMAGE_BRUSH("TreeItems/InputDeviceKeyboard_16x", Icon16x16));
-	Style->Set("DisplayClusterConfigurator.TreeItems.InputDeviceTracker",  new IMAGE_BRUSH("TreeItems/InputDeviceTracker_16x", Icon16x16));
-
 
 	// Icons
 	Style->Set("DisplayClusterConfigurator.OutputMapping.ToggleWindowInfo", new IMAGE_BRUSH("OutputMapping/ToggleWindowInfo_16x", Icon16x16));

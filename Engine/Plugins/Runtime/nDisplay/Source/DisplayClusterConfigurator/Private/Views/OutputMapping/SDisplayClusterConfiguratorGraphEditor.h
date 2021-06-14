@@ -63,10 +63,12 @@ public:
 	virtual void PostRedo(bool bSuccess) override { PostUndo(bSuccess); }
 	// End of FEditorUndoClient
 
-	void SetViewportPreviewTexture(const FString& NodeId, const FString& ViewportId, UTexture* InTexture);
+	void FindAndSelectObjects(const TArray<UObject*>& ObjectsToSelect);
+	void JumpToObject(UObject* InObject);
 
 private:
 	void OnSelectedNodesChanged(const TSet<UObject*>& NewSelection);
+	void OnNodeDoubleClicked(UEdGraphNode* ClickedNode);
 	void OnObjectSelected();
 	void OnConfigReloaded();
 	void OnClusterChanged();

@@ -899,10 +899,13 @@ FLinkerLoad::FLinkerLoad(UPackage* InParent, const TCHAR* InFilename, uint32 InL
 
 #if WITH_EDITOR
 	// Check if the linker is instanced @todo: pass through a load flag?
-	FName PackageNameToLoad = *FPackageName::FilenameToLongPackageName(InFilename);
-	if (LinkerRoot->GetFName() != PackageNameToLoad)
+	FString PackageName;
+	if (FPackageName::TryConvertFilenameToLongPackageName(Filename, PackageName))
 	{
-		InstancingContext.AddMapping(PackageNameToLoad, LinkerRoot->GetFName());
+		if (LinkerRoot->GetFName() != *PackageName)
+		{
+			InstancingContext.AddMapping(*PackageName, LinkerRoot->GetFName());
+		}
 	}
 #endif
 }
@@ -4783,14 +4786,21 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 		// to get default value initialization to work.
 		if ((ObjectLoadFlags & RF_ClassDefaultObject) != 0)
 		{
-			UClass* SuperClass = LoadClass->GetSuperClass();
-			if (SuperClass && !SuperClass->IsNative())
-			{
-				UObject* SuperCDO = SuperClass->GetDefaultObject();
-				TArray<UObject*> SuperSubObjects;
-				GetObjectsWithOuter(SuperCDO, SuperSubObjects, /*bIncludeNestedObjects=*/ false, /*ExclusionFlags=*/ RF_NoFlags, /*InternalExclusionFlags=*/ EInternalObjectFlags::Native);
+			TArray<UObject*> SubObjects;
 
-				for (UObject* SubObject : SuperSubObjects)
+			TFunction<void(UClass*)> PreloadSubobjects = [this, &SubObjects, &PreloadSubobjects](UClass* PreloadClass)
+			{
+				if (PreloadClass == nullptr || PreloadClass->IsNative())
+			{
+					return;
+				}
+
+				PreloadSubobjects(PreloadClass->GetSuperClass());
+				SubObjects.Reset();
+
+				GetObjectsWithOuter(PreloadClass->GetDefaultObject(), SubObjects, /*bIncludeNestedObjects=*/ false, /*ExclusionFlags=*/ RF_NoFlags, /*InternalExclusionFlags=*/ EInternalObjectFlags::Native);
+
+				for (UObject* SubObject : SubObjects)
 				{
 					// Matching behavior in UBlueprint::ForceLoad to ensure that the subobject is actually loaded:
 					if (SubObject->HasAnyFlags(RF_WasLoaded) &&
@@ -4800,6 +4810,8 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 						Preload(SubObject);
 					}
 				}
+			};
+			PreloadSubobjects(LoadClass->GetSuperClass());
 
 				// Preload may have already created this object.
 				if (Export.Object)
@@ -4807,7 +4819,6 @@ UObject* FLinkerLoad::CreateExport( int32 Index )
 					return Export.Object;
 				}
 			}
-		}
 
 		LoadClass->GetDefaultObject();
 

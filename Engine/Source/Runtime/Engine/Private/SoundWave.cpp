@@ -2222,7 +2222,7 @@ void USoundWave::Parse(FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstance
 
 #if !NO_LOGGING
 	// Sanity check
-	if (NumChannels > 2 && WaveInstance->GetUseSpatialization() && !WaveInstance->bReportedSpatializationWarning)
+	if (NumChannels > 2 && !WaveInstance->bIsAmbisonics && WaveInstance->GetUseSpatialization() && !WaveInstance->bReportedSpatializationWarning)
 	{
 		static TSet<USoundWave*> ReportedSounds;
 		if (!ReportedSounds.Contains(this))
@@ -2902,7 +2902,7 @@ void USoundWave::CacheInheritedLoadingBehavior()
 		// if this is true then the behavior should not be Inherited here
 		check(!bLoadingBehaviorOverridden);
 
-		USoundClass* CurrentSoundClass = SoundClassObject;
+		USoundClass* CurrentSoundClass = GetSoundClass();
 		ESoundWaveLoadingBehavior SoundClassLoadingBehavior = ESoundWaveLoadingBehavior::Inherited;
 
 		// Recurse through this sound class's parents until we find an override.

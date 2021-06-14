@@ -30,9 +30,8 @@ TArray<TWeakObjectPtr<UNiagaraMeshRendererProperties>> UNiagaraMeshRendererPrope
 
 FNiagaraMeshMaterialOverride::FNiagaraMeshMaterialOverride()
 	: ExplicitMat(nullptr)
+	, UserParamBinding(FNiagaraTypeDefinition(UMaterialInterface::StaticClass()))
 {
-	FNiagaraTypeDefinition MaterialDef(UMaterialInterface::StaticClass());
-	UserParamBinding.Parameter.SetType(MaterialDef);
 }
 
 bool FNiagaraMeshMaterialOverride::SerializeFromMismatchedTag(const struct FPropertyTag& Tag, FStructuredArchive::FSlot Slot)
@@ -62,6 +61,7 @@ UNiagaraMeshRendererProperties::UNiagaraMeshRendererProperties()
 	, SortMode(ENiagaraSortMode::None)
 	, bOverrideMaterials(false)
 	, bSortOnlyWhenTranslucent(true)
+	, bGpuLowLatencyTranslucency(true)
 	, bSubImageBlend(false)
 	, SubImageSize(1.0f, 1.0f)
 	, FacingMode(ENiagaraMeshFacingMode::Default)
@@ -263,11 +263,11 @@ void UNiagaraMeshRendererProperties::InitBindings()
 
 void UNiagaraMeshRendererProperties::SetPreviousBindings(const UNiagaraEmitter* SrcEmitter, ENiagaraRendererSourceDataMode InSourceMode)
 {
-	PrevPositionBinding.SetAsPreviousValue(PositionBinding.GetParamMapBindableVariable(), SrcEmitter, InSourceMode);
-	PrevScaleBinding.SetAsPreviousValue(ScaleBinding.GetParamMapBindableVariable(), SrcEmitter, InSourceMode);
-	PrevMeshOrientationBinding.SetAsPreviousValue(MeshOrientationBinding.GetParamMapBindableVariable(), SrcEmitter, InSourceMode);
-	PrevCameraOffsetBinding.SetAsPreviousValue(CameraOffsetBinding.GetParamMapBindableVariable(), SrcEmitter, InSourceMode);
-	PrevVelocityBinding.SetAsPreviousValue(VelocityBinding.GetParamMapBindableVariable(), SrcEmitter, InSourceMode);
+	PrevPositionBinding.SetAsPreviousValue(PositionBinding, SrcEmitter, InSourceMode);
+	PrevScaleBinding.SetAsPreviousValue(ScaleBinding, SrcEmitter, InSourceMode);
+	PrevMeshOrientationBinding.SetAsPreviousValue(MeshOrientationBinding, SrcEmitter, InSourceMode);
+	PrevCameraOffsetBinding.SetAsPreviousValue(CameraOffsetBinding, SrcEmitter, InSourceMode);
+	PrevVelocityBinding.SetAsPreviousValue(VelocityBinding, SrcEmitter, InSourceMode);
 }
 
 void UNiagaraMeshRendererProperties::UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit)
@@ -958,6 +958,23 @@ void UNiagaraMeshRendererProperties::RebuildMeshList()
 	{
 		ShowFlipbookWarningToast(LOCTEXT("FlipbookSuffixWarningToastMessage", "Failed to load one or more meshes for Mesh Flipbook. See the Output Log for details."));
 	}
+}
+
+FNiagaraVariable UNiagaraMeshRendererProperties::GetBoundAttribute(const FNiagaraVariableAttributeBinding* Binding) const
+{
+	if (!NeedsPreciseMotionVectors())
+	{
+		if (Binding == &PrevPositionBinding
+			|| Binding == &PrevScaleBinding
+			|| Binding == &PrevMeshOrientationBinding
+			|| Binding == &PrevCameraOffsetBinding
+			|| Binding == &PrevVelocityBinding)
+		{
+			return FNiagaraVariable();
+		}
+	}
+
+	return Super::GetBoundAttribute(Binding);
 }
 
 #endif // WITH_EDITORONLY_DATA

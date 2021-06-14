@@ -1,9 +1,9 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
 #include "AudioEncoderFactory.h"
 #include "AVEncoder.h"
 
 #if PLATFORM_WINDOWS
-#include "Encoders/WmfAudioEncoder.h"
-#elif (PLATFORM_XBOXONE && WITH_LEGACY_XDK)
 #include "Encoders/WmfAudioEncoder.h"
 #endif
 
@@ -60,7 +60,7 @@ namespace AVEncoder
 		// We need to set this at the top, otherwise RegisterFactory will call this recursively
 		GDefaultFactoriesRegistered = true;
 
-#if PLATFORM_WINDOWS || (PLATFORM_XBOXONE && WITH_LEGACY_XDK)
+#if PLATFORM_WINDOWS
 		// Generic Windows/XBox Wmf encoder
 		static FWmfAudioEncoderFactory WmfAudioEncoderFactory;
 		FAudioEncoderFactory::RegisterFactory(WmfAudioEncoderFactory);

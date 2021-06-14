@@ -15,6 +15,7 @@ public class RemoteControlUI : ModuleRules
 				"ApplicationCore",
 				"AssetRegistry",
 				"AssetTools",
+				"ClassViewer",
 				"Core",
 				"CoreUObject",
 				"DeveloperSettings",
@@ -23,6 +24,7 @@ public class RemoteControlUI : ModuleRules
 				"Engine",
 				"HotReload",
 				"InputCore",
+				"MessageLog",
 				"Projects",
 				"PropertyEditor",
 				"RemoteControl",
@@ -30,8 +32,7 @@ public class RemoteControlUI : ModuleRules
 				"SceneOutliner",
 				"Slate",
 				"SlateCore",
-				"UnrealEd",
-				"WebRemoteControl"
+				"UnrealEd"
 			}
 		);
     }

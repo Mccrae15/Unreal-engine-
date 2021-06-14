@@ -24,7 +24,6 @@ UCLASS(Config = Engine, DefaultConfig, Meta = (DisplayName = "DMX"))
 class DMXPROTOCOL_API UDMXProtocolSettings 
 	: public UObject
 {
-	DECLARE_MULTICAST_DELEGATE(FDMXOnPortConfigsChangedDelegate);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FDMXOnSendDMXEnabled, bool /** bEnabled */);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FDMXOnReceiveDMXEnabled, bool /** bEnabled */);
 
@@ -81,9 +80,6 @@ public:
 	UPROPERTY(Meta = (DeprecatedProperty, DeprecationMessage = "ReceivingRefreshRate is deprecated without replacement. It would deter timestamps on the receivers. Instead use a per object rate where desired."))
 	uint32 ReceivingRefreshRate;
 
-	/** Broadcast when ports configs changed in project settings */
-	FDMXOnPortConfigsChangedDelegate OnPortConfigsChanged;
-
 	/** Broadcast when send DMX is enabled or disabled */
 	FDMXOnSendDMXEnabled OnSetSendDMXEnabled;
 
@@ -102,9 +98,6 @@ public:
 	/** Overrides if send DMX is enabled at runtime */
 	void OverrideReceiveDMXEnabled(bool bEnabled);
 
-	/** Updates ports from settings */
-	void UpdatePortsFromSettings();
-
 private:
 	/** Whether DMX is received from the network. Recalled whenever editor or game starts. */
 	UPROPERTY(Config, EditAnywhere, Category = "DMX|Sending Settings", Meta = (AllowPrivateAccess = true, DisplayName = "Send DMX by default"))
@@ -119,7 +112,6 @@ private:
 
 	/** Overrides the default bDefaultReceiveDMXEnabled value at runtime */
 	bool bOverrideReceiveDMXEnabled;
-
 
 	///////////////////
 	// DEPRECATED 4.27

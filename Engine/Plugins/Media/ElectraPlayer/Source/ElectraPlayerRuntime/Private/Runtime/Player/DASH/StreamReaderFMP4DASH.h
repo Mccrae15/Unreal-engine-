@@ -5,8 +5,10 @@
 #include "Player/PlayerStreamReader.h"
 #include "Player/AdaptiveStreamingPlayerResourceRequest.h"
 #include "Player/DASH/PlaylistReaderDASH_Internal.h"
+#include "Player/DASH/PlayerEventDASH.h"
 #include "Demuxer/ParserISO14496-12.h"
 #include "HTTP/HTTPManager.h"
+#include "Player/DRM/DRMManager.h"
 
 namespace Electra
 {
@@ -54,7 +56,13 @@ public:
 	FTimeValue												SAET;
 	FTimeValue												DownloadDelayTime;
 
+	// Encryption
+	TSharedPtrTS<ElectraCDM::IMediaCDMClient>				DrmClient;
+	FString													DrmMimeType;
+
+
 	// Internal work variables
+	TSharedPtrTS<FBufferSourceInfo>							SourceBufferInfo;
 	FPlayerLoopState										PlayerLoopState;
 	int32													NumOverallRetries = 0;								//!< Number of retries for this _segment_ across all possible quality levels and CDNs.
 	uint32													CurrentPlaybackSequenceID = ~0U;					//!< Set by the player before adding the request to the stream reader.
@@ -82,6 +90,9 @@ public:
 
 	//! Adds a request to read from a stream
 	virtual EAddResult AddRequest(uint32 CurrentPlaybackSequenceID, TSharedPtrTS<IStreamSegment> Request) override;
+
+	//! Cancels any ongoing requests of the given stream type. Silent cancellation will not notify OnFragmentClose() or OnFragmentReachedEOS(). 
+	virtual void CancelRequest(EStreamType StreamType, bool bSilent) override;
 
 	//! Cancels all pending requests.
 	virtual void CancelRequests() override;
@@ -113,8 +124,10 @@ private:
 		IStreamReader::CreateParam								Parameters;
 		TSharedPtrTS<FStreamSegmentRequestFMP4DASH>				CurrentRequest;
 		FMediaSemaphore											WorkSignal;
+		FMediaEvent												IsIdleSignal;
 		volatile bool											bTerminate = false;
 		volatile bool											bRequestCanceled = false;
+		volatile bool											bSilentCancellation = false;
 		volatile bool											bHasErrored = false;
 		bool													bAbortedByABR = false;
 		bool													bAllowEarlyEmitting = false;
@@ -130,6 +143,8 @@ private:
 		FTimeValue 												DurationSuccessfullyRead;
 		FTimeValue 												DurationSuccessfullyDelivered;
 
+		TArray<TSharedPtrTS<DASH::FPlayerEvent>>				SegmentEventsFound;
+
 		FMediaCriticalSection									MetricUpdateLock;
 		int32													ProgressReportCount = 0;
 		TSharedPtrTS<IAdaptiveStreamSelector>					StreamSelector;
@@ -137,12 +152,14 @@ private:
 
 		FStreamHandler();
 		virtual ~FStreamHandler();
-		void Cancel();
+		void Cancel(bool bSilent);
 		void SignalWork();
 		void WorkerThread();
 		void HandleRequest();
-		
+
 		FErrorDetail GetInitSegment(TSharedPtrTS<const IParserISO14496_12>& OutMP4InitSegment, const TSharedPtrTS<FStreamSegmentRequestFMP4DASH>& InRequest);
+		void CheckForInbandDASHEvents();
+		void HandleEventMessages();
 
 		void LogMessage(IInfoLog::ELevel Level, const FString& Message);
 

@@ -62,6 +62,9 @@ class IDisplayClusterConfiguratorViewTree
 	: public IDisplayClusterConfiguratorView
 {
 public:
+	virtual ~IDisplayClusterConfiguratorViewTree() = default;
+
+public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnHoveredItemSet, const TSharedRef<IDisplayClusterConfiguratorTreeItem>&);
 	DECLARE_MULTICAST_DELEGATE(FOnHoveredItemCleared);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnItemsSelected, const TArray<TSharedPtr<IDisplayClusterConfiguratorTreeItem>>&);
@@ -130,6 +133,15 @@ public:
 	 * @return The list of currently selected tree items
 	 */
 	virtual TArray<TSharedPtr<IDisplayClusterConfiguratorTreeItem>> GetSelectedItems() const = 0;
+
+	/** Gets the objects that are currently selected in the tree view. */
+	virtual void GetSelectedObjects(TArray<UObject*>& OutObjects) const = 0;
+
+	/**
+	 * Finds any tree items that represet the specified objects and selects them.
+	 * @param ObjectsToSelect - The objects to select
+	 */
+	virtual void FindAndSelectObjects(const TArray<UObject*>& ObjectsToSelect) = 0;
 
 	/**
 	 * Filters the specified list of items based on the filter arguments, and outputs the filtered list.

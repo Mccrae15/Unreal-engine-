@@ -2,7 +2,7 @@ import { Dispatch } from 'redux';
 import { createAction, createReducer } from 'redux-act';
 import dotProp from 'dot-prop-immutable';
 import io from 'socket.io-client';
-import { IAsset, IPayload, IPayloads, IPreset, IView, PropertyValue, AssetAction } from '../shared';
+import { IAsset, IPayload, IPayloads, IPreset, IView, PropertyValue, TabLayout } from '../shared';
 import _ from 'lodash';
 
 
@@ -66,10 +66,6 @@ function _initialize(dispatch: Dispatch, getState: () => { api: ApiState }) {
 
 type IRequestCallback = Function | string | undefined;
 
-interface IRequestOptions {
-  blob?: boolean;
-}
-
 async function _request(method: string, url: string, body: string | object | undefined, callback: IRequestCallback): Promise<any> {
   const request: RequestInit = { method, mode: 'cors', redirect: 'follow', headers: {} };
   if (body instanceof FormData || typeof(body) === 'string') {
@@ -121,9 +117,21 @@ export const _api = {
     select: (preset?: IPreset) => _dispatch(API.PRESET_SELECT(preset?.Name)),
   },
   views: {
-    get: (preset: string): Promise<IView> => _get(`/api/presets/view?preset=${preset}`, API.VIEW),
+    get: async(preset: string): Promise<IView> => {
+      let view = await _get(`/api/presets/view?preset=${preset}`);
+      if (typeof(view) !== 'object' || !view?.tabs?.length) {
+        view = {
+          tabs: [{ name: 'Tab 1', layout: TabLayout.Stack, panels: [] }]
+        };
+      }
+
+      _dispatch(API.VIEW(view));
+
+      return view;
+    },
     set: (view: IView) => {
       const preset = _internal.getPreset();
+
       _socket.emit('view', preset, view);
     },
   },
@@ -134,27 +142,14 @@ export const _api = {
       const preset = _internal.getPreset();
       _socket.emit('value', preset, property, value);
     },
-    reset: (property: string) => {
+    execute: (func: string, args?: Record<string, any>) => {
       const preset = _internal.getPreset();
-      _socket.emit('reset', preset, property);
+      _socket.emit('execute', preset, func, args ?? {});
     },
-    execute: (func: string) => {
+    metadata: (property: string, meta: string, value: string) => {
       const preset = _internal.getPreset();
-      _socket.emit('execute', null, preset, func);
-    },
-    asset: (asset: string, action: AssetAction, meta?: any) => {
-      _socket.emit('asset', asset, action, meta);
+      _socket.emit('metadata', preset, property, meta, value);
     }
-  },
-  actor: {
-    set: (actor: string, property: string, value: PropertyValue) => {
-      const preset = _internal.getPreset();
-      _socket.emit('actor', preset, actor, property, value);
-    },
-    execute: (actor: string, func: string) => {
-      const preset = _internal.getPreset();
-      _socket.emit('execute', preset, actor, func);
-    },
   },
   assets: {
     search: (q: string, types: string[], prefix: string, count: number = 50): Promise<IAsset[]> => {
@@ -198,15 +193,36 @@ const reducer = createReducer<ApiState>({}, initialState);
 reducer
   .on(API.STATUS, (state, status) => dotProp.merge(state, 'status', status))
   .on(API.PRESETS, (state, presets) => {
-    state = dotProp.set(state, 'presets', _.keyBy(presets, 'Name'));
+    const presetsMap = _.keyBy(presets, 'Name');
+    state = dotProp.set(state, 'presets', presetsMap);
 
-    const preset = presets?.[0]?.Name;
-    if (!state.preset && preset) {
+    let { preset } = state;
+
+    // Is loaded preset still available?
+    if (preset && !presetsMap[preset])
+      preset = undefined;
+
+    // If there isn't a loaded preset
+    if (!preset) {
+      // 1. Load the preset name specified in the url
+      const params = new URLSearchParams(window.location.search);
+      preset = params.get('preset');
+
+      // 2. Load last used preset
+      if (!preset || !presetsMap[preset])
+        preset = localStorage.getItem('preset');
+
+      // 3. Load first preset
+      if (!preset || !presetsMap[preset])
+        preset = presets[0]?.Name;
+
+      // No available preset
+      if (!preset)
+        return { ...state, preset: undefined, view: { tabs: null }, payload: {} };
+
       _api.views.get(preset);
       _api.payload.get(preset);
       return { ...state, preset, view: { tabs: [] }, payload: {} };
-    } else if (state.preset && !presets.length) {
-      return { ...state, preset: undefined, view: { tabs: null }, payload: {} };
     }
 
     return state;
@@ -230,6 +246,7 @@ reducer
     return state;
   })
   .on(API.PRESET_SELECT, (state, preset) => {
+    localStorage.setItem('preset', preset);
     _api.views.get(preset);
     _api.payload.get(preset);
     return { ...state, preset, view: { tabs: [] }, payload: {} };

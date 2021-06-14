@@ -2,7 +2,7 @@
 
 #include? "SDKsRoot.xcconfig"
 
-AC_SDK_PATH = $(UESDKRoot)/HostMac/macOS/Archicad/$(AC_VERSION)
+AC_SDK_PATH = $(UESDKRoot)/HostMac/Mac/Archicad/$(AC_VERSION)
 
 AC_INCLUDES_PATH = "$(AC_SDK_PATH)/Support/Inc" "$(AC_SDK_PATH)/Support/Modules/GSRoot/STL/imp" "$(AC_SDK_PATH)/Support/Modules/GSRoot" "$(AC_SDK_PATH)/Support/Modules/InputOutput"/** "$(AC_SDK_PATH)/Support/Modules/GSModelDevLib"/** "$(AC_SDK_PATH)/Support/Modules/GSUtils"/** "$(AC_SDK_PATH)/Support/Modules/GSModeler"/** "$(AC_SDK_PATH)/Support/Modules/Model3D"/** "$(AC_SDK_PATH)/Support/Modules/MPIInterfaceDevLib"/** "$(AC_SDK_PATH)/Support/Modules/Geometry"/** "$(AC_SDK_PATH)/Support/Modules/DGLib"/** "$(AC_SDK_PATH)/Support/Modules/GDL"/** "$(AC_SDK_PATH)/Support/Modules/GXImage"/** "$(AC_SDK_PATH)/Support/Modules/GX"/** "$(AC_SDK_PATH)/Support/Modules/DGGraphix"/** "$(AC_SDK_PATH)/Support/Modules/Graphix"/** "$(AC_SDK_PATH)/Support/Modules/TextEngine"/** "$(AC_SDK_PATH)/Support/Modules/GXImageBase"/** "$(AC_SDK_PATH)/Support/Modules/PointCloudManager" "$(AC_SDK_PATH)/Support/Modules/PointCloud" "$(AC_SDK_PATH)/Support/Modules/Pattern" "$(AC_SDK_PATH)/Support/Modules/Brep" "$(AC_SDK_PATH)/Support/Modules/VBAttributes" "$(AC_SDK_PATH)/Support/Modules/GSModeler2D" "$(AC_SDK_PATH)/Support/Modules/ObjectDatabase" "$(AC_SDK_PATH)/Support/Modules/UDLib" "$(UE_Engine)/Binaries/Mac/DatasmithSDK"
 
@@ -13,6 +13,8 @@ UE_Project = $(UE_Runtime)/Projects/Public
 UE_INCLUDES_PATH = "$(UE_Core)" "$(UE_Core)/Internationalization" "$(UE_Core)/Async" "$(UE_Core)/Concurrency" "$(UE_Core)/Containers" "$(UE_Core)/Delegates" "$(UE_Core)/GenericPlatform" "$(UE_Core)/HAL" "$(UE_Core)/Logging" "$(UE_Core)/Math" "$(UE_Core)/Misc" "$(UE_Core)/Modules" "$(UE_Core)/Modules\Boilerplate" "$(UE_Core)/ProfilingDebugging" "$(UE_Core)/Serialization" "$(UE_Core)/Serialization\Csv" "$(UE_Core)/Stats" "$(UE_Core)/Templates" "$(UE_Core)/UObject" "$(UE_Project)/Public" "$(UE_Project)/Interfaces" "$(UE_Runtime)/TraceLog/Public"  "$(UE_Runtime)/Datasmith/DatasmithCore/Public" "$(UE_Runtime)/Datasmith/DirectLink/Public" "$(UE_Runtime)/Launch/Resources" "$(UE_Engine)/Source/Developer/Datasmith/DatasmithExporter/Public" "$(UE_Engine)/Source/Developer/Datasmith/DatasmithExporterUI/Public"
 
 USER_HEADER_SEARCH_PATHS = "." $(AC_INCLUDES_PATH) $(UE_INCLUDES_PATH)
+
+AUTO_SYNC = 1
 
 VMajor = 1
 VMinor = 0
@@ -50,13 +52,12 @@ PRODUCT_BUNDLE_IDENTIFIER = com.epicgames.DatasmithARCHICAD$(AC_VERSION)Exporter
 GRC_CFG_DEFINES[config=Release] = -DNDEBUG
 GRC_CFG_DEFINES[config=Debug] = -DDEBUG
 
-GRC_DEFINES = $GRC_CFG_DEFINES -DPREPROCESS_GRC -DCHECK_UPDATE -DGS_64BIT -Dmacintosh -DINT__APP
+GRC_DEFINES = $GRC_CFG_DEFINES -DPREPROCESS_GRC -DCHECK_UPDATE -DGS_64BIT -Dmacintosh -DINT__APP -DAUTO_SYNC=$(AUTO_SYNC)
 
 GRC_LIB_OUTPUT = $(PROJECT_TEMP_DIR)/GRC_OUT$(AC_VERSION)/
 GRC_OUTPUT = $(PROJECT_TEMP_DIR)/GRC_OUT$(RES_NAME)$(AC_VERSION)/
 
-
-ADDON_PREPROCESSOR_DEFINITIONS = ADDON_VERSION=$(VAddOn) VMAJOR=$(VMajor) VMINOR=$(VMinor) VREVISION=$(VRevision)
+ADDON_PREPROCESSOR_DEFINITIONS = ADDON_VERSION=$(VAddOn) VMAJOR=$(VMajor) VMINOR=$(VMinor) VREVISION=$(VRevision) AUTO_SYNC=$(AUTO_SYNC)
 
 AC_PREPROCESSOR_DEFINITIONS = AC_VERSION=$(AC_VERSION) AC_SDK=$(AC_SDK_BUILD_NUMBER) macintosh=1 ACExtension
 

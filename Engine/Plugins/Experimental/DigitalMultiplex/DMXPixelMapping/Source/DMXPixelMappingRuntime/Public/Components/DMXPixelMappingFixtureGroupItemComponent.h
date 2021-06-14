@@ -13,10 +13,9 @@
 
 #include "DMXPixelMappingFixtureGroupItemComponent.generated.h"
 
+class STextBlock;
 class UTextureRenderTarget2D;
 enum class EDMXColorMode : uint8;
-
-class STextBlock;
 
 /**
  * Fixture Item pixel component
@@ -32,8 +31,6 @@ public:
 
 protected:
 	//~ Begin UObject implementation
-	virtual void PostLoad() override;
-
 #if WITH_EDITOR
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedChainEvent) override;
 #endif // WITH_EDITOR
@@ -44,8 +41,6 @@ public:
 	virtual const FName& GetNamePrefix() override;
 	virtual void ResetDMX() override;
 	virtual void SendDMX() override;
-	virtual void Render() override;
-	virtual void RenderAndSendDMX() override;
 	virtual void PostParentAssigned() override;
 
 #if WITH_EDITOR
@@ -62,16 +57,18 @@ public:
 	virtual void UpdateWidget() override;
 #endif // WITH_EDITOR	
 
-	virtual UTextureRenderTarget2D* GetOutputTexture() override;
 	virtual FVector2D GetSize() const override;
 	virtual FVector2D GetPosition() override;
 	virtual void SetPosition(const FVector2D& InPosition) override;
 	virtual void SetSize(const FVector2D& InSize) override;
+
+	virtual void QueueDownsample() override;
+
+	virtual int32 GetDownsamplePixelIndex() const override { return DownsamplePixelIndex; }
 	//~ End UDMXPixelMappingOutputComponent implementation
 
 	//~ Begin UDMXPixelMappingOutputDMXComponent implementation
 	virtual void RenderWithInputAndSendDMX() override;
-	virtual void RendererOutputTexture() override;
 	//~ End UDMXPixelMappingOutputDMXComponent implementation
 
 	/** Check if a Component can be moved under another one (used for copy/move/duplicate) */
@@ -88,10 +85,6 @@ private:
 
 	/** Set size of Fixture Pixel inside Fixture Group Boundary Box */
 	void SetSizeWithinBoundaryBox(const FVector2D& InSize);
-
-#if WITH_EDITOR
-	FMargin GetLabelPadding() const;
-#endif
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Selected Patch")
@@ -155,14 +148,14 @@ private:
 	void AutoMapAttributes();
 #endif // WITH_EDITOR
 
-	UPROPERTY(Transient)
-	UTextureRenderTarget2D* OutputTarget;
-
 #if WITH_EDITORONLY_DATA
 	FSlateBrush Brush;
 
 	TSharedPtr<STextBlock> PatchNameWidget;
 #endif // WITH_EDITORONLY_DATA
+
+	/** Index of the cell pixel in downsample target buffer */
+	int32 DownsamplePixelIndex;
 
 private:
 	static const FVector2D MixPixelSize;

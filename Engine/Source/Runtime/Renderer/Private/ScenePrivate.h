@@ -948,6 +948,9 @@ public:
 
 	// Reference path tracing cached results
 	TRefCountPtr<IPooledRenderTarget> PathTracingRadianceRT;
+	TRefCountPtr<IPooledRenderTarget> PathTracingAlbedoRT;
+	TRefCountPtr<IPooledRenderTarget> PathTracingNormalRT;
+	TRefCountPtr<IPooledRenderTarget> PathTracingRadianceDenoisedRT;
 	// Keep track of the rectangle of pixels the Radiance texture is valid for so that path tracing can restart if this changes
 	FIntRect PathTracingRect;
 	// Target sampling count for the path tracer - to allow different views to target different quality levels
@@ -1043,6 +1046,9 @@ public:
 	FVector VolumetricCloudShadowmapPreviousAtmosphericLightPos[NUM_ATMOSPHERE_LIGHTS];
 	FVector VolumetricCloudShadowmapPreviousAnchorPoint[NUM_ATMOSPHERE_LIGHTS];
 	FVector VolumetricCloudShadowmapPreviousAtmosphericLightDir[NUM_ATMOSPHERE_LIGHTS];
+
+	// View state
+	FHairStrandsViewData HairStrandsViewData;
 
 	// call after OnFrameRenderingSetup()
 	virtual uint32 GetCurrentTemporalAASampleIndex() const
@@ -2389,9 +2395,9 @@ public:
 	const FViewInfo& GetInstancedView(const FViewInfo& View)
 	{
 		// When drawing the left eye in a stereo scene, copy the right eye view values into the instanced view uniform buffer.
-		const int32 StereoPassIndex = IStereoRendering::IsStereoEyeView(View) ? View.StereoPass + 1 : eSSP_FULL;
+		const EStereoscopicPass StereoPassIndex = IStereoRendering::IsStereoEyeView(View) ? eSSP_RIGHT_EYE : eSSP_FULL;
 
-		return static_cast<const FViewInfo&>(View.Family->GetStereoEyeView((EStereoscopicPass)StereoPassIndex));
+		return static_cast<const FViewInfo&>(View.Family->GetStereoEyeView(StereoPassIndex));
 	}
 
 	TUniformBufferRef<FViewUniformShaderParameters> ViewUniformBuffer;
@@ -2800,6 +2806,7 @@ public:
 
 	virtual void AddWindSource(UWindDirectionalSourceComponent* WindComponent) override;
 	virtual void RemoveWindSource(UWindDirectionalSourceComponent* WindComponent) override;
+	virtual void UpdateWindSource(UWindDirectionalSourceComponent* WindComponent) override;
 	virtual const TArray<FWindSourceSceneProxy*>& GetWindSources_RenderThread() const override;
 	virtual void GetWindParameters(const FVector& Position, FVector& OutDirection, float& OutSpeed, float& OutMinGustAmt, float& OutMaxGustAmt) const override;
 	virtual void GetWindParameters_GameThread(const FVector& Position, FVector& OutDirection, float& OutSpeed, float& OutMinGustAmt, float& OutMaxGustAmt) const override;

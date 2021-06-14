@@ -4,6 +4,7 @@
 
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
 #include "DisplayClusterConfigurationTypes.h"
+#include "Views/Details/DisplayClusterConfiguratorDetailCustomizationUtils.h"
 #include "Views/Details/Widgets/SDisplayClusterConfigurationSearchableComboBox.h"
 #include "Views/OutputMapping/Widgets/SDisplayClusterConfiguratorExternalImagePicker.h"
 #include "DisplayClusterConfiguratorUtils.h"
@@ -18,16 +19,19 @@
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
+#include "DisplayClusterConfiguratorPropertyUtils.h"
 #include "IDetailChildrenBuilder.h"
+#include "IDetailGroup.h"
 #include "IPropertyUtilities.h"
+#include "PropertyCustomizationHelpers.h"
 #include "PropertyHandle.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSpinBox.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SBoxPanel.h"
-
 
 
 #define LOCTEXT_NAMESPACE "FDisplayClusterConfiguratorDetailCustomization"
@@ -35,13 +39,6 @@
 //////////////////////////////////////////////////////////////////////////////////////////////
 // Base UCLASS Detail Customization
 //////////////////////////////////////////////////////////////////////////////////////////////
-
-FDisplayClusterConfiguratorDetailCustomization::FDisplayClusterConfiguratorDetailCustomization()
-	: ToolkitPtr(nullptr)
-	, LayoutBuilder(nullptr)
-	, NDisplayCategory(nullptr)
-{}
-
 void FDisplayClusterConfiguratorDetailCustomization::CustomizeDetails(IDetailLayoutBuilder& InLayoutBuilder)
 {
 	UObject* ObjectBeingEdited = nullptr;
@@ -50,19 +47,82 @@ void FDisplayClusterConfiguratorDetailCustomization::CustomizeDetails(IDetailLay
 		TArray<TWeakObjectPtr<UObject>> ObjectsBeingEdited = InLayoutBuilder.GetSelectedObjects();
 		check(ObjectsBeingEdited.Num() > 0);
 		ObjectBeingEdited = ObjectsBeingEdited[0].Get();
+		
+		for (UObject* Owner = ObjectBeingEdited; Owner; Owner = Owner->GetOuter())
+		{
+			if (ADisplayClusterRootActor* RootActor = Cast<ADisplayClusterRootActor>(Owner))
+			{
+				RootActorPtr = RootActor;
+				break;
+			}
+		}
 	}
 
+	if (!RootActorPtr.IsValid() || (ObjectBeingEdited && ObjectBeingEdited->IsTemplate(RF_ClassDefaultObject)))
 	{
-		FDisplayClusterConfiguratorBlueprintEditor* BPEditor = FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(ObjectBeingEdited);
-		check(BPEditor);
-		
-		ToolkitPtr = StaticCastSharedRef<FDisplayClusterConfiguratorBlueprintEditor>(BPEditor->AsShared());
-		check(ToolkitPtr.IsValid());
+		if (FDisplayClusterConfiguratorBlueprintEditor* BPEditor = FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(ObjectBeingEdited))
+		{
+			ToolkitPtr = StaticCastSharedRef<FDisplayClusterConfiguratorBlueprintEditor>(BPEditor->AsShared());
+		}
+	}
+
+	check(RootActorPtr.IsValid() || ToolkitPtr.IsValid());
+	
+	// Iterate over all of the properties in the object being edited to find properties marked with specific custom metadata tags and hide those properties if necessary
+	if (ObjectBeingEdited)
+	{
+		for (TFieldIterator<FProperty> It(ObjectBeingEdited->GetClass()); It; ++It)
+		{
+			if (FProperty* Property = *It)
+			{
+				TSharedRef<IPropertyHandle> PropertyHandle = InLayoutBuilder.GetProperty(Property->GetFName());
+
+				const bool bShouldHide = PropertyHandle->HasMetaData("nDisplayHidden") ||
+					(IsRunningForBlueprintEditor() ?
+						PropertyHandle->HasMetaData("nDisplayInstanceOnly") || Property->HasAnyPropertyFlags(CPF_DisableEditOnTemplate) :
+						false);
+
+				if (bShouldHide)
+				{
+					PropertyHandle->MarkHiddenByCustomization();
+				}
+			}
+		}
+	}
+}
+
+ADisplayClusterRootActor* FDisplayClusterConfiguratorDetailCustomization::GetRootActor() const
+{
+	ADisplayClusterRootActor* RootActor = nullptr;
+	
+	if (ToolkitPtr.IsValid())
+	{
+		RootActor = Cast<ADisplayClusterRootActor>(ToolkitPtr.Pin()->GetPreviewActor());
+	}
+	else
+	{
+		RootActor = RootActorPtr.Get();
+	}
+
+	check(RootActor);
+	return RootActor;
+}
+
+UDisplayClusterConfigurationData* FDisplayClusterConfiguratorDetailCustomization::GetConfigData() const
+{
+	UDisplayClusterConfigurationData* ConfigData = nullptr;
+	
+	if (ToolkitPtr.IsValid())
+	{
+		ConfigData = ToolkitPtr.Pin()->GetConfig();
+	}
+	else if (RootActorPtr.IsValid())
+	{
+		ConfigData = RootActorPtr->GetConfigData();
 	}
 	
-	LayoutBuilder = &InLayoutBuilder;
-	NDisplayCategory = &LayoutBuilder->EditCategory("nDisplay", FText::GetEmpty());
-	NDisplayCategory->InitiallyCollapsed(false);
+	check(ConfigData);
+	return ConfigData;
 }
 
 void FDisplayClusterConfiguratorDetailCustomization::AddCustomInfoRow(IDetailCategoryBuilder* InCategory, TAttribute<FText> NameContentAttribute, TAttribute<FText> ValueContentAttribute)
@@ -89,13 +149,17 @@ void FDisplayClusterConfiguratorDataDetailCustomization::CustomizeDetails(IDetai
 {
 	Super::CustomizeDetails(InLayoutBuilder);
 
-	TSharedRef<IPropertyHandle> InfoHandle = InLayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationData, Info));
-	check(InfoHandle->IsValidHandle());
-	NDisplayCategory->AddProperty(InfoHandle).ShouldAutoExpand(true);
+	FDisplayClusterConfiguratorNestedPropertyHelper NestedPropertyHelper(InLayoutBuilder);
 
-	TSharedRef<IPropertyHandle> DiagnosticsHandle = InLayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationData, Diagnostics));
-	check(DiagnosticsHandle->IsValidHandle());
-	NDisplayCategory->AddProperty(DiagnosticsHandle).ShouldAutoExpand(true);
+	BEGIN_CATEGORY(DisplayClusterConfigurationStrings::categories::ConfigurationCategory)
+		ADD_NESTED_PROPERTY(NestedPropertyHelper, UDisplayClusterConfigurationData, StageSettings.DefaultFrameSize)
+		ADD_EXPANDED_PROPERTY(UDisplayClusterConfigurationData, RenderFrameSettings);
+		ADD_PROPERTY(UDisplayClusterConfigurationData, Info);
+		ADD_PROPERTY(UDisplayClusterConfigurationData, Diagnostics);
+		ADD_PROPERTY(UDisplayClusterConfigurationData, CustomParameters);
+		ADD_PROPERTY(UDisplayClusterConfigurationData, bFollowLocalPlayerCamera);
+		ADD_PROPERTY(UDisplayClusterConfigurationData, bExitOnEsc);
+	END_CATEGORY()
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -105,20 +169,70 @@ void FDisplayClusterConfiguratorClusterDetailCustomization::CustomizeDetails(IDe
 {
 	Super::CustomizeDetails(InLayoutBuilder);
 
-	NDisplayCategory->InitiallyCollapsed(false);
+	// Store the Nodes property handle for use later
+	ClusterNodesHandle = InLayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, Nodes));
+	check(ClusterNodesHandle->IsValidHandle());
 
-	TSharedPtr<IPropertyHandle> MasterNodeHandle = InLayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, MasterNode), UDisplayClusterConfigurationCluster::StaticClass());
-	check(MasterNodeHandle->IsValidHandle());
+	FDisplayClusterConfiguratorNestedPropertyHelper NestedPropertyHelper(InLayoutBuilder);
+	
+	
 
-	TSharedPtr<IPropertyHandle> SyncHandle = InLayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, Sync), UDisplayClusterConfigurationCluster::StaticClass());
-	check(SyncHandle->IsValidHandle());
+	BEGIN_CATEGORY(DisplayClusterConfigurationStrings::categories::ConfigurationCategory)
+		ADD_PROPERTY(UDisplayClusterConfigurationCluster, MasterNode);
+		ADD_PROPERTY(UDisplayClusterConfigurationCluster, Sync);
+		ADD_PROPERTY(UDisplayClusterConfigurationCluster, Network);
 
-	TSharedPtr<IPropertyHandle> NetworkHandle = InLayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, Network), UDisplayClusterConfigurationCluster::StaticClass());
-	check(NetworkHandle->IsValidHandle());
+		if (!IsRunningForBlueprintEditor())
+		{
+			ADD_CUSTOM_PROPERTY(LOCTEXT("ResetClusterNodesButton_Label", "Reset Cluster Nodes"))
+				.NameContent()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					.HAlign(HAlign_Fill)
+					[
+						SNew(SButton)
+						.Text(LOCTEXT("ResetClusterNodesButton_Label", "Reset Cluster Nodes"))
+						.ToolTipText(LOCTEXT("ResetClusterNodesButton_Tooltip", "Reset all cluster nodes to class defaults."))
+						.OnClicked(FOnClicked::CreateLambda([this]()
+						{
+							ClusterNodesHandle->ResetToDefault();
+							return FReply::Handled();
+						}))
+					]
+				];
+		}
+	END_CATEGORY();
 
-	NDisplayCategory->AddProperty(MasterNodeHandle).ShouldAutoExpand(true);
-	NDisplayCategory->AddProperty(SyncHandle).ShouldAutoExpand(true);
-	NDisplayCategory->AddProperty(NetworkHandle).ShouldAutoExpand(true);
+	BEGIN_CATEGORY(DisplayClusterConfigurationStrings::categories::ClusterPostprocessCategory)
+		BEGIN_GROUP(TEXT("GlobalPostProcess"), LOCTEXT("GlobalPostprocessLabel", "All Viewports"))
+			ADD_GROUP_PROPERTY(UDisplayClusterConfigurationCluster, bUseOverallClusterPostProcess);
+			ADD_GROUP_EXPANDED_PROPERTY(UDisplayClusterConfigurationCluster, OverallClusterPostProcessSettings);
+		END_GROUP();
+
+		if (!IsRunningForBlueprintEditor())
+		{
+			TArray<FString> ViewportNames;
+			NestedPropertyHelper.GetNestedPropertyKeys(TEXT("Nodes.Viewports"), ViewportNames);
+
+			TArray<TSharedPtr<IPropertyHandle>> ViewportPostProcessSettings;
+			NestedPropertyHelper.GetNestedProperties(TEXT("Nodes.Viewports.PostProcessSettings"), ViewportPostProcessSettings);
+
+			// This number could mismatch temporarily on an undo after a viewport is deleted.
+			if (ViewportNames.Num() == ViewportPostProcessSettings.Num())
+			{
+				for (int32 Index = 0; Index < ViewportNames.Num(); ++Index)
+				{
+					BEGIN_GROUP(FName(*ViewportNames[Index]), FText::FromString(ViewportNames[Index]))
+						CurrentGroup.AddPropertyRow(ViewportPostProcessSettings[Index]->GetChildHandle(GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationViewport_PostProcessSettings, bIsEnabled)).ToSharedRef());
+					CurrentGroup.AddPropertyRow(ViewportPostProcessSettings[Index]->GetChildHandle(GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationViewport_PostProcessSettings, bExcludeFromOverallClusterPostProcess)).ToSharedRef());
+					CurrentGroup.AddPropertyRow(ViewportPostProcessSettings[Index]->GetChildHandle(GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationViewport_PostProcessSettings, ViewportSettings)).ToSharedRef()).ShouldAutoExpand(true);
+					END_GROUP();
+				}
+			}
+		}
+	END_CATEGORY();
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -130,15 +244,13 @@ void FDisplayClusterConfiguratorViewportDetailCustomization::CustomizeDetails(ID
 
 	ConfigurationViewportPtr = nullptr;
 	NoneOption = MakeShared<FString>("None");
-
+	
 	// Set config data pointer
-	TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> Toolkit = ToolkitPtr.Pin();
-	check(Toolkit.IsValid());
-
-	UDisplayClusterConfigurationData* ConfigurationData = Toolkit->GetConfig();
+	UDisplayClusterConfigurationData* ConfigurationData = GetConfigData();
 	check(ConfigurationData != nullptr);
+	
 	ConfigurationDataPtr = ConfigurationData;
-
+	
 	// Get the Editing object
 	const TArray<TWeakObjectPtr<UObject>>& SelectedObjects = InLayoutBuilder.GetSelectedObjects();
 	if (SelectedObjects.Num())
@@ -146,25 +258,56 @@ void FDisplayClusterConfiguratorViewportDetailCustomization::CustomizeDetails(ID
 		ConfigurationViewportPtr = Cast<UDisplayClusterConfigurationViewport>(SelectedObjects[0]);
 	}
 	check(ConfigurationViewportPtr != nullptr);
+	
+	CameraHandle = InLayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, Camera));
+	check(CameraHandle.IsValid());
 
-	// Hide properties
-	CameraHandle = InLayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, Camera), UDisplayClusterConfigurationViewport::StaticClass());
-	check(CameraHandle->IsValidHandle());
-	InLayoutBuilder.HideProperty(CameraHandle);
-
+	if (ConfigurationViewportPtr->ProjectionPolicy.Type == DisplayClusterProjectionStrings::projection::Camera)
+	{
+		CameraHandle->MarkHiddenByCustomization();
+		return;
+	}
+	
 	ResetCameraOptions();
-	AddCameraRow();
+	
+	BEGIN_CATEGORY(CameraHandle->GetDefaultCategoryName())
+		REPLACE_PROPERTY_WITH_CUSTOM(UDisplayClusterConfigurationViewport, Camera, CreateCustomCameraWidget());
+	END_CATEGORY()
+
+	FDisplayClusterConfiguratorNestedPropertyHelper NestedPropertyHelper(InLayoutBuilder);
+
+	// Update the metadata for the viewport's region. Must set this here instead of in the UPROPERTY specifier because
+	// the Region property is a generic FDisplayClusterConfigurationRectangle struct which is used in lots of places, most of
+	// which don't make sense to have a minimum or maximum limit
+	TSharedPtr<IPropertyHandle> XHandle = NestedPropertyHelper.GetNestedProperty(TEXT("Region.X"));
+	TSharedPtr<IPropertyHandle> YHandle = NestedPropertyHelper.GetNestedProperty(TEXT("Region.Y"));
+	TSharedPtr<IPropertyHandle> WidthHandle = NestedPropertyHelper.GetNestedProperty(TEXT("Region.W"));
+	TSharedPtr<IPropertyHandle> HeightHandle = NestedPropertyHelper.GetNestedProperty(TEXT("Region.H"));
+
+	XHandle->SetInstanceMetaData(TEXT("ClampMin"), FString::SanitizeFloat(0.0f));
+	XHandle->SetInstanceMetaData(TEXT("UIMin"), FString::SanitizeFloat(0.0f));
+
+	YHandle->SetInstanceMetaData(TEXT("ClampMin"), FString::SanitizeFloat(0.0f));
+	YHandle->SetInstanceMetaData(TEXT("UIMin"), FString::SanitizeFloat(0.0f));
+
+	WidthHandle->SetInstanceMetaData(TEXT("ClampMin"), FString::SanitizeFloat(UDisplayClusterConfigurationViewport::ViewportMinimumSize));
+	WidthHandle->SetInstanceMetaData(TEXT("UIMin"), FString::SanitizeFloat(UDisplayClusterConfigurationViewport::ViewportMinimumSize));
+	WidthHandle->SetInstanceMetaData(TEXT("ClampMax"), FString::SanitizeFloat(UDisplayClusterConfigurationViewport::ViewportMaximumSize));
+	WidthHandle->SetInstanceMetaData(TEXT("UIMax"), FString::SanitizeFloat(UDisplayClusterConfigurationViewport::ViewportMaximumSize));
+
+	HeightHandle->SetInstanceMetaData(TEXT("ClampMin"), FString::SanitizeFloat(UDisplayClusterConfigurationViewport::ViewportMinimumSize));
+	HeightHandle->SetInstanceMetaData(TEXT("UIMin"), FString::SanitizeFloat(UDisplayClusterConfigurationViewport::ViewportMinimumSize));
+	HeightHandle->SetInstanceMetaData(TEXT("ClampMax"), FString::SanitizeFloat(UDisplayClusterConfigurationViewport::ViewportMaximumSize));
+	HeightHandle->SetInstanceMetaData(TEXT("UIMax"), FString::SanitizeFloat(UDisplayClusterConfigurationViewport::ViewportMaximumSize));
 }
 
 void FDisplayClusterConfiguratorViewportDetailCustomization::ResetCameraOptions()
 {
 	CameraOptions.Reset();
-
 	UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get();
 	check(ConfigurationViewport != nullptr);
 	
-	check(ToolkitPtr.IsValid());
-	AActor* RootActor = ToolkitPtr.Pin()->GetPreviewActor();
+	AActor* RootActor = GetRootActor();
 	
 	TArray<UActorComponent*> ActorComponents;
 	RootActor->GetComponents(UDisplayClusterCameraComponent::StaticClass(), ActorComponents);
@@ -173,7 +316,7 @@ void FDisplayClusterConfiguratorViewportDetailCustomization::ResetCameraOptions(
 		const FString ComponentName = ActorComponent->GetName();
 		CameraOptions.Add(MakeShared<FString>(ComponentName));
 	}
-
+	
 	// Component order not guaranteed, sort for consistency.
 	CameraOptions.Sort([](const TSharedPtr<FString>& A, const TSharedPtr<FString>& B)
 	{
@@ -188,21 +331,14 @@ void FDisplayClusterConfiguratorViewportDetailCustomization::ResetCameraOptions(
 	}
 }
 
-void FDisplayClusterConfiguratorViewportDetailCustomization::AddCameraRow()
+TSharedRef<SWidget> FDisplayClusterConfiguratorViewportDetailCustomization::CreateCustomCameraWidget()
 {
 	if (CameraComboBox.IsValid())
 	{
-		return;
+		return CameraComboBox.ToSharedRef();
 	}
 	
-	NDisplayCategory->AddCustomRow(CameraHandle->GetPropertyDisplayName())
-	.NameContent()
-	[
-		CameraHandle->CreatePropertyNameWidget()
-	]
-	.ValueContent()
-	[
-		SAssignNew(CameraComboBox, SDisplayClusterConfigurationSearchableComboBox)
+	return SAssignNew(CameraComboBox, SDisplayClusterConfigurationSearchableComboBox)
 		.OptionsSource(&CameraOptions)
 		.OnGenerateWidget(this, &FDisplayClusterConfiguratorViewportDetailCustomization::MakeCameraOptionComboWidget)
 		.OnSelectionChanged(this, &FDisplayClusterConfiguratorViewportDetailCustomization::OnCameraSelected)
@@ -212,8 +348,7 @@ void FDisplayClusterConfiguratorViewportDetailCustomization::AddCameraRow()
 		[
 			SNew(STextBlock)
 			.Text(this, &FDisplayClusterConfiguratorViewportDetailCustomization::GetSelectedCameraText)
-		]
-	];
+		];
 }
 
 TSharedRef<SWidget> FDisplayClusterConfiguratorViewportDetailCustomization::MakeCameraOptionComboWidget(TSharedPtr<FString> InItem)
@@ -227,22 +362,18 @@ void FDisplayClusterConfiguratorViewportDetailCustomization::OnCameraSelected(TS
 	{
 		UDisplayClusterConfigurationViewport* ConfigurationViewport = ConfigurationViewportPtr.Get();
 		check(ConfigurationViewport != nullptr);
-
 		// Handle empty case
 		if (InCamera->Equals(*NoneOption.Get()))
 		{
-			ConfigurationViewport->Camera = "";
-
+			CameraHandle->SetValue(TEXT(""));
 		}
 		else
 		{
-			ConfigurationViewport->Camera = *InCamera.Get();
+			CameraHandle->SetValue(*InCamera.Get());
 		}
-
 		// Reset available options
 		ResetCameraOptions();
 		CameraComboBox->ResetOptionsSource(&CameraOptions);
-
 		CameraComboBox->SetIsOpen(false);
 	}
 }
@@ -254,35 +385,7 @@ FText FDisplayClusterConfiguratorViewportDetailCustomization::GetSelectedCameraT
 	{
 		SelectedOption = *NoneOption.Get();
 	}
-
 	return FText::FromString(SelectedOption);
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////
-// Input Detail Customization
-//////////////////////////////////////////////////////////////////////////////////////////////
-void FDisplayClusterConfiguratorInputDetailCustomization::CustomizeDetails(IDetailLayoutBuilder& InLayoutBuilder)
-{
-	Super::CustomizeDetails(InLayoutBuilder);
-	ConfigurationInputPtr = nullptr;
-
-	// Get the Editing object
-	const TArray<TWeakObjectPtr<UObject>>& SelectedObjects = InLayoutBuilder.GetSelectedObjects();
-	if (SelectedObjects.Num())
-	{
-		ConfigurationInputPtr = Cast<UDisplayClusterConfigurationInput>(SelectedObjects[0]);
-	}
-	check(ConfigurationInputPtr != nullptr);
-
-	// Add Statistics
-	AddCustomInfoRow(NDisplayCategory, LOCTEXT("ConfigurationSceneComponentAnalogDevicesName", "Analog Devices"), FText::Format(LOCTEXT("ConfigurationSceneComponentAnalogDevicesValue", "{0}"), FText::AsNumber(ConfigurationInputPtr->AnalogDevices.Num())));
-	AddCustomInfoRow(NDisplayCategory, LOCTEXT("ConfigurationSceneComponentButtonDevicesName", "Button Devices"), FText::Format(LOCTEXT("ConfigurationSceneComponentButtonDevicesValue", "{0}"), FText::AsNumber(ConfigurationInputPtr->ButtonDevices.Num())));
-	AddCustomInfoRow(NDisplayCategory, LOCTEXT("ConfigurationSceneComponentKeyboardDevicesName", "Keyboard Devices"), FText::Format(LOCTEXT("ConfigurationSceneComponentKeyboardDevicesValue", "{0}"), FText::AsNumber(ConfigurationInputPtr->KeyboardDevices.Num())));
-	AddCustomInfoRow(NDisplayCategory, LOCTEXT("ConfigurationSceneComponentTrackerDevicesName", "Tracker Devices"), FText::Format(LOCTEXT("ConfigurationSceneComponentTrackerDevicesValue", "{0}"), FText::AsNumber(ConfigurationInputPtr->TrackerDevices.Num())));
-
-	// Expand Array
-	TSharedRef<IPropertyHandle> InputBindingHandle = InLayoutBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationInput, InputBinding));
-	NDisplayCategory->AddProperty(InputBindingHandle).ShouldAutoExpand(true);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -292,7 +395,6 @@ void FDisplayClusterConfiguratorSceneComponentDetailCustomization::CustomizeDeta
 {
 	Super::CustomizeDetails(InLayoutBuilder);
 	SceneComponenPtr = nullptr;
-	NoneOption = MakeShared<FString>("None");
 
 	// Get the Editing object
 	const TArray<TWeakObjectPtr<UObject>>& SelectedObjects = InLayoutBuilder.GetSelectedObjects();
@@ -301,134 +403,6 @@ void FDisplayClusterConfiguratorSceneComponentDetailCustomization::CustomizeDeta
 		SceneComponenPtr = Cast<UDisplayClusterSceneComponent>(SelectedObjects[0]);
 	}
 	check(SceneComponenPtr != nullptr);
-
-	// Hide properties
-	TrackerIdHandle = InLayoutBuilder.GetProperty("TrackerId" /* Protected member */, UDisplayClusterSceneComponent::StaticClass());
-	check(TrackerIdHandle->IsValidHandle());
-	InLayoutBuilder.HideProperty(TrackerIdHandle);
-
-	ResetTrackerIdOptions();
-	AddTrackerIdRow();
-
-	// Hide Location and Rotation if the tracker has been selected
-	TSharedRef<IPropertyHandle> LocationHandle = InLayoutBuilder.GetProperty("RelativeLocation", UDisplayClusterSceneComponent::StaticClass());
-	NDisplayCategory->AddProperty(LocationHandle)
-		.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FDisplayClusterConfiguratorSceneComponentDetailCustomization::GetLocationAndRotationVisibility)));
-
-	TSharedRef<IPropertyHandle> RotationHandle = InLayoutBuilder.GetProperty("RelativeRotation", UDisplayClusterSceneComponent::StaticClass());
-	NDisplayCategory->AddProperty(RotationHandle)
-		.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FDisplayClusterConfiguratorSceneComponentDetailCustomization::GetLocationAndRotationVisibility)));
-}
-
-void FDisplayClusterConfiguratorSceneComponentDetailCustomization::ResetTrackerIdOptions()
-{
-	TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> Toolkit = ToolkitPtr.Pin();
-	check(Toolkit.IsValid());
-
-	UDisplayClusterConfigurationData* ConfigurationData = Toolkit->GetConfig();
-	check(ConfigurationData != nullptr);
-	
-	UDisplayClusterSceneComponent* SceneComponent = SceneComponenPtr.Get();
-	check(SceneComponent != nullptr);
-
-	TrackerIdOptions.Empty();
-
-	const FString TrackerId = SceneComponent->GetTrackerId();
-	
-	for (const TPair<FString, UDisplayClusterConfigurationInputDeviceTracker*>& InputDeviceTrackerPair : ConfigurationData->Input->TrackerDevices)
-	{
-		if (!InputDeviceTrackerPair.Key.Equals(TrackerId))
-		{
-			TrackerIdOptions.Add(MakeShared<FString>(InputDeviceTrackerPair.Key));
-		}
-	}
-
-	// Add None option
-	if (!TrackerId.IsEmpty())
-	{
-		TrackerIdOptions.Add(NoneOption);
-	}
-}
-
-TSharedRef<SWidget> FDisplayClusterConfiguratorSceneComponentDetailCustomization::MakeTrackerIdOptionComboWidget(TSharedPtr<FString> InItem)
-{
-	return SNew(STextBlock).Text(FText::FromString(*InItem));
-}
-
-void FDisplayClusterConfiguratorSceneComponentDetailCustomization::OnTrackerIdSelected(TSharedPtr<FString> InTrackerId, ESelectInfo::Type SelectInfo)
-{
-	if (InTrackerId.IsValid())
-	{
-		UDisplayClusterSceneComponent* SceneComponent = SceneComponenPtr.Get();
-		check(SceneComponent != nullptr);
-
-		// Handle empty case
-		if (InTrackerId->Equals(*NoneOption.Get()))
-		{
-			SceneComponent->SetTrackerId("");
-
-		}
-		else
-		{
-			SceneComponent->SetTrackerId(*InTrackerId.Get());
-		}
-
-		// Reset available options
-		ResetTrackerIdOptions();
-		TrackerIdComboBox->ResetOptionsSource(&TrackerIdOptions);
-
-		TrackerIdComboBox->SetIsOpen(false);
-	}
-}
-
-void FDisplayClusterConfiguratorSceneComponentDetailCustomization::AddTrackerIdRow()
-{
-	if (TrackerIdComboBox.IsValid())
-	{
-		return;
-	}
-	
-	NDisplayCategory->AddCustomRow(TrackerIdHandle->GetPropertyDisplayName())
-	.NameContent()
-	[
-		TrackerIdHandle->CreatePropertyNameWidget()
-	]
-	.ValueContent()
-	[
-		SAssignNew(TrackerIdComboBox, SDisplayClusterConfigurationSearchableComboBox)
-		.OptionsSource(&TrackerIdOptions)
-		.OnGenerateWidget(this, &FDisplayClusterConfiguratorSceneComponentDetailCustomization::MakeTrackerIdOptionComboWidget)
-		.OnSelectionChanged(this, &FDisplayClusterConfiguratorSceneComponentDetailCustomization::OnTrackerIdSelected)
-		.ContentPadding(2)
-		.MaxListHeight(200.0f)
-		.Content()
-		[
-			SNew(STextBlock)
-			.Text(this, &FDisplayClusterConfiguratorSceneComponentDetailCustomization::GetSelectedTrackerIdText)
-		]
-	];
-}
-
-FText FDisplayClusterConfiguratorSceneComponentDetailCustomization::GetSelectedTrackerIdText() const
-{
-	FString SelectedOption = SceneComponenPtr.Get()->GetTrackerId();
-	if (SelectedOption.IsEmpty())
-	{
-		SelectedOption = *NoneOption.Get();
-	}
-	
-	return FText::FromString(SelectedOption);
-}
-
-EVisibility FDisplayClusterConfiguratorSceneComponentDetailCustomization::GetLocationAndRotationVisibility() const
-{
-	const FString SelectedOption = SceneComponenPtr.Get()->GetTrackerId();
-	if (SelectedOption.IsEmpty())
-	{
-		return EVisibility::Visible;
-	}
-
-	return EVisibility::Collapsed;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -456,6 +430,12 @@ void FDisplayClusterConfiguratorScreenDetailCustomization::CustomizeDetails(IDet
 	}
 	check(ScreenComponentPtr != nullptr);
 
+	if (!ScreenComponentPtr->IsTemplate())
+	{
+		// Don't allow size property and aspect ratio changes on instances for now.
+		return;
+	}
+	
 	for (const FDisplayClusterConfiguratorAspectRatioPresetSize& PresetItem : FDisplayClusterConfiguratorAspectRatioPresetSize::CommonPresets)
 	{
 		TSharedPtr<FDisplayClusterConfiguratorAspectRatioPresetSize> PresetItemPtr = MakeShared<FDisplayClusterConfiguratorAspectRatioPresetSize>(PresetItem);
@@ -476,7 +456,7 @@ void FDisplayClusterConfiguratorScreenDetailCustomization::CustomizeDetails(IDet
 	// This will detect custom ratios.
 	OnSizePropertyChanged();
 	
-	InLayoutBuilder.EditCategory("DisplayCluster")
+	InLayoutBuilder.EditCategory(TEXT("Screen Size"))
 	.AddCustomRow(RowName)
 	.NameWidget
 	[
@@ -642,6 +622,21 @@ void FDisplayClusterConfiguratorTypeCustomization::ModifyBlueprint()
 	}
 }
 
+ADisplayClusterRootActor* FDisplayClusterConfiguratorTypeCustomization::FindRootActor() const
+{
+	if (EditingObject == nullptr)
+	{
+		return nullptr;
+	}
+
+	if (ADisplayClusterRootActor* RootActor = Cast<ADisplayClusterRootActor>(EditingObject))
+	{
+		return RootActor;
+	}
+	
+	return EditingObject->GetTypedOuter<ADisplayClusterRootActor>();
+}
+
 //////////////////////////////////////////////////////////////////////////////////////////////
 // Cluster Sync Type Customization
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -678,7 +673,11 @@ void FDisplayClusterConfiguratorPolymorphicEntityCustomization::CustomizeHeader(
 	check(TypeHandle->IsValidHandle());
 	ParametersHandle = InPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationPolymorphicEntity, Parameters));
 	check(ParametersHandle->IsValidHandle());
+	IsCustomHandle = InPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationPolymorphicEntity, bIsCustom));
+	check(IsCustomHandle->IsValidHandle());
 
+	IsCustomHandle->MarkHiddenByCustomization();
+	
 	// Create header row
 	InHeaderRow.NameContent()
 	[
@@ -695,8 +694,6 @@ void FDisplayClusterConfiguratorPolymorphicEntityCustomization::CustomizeChildre
 	FDisplayClusterConfiguratorTypeCustomization::CustomizeChildren(InPropertyHandle, InChildBuilder, CustomizationUtils);
 
 	ChildBuilder = &InChildBuilder;
-
-
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -751,7 +748,7 @@ void FDisplayClusterConfiguratorRenderSyncPolicyCustomization::CustomizeHeader(T
 void FDisplayClusterConfiguratorRenderSyncPolicyCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> InPropertyHandle, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
 	FDisplayClusterConfiguratorPolymorphicEntityCustomization::CustomizeChildren(InPropertyHandle, InChildBuilder, CustomizationUtils);
-
+	
 	// Hide properties 
 	TypeHandle->MarkHiddenByCustomization();
 
@@ -780,12 +777,12 @@ EVisibility FDisplayClusterConfiguratorRenderSyncPolicyCustomization::GetCustomR
 
 EVisibility FDisplayClusterConfiguratorRenderSyncPolicyCustomization::GetNvidiaPolicyRowsVisibility() const
 {
-	UDisplayClusterConfigurationCluster* ConfigurationCluster = ConfigurationClusterPtr.Get();
-	check(ConfigurationCluster != nullptr);
-
-	if (ConfigurationCluster->Sync.RenderSyncPolicy.Type.Equals(*NvidiaOption.Get()))
+	if (UDisplayClusterConfigurationCluster* ConfigurationCluster = ConfigurationClusterPtr.Get())
 	{
-		return EVisibility::Visible;
+		if (ConfigurationCluster->Sync.RenderSyncPolicy.Type.Equals(*NvidiaOption.Get()))
+		{
+			return EVisibility::Visible;
+		}
 	}
 
 	return EVisibility::Collapsed;
@@ -859,11 +856,8 @@ void FDisplayClusterConfiguratorRenderSyncPolicyCustomization::AddNvidiaPolicyRo
 		})
 		.OnValueChanged_Lambda([this](int32 InValue)
 		{
-			UDisplayClusterConfigurationCluster* ConfigurationCluster = ConfigurationClusterPtr.Get();
-			check(ConfigurationCluster != nullptr);
-
 			SwapGroupValue = InValue;
-			ConfigurationCluster->Sync.RenderSyncPolicy.Parameters.Add(SwapGroupName, FString::FromInt(SwapGroupValue));
+			AddToParameterMap(SwapGroupName, FString::FromInt(SwapGroupValue));
 		})
 	];
 
@@ -887,11 +881,8 @@ void FDisplayClusterConfiguratorRenderSyncPolicyCustomization::AddNvidiaPolicyRo
 		})
 		.OnValueChanged_Lambda([this](int32 InValue)
 		{
-			UDisplayClusterConfigurationCluster* ConfigurationCluster = ConfigurationClusterPtr.Get();
-			check(ConfigurationCluster != nullptr);
-
 			SwapBarrierValue = InValue;
-			ConfigurationCluster->Sync.RenderSyncPolicy.Parameters.Add(SwapBarrierName, FString::FromInt(SwapBarrierValue));
+			AddToParameterMap(SwapBarrierName, FString::FromInt(SwapBarrierValue));
 		})
 	];
 }
@@ -932,7 +923,7 @@ void FDisplayClusterConfiguratorRenderSyncPolicyCustomization::OnRenderSyncPolic
 		UDisplayClusterConfigurationCluster* ConfigurationCluster = ConfigurationClusterPtr.Get();
 		check(ConfigurationCluster != nullptr);
 
-		FString SelectedPolicy = *InPolicy.Get();
+		const FString SelectedPolicy = *InPolicy.Get();
 
 		ConfigurationCluster->Modify();
 		ModifyBlueprint();
@@ -940,31 +931,30 @@ void FDisplayClusterConfiguratorRenderSyncPolicyCustomization::OnRenderSyncPolic
 		if (SelectedPolicy.Equals(*CustomOption.Get()))
 		{
 			bIsCustomPolicy = true;
-			ConfigurationCluster->Sync.RenderSyncPolicy.Type = CustomPolicy;
-			ConfigurationCluster->Sync.RenderSyncPolicy.bIsCustom = true;
+			TypeHandle->SetValue(CustomPolicy);
+			IsCustomHandle->SetValue(true);
 		}
 		else
 		{
 			bIsCustomPolicy = false;
-			ConfigurationCluster->Sync.RenderSyncPolicy.Type = SelectedPolicy;
-			ConfigurationCluster->Sync.RenderSyncPolicy.bIsCustom = false;
+			TypeHandle->SetValue(SelectedPolicy);
+			IsCustomHandle->SetValue(false);
 		}
 
 		if (ConfigurationCluster->Sync.RenderSyncPolicy.Type.Equals(*NvidiaOption.Get()))
 		{
-			ConfigurationCluster->Sync.RenderSyncPolicy.Parameters.Add(SwapGroupName, FString::FromInt(SwapGroupValue));
-			ConfigurationCluster->Sync.RenderSyncPolicy.Parameters.Add(SwapBarrierName, FString::FromInt(SwapBarrierValue));
+			AddToParameterMap(SwapGroupName, FString::FromInt(SwapGroupValue));
+			AddToParameterMap(SwapBarrierName, FString::FromInt(SwapBarrierValue));
 		}
 		else
 		{
-			ConfigurationCluster->Sync.RenderSyncPolicy.Parameters.Remove(SwapGroupName);
-			ConfigurationCluster->Sync.RenderSyncPolicy.Parameters.Remove(SwapBarrierName);
+			RemoveFromParameterMap(SwapGroupName);
+			RemoveFromParameterMap(SwapBarrierName);
 		}
 
 		// Reset available options
 		ResetRenderSyncPolicyOptions();
 		RenderSyncPolicyComboBox->ResetOptionsSource(&RenderSyncPolicyOptions);
-
 		RenderSyncPolicyComboBox->SetIsOpen(false);
 	}
 }
@@ -972,7 +962,10 @@ void FDisplayClusterConfiguratorRenderSyncPolicyCustomization::OnRenderSyncPolic
 FText FDisplayClusterConfiguratorRenderSyncPolicyCustomization::GetSelectedRenderSyncPolicyText() const
 {
 	UDisplayClusterConfigurationCluster* ConfigurationCluster = ConfigurationClusterPtr.Get();
-	check(ConfigurationCluster != nullptr);
+	if (ConfigurationCluster == nullptr)
+	{
+		return FText::GetEmpty();
+	}
 
 	if (bIsCustomPolicy)
 	{
@@ -1015,8 +1008,8 @@ void FDisplayClusterConfiguratorRenderSyncPolicyCustomization::OnTextCommittedIn
 	// Update Config
 	UDisplayClusterConfigurationCluster* ConfigurationCluster = ConfigurationClusterPtr.Get();
 	check(ConfigurationCluster != nullptr);
-
-	ConfigurationCluster->Sync.RenderSyncPolicy.Type = CustomPolicy;
+	
+	TypeHandle->SetValue(CustomPolicy);
 
 	// Check if the custom config same as any of the ProjectionPoliсies configs 
 	bIsCustomPolicy = true;
@@ -1031,6 +1024,37 @@ void FDisplayClusterConfiguratorRenderSyncPolicyCustomization::OnTextCommittedIn
 			break;
 		}
 	}
+}
+
+void FDisplayClusterConfiguratorRenderSyncPolicyCustomization::AddToParameterMap(const FString& Key,
+                                                                                 const FString& Value)
+{
+	UDisplayClusterConfigurationCluster* ConfigurationCluster = ConfigurationClusterPtr.Get();
+	check(ConfigurationCluster != nullptr);
+	
+	FStructProperty* SyncStructProperty = FindFProperty<FStructProperty>(ConfigurationCluster->GetClass(), GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, Sync));
+	check(SyncStructProperty);
+
+	FStructProperty* RenderStructProperty = FindFProperty<FStructProperty>(SyncStructProperty->Struct, GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationClusterSync, RenderSyncPolicy));
+	check(RenderStructProperty);
+
+	uint8* MapContainer = RenderStructProperty->ContainerPtrToValuePtr<uint8>(&ConfigurationCluster->Sync);
+	DisplayClusterConfiguratorPropertyUtils::AddKeyValueToMap(MapContainer, ParametersHandle, Key, Value);
+}
+
+void FDisplayClusterConfiguratorRenderSyncPolicyCustomization::RemoveFromParameterMap(const FString& Key)
+{
+	UDisplayClusterConfigurationCluster* ConfigurationCluster = ConfigurationClusterPtr.Get();
+	check(ConfigurationCluster != nullptr);
+
+	FStructProperty* SyncStructProperty = FindFProperty<FStructProperty>(ConfigurationCluster->GetClass(), GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, Sync));
+	check(SyncStructProperty);
+
+	FStructProperty* RenderStructProperty = FindFProperty<FStructProperty>(SyncStructProperty->Struct, GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationClusterSync, RenderSyncPolicy));
+	check(RenderStructProperty);
+
+	uint8* MapContainer = RenderStructProperty->ContainerPtrToValuePtr<uint8>(&ConfigurationCluster->Sync);
+	DisplayClusterConfiguratorPropertyUtils::RemoveKeyFromMap(MapContainer, ParametersHandle, Key);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -1120,8 +1144,8 @@ void FDisplayClusterConfiguratorInputSyncPolicyCustomization::OnInputSyncPolicyS
 		ConfigurationCluster->Modify();
 		ModifyBlueprint();
 		
-		ConfigurationCluster->Sync.InputSyncPolicy.Type = *InPolicy.Get();
-
+		TypeHandle->SetValue(*InPolicy.Get());
+		
 		// Reset available options
 		ResetInputSyncPolicyOptions();
 		InputSyncPolicyComboBox->ResetOptionsSource(&InputSyncPolicyOptions);
@@ -1133,7 +1157,10 @@ void FDisplayClusterConfiguratorInputSyncPolicyCustomization::OnInputSyncPolicyS
 FText FDisplayClusterConfiguratorInputSyncPolicyCustomization::GetSelectedInputSyncPolicyText() const
 {
 	UDisplayClusterConfigurationCluster* ConfigurationCluster = ConfigurationClusterPtr.Get();
-	check(ConfigurationCluster != nullptr);
+	if (ConfigurationCluster == nullptr)
+	{
+		return FText::GetEmpty();
+	}
 
 	return FText::FromString(ConfigurationCluster->Sync.InputSyncPolicy.Type);
 }
@@ -1178,6 +1205,231 @@ void FDisplayClusterConfiguratorExternalImageTypeCustomization::CustomizeHeader(
 void FDisplayClusterConfiguratorExternalImageTypeCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> InPropertyHandle, IDetailChildrenBuilder& InChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
 	FDisplayClusterConfiguratorTypeCustomization::CustomizeChildren(InPropertyHandle, InChildBuilder, CustomizationUtils);
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////
+// Component Ref Type Customization
+//////////////////////////////////////////////////////////////////////////////////////////////
+
+void FDisplayClusterConfiguratorComponentRefCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle,
+	FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+	// This will prevent the struct from being expanded.
+
+	HeaderRow.NameContent()
+	[
+		PropertyHandle->CreatePropertyNameWidget()
+	]
+	.ValueContent()
+	[
+		// Automatically retrieves the TitleProperty
+		PropertyHandle->CreatePropertyValueWidget(false)
+	];
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////
+// Node Selection Customization
+//////////////////////////////////////////////////////////////////////////////////////////////
+
+FDisplayClusterConfiguratorNodeSelection::FDisplayClusterConfiguratorNodeSelection(EOperationMode InMode, ADisplayClusterRootActor* InRootActor, FDisplayClusterConfiguratorBlueprintEditor* InToolkitPtr)
+{
+	RootActorPtr = InRootActor;
+
+	if (InToolkitPtr)
+	{
+		ToolkitPtr = StaticCastSharedRef<FDisplayClusterConfiguratorBlueprintEditor>(InToolkitPtr->AsShared());
+	}
+
+	OperationMode = InMode;
+
+	check(RootActorPtr.IsValid() || ToolkitPtr.IsValid());
+	ResetOptions();
+}
+
+ADisplayClusterRootActor* FDisplayClusterConfiguratorNodeSelection::GetRootActor() const
+{
+	ADisplayClusterRootActor* RootActor = nullptr;
+
+	if (ToolkitPtr.IsValid())
+	{
+		RootActor = Cast<ADisplayClusterRootActor>(ToolkitPtr.Pin()->GetPreviewActor());
+	}
+	else
+	{
+		RootActor = RootActorPtr.Get();
+	}
+
+	check(RootActor);
+	return RootActor;
+}
+
+UDisplayClusterConfigurationData* FDisplayClusterConfiguratorNodeSelection::GetConfigData() const
+{
+	UDisplayClusterConfigurationData* ConfigData = nullptr;
+
+	if (ToolkitPtr.IsValid())
+	{
+		ConfigData = ToolkitPtr.Pin()->GetConfig();
+	}
+	else if (RootActorPtr.IsValid())
+	{
+		ConfigData = RootActorPtr->GetConfigData();
+	}
+
+	check(ConfigData);
+	return ConfigData;
+}
+
+void FDisplayClusterConfiguratorNodeSelection::CreateArrayBuilder(const TSharedRef<IPropertyHandle>& InPropertyHandle,
+	IDetailChildrenBuilder& InChildBuilder)
+{
+	TSharedRef<FDetailArrayBuilder> ArrayBuilder = MakeShareable(new FDetailArrayBuilder(InPropertyHandle));
+	ArrayBuilder->OnGenerateArrayElementWidget(FOnGenerateArrayElementWidget::CreateRaw(this,
+		&FDisplayClusterConfiguratorNodeSelection::GenerateSelectionWidget));
+
+	InChildBuilder.AddCustomBuilder(ArrayBuilder);
+}
+
+FDisplayClusterConfiguratorNodeSelection::EOperationMode FDisplayClusterConfiguratorNodeSelection::GetOperationModeFromProperty(FProperty* Property)
+{
+	EOperationMode ReturnMode = ClusterNodes;
+	if(Property)
+	{
+		if (const FString* DefinedMode = Property->FindMetaData(TEXT("ConfigurationMode")))
+		{
+			FString ModeLower = (*DefinedMode).ToLower();
+			ModeLower.RemoveSpacesInline();
+			if (ModeLower == TEXT("viewports"))
+			{
+				ReturnMode = FDisplayClusterConfiguratorNodeSelection::EOperationMode::Viewports;
+			}
+			else if (ModeLower == TEXT("clusternodes"))
+			{
+				ReturnMode = FDisplayClusterConfiguratorNodeSelection::EOperationMode::ClusterNodes;
+			}
+			// Define any other modes here.
+		}
+	}
+
+	return ReturnMode;
+}
+
+void FDisplayClusterConfiguratorNodeSelection::GenerateSelectionWidget(
+	TSharedRef<IPropertyHandle> PropertyHandle, int32 ArrayIndex, IDetailChildrenBuilder& ChildrenBuilder)
+{
+	IDetailPropertyRow& PropertyRow = ChildrenBuilder.AddProperty(PropertyHandle);
+	PropertyRow.CustomWidget(false)
+		.NameContent()
+		[
+			PropertyHandle->CreatePropertyNameWidget()
+		]
+		.ValueContent()
+		[
+			SAssignNew(OptionsComboBox, SDisplayClusterConfigurationSearchableComboBox)
+				.OptionsSource(&Options)
+				.OnGenerateWidget(this, &FDisplayClusterConfiguratorNodeSelection::MakeOptionComboWidget)
+				.OnSelectionChanged(this, &FDisplayClusterConfiguratorNodeSelection::OnOptionSelected, PropertyHandle)
+				.ContentPadding(2)
+				.MaxListHeight(200.0f)
+				.Content()
+				[
+					SNew(STextBlock)
+					.Text(this, &FDisplayClusterConfiguratorNodeSelection::GetSelectedOptionText, PropertyHandle)
+				]
+		];
+}
+
+void FDisplayClusterConfiguratorNodeSelection::ResetOptions()
+{
+	Options.Reset();
+	if (UDisplayClusterConfigurationData* ConfigData = GetConfigData())
+	{
+		for (const TTuple<FString, UDisplayClusterConfigurationClusterNode*>& Node : ConfigData->Cluster->Nodes)
+		{
+			if (OperationMode == ClusterNodes)
+			{
+				Options.Add(MakeShared<FString>(Node.Value->GetName()));
+				continue;
+			}
+			for (const TTuple<FString, UDisplayClusterConfigurationViewport*>& Viewport : Node.Value->Viewports)
+			{
+				Options.Add(MakeShared<FString>(Viewport.Value->GetName()));
+			}
+		}
+	}
+}
+
+TSharedRef<SWidget> FDisplayClusterConfiguratorNodeSelection::MakeOptionComboWidget(
+	TSharedPtr<FString> InItem)
+{
+	return SNew(STextBlock).Text(FText::FromString(*InItem));
+}
+
+void FDisplayClusterConfiguratorNodeSelection::OnOptionSelected(TSharedPtr<FString> InValue,
+	ESelectInfo::Type SelectInfo, TSharedRef<IPropertyHandle> InPropertyHandle)
+{
+	if (InValue.IsValid())
+	{
+		InPropertyHandle->SetValue(*InValue);
+		
+		ResetOptions();
+		OptionsComboBox->ResetOptionsSource(&Options);
+		OptionsComboBox->SetIsOpen(false);
+	}
+}
+
+FText FDisplayClusterConfiguratorNodeSelection::GetSelectedOptionText(TSharedRef<IPropertyHandle> InPropertyHandle) const
+{
+	FString Value;
+	InPropertyHandle->GetValue(Value);
+	return FText::FromString(Value);
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////
+// OCIO Profile Customization
+//////////////////////////////////////////////////////////////////////////////////////////////
+
+void FDisplayClusterConfiguratorOCIOProfileCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle,
+	FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+	FDisplayClusterConfiguratorTypeCustomization::CustomizeHeader(PropertyHandle, HeaderRow, CustomizationUtils);
+
+	Mode = FDisplayClusterConfiguratorNodeSelection::GetOperationModeFromProperty(PropertyHandle->GetProperty()->GetOwnerProperty());
+	NodeSelection = MakeShared<FDisplayClusterConfiguratorNodeSelection>(Mode, FindRootActor(), FDisplayClusterConfiguratorUtils::GetBlueprintEditorForObject(EditingObject));
+	
+	HeaderRow.NameContent()
+	[
+		PropertyHandle->CreatePropertyNameWidget()
+	];
+}
+
+void FDisplayClusterConfiguratorOCIOProfileCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle,
+	IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+	const TSharedPtr<IPropertyHandle> OCIOHandle = PropertyHandle->GetChildHandle(
+		GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationOCIOProfile, OCIOConfiguration));
+	check(OCIOHandle->IsValidHandle());
+
+	const TSharedPtr<IPropertyHandle> EnableOCIOHandle = OCIOHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FOpenColorIODisplayConfiguration, bIsEnabled));
+	check(EnableOCIOHandle->IsValidHandle());
+	
+	EnableOCIOHandle->SetPropertyDisplayName(Mode == FDisplayClusterConfiguratorNodeSelection::EOperationMode::Viewports ?
+		LOCTEXT("EnableOCIOViewportsDisplayName", "Enable Outer Viewport OCIO Configuration") : LOCTEXT("EnableOCIOClusterDisplayName", "Enable Inner Frustum OCIO Configuration"));
+	
+	const TSharedPtr<IPropertyHandle> ArrayHandle = PropertyHandle->GetChildHandle(
+		GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationOCIOProfile, ApplyOCIOToObjects));
+	check(ArrayHandle->IsValidHandle());
+	
+	OCIOHandle->SetPropertyDisplayName(Mode == FDisplayClusterConfiguratorNodeSelection::EOperationMode::Viewports ?
+		LOCTEXT("OCIOViewportsModeDisplayName", "Outer Viewport OCIO Configuration") : LOCTEXT("OCIOClusterModeDisplayName", "Inner Frustum OCIO Configuration"));
+	ArrayHandle->SetPropertyDisplayName(Mode == FDisplayClusterConfiguratorNodeSelection::EOperationMode::Viewports ?
+		LOCTEXT("DataViewportsModeDisplayName", "Apply OCIO to Viewports") : LOCTEXT("DataClusterModeDisplayName", "Apply OCIO to Nodes"));
+	ArrayHandle->SetToolTipText(Mode == FDisplayClusterConfiguratorNodeSelection::EOperationMode::Viewports ?
+		LOCTEXT("DataViewportsModeToolTip", "Select viewports to receive this OCIO profile.") :
+		LOCTEXT("DataClusterModeToolTip", "Select cluster nodes to receive this OCIO profile."));
+	
+	ChildBuilder.AddProperty(OCIOHandle.ToSharedRef());
+	NodeSelection->CreateArrayBuilder(ArrayHandle.ToSharedRef(), ChildBuilder);
 }
 
 #undef LOCTEXT_NAMESPACE

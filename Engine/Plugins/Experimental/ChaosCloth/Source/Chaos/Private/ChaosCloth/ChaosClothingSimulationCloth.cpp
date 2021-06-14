@@ -190,12 +190,14 @@ void FClothingSimulationCloth::FLODData::Add(FClothingSimulationSolver* Solver, 
 	}
 
 	// Long range constraints
-	if (Cloth->TetherStiffness)
+	if (Cloth->TetherStiffness[0] > 0.f || Cloth->TetherStiffness[1] > 0.f)
 	{
 		const TMap<int32, TSet<int32>>& PointToNeighborsMap = TriangleMesh.GetPointToNeighborsMap();
+		const TConstArrayView<FRealSingle>& TetherStiffnessMultipliers = WeightMaps[(int32)EChaosWeightMapTarget::TetherStiffness];
 
 		ClothConstraints.SetLongRangeConstraints(
 			PointToNeighborsMap,
+			TetherStiffnessMultipliers,
 			Cloth->TetherStiffness,
 			Cloth->LimitScale,
 			Cloth->TetherMode,
@@ -336,7 +338,7 @@ FClothingSimulationCloth::FClothingSimulationCloth(
 	FRealSingle InAreaStiffness,
 	FRealSingle InVolumeStiffness,
 	bool bInUseThinShellVolumeConstraints,
-	FRealSingle InTetherStiffness,
+	const FVec2& InTetherStiffness,
 	FRealSingle InLimitScale,
 	ETetherMode InTetherMode,
 	FRealSingle InMaxDistancesMultiplier,
@@ -390,6 +392,7 @@ FClothingSimulationCloth::FClothingSimulationCloth(
 	, FictitiousAngularScale(InFictitiousAngularScale)
 	, DragCoefficient(InDragCoefficient)
 	, LiftCoefficient(InLiftCoefficient)
+	, WindVelocity(0.f, 0.f, 0.f)  // Set by clothing interactor
 	, bUseLegacyWind(bInUseLegacyWind)
 	, DampingCoefficient(InDampingCoefficient)
 	, CollisionThickness(InCollisionThickness)
@@ -737,6 +740,7 @@ void FClothingSimulationCloth::Update(FClothingSimulationSolver* Solver)
 		{
 			Solver->SetWindVelocityField(GroupId, DragCoefficient, LiftCoefficient, &GetTriangleMesh(Solver));
 		}
+		Solver->SetWindVelocity(GroupId, WindVelocity + Solver->GetWindVelocity());
 
 		// Update general solver properties
 		Solver->SetProperties(GroupId, DampingCoefficient, CollisionThickness, FrictionCoefficient);

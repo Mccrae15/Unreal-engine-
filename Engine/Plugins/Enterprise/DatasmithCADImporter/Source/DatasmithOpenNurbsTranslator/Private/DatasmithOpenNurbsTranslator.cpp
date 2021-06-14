@@ -19,6 +19,7 @@
 #include "Utility/DatasmithMeshHelper.h"
 
 #if WITH_EDITOR
+#include "Editor.h"
 #include "IMessageLogListing.h"
 #include "MessageLogModule.h"
 #endif
@@ -114,7 +115,7 @@ TSharedPtr<IDatasmithMetaDataElement> DuplicateMetaDataElement(const TSharedPtr<
 		if (SourceProperty)
 		{
 			TSharedRef<IDatasmithKeyValueProperty> DuplicatedProperty = FDatasmithSceneFactory::CreateKeyValueProperty(SourceProperty->GetName());
-			
+
 			DuplicatedProperty->SetValue(SourceProperty->GetValue());
 			DuplicatedMetaData->AddProperty(DuplicatedProperty);
 		}
@@ -127,7 +128,7 @@ TSharedPtr<IDatasmithMetaDataElement> DuplicateMetaDataElement(const TSharedPtr<
 class FOpenNurbsObjectWrapper
 {
 public:
-	ON_Object *ObjectPtr;
+	ON_Object* ObjectPtr;
 	ON_3dmObjectAttributes Attributes;
 
 	FOpenNurbsObjectWrapper()
@@ -188,7 +189,7 @@ namespace DatasmithOpenNurbsTranslatorUtils
 
 	bool HasPackedTextureRegion(const ON_Mesh& mesh)
 	{
-		return ( ON_IsValid(mesh.m_srf_scale[0]) && mesh.m_srf_scale[0] > 0.0
+		return (ON_IsValid(mesh.m_srf_scale[0]) && mesh.m_srf_scale[0] > 0.0
 			&& ON_IsValid(mesh.m_srf_scale[1]) && mesh.m_srf_scale[1] > 0.0
 			&& mesh.m_packed_tex_domain[0].IsInterval()
 			&& ON_Interval::ZeroToOne.Includes(mesh.m_packed_tex_domain[0])
@@ -197,7 +198,7 @@ namespace DatasmithOpenNurbsTranslatorUtils
 			);
 	}
 
-	FVector2D GetMeshTexCoords( const ON_Mesh *mesh, const int vertexCount, const int texCoordIndex, bool hasPackedTexCoords )
+	FVector2D GetMeshTexCoords(const ON_Mesh* mesh, const int vertexCount, const int texCoordIndex, bool hasPackedTexCoords)
 	{
 		// Ref. getMeshTexCoords
 		// Use values in m_T if number of values in m_T matches number of vertices
@@ -553,7 +554,7 @@ namespace DatasmithOpenNurbsTranslatorUtils
 		FMD5 MD5;
 
 		// Hash the material properties that are used to create the Unreal material: diffuse color, transparency, shininess and texture maps
-		unsigned int ColorRef = (unsigned int) Material.Diffuse();
+		unsigned int ColorRef = (unsigned int)Material.Diffuse();
 		MD5.Update(reinterpret_cast<const uint8*>(&ColorRef), sizeof(unsigned int));
 
 		double Transparency = Material.Transparency();
@@ -567,7 +568,7 @@ namespace DatasmithOpenNurbsTranslatorUtils
 
 		for (int Index = 0; Index < Material.m_textures.Count(); ++Index)
 		{
-			const ON_Texture *Texture = Material.m_textures.At(Index);
+			const ON_Texture* Texture = Material.m_textures.At(Index);
 
 			if (!Texture->m_bOn || (Texture->m_type != ON_Texture::TYPE::bitmap_texture && Texture->m_type != ON_Texture::TYPE::bump_texture && Texture->m_type != ON_Texture::TYPE::transparency_texture))
 			{
@@ -647,7 +648,7 @@ public:
 			TranslationCache = MakeShared<FTranslationCache>();
 		}
 
-		LocalSession = FRhinoCoretechWrapper::GetSharedSession(MetricUnit, ScalingFactor);
+		LocalSession = FRhinoCoretechWrapper::GetSharedSession();
 	}
 
 	~FOpenNurbsTranslatorImpl()
@@ -667,7 +668,7 @@ public:
 	void SetBaseOptions(const FDatasmithImportBaseOptions& InBaseOptions);
 	void SetOpenNurbsOptions(const FDatasmithOpenNurbsOptions& Options);
 	void SetOutputPath(const FString& Path) { OutputPath = Path; }
-	double GetScalingFactor () const { return ScalingFactor; }
+	double GetScalingFactor() const { return ScalingFactor; }
 	double GetMetricUnit() const { return MetricUnit; }
 
 	void ShowMessageLog(const FString& Filename);
@@ -703,7 +704,7 @@ private:
 	TSharedPtr<IDatasmithBaseMaterialElement> GetMaterial(int MaterialIndex);
 	TSharedPtr<IDatasmithBaseMaterialElement> GetDefaultMaterial();
 
-	TSharedPtr<IDatasmithActorElement> GetParentElement(const FOpenNurbsObjectWrapper & Object);
+	TSharedPtr<IDatasmithActorElement> GetParentElement(const FOpenNurbsObjectWrapper& Object);
 	FString GetLayerName(const TSharedPtr<IDatasmithActorElement>& LayerElement);
 	void SetLayers(const TSharedPtr<IDatasmithActorElement>& ActorElement, const FOpenNurbsObjectWrapper& Object);
 	void SetTags(const TSharedPtr<IDatasmithActorElement>& ActorElement, const FOpenNurbsObjectWrapper& Object);
@@ -738,7 +739,7 @@ private:
 	FDatasmithOpenNurbsOptions OpenNurbsOptions;
 	uint32 OpenNurbsOptionsHash;
 	FDatasmithImportBaseOptions BaseOptions;
-	
+
 	TSharedPtr<FRhinoCoretechWrapper> LocalSession;
 
 private:
@@ -814,7 +815,7 @@ private:
 	TMap< IDatasmithMeshElement*, const FOpenNurbsObjectWrapper* > MeshElementToObjectMap;
 
 	/** OpenNurbs objects to Datasmith mesh elements */
-	TMap<const FOpenNurbsObjectWrapper* , TSharedPtr< IDatasmithMeshElement > > ObjectToMeshElementMap;
+	TMap<const FOpenNurbsObjectWrapper*, TSharedPtr< IDatasmithMeshElement > > ObjectToMeshElementMap;
 
 	TMap< TSharedPtr< IDatasmithMeshElement >, ON_3dVector > MeshElementToGeometryCenter;
 
@@ -836,7 +837,7 @@ void FOpenNurbsTranslatorImpl::ShowMessageLog(const FString& Filename)
 			FText::Format(LOCTEXT("DatasmithOpenNurbsTranslator_NoMeshDataForAllMeshes", "Rhino model \"{0}\" doesn't contain mesh data for all objects. \nEither resave the 3dm file with a \"rendered view\" or change the import settings to \"Import as NURBS, Tessellate in Unreal\""), FText::FromString(Filename))
 		));
 
-		for (const FString& Name: MissingRenderMeshes)
+		for (const FString& Name : MissingRenderMeshes)
 		{
 			FText ErrorMessage = FText::Format(LOCTEXT("DatasmithOpenNurbsTranslator_NoMesh", "  {0} doesn't have mesh information."), FText::FromString(Name));
 			LogListing->AddMessage(FTokenizedMessage::Create(EMessageSeverity::Error, ErrorMessage));
@@ -860,7 +861,7 @@ void FOpenNurbsTranslatorImpl::TranslateMaterialTable(const ON_ObjectArray<ON_Ma
 	// These materials are from the Materials tab and do not include materials from layers
 	for (int Index = 0; Index < InMaterialTable.Count(); ++Index)
 	{
-		const ON_Material &OpenNurbsMaterial = *InMaterialTable.At(Index);
+		const ON_Material& OpenNurbsMaterial = *InMaterialTable.At(Index);
 
 		FMD5Hash Hash = DatasmithOpenNurbsTranslatorUtils::ComputeMaterialHash(OpenNurbsMaterial);
 		TSharedPtr<IDatasmithBaseMaterialElement>* MaterialPtr = HashToMaterial.Find(Hash);
@@ -880,7 +881,7 @@ void FOpenNurbsTranslatorImpl::TranslateMaterialTable(const ON_ObjectArray<ON_Ma
 
 		// Note that in OpenNurbs, Alpha means Transparency, whereas it is usually an Opacity.
 		// Hence the (255 - Transparency) where an opacity is expected
-		FColor Color((uint8) Diffuse.Red(), (uint8) Diffuse.Green(), (uint8) Diffuse.Blue(), (uint8) (255 - Transparency));
+		FColor Color((uint8)Diffuse.Red(), (uint8)Diffuse.Green(), (uint8)Diffuse.Blue(), (uint8)(255 - Transparency));
 		FLinearColor LinearColor = FLinearColor::FromSRGBColor(Color);
 
 		FString MaterialLabel(OpenNurbsMaterial.Name().Array());
@@ -903,7 +904,7 @@ void FOpenNurbsTranslatorImpl::TranslateMaterialTable(const ON_ObjectArray<ON_Ma
 		{
 			for (int TextureIndex = 0; TextureIndex < OpenNurbsMaterial.m_textures.Count(); ++TextureIndex)
 			{
-				const ON_Texture *Texture = OpenNurbsMaterial.m_textures.At(TextureIndex);
+				const ON_Texture* Texture = OpenNurbsMaterial.m_textures.At(TextureIndex);
 
 				if (!Texture->m_bOn || (Texture->m_type != ON_Texture::TYPE::bitmap_texture && Texture->m_type != ON_Texture::TYPE::bump_texture && Texture->m_type != ON_Texture::TYPE::transparency_texture))
 				{
@@ -1033,8 +1034,8 @@ void FOpenNurbsTranslatorImpl::TranslateMaterialTable(const ON_ObjectArray<ON_Ma
 
 				UVParameters.UVTiling.Y = Tiling.Y;
 
-				if ( !FMath::IsNearlyZero( Tiling.X, KINDA_SMALL_NUMBER )
-					&& !FMath::IsNearlyZero( Tiling.Y, KINDA_SMALL_NUMBER ) )
+				if (!FMath::IsNearlyZero(Tiling.X, KINDA_SMALL_NUMBER)
+					&& !FMath::IsNearlyZero(Tiling.Y, KINDA_SMALL_NUMBER))
 				{
 					UVParameters.UVOffset.X = Translation.X / Tiling.X;
 
@@ -1105,7 +1106,7 @@ void FOpenNurbsTranslatorImpl::TranslateMaterialTable(const ON_ObjectArray<ON_Ma
 			{
 				// Transparent color
 				IDatasmithMaterialExpressionScalar* Scalar = static_cast<IDatasmithMaterialExpressionScalar*>(Material->AddMaterialExpression(EDatasmithMaterialExpressionType::ConstantScalar));
-				Scalar->SetName( TEXT( "Opacity" ) );
+				Scalar->SetName(TEXT("Opacity"));
 				Scalar->GetScalar() = LinearColor.A;
 
 				Material->GetOpacity().SetExpression(Scalar);
@@ -1114,10 +1115,10 @@ void FOpenNurbsTranslatorImpl::TranslateMaterialTable(const ON_ObjectArray<ON_Ma
 			{
 				// Modulate the opacity map with the color transparency setting
 				IDatasmithMaterialExpressionGeneric* Multiply = static_cast<IDatasmithMaterialExpressionGeneric*>(Material->AddMaterialExpression(EDatasmithMaterialExpressionType::Generic));
-				Multiply->SetExpressionName( TEXT( "Multiply" ) );
+				Multiply->SetExpressionName(TEXT("Multiply"));
 
 				IDatasmithMaterialExpressionScalar* Scalar = static_cast<IDatasmithMaterialExpressionScalar*>(Material->AddMaterialExpression(EDatasmithMaterialExpressionType::ConstantScalar));
-				Scalar->SetName( TEXT( "Opacity Output Level" ) );
+				Scalar->SetName(TEXT("Opacity Output Level"));
 				Scalar->GetScalar() = LinearColor.A;
 				Scalar->ConnectExpression(*Multiply->GetInput(0));
 
@@ -1133,7 +1134,7 @@ void FOpenNurbsTranslatorImpl::TranslateMaterialTable(const ON_ObjectArray<ON_Ma
 		if (!FMath::IsNearlyZero(Shininess))
 		{
 			IDatasmithMaterialExpressionScalar* Scalar = static_cast<IDatasmithMaterialExpressionScalar*>(Material->AddMaterialExpression(EDatasmithMaterialExpressionType::ConstantScalar));
-			Scalar->SetName( TEXT( "Roughness" ) );
+			Scalar->SetName(TEXT("Roughness"));
 			Scalar->GetScalar() = 1.f - Shininess;
 			Material->GetRoughness().SetExpression(Scalar);
 		}
@@ -1142,7 +1143,7 @@ void FOpenNurbsTranslatorImpl::TranslateMaterialTable(const ON_ObjectArray<ON_Ma
 		if (!FMath::IsNearlyZero(Reflectivity))
 		{
 			IDatasmithMaterialExpressionScalar* Scalar = static_cast<IDatasmithMaterialExpressionScalar*>(Material->AddMaterialExpression(EDatasmithMaterialExpressionType::ConstantScalar));
-			Scalar->SetName( TEXT( "Metallic" ) );
+			Scalar->SetName(TEXT("Metallic"));
 			Scalar->GetScalar() = Reflectivity;
 			Material->GetMetallic().SetExpression(Scalar);
 		}
@@ -1155,7 +1156,7 @@ void FOpenNurbsTranslatorImpl::TranslateLayerTable(const ON_ObjectArray<ON_Layer
 	TSet<ON_UUID> HiddenLayersUUIDs;
 	for (int Index = 0; Index < InLayerTable.Count(); ++Index)
 	{
-		const ON_Layer &CurrentLayer = *InLayerTable.At(Index);
+		const ON_Layer& CurrentLayer = *InLayerTable.At(Index);
 
 		TSharedPtr<IDatasmithActorElement> Parent;
 		if (ON_UuidCompare(ON_nil_uuid, CurrentLayer.ParentLayerId()) != 0)
@@ -1185,7 +1186,7 @@ void FOpenNurbsTranslatorImpl::TranslateLayerTable(const ON_ObjectArray<ON_Layer
 		{
 			Parent->AddChild(LayerElement);
 			FString ParentLayerName = GetLayerName(Parent);
-			FullLayerName =  ParentLayerName + TEXT(".") + FullLayerName;
+			FullLayerName = ParentLayerName + TEXT(".") + FullLayerName;
 		}
 		else
 		{
@@ -1215,7 +1216,7 @@ void FOpenNurbsTranslatorImpl::TranslateGroupTable(const ON_ObjectArray<ON_Group
 {
 	for (int Index = 0; Index < InGroupTable.Count(); ++Index)
 	{
-		const ON_Group &Group = *InGroupTable.At(Index);
+		const ON_Group& Group = *InGroupTable.At(Index);
 		GroupNames.Add(Group.Name().IsEmpty() ? FString::Printf(TEXT("Group%d"), Index) : Group.Name().Array());
 	}
 }
@@ -1285,7 +1286,7 @@ void FOpenNurbsTranslatorImpl::TranslateLightTable(const ON_ClassArray<FOpenNurb
 		LightElement->SetEnabled(LightObj.m_bOn);
 
 		// Diffuse color (Ambient and Specular color not supported and alpha from diffuse is ignored)
-		FColor Color((uint8) LightObj.Diffuse().Red(), (uint8) LightObj.Diffuse().Green(), (uint8) LightObj.Diffuse().Blue(), 255);
+		FColor Color((uint8)LightObj.Diffuse().Red(), (uint8)LightObj.Diffuse().Green(), (uint8)LightObj.Diffuse().Blue(), 255);
 		LightElement->SetColor(Color.ReinterpretAsLinear());
 
 		// Intensity (PowerWatts and ShadowIntensity not used)
@@ -1410,7 +1411,7 @@ void FOpenNurbsTranslatorImpl::TranslateInstanceDefinitionTable(const TArray<ON_
 	{
 		++instanceDefCount;
 
-		const ON_InstanceDefinition &instanceDef = *pInstanceDef;
+		const ON_InstanceDefinition& instanceDef = *pInstanceDef;
 		const ON_UUID& instanceDefUuid = instanceDef.Id();
 
 		FString InstanceDefName;
@@ -1644,48 +1645,48 @@ void FOpenNurbsTranslatorImpl::SetTags(const TSharedPtr<IDatasmithActorElement>&
 	const TCHAR* StrObjectType;
 	switch (objType)
 	{
-		case ON::instance_definition:
-			StrObjectType = TEXT("block definition");
-			break;
-		case ON::instance_reference:
-			StrObjectType = TEXT("block instance");
-			break;
-		case ON::point_object:
-			StrObjectType = TEXT("point");
-			break;
-		case ON::curve_object:
-			StrObjectType = TEXT("curve");
-			break;
-		case ON::surface_object:
-			StrObjectType = TEXT("surface");
-			break;
-		case ON::brep_object:
-			StrObjectType = TEXT("brep");
-			break;
-		case ON::mesh_object:
-			StrObjectType = TEXT("mesh");
-			break;
-		case ON::text_dot:
-			StrObjectType = TEXT("textdot");
-			break;
-		case ON::subd_object:
-			StrObjectType = TEXT("subd");
-			break;
-		case ON::loop_object:
-			StrObjectType = TEXT("loop");
-			break;
-		case ON::cage_object:
-			StrObjectType = TEXT("cage");
-			break;
-		case ON::clipplane_object:
-			StrObjectType = TEXT("clip plane");
-			break;
-		case ON::extrusion_object:
-			StrObjectType = TEXT("extrusion");
-			break;
-		default:
-			StrObjectType = TEXT("unknown");
-			break;
+	case ON::instance_definition:
+		StrObjectType = TEXT("block definition");
+		break;
+	case ON::instance_reference:
+		StrObjectType = TEXT("block instance");
+		break;
+	case ON::point_object:
+		StrObjectType = TEXT("point");
+		break;
+	case ON::curve_object:
+		StrObjectType = TEXT("curve");
+		break;
+	case ON::surface_object:
+		StrObjectType = TEXT("surface");
+		break;
+	case ON::brep_object:
+		StrObjectType = TEXT("brep");
+		break;
+	case ON::mesh_object:
+		StrObjectType = TEXT("mesh");
+		break;
+	case ON::text_dot:
+		StrObjectType = TEXT("textdot");
+		break;
+	case ON::subd_object:
+		StrObjectType = TEXT("subd");
+		break;
+	case ON::loop_object:
+		StrObjectType = TEXT("loop");
+		break;
+	case ON::cage_object:
+		StrObjectType = TEXT("cage");
+		break;
+	case ON::clipplane_object:
+		StrObjectType = TEXT("clip plane");
+		break;
+	case ON::extrusion_object:
+		StrObjectType = TEXT("extrusion");
+		break;
+	default:
+		StrObjectType = TEXT("unknown");
+		break;
 	}
 
 	ActorElement->AddTag(*FString::Printf(TEXT("Rhino.ID: %s"), *UUID));
@@ -1813,7 +1814,7 @@ bool FOpenNurbsTranslatorImpl::HasUnprocessedChildren(const ON_UUID& instanceDef
 bool FOpenNurbsTranslatorImpl::TranslateInstance(const FOpenNurbsObjectWrapper& Object)
 {
 	// Ref. visitInstance
-	ON_InstanceRef *instanceRef = ON_InstanceRef::Cast(Object.ObjectPtr);
+	ON_InstanceRef* instanceRef = ON_InstanceRef::Cast(Object.ObjectPtr);
 	if (instanceRef == nullptr)
 	{
 		return true;
@@ -2184,22 +2185,22 @@ FOpenNurbsTranslatorImpl::FMaterial FOpenNurbsTranslatorImpl::GetObjectMaterial(
 
 	switch (MaterialSource)
 	{
-		case ON::material_from_object:
+	case ON::material_from_object:
+	{
+		if (Object.Attributes.m_material_index != -1)
 		{
-			if (Object.Attributes.m_material_index != -1)
-			{
-				return { GetMaterial(Object.Attributes.m_material_index) , GetOpenNurbsMaterial(Object.Attributes.m_material_index) };
-			}
-			break;
+			return { GetMaterial(Object.Attributes.m_material_index) , GetOpenNurbsMaterial(Object.Attributes.m_material_index) };
 		}
-		case ON::material_from_layer:
+		break;
+	}
+	case ON::material_from_layer:
+	{
+		if (int* MaterialIndexPtr = LayerIndexToMaterialIndex.Find(Object.Attributes.m_layer_index))
 		{
-			if (int* MaterialIndexPtr = LayerIndexToMaterialIndex.Find(Object.Attributes.m_layer_index))
-			{
-				return { GetMaterial(*MaterialIndexPtr), GetOpenNurbsMaterial(*MaterialIndexPtr) };
-			}
-			break;
+			return { GetMaterial(*MaterialIndexPtr), GetOpenNurbsMaterial(*MaterialIndexPtr) };
 		}
+		break;
+	}
 	}
 
 	return { GetDefaultMaterial() };
@@ -2253,7 +2254,7 @@ TSharedPtr<IDatasmithBaseMaterialElement> FOpenNurbsTranslatorImpl::GetDefaultMa
 	return DefaultMaterial;
 }
 
-TSharedPtr<IDatasmithActorElement> FOpenNurbsTranslatorImpl::GetParentElement(const FOpenNurbsObjectWrapper & Object)
+TSharedPtr<IDatasmithActorElement> FOpenNurbsTranslatorImpl::GetParentElement(const FOpenNurbsObjectWrapper& Object)
 {
 	TSharedPtr<IDatasmithActorElement>* Parent = LayerIndexToContainer.Find(Object.Attributes.m_layer_index);
 	if (Parent)
@@ -2325,6 +2326,7 @@ bool FOpenNurbsTranslatorImpl::Read(ON_BinaryFile& Archive, TSharedRef<IDatasmit
 
 	// 	ScalingFactor is defined according to input Rhino file unit. CT don't modify CAD input according to the set file unit.
 	ScalingFactor = 100 / Settings.m_ModelUnitsAndTolerances.Scale(ON::LengthUnitSystem::Meters);
+	MetricUnit = 1 / Settings.m_ModelUnitsAndTolerances.Scale(ON::LengthUnitSystem::Meters);
 	LocalSession->SetScaleFactor(ScalingFactor);
 
 	// Step 4: REQUIRED - Read bitmap table (it can be empty)
@@ -3182,7 +3184,7 @@ bool FOpenNurbsTranslatorImpl::TranslateBRep(ON_Brep* Brep, const ON_3dmObjectAt
 		LocalSession->GetImportParameters().ModelCoordSys = FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded_FBXLegacy;
 
 		LocalSession->ClearData();
-
+		LocalSession->SetSceneUnit(GetMetricUnit());
 		LocalSession->AddBRep(*Brep, Offset);
 
 		FString Filename = FString::Printf(TEXT("%s.ct"), *Name);
@@ -3356,7 +3358,7 @@ TOptional<FMeshDescription> FOpenNurbsTranslatorImpl::GetMeshDescription(TShared
 		ON_3dVector Offset = GetGeometryOffset(MeshElement);
 		bIsValid = DatasmithOpenNurbsTranslatorUtils::TranslateMesh(ON_Mesh::Cast(Object.ObjectPtr), MeshDescription, bHasNormal, SelectedTranslator->ScalingFactor, Offset);
 	}
-	else if (Object.ObjectPtr->IsKindOf(&ON_Brep::m_ON_Brep_class_rtti) )
+	else if (Object.ObjectPtr->IsKindOf(&ON_Brep::m_ON_Brep_class_rtti))
 	{
 		bIsValid = SelectedTranslator->TranslateBRep(ON_Brep::Cast(Object.ObjectPtr), Object.Attributes, MeshDescription, MeshElement, UUID, bHasNormal);
 	}
@@ -3384,9 +3386,9 @@ TOptional<FMeshDescription> FOpenNurbsTranslatorImpl::GetMeshDescription(TShared
 			bIsValid = SelectedTranslator->TranslateBRep(&brep, Object.Attributes, MeshDescription, MeshElement, UUID, bHasNormal);
 		}
 	}
-	else if (Object.ObjectPtr->IsKindOf(&ON_Hatch::m_ON_Hatch_class_rtti) )
+	else if (Object.ObjectPtr->IsKindOf(&ON_Hatch::m_ON_Hatch_class_rtti))
 	{
-		const ON_Hatch *hatch = ON_Hatch::Cast(Object.ObjectPtr);
+		const ON_Hatch* hatch = ON_Hatch::Cast(Object.ObjectPtr);
 		ON_Brep brep;
 		if (hatch != nullptr && hatch->BrepForm(&brep) != nullptr)
 		{
@@ -3395,7 +3397,7 @@ TOptional<FMeshDescription> FOpenNurbsTranslatorImpl::GetMeshDescription(TShared
 	}
 	else if (Object.ObjectPtr->IsKindOf(&ON_PlaneSurface::m_ON_PlaneSurface_class_rtti))
 	{
-		const ON_PlaneSurface *planeSurface = ON_PlaneSurface::Cast(Object.ObjectPtr);
+		const ON_PlaneSurface* planeSurface = ON_PlaneSurface::Cast(Object.ObjectPtr);
 		ON_Interval xInterval = planeSurface->Extents(0);
 		ON_Interval yInterval = planeSurface->Extents(1);
 
@@ -3440,7 +3442,15 @@ void FOpenNurbsTranslatorImpl::SetOpenNurbsOptions(const FDatasmithOpenNurbsOpti
 
 void FDatasmithOpenNurbsTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCapabilities)
 {
-	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{TEXT("3dm"), TEXT("Rhino file format")});
+#if WITH_EDITOR
+	if (GIsEditor && !GEditor->PlayWorld && !GIsPlayInEditorWorld)
+	{
+		OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("3dm"), TEXT("Rhino file format") });
+		return;
+	}
+#endif
+
+	OutCapabilities.bIsEnabled = false;
 }
 
 bool FDatasmithOpenNurbsTranslator::LoadScene(TSharedRef<IDatasmithScene> OutScene)

@@ -9,8 +9,10 @@
 
 class IDisplayClusterPresentation;
 struct FDisplayClusterRenderViewContext;
+class FDisplayClusterRenderFrame;
 class IDisplayClusterProjectionPolicy;
 class UWorld;
+class FViewport;
 
 
 /**
@@ -19,8 +21,7 @@ class UWorld;
 class IDisplayClusterRenderDevice : public IStereoRendering
 {
 public:
-	virtual ~IDisplayClusterRenderDevice() = 0
-	{ }
+	virtual ~IDisplayClusterRenderDevice() = default;
 
 public:
 
@@ -50,12 +51,9 @@ public:
 	virtual void EndScene()
 	{ }
 
-	virtual class IDisplayClusterViewportManager& GetViewportManager() const = 0;
-
-	virtual EDisplayClusterRenderFrameMode GetRenderFrameMode() const = 0;
-
-	virtual void SetDesiredNumberOfViews(int32 DesiredNumberOfViews) = 0;
-	virtual void RenderFrame_RenderThread(FRHICommandListImmediate& RHICmdList) = 0;
+	// update settings from root actor config data, and build new frame structure
+	virtual bool BeginNewFrame(FViewport* InViewport, UWorld* InWorld, FDisplayClusterRenderFrame& OutRenderFrame) = 0;
+	virtual void FinalizeNewFrame() = 0;
 
 	/**
 	* Assigns camera to a specified viewport. If InViewportId is empty, all viewports will be assigned to a new camera. Empty camera ID means default active camera.
@@ -119,7 +117,7 @@ public:
 	* @param OutProjectionPolicy - projection policy instance
 	*/
 	UE_DEPRECATED(4.27, "This function has been moved to FDisplayClusterViewport. Use GetViewportManager() to access  that interface.")
-	virtual bool GetViewportProjectionPolicy(const FString& ViewportId, TSharedPtr<IDisplayClusterProjectionPolicy>& OutProjectionPolicy)
+	virtual bool GetViewportProjectionPolicy(const FString& ViewportId, TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& OutProjectionPolicy)
 	{
 		return false;
 	}

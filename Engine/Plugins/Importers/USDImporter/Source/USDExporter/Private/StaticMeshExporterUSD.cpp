@@ -85,6 +85,11 @@ bool UStaticMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type, F
 		FString ExtensionPart;
 		FPaths::Split( PayloadFilename, PathPart, FilenamePart, ExtensionPart );
 
+		if ( FormatExtension.Contains( Options->PayloadFormat ) )
+		{
+			ExtensionPart = Options->PayloadFormat;
+		}
+
 		PayloadFilename = FPaths::Combine( PathPart, FilenamePart + TEXT( "_payload." ) + ExtensionPart );
 	}
 
@@ -100,7 +105,7 @@ bool UStaticMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type, F
 		UsdUtils::SetUsdStageUpAxis( UsdStage, Options->StageOptions.UpAxis );
 	}
 
-	FString RootPrimPath = ( TEXT( "/" ) + StaticMesh->GetName() );
+	FString RootPrimPath = ( TEXT( "/" ) + UsdUtils::SanitizeUsdIdentifier( *StaticMesh->GetName() ) );
 
 	UE::FUsdPrim RootPrim = UsdStage.DefinePrim( UE::FSdfPath( *RootPrimPath ) );
 	if ( !RootPrim )

@@ -5,7 +5,6 @@
 #include "Cluster/IPDisplayClusterClusterManager.h"
 #include "Game/IPDisplayClusterGameManager.h"
 #include "Config/IPDisplayClusterConfigManager.h"
-#include "Input/IPDisplayClusterInputManager.h"
 
 #include "DisplayClusterConfigurationTypes.h"
 
@@ -32,24 +31,22 @@ FDisplayClusterClusterNodeCtrlMaster::FDisplayClusterClusterNodeCtrlMaster(const
 	CachedSyncData.Emplace(EDisplayClusterSyncGroup::Tick);
 	CachedSyncData.Emplace(EDisplayClusterSyncGroup::PostTick);
 
-	CachedSyncDataEvents.Emplace(EDisplayClusterSyncGroup::PreTick, FPlatformProcess::CreateSynchEvent(true));
-	CachedSyncDataEvents.Emplace(EDisplayClusterSyncGroup::Tick, FPlatformProcess::CreateSynchEvent(true));
-	CachedSyncDataEvents.Emplace(EDisplayClusterSyncGroup::PostTick, FPlatformProcess::CreateSynchEvent(true));
+	CachedSyncDataEvents.Emplace(EDisplayClusterSyncGroup::PreTick,  FPlatformProcess::GetSynchEventFromPool(true));
+	CachedSyncDataEvents.Emplace(EDisplayClusterSyncGroup::Tick,     FPlatformProcess::GetSynchEventFromPool(true));
+	CachedSyncDataEvents.Emplace(EDisplayClusterSyncGroup::PostTick, FPlatformProcess::GetSynchEventFromPool(true));
 
-	CachedTimeDataEvent   = FPlatformProcess::CreateSynchEvent(true);
-	CachedInputDataEvent  = FPlatformProcess::CreateSynchEvent(true);
-	CachedEventsDataEvent = FPlatformProcess::CreateSynchEvent(true);
+	CachedTimeDataEvent   = FPlatformProcess::GetSynchEventFromPool(true);
+	CachedEventsDataEvent = FPlatformProcess::GetSynchEventFromPool(true);
 }
 
 FDisplayClusterClusterNodeCtrlMaster::~FDisplayClusterClusterNodeCtrlMaster()
 {
-	delete CachedTimeDataEvent;
-	delete CachedInputDataEvent;
-	delete CachedEventsDataEvent;
+	FPlatformProcess::ReturnSynchEventToPool(CachedTimeDataEvent);
+	FPlatformProcess::ReturnSynchEventToPool(CachedEventsDataEvent);
 
 	for (auto& it : CachedSyncDataEvents)
 	{
-		delete it.Value;
+		FPlatformProcess::ReturnSynchEventToPool(it.Value);
 	}
 }
 
@@ -124,36 +121,6 @@ void FDisplayClusterClusterNodeCtrlMaster::GetSyncData(TMap<FString, FString>& S
 	SyncData = CachedSyncData[SyncGroup];
 }
 
-void FDisplayClusterClusterNodeCtrlMaster::GetInputData(TMap<FString, FString>& InputData)
-{
-	static IPDisplayClusterInputManager* const InputMgr = GDisplayCluster->GetPrivateInputMgr();
-
-	if (IsInGameThread())
-	{
-		// Cache data so it will be the same for all requests within current frame
-		InputMgr->ExportInputData(CachedInputData);
-
-		UE_LOG(LogDisplayClusterCluster, Verbose, TEXT("GetInputData cached values amount: %d"), CachedInputData.Num());
-
-		int i = 0;
-		for (auto it = CachedInputData.CreateConstIterator(); it; ++it)
-		{
-			UE_LOG(LogDisplayClusterCluster, Verbose, TEXT("GetInputData cached value %d: %s - %s"), i++, *it->Key, *it->Value);
-		}
-
-		UE_LOG(LogDisplayClusterCluster, Verbose, TEXT("InputData has %d records"), CachedInputData.Num());
-
-		// Notify data is available
-		CachedInputDataEvent->Trigger();
-	}
-
-	// Wait until data is available
-	CachedInputDataEvent->Wait();
-
-	// Return cached value
-	InputData = CachedInputData;
-}
-
 void FDisplayClusterClusterNodeCtrlMaster::GetEventsData(TArray<TSharedPtr<FDisplayClusterClusterEventJson, ESPMode::ThreadSafe>>& JsonEvents, TArray<TSharedPtr<FDisplayClusterClusterEventBinary, ESPMode::ThreadSafe>>& BinaryEvents)
 {
 	static IPDisplayClusterClusterManager* const ClusterMgr = GDisplayCluster->GetPrivateClusterMgr();
@@ -194,10 +161,8 @@ void FDisplayClusterClusterNodeCtrlMaster::ClearCache()
 	// Reset all cache events
 	CachedTimeDataEvent->Reset();
 	CachedEventsDataEvent->Reset();
-	CachedInputDataEvent->Reset();
 
 	// Reset cache containers
-	CachedInputData.Reset();
 	CachedJsonEvents.Reset();
 	CachedBinaryEvents.Reset();
 

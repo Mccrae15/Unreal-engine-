@@ -63,6 +63,9 @@ namespace UE
 
 	// Wrapped pxr::UsdPrim functions, refer to the USD SDK documentation
 	public:
+		bool IsActive() const;
+		bool SetActive( bool bActive );
+
 		bool IsValid() const;
 		bool IsPseudoRoot() const;
 		bool IsModel() const;
@@ -70,6 +73,7 @@ namespace UE
 
 		TArray<FName> GetAppliedSchemas() const;
 
+		bool IsA( FName SchemaType ) const;
 		bool HasAPI( FName SchemaType, TOptional<FName> InstanceName = {} ) const;
 
 		const FSdfPath GetPrimPath() const;

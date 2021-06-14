@@ -36,6 +36,7 @@ struct FMovieSceneSequenceTransform;
 class UAnimSeqExportOption;
 template<typename ChannelType> struct TMovieSceneChannelData;
 enum class EVisibilityBasedAnimTickOption : uint8;
+class ACameraActor;
 
 namespace fbxsdk
 {
@@ -196,9 +197,20 @@ public:
 	 *
 	 * @param InTrack The track to find the next available row on
 	 * @param InSection The section
+	 * @param SectionsToDisregard Disregard checking these sections
 	 * @return The next available row index
 	 */
-	static int32 FindAvailableRowIndex(UMovieSceneTrack* InTrack, UMovieSceneSection* InSection);
+	static int32 FindAvailableRowIndex(UMovieSceneTrack* InTrack, UMovieSceneSection* InSection, const TArray<UMovieSceneSection*>& SectionsToDisregard = TArray<UMovieSceneSection*>());
+
+	/**
+	 * Does this section overlap any other track section?
+	 *
+	 * @param InTrack The track to find sections on
+	 * @param InSection The section
+	 * @param SectionsToDisregard Disregard checking these sections
+	 * @return Whether this section overlaps any other track section
+	 */
+	static bool OverlapsSection(UMovieSceneTrack* InTrack, UMovieSceneSection* InSection, const TArray<UMovieSceneSection*>& SectionsToDisregard = TArray<UMovieSceneSection*>());
 
 	/**
 	 * Generate a combobox for editing enum values
@@ -352,15 +364,22 @@ public:
 	*/
 	static bool ImportFBXNode(FString NodeName, UnFbx::FFbxCurvesAPI& CurveAPI, UMovieSceneSequence* InSequence, IMovieScenePlayer* Player, FMovieSceneSequenceIDRef TemplateID, FGuid ObjectBinding);
 
+	/**
+	 * Lock the given camera actor to the viewport
+	 *
+	 * @param Sequencer The Sequencer to set the camera cut enabled for
+	 * @param CameraActor The camera actor to lock
+	 */
+	static void LockCameraActorToViewport(const TSharedPtr<ISequencer>& Sequencer, ACameraActor* CameraActor);
 
 	/**
-	*  Camera track was added, we usually do extra things, like add a Camera Cut tracks
-	*
-	* @param MovieScene MovieScene to add Camera.
-	* @param CameraGuid CameraGuid  Guid of the camera that was added.
-	* @param FrameNumber FrameNumber it's added at.
-	*/
-	static void CameraAdded(UMovieScene* MovieScene, FGuid CameraGuid, FFrameNumber FrameNumber);
+	 * Create a new camera cut section for the given camera
+	 *
+	 * @param MovieScene MovieScene to add Camera.
+	 * @param CameraGuid CameraGuid  Guid of the camera that was added.
+	 * @param FrameNumber FrameNumber it's added at.
+	 */
+	static void CreateCameraCutSectionForCamera(UMovieScene* MovieScene, FGuid CameraGuid, FFrameNumber FrameNumber);
 
 	/**
 	* Import FBX Camera to existing camera's

@@ -10,7 +10,9 @@
 class IDisplayClusterProtocolRenderSync
 {
 public:
-	// Swap sync barrier
-	virtual void WaitForSwapSync(double* ThreadWaitTime, double* BarrierWaitTime) = 0;
-};
+	virtual ~IDisplayClusterProtocolRenderSync() = default;
 
+public:
+	// Swap sync barrier
+	virtual void WaitForSwapSync() = 0;
+};

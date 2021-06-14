@@ -11,12 +11,22 @@
 #include "HAL/PlatformFilemanager.h"
 #include "HAL/PlatformFile.h"
 #include "HAL/PlatformTime.h"
-
+#include "MoviePipelineUtils.h"
 void UMoviePipelineVideoOutputBase::OnShotFinishedImpl(const UMoviePipelineExecutorShot* InShot, const bool bFlushToDisk)
 {
 	if (bFlushToDisk)
 	{
-		UE_LOG(LogMovieRenderPipeline, Log, TEXT("MoviePipelineVideoOutputBase flushing %d tasks to disk..."), AllWriters.Num());
+		// If they don't have {shot_name} or {camera_name} in their output path, this probably doesn't do what they expect
+		// as it will finalize and then overwrite itself.
+		UMoviePipelineOutputSetting* OutputSettings = GetPipeline()->GetPipelineMasterConfig()->FindSetting<UMoviePipelineOutputSetting>();
+		check(OutputSettings);
+		FString FullPath = OutputSettings->OutputDirectory.Path / OutputSettings->FileNameFormat;
+		if (!(FullPath.Contains(TEXT("{shot_name}")) || FullPath.Contains(TEXT("{camera_name}"))))
+		{
+			UE_LOG(LogMovieRenderPipelineIO, Warning, TEXT("Asked MoviePipeline to flush file writes to disk after each shot, but filename format doesn't seem to separate video files per shot. This will cause the file to overwrite itself, is this intended?"));
+		}
+
+		UE_LOG(LogMovieRenderPipelineIO, Log, TEXT("MoviePipelineVideoOutputBase flushing %d tasks to disk..."), AllWriters.Num());
 		const double FlushBeginTime = FPlatformTime::Seconds();
 
 		// Despite what the comments indicate, there's no actual queue of tasks here, so we can just call BeginFinalize/Finalize.
@@ -25,7 +35,7 @@ void UMoviePipelineVideoOutputBase::OnShotFinishedImpl(const UMoviePipelineExecu
 		FinalizeImpl();
 
 		const float ElapsedS = float((FPlatformTime::Seconds() - FlushBeginTime));
-		UE_LOG(LogMovieRenderPipeline, Log, TEXT("Finished flushing tasks to disk after %2.2fs!"), ElapsedS);
+		UE_LOG(LogMovieRenderPipelineIO, Log, TEXT("Finished flushing tasks to disk after %2.2fs!"), ElapsedS);
 	}
 }
 
@@ -133,7 +143,12 @@ void UMoviePipelineVideoOutputBase::OnReceiveImageDataImpl(FMoviePipelineMergerO
 			if (NewWriter)
 			{
 				TPromise<bool> Completed;
-				GetPipeline()->AddOutputFuture(Completed.GetFuture(), FinalFilePath, RenderPassData.Key);
+				MoviePipeline::FMoviePipelineOutputFutureData OutputData;
+				OutputData.Shot = GetPipeline()->GetActiveShotList()[Payload->SampleState.OutputState.ShotIndex];
+				OutputData.PassIdentifier = RenderPassData.Key;
+				OutputData.FilePath = FinalFilePath;
+
+				GetPipeline()->AddOutputFuture(Completed.GetFuture(), OutputData);
 
 				AllWriters.Add(FMoviePipelineCodecWriter(MoveTemp(NewWriter), MoveTemp(Completed)));
 				OutputWriter = &AllWriters.Last();
@@ -150,7 +165,7 @@ void UMoviePipelineVideoOutputBase::OnReceiveImageDataImpl(FMoviePipelineMergerO
 
 		if (!OutputWriter)
 		{
-			UE_LOG(LogMovieRenderPipeline, Error, TEXT("Failed to generate writer for FileName: %s"), *FinalFilePath);
+			UE_LOG(LogMovieRenderPipelineIO, Error, TEXT("Failed to generate writer for FileName: %s"), *FinalFilePath);
 			continue;
 		}
 

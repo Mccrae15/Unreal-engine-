@@ -39,8 +39,7 @@ namespace
 }
 
 FDMXProtocolSACNReceiver::FDMXProtocolSACNReceiver(const TSharedPtr<FDMXProtocolSACN, ESPMode::ThreadSafe>& InSACNProtocol, FSocket& InSocket, TSharedRef<FInternetAddr> InEndpointInternetAddr)
-	: HighestReceivedPriority(0)
-	, Protocol(InSACNProtocol)
+	: Protocol(InSACNProtocol)
 	, Socket(&InSocket)
 	, EndpointInternetAddr(InEndpointInternetAddr)
 	, bStopping(false)
@@ -56,16 +55,16 @@ FDMXProtocolSACNReceiver::FDMXProtocolSACNReceiver(const TSharedPtr<FDMXProtocol
 
 FDMXProtocolSACNReceiver::~FDMXProtocolSACNReceiver()
 {
-	if (Socket)
-	{
-		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-		SocketSubsystem->DestroySocket(Socket);
-	}
-
 	if (Thread != nullptr)
 	{
 		Thread->Kill(true);
 		delete Thread;
+	}
+
+	if (Socket)
+	{
+		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+		SocketSubsystem->DestroySocket(Socket);
 	}
 
 	UE_LOG(LogDMXProtocol, VeryVerbose, TEXT("Destroyed sACN Receiver at %s"), *EndpointInternetAddr->ToString(false));
@@ -86,6 +85,7 @@ TSharedPtr<FDMXProtocolSACNReceiver> FDMXProtocolSACNReceiver::TryCreate(const T
 		.AsBlocking()
 		.AsReusable()
 		.BoundToEndpoint(Endpoint)
+		.WithMulticastLoopback()
 		.WithMulticastTtl(1)
 		.WithMulticastInterface(Endpoint.Address);
 
@@ -140,13 +140,13 @@ void FDMXProtocolSACNReceiver::AssignInputPort(const TSharedPtr<FDMXInputPort, E
 			ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
 			TSharedRef<FInternetAddr> NewMulticastGroupAddr = SocketSubsystem->CreateInternetAddr();
 
-			uint32 Ip = GetIpForUniverseID(UniverseID);
-			NewMulticastGroupAddr->SetIp(Ip);
+			uint32 MulticastIp = GetIpForUniverseID(UniverseID);
+			NewMulticastGroupAddr->SetIp(MulticastIp);
 			NewMulticastGroupAddr->SetPort(ACN_PORT);
 
 			Socket->JoinMulticastGroup(*NewMulticastGroupAddr);
 
-			MulticastGroupAddrToUniverseIDMap.Add(NewMulticastGroupAddr, UniverseID);
+			MulticastGroupAddrToUniverseIDMap.Add(MulticastIp, UniverseID);
 		}
 	}
 }
@@ -156,10 +156,14 @@ void FDMXProtocolSACNReceiver::UnassignInputPort(const TSharedPtr<FDMXInputPort,
 	check(AssignedInputPorts.Contains(InputPort));
 	AssignedInputPorts.Remove(InputPort);
 
+	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	TSharedRef<FInternetAddr> MulticastGroupAddrToLeave = SocketSubsystem->CreateInternetAddr();
+
 	// Leave multicast groups outside of remaining port's universe ranges
-	for (const TTuple<TSharedRef<FInternetAddr>, uint16>& MulticastGroupAddrToUniverseIDKvp : MulticastGroupAddrToUniverseIDMap)
+	for (const TTuple<uint32, uint16>& MulticastGroupAddrToUniverseIDKvp : MulticastGroupAddrToUniverseIDMap)
 	{
-		const TSharedRef<FInternetAddr>& MulticastGroupAddr = MulticastGroupAddrToUniverseIDKvp.Key;
+		MulticastGroupAddrToLeave->SetIp(MulticastGroupAddrToUniverseIDKvp.Key);
+		MulticastGroupAddrToLeave->SetPort(ACN_PORT);
 		uint16 UniverseID = MulticastGroupAddrToUniverseIDKvp.Value;
 
 		bool bGroupInUse = true;
@@ -177,7 +181,7 @@ void FDMXProtocolSACNReceiver::UnassignInputPort(const TSharedPtr<FDMXInputPort,
 
 		if (!bGroupInUse)
 		{
-			Socket->LeaveMulticastGroup(*MulticastGroupAddr);
+			Socket->LeaveMulticastGroup(*MulticastGroupAddrToLeave);
 		}
 	}
 }
@@ -190,7 +194,7 @@ bool FDMXProtocolSACNReceiver::Init()
 uint32 FDMXProtocolSACNReceiver::Run()
 {
 	// No receive refresh rate, it would deter the timestamp
-	
+
 	while (!bStopping)
 	{
 		Update(FTimespan::FromMilliseconds(1000.f));
@@ -242,8 +246,10 @@ void FDMXProtocolSACNReceiver::Update(const FTimespan& SocketWaitTime)
 		if (Socket->RecvFromWithPktInfo(Reader->GetData(), Reader->Num(), NumBytesRead, *Sender, *Destination))
 		{
 			Reader->RemoveAt(NumBytesRead, Reader->Num() - NumBytesRead, false);
+			uint32 MulticastIp = 0;
+			Destination->GetIp(MulticastIp);
 
-			if (const uint16* UniverseIDPtr = MulticastGroupAddrToUniverseIDMap.Find(Destination.ToSharedRef()))
+			if (const uint16* UniverseIDPtr = MulticastGroupAddrToUniverseIDMap.Find(MulticastIp))
 			{
 				const uint16 UniverseID = *UniverseIDPtr;
 				DistributeReceivedData(UniverseID, Reader);
@@ -276,32 +282,71 @@ void FDMXProtocolSACNReceiver::HandleDataPacket(uint16 UniverseID, const TShared
 	FDMXProtocolE131FramingLayerPacket IncomingDMXFramingLayer;
 	FDMXProtocolE131DMPLayerPacket IncomingDMXDMPLayer;
 
-	*PacketReader << IncomingDMXRootLayer;
-	*PacketReader << IncomingDMXFramingLayer;
-	*PacketReader << IncomingDMXDMPLayer;
+	uint16 RootPayloadLength = 0;
+	uint16 FramingPayloadLength = 0;
+	uint16 DMPPayloadLength = 0;
 
-	// Ignore packets of lower priority than the highest one we received.
-	if (HighestReceivedPriority > IncomingDMXFramingLayer.Priority)
-	{		return;
+	IncomingDMXRootLayer.Serialize(*PacketReader, RootPayloadLength);
+
+	// check if the advertised length is valid
+	if (RootPayloadLength + ACN_RLP_PREAMBLE_SIZE > PacketReader->Num())
+	{
+		return;
 	}
-	HighestReceivedPriority = IncomingDMXFramingLayer.Priority;
 
-	// Make sure we copy same amount of data
+	IncomingDMXFramingLayer.Serialize(*PacketReader, FramingPayloadLength);
+	// check if the advertised length is still valid
+	if (FramingPayloadLength + ACN_DMX_ROOT_PACKAGE_SIZE > PacketReader->Num())
+	{
+		return;
+	}
 
-	FDMXSignalSharedRef DMXSignal = MakeShared<FDMXSignal, ESPMode::ThreadSafe>(FPlatformTime::Seconds(), UniverseID, TArray<uint8>(IncomingDMXDMPLayer.DMX, DMX_UNIVERSE_SIZE));
+	IncomingDMXDMPLayer.Serialize(*PacketReader, DMPPayloadLength);
+	// check if the advertised length is still valid
+	if ((DMPPayloadLength + ACN_DMX_ROOT_PACKAGE_SIZE + ACN_DMX_PDU_FRAMING_PACKAGE_SIZE) > PacketReader->Num())
+	{
+		return;
+	}
+
+	// check if the number of properties is consistent
+	if ((IncomingDMXDMPLayer.FirstPropertyAddress + IncomingDMXDMPLayer.PropertyValueCount) > (ACN_DMX_SIZE + 1))
+	{
+		return;
+	}
+
+	// E1.31 specs forces address increment to be 1
+	if (IncomingDMXDMPLayer.AddressIncrement != ACN_ADDRESS_INC)
+	{
+		return;
+	}
+
+	// Eventually build a history of values for each universe,
+	// this will allow to receive fewer values in e1.31 packets
+	TArray<uint8>* UniverseData = PropertiesCacheValues.Find(UniverseID);
+	if (!UniverseData)
+	{
+		TArray<uint8> DefaultProperties;
+		DefaultProperties.AddZeroed(ACN_DMX_SIZE);
+		UniverseData = &PropertiesCacheValues.Add(UniverseID, DefaultProperties);
+	}
+
+	// Copy relevant data
+	FMemory::Memcpy(UniverseData->GetData() + IncomingDMXDMPLayer.FirstPropertyAddress, IncomingDMXDMPLayer.DMX.GetData(), IncomingDMXDMPLayer.PropertyValueCount - 1);
+	
+	FDMXSignalSharedRef DMXSignal = MakeShared<FDMXSignal, ESPMode::ThreadSafe>(FPlatformTime::Seconds(), UniverseID, PropertiesCacheValues[UniverseID]);
 	for (const TSharedPtr<FDMXInputPort, ESPMode::ThreadSafe>& InputPort : AssignedInputPorts)
 	{
 		InputPort->SingleProducerInputDMXSignal(DMXSignal);
 	}
-		
+
 	INC_DWORD_STAT(STAT_SACNPackagesReceived);
 }
 
 uint32 FDMXProtocolSACNReceiver::GetRootPacketType(const TSharedPtr<FArrayReader>& Buffer)
 {
 	uint32 Vector = 0x00000000;
-	const uint32 MinCheck = ACN_ADDRESS_ROOT_VECTOR + 4;
-	if (Buffer->Num() > MinCheck)
+	/* check for the minimal valid packet size (assuming at least one property) */
+	if (Buffer->Num() > ACN_DMX_MIN_PACKAGE_SIZE)
 	{
 		// Get OpCode
 		Buffer->Seek(ACN_ADDRESS_ROOT_VECTOR);

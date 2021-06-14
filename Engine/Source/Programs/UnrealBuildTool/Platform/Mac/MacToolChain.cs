@@ -307,8 +307,6 @@ namespace UnrealBuildTool
 		{
 			string Result = "";
 			Result += " -x objective-c++";
-			Result += " -fobjc-abi-version=2";
-			Result += " -fobjc-legacy-dispatch";
 			Result += GetCppStandardCompileArgument(CompileEnvironment);
 			Result += " -stdlib=libc++";
 			return Result;
@@ -318,8 +316,6 @@ namespace UnrealBuildTool
 		{
 			string Result = "";
 			Result += " -x objective-c++";
-			Result += " -fobjc-abi-version=2";
-			Result += " -fobjc-legacy-dispatch";
 			Result += GetCppStandardCompileArgument(CompileEnvironment);
 			Result += " -stdlib=libc++";
 			return Result;
@@ -329,8 +325,6 @@ namespace UnrealBuildTool
 		{
 			string Result = "";
 			Result += " -x objective-c";
-			Result += " -fobjc-abi-version=2";
-			Result += " -fobjc-legacy-dispatch";
 			Result += " -stdlib=libc++";
 			return Result;
 		}
@@ -346,8 +340,6 @@ namespace UnrealBuildTool
 		{
 			string Result = "";
 			Result += " -x objective-c++-header";
-			Result += " -fobjc-abi-version=2";
-			Result += " -fobjc-legacy-dispatch";
 			Result += GetCppStandardCompileArgument(CompileEnvironment);
 			Result += " -stdlib=libc++";
 			return Result;
@@ -718,6 +710,17 @@ namespace UnrealBuildTool
 				if (bCanUseMultipleRPATHs)
 				{
 					LinkCommand += " -rpath \"@loader_path/" + RelativePath + "\"";
+
+					// We are referencing plugins that need to be relative to the engine not the dylib we are building
+					// To be safe leave the previous relative loader_path in place and add a relative engine executable path
+					if (!bIsBuildingAppBundle && LibraryDir.Contains("/Engine/Plugins/") && ExeAbsolutePath.EndsWith("dylib"))
+					{
+						int EngineDirStrIndex = LibraryDir.IndexOf("Engine");
+						if (EngineDirStrIndex >= 0)
+						{
+							LinkCommand += " -rpath \"@executable_path/../../../../../../" + LibraryDir.Substring(EngineDirStrIndex) + "\"";
+						}
+					}
 				}
 
 				// If building an app bundle, we also need an RPATH for use in packaged game and a separate one for staged builds
@@ -1177,7 +1180,7 @@ namespace UnrealBuildTool
 			// The script is deleted after it's executed so it's empty when we start appending link commands for the next executable.
 			FileItem FixDylibDepsScript = FileItem.GetItemByFileReference(FileReference.Combine(LinkEnvironment.LocalShadowDirectory, "FixDylibDependencies.sh"));
 
-			FixDylibAction.CommandArguments = "-c 'chmod +x \"" + FixDylibDepsScript.AbsolutePath + "\"; \"" + FixDylibDepsScript.AbsolutePath + "\"; if [[ $? -ne 0 ]]; then exit 1; fi; ";
+			FixDylibAction.CommandArguments = "-c \"chmod +x \\\"" + FixDylibDepsScript.AbsolutePath + "\\\"; \\\"" + FixDylibDepsScript.AbsolutePath + "\\\"; if [[ $? -ne 0 ]]; then exit 1; fi; ";
 
 			// Make sure this action is executed after all the dylibs and the main executable are created
 
@@ -1191,8 +1194,8 @@ namespace UnrealBuildTool
 
 			FileItem OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(LinkEnvironment.LocalShadowDirectory, Path.GetFileNameWithoutExtension(Executable.AbsolutePath) + ".link"));
 
-			FixDylibAction.CommandArguments += "echo \"Dummy\" >> \"" + OutputFile.AbsolutePath + "\"";
-			FixDylibAction.CommandArguments += "'";
+			FixDylibAction.CommandArguments += "echo Dummy >> \\\"" + OutputFile.AbsolutePath + "\\\"";
+			FixDylibAction.CommandArguments += "\"";
 
 			FixDylibAction.ProducedItems.Add(OutputFile);
 
@@ -1239,7 +1242,7 @@ namespace UnrealBuildTool
 			// Note that the source and dest are switched from a copy command
 			string ExtraOptions;
 			string DsymutilPath = GetDsymutilPath(out ExtraOptions, bIsForLTOBuild: false);
-			GenDebugAction.CommandArguments = string.Format("-c 'rm -rf \"{2}\"; for i in {{1..30}}; do if [ -f \"{1}\" ] ; then break; else echo\"Waiting for {1} before generating dSYM file.\"; sleep 1; fi; done; \"{0}\" {3} -f \"{1}\" -o \"{2}\"'",
+			GenDebugAction.CommandArguments = string.Format("-c \"rm -rf \\\"{2}\\\"; for i in {{1..30}}; do if [ -f \\\"{1}\\\" ] ; then break; else echo \\\"Waiting for {1} before generating dSYM file.\\\"; sleep 1; fi; done; \\\"{0}\\\" {3} -f \\\"{1}\\\" -o \\\"{2}\\\"\"",
 				DsymutilPath,
 				MachOBinary.AbsolutePath,
 				OutputFile.AbsolutePath,
@@ -1301,7 +1304,7 @@ namespace UnrealBuildTool
 
 			FileItem TargetItem = FileItem.GetItemByPath(TargetPath);
 
-			CopyAction.CommandArguments = string.Format("-c 'cp -f -R \"{0}\" \"{1}\"; touch -c \"{2}\"'", SourcePath, Path.GetDirectoryName(TargetPath).Replace('\\', '/') + "/", TargetPath.Replace('\\', '/'));
+			CopyAction.CommandArguments = string.Format("-c \"cp -f -R \\\"{0}\\\" \\\"{1}\\\"; touch -c \\\"{2}\\\"\"", SourcePath, Path.GetDirectoryName(TargetPath).Replace('\\', '/') + "/", TargetPath.Replace('\\', '/'));
 			CopyAction.PrerequisiteItems.Add(Executable);
 			CopyAction.ProducedItems.Add(TargetItem);
 			CopyAction.bShouldOutputStatusDescription = Resource.bShouldLog;

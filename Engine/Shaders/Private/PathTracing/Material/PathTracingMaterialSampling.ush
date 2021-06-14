@@ -22,18 +22,15 @@ PathTracingMaterialSampling.usf: Material sampling functions
 #include "PathTracingSubsurfaceProfile.ush"
 #include "../../BurleyNormalizedSSSCommon.ush"
 
-#ifndef FORCE_ALL_MATERIALS_DIFFUSE
-	#define FORCE_ALL_MATERIALS_DIFFUSE 0
+// Simplified material shaders for GPU Lightmass, supporting Lambert, Two Sided Foliage and Thin Translucent
+// Make sure material evaluation code below matches with hit shader which fills the payload
+#ifndef SIMPLIFIED_MATERIAL_SHADER
+	#define SIMPLIFIED_MATERIAL_SHADER 0
 #endif
 
 bool IsNeeValidMaterial(FMaterialClosestHitPayload Payload)
 {
 	// Checks done in the same order as other sampling and evaluation functions to ensure consistency
-	
-#if FORCE_ALL_MATERIALS_DIFFUSE
-	return true;
-#else
-
 	if (Payload.BlendingMode == RAY_TRACING_BLEND_MODE_MODULATE ||
 		Payload.BlendingMode == RAY_TRACING_BLEND_MODE_ALPHA_HOLDOUT)
 	{
@@ -54,7 +51,6 @@ bool IsNeeValidMaterial(FMaterialClosestHitPayload Payload)
 		default:
 			return true;
 	}
-#endif
 }
 
 float3 GetMaterialTransparency(FMaterialClosestHitPayload Payload, float3 RayDirection)
@@ -63,14 +59,16 @@ float3 GetMaterialTransparency(FMaterialClosestHitPayload Payload, float3 RayDir
 	{
 		case SHADINGMODELID_THIN_TRANSLUCENT:
 		{
-			if (Payload.Ior == 1.0)
+#if !SIMPLIFIED_MATERIAL_SHADER
+			if (Payload.Ior != 1.0)
+			{
+				return 0;
+			}
+			else
+#endif
 			{
 				float VoN = dot(RayDirection, Payload.WorldNormal);
 				return (1 - Payload.Opacity) * pow(Payload.CustomData.xyz, 1.0 / abs(VoN));
-			}
-			else
-			{
-				return 0;
 			}
 		}
 		default:
@@ -80,15 +78,17 @@ float3 GetMaterialTransparency(FMaterialClosestHitPayload Payload, float3 RayDir
 	switch (Payload.BlendingMode)
 	{
 		case RAY_TRACING_BLEND_MODE_TRANSLUCENT:
-			if (Payload.Ior == 1.0)
-			{
-				// material is not configured with refraction, can use transparency
-				return 1 - Payload.Opacity;
-			}
-			else
+#if !SIMPLIFIED_MATERIAL_SHADER
+			if (Payload.Ior != 1.0)
 			{
 				// not using transparency - material will be opaque
 				return 0;
+			}
+			else
+#endif
+			{
+				// material is not configured with refraction, can use transparency
+				return 1 - Payload.Opacity;
 			}
 		case RAY_TRACING_BLEND_MODE_ADDITIVE:
 			return 1;
@@ -110,15 +110,17 @@ float3 EstimateMaterialAlbedo(FMaterialClosestHitPayload Payload)
 	switch (Payload.BlendingMode)
 	{
 		case RAY_TRACING_BLEND_MODE_TRANSLUCENT:
-			if (Payload.Ior == 1.0)
+#if !SIMPLIFIED_MATERIAL_SHADER
+			if (Payload.Ior != 1.0)
+			{
+				HasRefraction = true;
+			}
+			else
+#endif
 			{
 				// material is not configured with refraction, can use transparency
 				// NOTE: the albedo when considering refraction is handled below
 				BrdfWeight = Payload.Opacity;
-			}
-			else
-			{
-				HasRefraction = true;
 			}
 			break;
 		case RAY_TRACING_BLEND_MODE_ADDITIVE:
@@ -132,13 +134,18 @@ float3 EstimateMaterialAlbedo(FMaterialClosestHitPayload Payload)
 			break;
 	}
 
-	// FIXME: could make this more accurate by estimating the directional albedo
+	// TODO: make this more accurate by estimating the directional albedo
 	float3 Albedo = 0;
 	switch (Payload.ShadingModelID)
 	{
 		case SHADINGMODELID_UNLIT:
 			// this object does not scatter light
 			return 0;
+#if SIMPLIFIED_MATERIAL_SHADER
+		case SHADINGMODELID_TWOSIDED_FOLIAGE:
+			Albedo = BrdfWeight * (Payload.BaseColor + GetSubsurfaceColor(Payload));
+			break;
+#else
 		case SHADINGMODELID_TWOSIDED_FOLIAGE:
 		case SHADINGMODELID_SUBSURFACE:
 		case SHADINGMODELID_PREINTEGRATED_SKIN:
@@ -153,10 +160,12 @@ float3 EstimateMaterialAlbedo(FMaterialClosestHitPayload Payload)
 		case SHADINGMODELID_CLOTH:
 			Albedo = BrdfWeight * (Payload.DiffuseColor + lerp(Payload.SpecularColor, Payload.CustomData.xyz, Payload.CustomData.w));
 			break;
+#endif
 		default:
 			Albedo = BrdfWeight * Payload.BaseColor;
 			break;
 	}
+#if !SIMPLIFIED_MATERIAL_SHADER
 	if (HasRefraction)
 	{
 		// glass is currently perfectly clear - so has unit albedo
@@ -164,11 +173,13 @@ float3 EstimateMaterialAlbedo(FMaterialClosestHitPayload Payload)
 		float3 White = 1;
 		Albedo = lerp(White, Albedo, Payload.Opacity);
 	}
+#endif
 	return Albedo;
 }
 
 void AdjustMaterialRoughness(inout FMaterialClosestHitPayload Payload, float PathRoughness)
 {
+#if !SIMPLIFIED_MATERIAL_SHADER
 	// boost material roughness according to what we've seen so far
 	switch (Payload.ShadingModelID)
 	{
@@ -200,11 +211,15 @@ void AdjustMaterialRoughness(inout FMaterialClosestHitPayload Payload, float Pat
 			Payload.Roughness = 1.0;
 			break;
 	}
+#endif
 }
 
 // returns an average roughness for the whole material (for the path roughness of shadow rays from this material)
 float GetAverageRoughness(FMaterialClosestHitPayload Payload)
 {
+#if SIMPLIFIED_MATERIAL_SHADER
+	return 1.0;
+#else
 	const float GlassPercent = (Payload.BlendingMode == RAY_TRACING_BLEND_MODE_TRANSLUCENT && Payload.Ior != 1.0) ? 1 - Payload.Opacity : 0.0;
 	float Roughness = Payload.Roughness;
 	switch (Payload.ShadingModelID)
@@ -222,6 +237,7 @@ float GetAverageRoughness(FMaterialClosestHitPayload Payload)
 	float AvgRoughness = lerp(1.0 /* diffuse lobe */, Roughness, Payload.Metallic);
 	AvgRoughness = lerp(AvgRoughness, Payload.Roughness, GlassPercent);
 	return AvgRoughness;
+#endif
 }
 
 
@@ -236,6 +252,7 @@ FMaterialClosestHitPayload UnpackPathTracingPayload(FPackedMaterialClosestHitPay
 
 	switch (HitPayload.ShadingModelID)
 	{
+#if !SIMPLIFIED_MATERIAL_SHADER
 		case SHADINGMODELID_SUBSURFACE:
 		case SHADINGMODELID_PREINTEGRATED_SKIN:
 		{
@@ -248,6 +265,7 @@ FMaterialClosestHitPayload UnpackPathTracingPayload(FPackedMaterialClosestHitPay
 			
 			// fallthrough to case below to avoid over-bright SSS
 		}
+#endif
 		case SHADINGMODELID_TWOSIDED_FOLIAGE:
 		{
 			float3 Front = HitPayload.DiffuseColor;
@@ -263,6 +281,13 @@ FMaterialClosestHitPayload UnpackPathTracingPayload(FPackedMaterialClosestHitPay
 			}
 			break;
 		}
+#if SIMPLIFIED_MATERIAL_SHADER
+		default:
+		{
+			HitPayload.CustomData = 0;
+			break;
+		}
+#else
 		case SHADINGMODELID_SUBSURFACE_PROFILE:
 		{
 			uint ProfileId = uint(HitPayload.CustomData.a * 255.0 + 0.5);
@@ -313,6 +338,7 @@ FMaterialClosestHitPayload UnpackPathTracingPayload(FPackedMaterialClosestHitPay
 			HitPayload.Opacity = 1;
 			break;
 		}
+#endif
 	}
 
 	return HitPayload;
@@ -329,11 +355,12 @@ FMaterialSample SampleMaterial(
 	{
 		return RadianceProbe_SampleMaterial(Payload, RandSample);
 	}
-	
-#if FORCE_ALL_MATERIALS_DIFFUSE
-	{
-		return Lambert_SampleMaterial(Payload, RandSample);
-	}
+
+#if SIMPLIFIED_MATERIAL_SHADER
+	FMaterialSample Result = Simplified_SampleMaterial(Payload, RandSample);
+	Result.Weight *= Payload.Opacity;
+	return Result;
+	//return Lambert_SampleMaterial(Payload, RandSample);
 #else
 
 	if (Payload.BlendingMode == RAY_TRACING_BLEND_MODE_MODULATE ||
@@ -446,11 +473,12 @@ FMaterialEval EvalMaterial(
 	{
 		return RadianceProbe_EvalMaterial(OutgoingDirection, Payload);
 	}
-	
-#if FORCE_ALL_MATERIALS_DIFFUSE
-	{
-		return Lambert_EvalMaterial(OutgoingDirection, Payload);
-	}
+#if SIMPLIFIED_MATERIAL_SHADER
+	FMaterialEval Result = Simplified_EvalMaterial(OutgoingDirection, Payload);
+	Result.Weight *= Payload.Opacity;
+	return Result;
+
+	//return Lambert_EvalMaterial(OutgoingDirection, Payload);
 #else
 
 	if (Payload.BlendingMode == RAY_TRACING_BLEND_MODE_MODULATE ||

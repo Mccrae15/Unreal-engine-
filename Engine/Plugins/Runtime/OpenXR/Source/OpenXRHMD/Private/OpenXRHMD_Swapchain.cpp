@@ -4,9 +4,16 @@
 #include "OpenXRCore.h"
 #include "XRThreadUtils.h"
 
-FOpenXRSwapchain::FOpenXRSwapchain(TArray<FTextureRHIRef>&& InRHITextureSwapChain, const FTextureRHIRef & InRHITexture, XrSwapchain InHandle) :
-	FXRSwapChain(MoveTemp(InRHITextureSwapChain), InRHITexture),
-	Handle(InHandle)
+static TAutoConsoleVariable<int32> CVarOpenXRSwapchainRetryCount(
+	TEXT("vr.OpenXRSwapchainRetryCount"),
+	9,
+	TEXT("Number of times the OpenXR plugin will attempt to wait for the next swapchain image."),
+	ECVF_RenderThreadSafe);
+
+FOpenXRSwapchain::FOpenXRSwapchain(TArray<FTextureRHIRef>&& InRHITextureSwapChain, const FTextureRHIRef & InRHITexture, XrSwapchain InHandle)
+	: FXRSwapChain(MoveTemp(InRHITextureSwapChain), InRHITexture)
+	, Handle(InHandle)
+	, Acquired(false)
 {
 }
 
@@ -21,6 +28,11 @@ void FOpenXRSwapchain::IncrementSwapChainIndex_RHIThread()
 {
 	check(IsInRenderingThread() || IsInRHIThread());
 
+	if (Acquired)
+	{
+		return;
+	}
+
 	SCOPED_NAMED_EVENT(AcquireImage, FColor::Red);
 
 	XrSwapchainImageAcquireInfo Info;
@@ -29,6 +41,7 @@ void FOpenXRSwapchain::IncrementSwapChainIndex_RHIThread()
 	XR_ENSURE(xrAcquireSwapchainImage(Handle, &Info, &SwapChainIndex_RHIThread));
 
 	GDynamicRHI->RHIAliasTextureResources((FTextureRHIRef&)RHITexture, (FTextureRHIRef&)RHITextureSwapChain[SwapChainIndex_RHIThread]);
+	Acquired = true;
 }
 
 void FOpenXRSwapchain::WaitCurrentImage_RHIThread(int64 Timeout)
@@ -43,7 +56,7 @@ void FOpenXRSwapchain::WaitCurrentImage_RHIThread(int64 Timeout)
 	WaitInfo.timeout = Timeout;
 
 	XrResult WaitResult = XR_SUCCESS;
-	int RetryCount = 3;
+	int RetryCount = CVarOpenXRSwapchainRetryCount.GetValueOnAnyThread();
 	do
 	{
 		XR_ENSURE(WaitResult = xrWaitSwapchainImage(Handle, &WaitInfo));
@@ -64,15 +77,22 @@ void FOpenXRSwapchain::ReleaseCurrentImage_RHIThread()
 {
 	check(IsInRenderingThread() || IsInRHIThread());
 
+	if (!Acquired)
+	{
+		return;
+	}
+
 	SCOPED_NAMED_EVENT(ReleaseImage, FColor::Red);
 
 	XrSwapchainImageReleaseInfo ReleaseInfo;
 	ReleaseInfo.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
 	ReleaseInfo.next = nullptr;
 	XR_ENSURE(xrReleaseSwapchainImage(Handle, &ReleaseInfo));
+
+	Acquired = false;
 }
 
-uint8 GetNearestSupportedSwapchainFormat(XrSession InSession, uint8 RequestedFormat, TFunction<uint32(uint8)> ToPlatformFormat = nullptr)
+uint8 FOpenXRSwapchain::GetNearestSupportedSwapchainFormat(XrSession InSession, uint8 RequestedFormat, TFunction<uint32(uint8)> ToPlatformFormat /*= nullptr*/)
 {
 	if (!ToPlatformFormat)
 	{
@@ -135,7 +155,7 @@ uint8 GetNearestSupportedSwapchainFormat(XrSession InSession, uint8 RequestedFor
 	return FallbackFormat;
 }
 
-XrSwapchain CreateSwapchain(XrSession InSession, uint32 PlatformFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags)
+XrSwapchain FOpenXRSwapchain::CreateSwapchain(XrSession InSession, uint32 PlatformFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags)
 {
 	// Need a mutable format so we can reinterpret an sRGB format into a linear format
 	XrSwapchainUsageFlags Usage = XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
@@ -205,13 +225,13 @@ FXRSwapChainPtr CreateSwapchain_D3D11(XrSession InSession, uint8 Format, uint32 
 		return PlatformFormat;
 	};
 
-	Format = GetNearestSupportedSwapchainFormat(InSession, Format, ToPlatformFormat);
+	Format = FOpenXRSwapchain::GetNearestSupportedSwapchainFormat(InSession, Format, ToPlatformFormat);
 	if (!Format)
 	{
 		return nullptr;
 	}
 
-	XrSwapchain Swapchain = CreateSwapchain(InSession, ToPlatformFormat(Format), SizeX, SizeY, ArraySize, NumMips, NumSamples, Flags, TargetableTextureFlags);
+	XrSwapchain Swapchain = FOpenXRSwapchain::CreateSwapchain(InSession, ToPlatformFormat(Format), SizeX, SizeY, ArraySize, NumMips, NumSamples, Flags, TargetableTextureFlags);
 	if (!Swapchain)
 	{
 		return nullptr;
@@ -243,13 +263,13 @@ FXRSwapChainPtr CreateSwapchain_D3D12(XrSession InSession, uint8 Format, uint32 
 		return PlatformFormat;
 	};
 
-	Format = GetNearestSupportedSwapchainFormat(InSession, Format, ToPlatformFormat);
+	Format = FOpenXRSwapchain::GetNearestSupportedSwapchainFormat(InSession, Format, ToPlatformFormat);
 	if (!Format)
 	{
 		return nullptr;
 	}
 
-	XrSwapchain Swapchain = CreateSwapchain(InSession, ToPlatformFormat(Format), SizeX, SizeY, ArraySize, NumMips, NumSamples, Flags, TargetableTextureFlags);
+	XrSwapchain Swapchain = FOpenXRSwapchain::CreateSwapchain(InSession, ToPlatformFormat(Format), SizeX, SizeY, ArraySize, NumMips, NumSamples, Flags, TargetableTextureFlags);
 	if (!Swapchain)
 	{
 		return nullptr;
@@ -271,13 +291,13 @@ FXRSwapChainPtr CreateSwapchain_D3D12(XrSession InSession, uint8 Format, uint32 
 #ifdef XR_USE_GRAPHICS_API_OPENGL
 FXRSwapChainPtr CreateSwapchain_OpenGL(XrSession InSession, uint8 Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, const FClearValueBinding& ClearValueBinding)
 {
-	Format = GetNearestSupportedSwapchainFormat(InSession, Format);
+	Format = FOpenXRSwapchain::GetNearestSupportedSwapchainFormat(InSession, Format);
 	if (!Format)
 	{
 		return nullptr;
 	}
 
-	XrSwapchain Swapchain = CreateSwapchain(InSession, GPixelFormats[Format].PlatformFormat, SizeX, SizeY, ArraySize, NumMips, NumSamples, Flags, TargetableTextureFlags);
+	XrSwapchain Swapchain = FOpenXRSwapchain::CreateSwapchain(InSession, GPixelFormats[Format].PlatformFormat, SizeX, SizeY, ArraySize, NumMips, NumSamples, Flags, TargetableTextureFlags);
 	if (!Swapchain)
 	{
 		return nullptr;
@@ -304,13 +324,13 @@ FXRSwapChainPtr CreateSwapchain_Vulkan(XrSession InSession, uint8 Format, uint32
 		// UE4 renders a gamma-corrected image so we need to use an sRGB format if available
 		return UEToVkTextureFormat(GPixelFormats[InFormat].UnrealFormat, true);
 	};
-	Format = GetNearestSupportedSwapchainFormat(InSession, Format, ToPlatformFormat);
+	Format = FOpenXRSwapchain::GetNearestSupportedSwapchainFormat(InSession, Format, ToPlatformFormat);
 	if (!Format)
 	{
 		return nullptr;
 	}
 
-	XrSwapchain Swapchain = CreateSwapchain(InSession, ToPlatformFormat(Format), SizeX, SizeY, ArraySize, NumMips, NumSamples, Flags, TargetableTextureFlags);
+	XrSwapchain Swapchain = FOpenXRSwapchain::CreateSwapchain(InSession, ToPlatformFormat(Format), SizeX, SizeY, ArraySize, NumMips, NumSamples, Flags, TargetableTextureFlags);
 	if (!Swapchain)
 	{
 		return nullptr;

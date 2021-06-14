@@ -205,6 +205,8 @@ struct ENGINE_API FCameraShakeDuration
 	/** Creates a new shake duration */
 	FCameraShakeDuration(float InDuration, ECameraShakeDurationType InType = ECameraShakeDurationType::Fixed) : Duration(InDuration), Type(InType) {}
 	
+	/** Returns the duration type */
+	ECameraShakeDurationType GetDurationType() const { return Type; }
 	/** Returns whether this duration is a fixed time */
 	bool IsFixed() const { return Type == ECameraShakeDurationType::Fixed; }
 	/** Returns whether this duration is infinite */
@@ -521,7 +523,7 @@ protected:
 private:
 
 	/** The root pattern for this camera shake */
-	UPROPERTY(EditAnywhere, Instanced, Category=CameraShake)
+	UPROPERTY(EditAnywhere, Instanced, Category=CameraShakePattern)
 	UCameraShakePattern* RootShakePattern;
 
 	/** The camera manager owning this camera shake. Only valid when the shake is active. */

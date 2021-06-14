@@ -190,7 +190,21 @@ UWorld* URemoteControlLevelDependantBinding::GetCurrentWorld() const
 	}
 #endif
 
-	return World ? World : GEngine->GetCurrentPlayWorld(); 
+	if (World)
+	{
+		return World;
+	}
+
+	for (const FWorldContext& WorldContext : GEngine->GetWorldContexts())
+	{
+		if (WorldContext.WorldType == EWorldType::Game)
+		{
+			World = WorldContext.World();
+			break;
+		}
+	}
+		
+	return World;
 }
 
 void URemoteControlLevelDependantBinding::SetBoundObject(const TSoftObjectPtr<ULevel>& Level, const TSoftObjectPtr<UObject>& BoundObject)

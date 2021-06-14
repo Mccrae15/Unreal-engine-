@@ -13,15 +13,16 @@
 #include "DisplayClusterConfiguratorLog.h"
 
 #include "DisplayClusterRootActor.h"
+#include "DisplayClusterProjectionStrings.h"
 #include "Blueprints/DisplayClusterBlueprint.h"
 #include "Components/DisplayClusterCameraComponent.h"
+#include "Components/DisplayClusterScreenComponent.h"
 
 #include "ClusterConfiguration/DisplayClusterConfiguratorClusterUtils.h"
+#include "DisplayClusterConfiguratorPropertyUtils.h"
 #include "DisplayClusterConfiguratorVersionUtils.h"
-#include "Views/General/DisplayClusterConfiguratorViewGeneral.h"
 #include "Views/OutputMapping/DisplayClusterConfiguratorViewOutputMapping.h"
 #include "Views/TreeViews/Cluster/DisplayClusterConfiguratorViewCluster.h"
-#include "Views/TreeViews/Input/DisplayClusterConfiguratorViewInput.h"
 #include "Views/Viewport/DisplayClusterConfiguratorSCSEditorViewport.h"
 #include "Views/Viewport/DisplayClusterConfiguratorSCSEditorViewportClient.h"
 #include "Views/SCSEditor/SDisplayClusterConfiguratorComponentCombo.h"
@@ -34,6 +35,7 @@
 #include "GameFramework/Actor.h"
 
 #include "EditorDirectories.h"
+#include "EditorSupportDelegates.h"
 #include "EditorViewportTabContent.h"
 #include "ISCSEditorUICustomization.h"
 #include "SBlueprintEditorToolbar.h"
@@ -88,9 +90,14 @@ TSharedPtr<FDisplayClusterBlueprintEditorSCSEditorUICustomization> FDisplayClust
 
 FDisplayClusterConfiguratorBlueprintEditor::~FDisplayClusterConfiguratorBlueprintEditor()
 {
-	if (UpdateOutputMappingHandle.IsValid() && ViewOutputMapping.IsValid())
+	if (ViewOutputMapping.IsValid())
 	{
-		ViewOutputMapping->UnregisterOnOutputMappingBuilt(UpdateOutputMappingHandle);
+		ViewOutputMapping->Cleanup();
+
+		if (UpdateOutputMappingHandle.IsValid())
+		{
+			ViewOutputMapping->UnregisterOnOutputMappingBuilt(UpdateOutputMappingHandle);
+		}
 	}
 
 	if (ADisplayClusterRootActor* RootActor = Cast<ADisplayClusterRootActor>(GetPreviewActor()))
@@ -100,6 +107,9 @@ FDisplayClusterConfiguratorBlueprintEditor::~FDisplayClusterConfiguratorBlueprin
 	}
 	
 	ShutdownDCSCSEditors();
+
+	FBlueprintEditorUtils::OnRenameVariableReferencesEvent.Remove(RenameVariableHandle);
+	FSlateApplication::Get().OnFocusChanging().Remove(FocusChangedHandle);
 }
 
 void FDisplayClusterConfiguratorBlueprintEditor::InitDisplayClusterBlueprintEditor(const EToolkitMode::Type Mode,
@@ -131,8 +141,7 @@ void FDisplayClusterConfiguratorBlueprintEditor::InitDisplayClusterBlueprintEdit
 	BindCommands();
 	
 	RegisterMenus();
-
-	TSharedRef<FApplicationMode> BlueprintMode = MakeShared<FDisplayClusterConfiguratorEditorBlueprintMode>(Editor);
+	
 	TSharedRef<FApplicationMode> ConfigurationMode = MakeShared<FDisplayClusterConfiguratorEditorConfigurationMode>(Editor);
 	
 	{
@@ -151,7 +160,6 @@ void FDisplayClusterConfiguratorBlueprintEditor::InitDisplayClusterBlueprintEdit
 	}
 
 	AddApplicationMode(ConfigurationMode->GetModeName(), ConfigurationMode);
-	AddApplicationMode(BlueprintMode->GetModeName(), BlueprintMode);
 	
 	const TArray<UBlueprint*> Blueprints{ Blueprint };
 	CommonInitialization(Blueprints, false);
@@ -183,6 +191,33 @@ void FDisplayClusterConfiguratorBlueprintEditor::InitDisplayClusterBlueprintEdit
 	SetCurrentMode(ConfigurationMode->GetModeName());
 
 	PostLayoutBlueprintEditorInitialization();
+
+	RenameVariableHandle = FBlueprintEditorUtils::OnRenameVariableReferencesEvent.AddSP(this, &FDisplayClusterConfiguratorBlueprintEditor::OnRenameVariable);
+	FocusChangedHandle = FSlateApplication::Get().OnFocusChanging().AddSP(this, &FDisplayClusterConfiguratorBlueprintEditor::OnFocusChanged);
+}
+
+void FDisplayClusterConfiguratorBlueprintEditor::PostUndo(bool bSuccess)
+{
+	FBlueprintEditor::PostUndo(bSuccess);
+
+	// Make sure to force any property window displaying this actor class to refresh in case 
+	// the cluster hierarchy was changed in the undo transaction
+	if (ADisplayClusterRootActor* Actor = Cast<ADisplayClusterRootActor>(GetPreviewActor()))
+	{
+		FEditorSupportDelegates::ForcePropertyWindowRebuild.Broadcast(Actor->GetClass());
+	}
+}
+
+void FDisplayClusterConfiguratorBlueprintEditor::PostRedo(bool bSuccess)
+{
+	FBlueprintEditor::PostRedo(bSuccess);
+
+	// Make sure to force any property window displaying this actor class to refresh in case 
+	// the cluster hierarchy was changed in the redo transaction
+	if (ADisplayClusterRootActor* Actor = Cast<ADisplayClusterRootActor>(GetPreviewActor()))
+	{
+		FEditorSupportDelegates::ForcePropertyWindowRebuild.Broadcast(Actor->GetClass());
+	}
 }
 
 UDisplayClusterConfigurationData* FDisplayClusterConfiguratorBlueprintEditor::GetEditorData() const
@@ -252,7 +287,7 @@ void FDisplayClusterConfiguratorBlueprintEditor::SelectObjects(TArray<UObject*>&
 
 	// Clear old tree view selections and update the details panel.
 	
-	if (bSCSEditorSelecting)
+	if (CurrentSelectionSource == ESelectionSource::Internal)
 	{
 		// SCS Selection is handled from OnSelectionUpdated.
 
@@ -266,6 +301,7 @@ void FDisplayClusterConfiguratorBlueprintEditor::SelectObjects(TArray<UObject*>&
 		TSharedPtr<SSCSEditor> SCSEditorTreeView = GetSCSEditor();
 		if (SCSEditorTreeView.IsValid())
 		{
+			const FSelectionScope SelectionScope(this, ESelectionSource::Ancillary);
 			SCSEditorTreeView->ClearSelection();
 		}
 		
@@ -277,6 +313,75 @@ void FDisplayClusterConfiguratorBlueprintEditor::SelectObjects(TArray<UObject*>&
 	OnObjectSelected.Broadcast();
 }
 
+void FDisplayClusterConfiguratorBlueprintEditor::SelectAncillaryComponents(const TArray<FString>& ComponentNames)
+{
+	const FSelectionScope SelectionScope(this, ESelectionSource::Ancillary);
+	if (ADisplayClusterRootActor* RootActor = Cast<ADisplayClusterRootActor>(GetPreviewActor()))
+	{
+		TArray<UActorComponent*> ComponentsToSelect;
+		for (const FString& ComponentName : ComponentNames)
+		{
+			TArray<UActorComponent*> RootActorComponents;
+			RootActor->GetComponents(RootActorComponents);
+
+			UActorComponent** FoundComponentPtr =  RootActorComponents.FindByPredicate([&ComponentName](UActorComponent* Component)
+			{
+				return Component->GetName() == ComponentName;
+			});
+
+			if (FoundComponentPtr)
+			{
+				FindAndSelectSCSEditorTreeNode(*FoundComponentPtr, true);
+			}
+		}
+	}
+}
+
+void FDisplayClusterConfiguratorBlueprintEditor::SelectAncillaryViewports(const TArray<FString>& ComponentNames)
+{
+	if (UDisplayClusterConfigurationData* Config = GetConfig())
+	{
+		TArray<UObject*> ViewportsToSelect;
+		for (TPair<FString, UDisplayClusterConfigurationClusterNode*> ClusterNodePair : Config->Cluster->Nodes)
+		{
+			UDisplayClusterConfigurationClusterNode* ClusterNode = ClusterNodePair.Value;
+			for (TPair<FString, UDisplayClusterConfigurationViewport*> ViewportPair : ClusterNode->Viewports)
+			{
+				UDisplayClusterConfigurationViewport* Viewport = ViewportPair.Value;
+
+				FString ComponentName;
+				if (Viewport->ProjectionPolicy.Parameters.Contains(DisplayClusterProjectionStrings::cfg::simple::Screen))
+				{
+					ComponentName = Viewport->ProjectionPolicy.Parameters[DisplayClusterProjectionStrings::cfg::simple::Screen];
+				}
+				else if (Viewport->ProjectionPolicy.Parameters.Contains(DisplayClusterProjectionStrings::cfg::mesh::Component))
+				{
+					ComponentName = Viewport->ProjectionPolicy.Parameters[DisplayClusterProjectionStrings::cfg::mesh::Component];
+				}
+				else if (Viewport->ProjectionPolicy.Parameters.Contains(DisplayClusterProjectionStrings::cfg::camera::Component))
+				{
+					ComponentName = Viewport->ProjectionPolicy.Parameters[DisplayClusterProjectionStrings::cfg::camera::Component];
+				}
+
+				if (ComponentNames.Contains(ComponentName))
+				{
+					ViewportsToSelect.Add(Viewport);
+				}
+			}
+		}
+
+		if (ViewCluster.IsValid())
+		{
+			ViewCluster->FindAndSelectObjects(ViewportsToSelect);
+		}
+
+		if (ViewOutputMapping.IsValid())
+		{
+			ViewOutputMapping->FindAndSelectObjects(ViewportsToSelect);
+		}
+	}
+}
+
 void FDisplayClusterConfiguratorBlueprintEditor::InvalidateViews()
 {
 	OnInvalidateViews.Broadcast();
@@ -286,7 +391,14 @@ void FDisplayClusterConfiguratorBlueprintEditor::ClusterChanged(bool bStructureC
 {
 	if (LoadedBlueprint.IsValid())
 	{
+		const FSelectionScope SelectionScope(this, ESelectionSource::Refresh);
 		FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(LoadedBlueprint.Get(), bStructureChange);
+	}
+
+	if (ADisplayClusterRootActor* Actor = Cast<ADisplayClusterRootActor>(GetPreviewActor()))
+	{
+		Actor->UpdatePreviewComponents();
+		FEditorSupportDelegates::ForcePropertyWindowRebuild.Broadcast(Actor->GetClass());
 	}
 
 	OnClusterChanged.Broadcast();
@@ -303,10 +415,22 @@ UDisplayClusterConfigurationData* FDisplayClusterConfiguratorBlueprintEditor::Ge
 	// GetEditorData and GetConfig are basically the same.
 	if (UDisplayClusterConfigurationData* Data = GetEditorData())
 	{
-		Data->PathToConfig = LoadedBlueprint->GetConfigPath();
 		return Data;
 	}
 	
+	return nullptr;
+}
+
+ADisplayClusterRootActor* FDisplayClusterConfiguratorBlueprintEditor::GetDefaultRootActor() const
+{
+	if (UBlueprint* Blueprint = GetBlueprintObj())
+	{
+		if (Blueprint->GeneratedClass)
+		{
+			return Cast<ADisplayClusterRootActor>(Blueprint->GeneratedClass->ClassDefaultObject);
+		}
+	}
+
 	return nullptr;
 }
 
@@ -318,16 +442,6 @@ TSharedRef<IDisplayClusterConfiguratorViewOutputMapping> FDisplayClusterConfigur
 TSharedRef<IDisplayClusterConfiguratorViewTree> FDisplayClusterConfiguratorBlueprintEditor::GetViewCluster() const
 {
 	return ViewCluster.ToSharedRef();
-}
-
-TSharedRef<IDisplayClusterConfiguratorViewTree> FDisplayClusterConfiguratorBlueprintEditor::GetViewInput() const
-{
-	return ViewInput.ToSharedRef();
-}
-
-TSharedRef<IDisplayClusterConfiguratorView> FDisplayClusterConfiguratorBlueprintEditor::GetViewGeneral() const
-{
-	return ViewGeneral.ToSharedRef();
 }
 
 void FDisplayClusterConfiguratorBlueprintEditor::SyncViewports()
@@ -345,81 +459,53 @@ void FDisplayClusterConfiguratorBlueprintEditor::SyncViewports()
 	}
 }
 
-void FDisplayClusterConfiguratorBlueprintEditor::RefreshDisplayClusterPreviewActor(bool bFullRefresh)
+void FDisplayClusterConfiguratorBlueprintEditor::RefreshDisplayClusterPreviewActor()
 {
-	UpdatePreviewActor(GetBlueprintObj(), bFullRefresh);
+	AActor* OldPreviewActor = GetPreviewActor();
+	const bool bCreatePreviewActor = OldPreviewActor == nullptr;
 
-	if (ADisplayClusterRootActor* PreviewActor = Cast<ADisplayClusterRootActor>(GetPreviewActor()))
-	{
-		check(LoadedBlueprint.IsValid());
-		PreviewActor->UpdateConfigDataInstance(LoadedBlueprint->GetOrLoadConfig());
-	}
+	UpdatePreviewActor(GetBlueprintObj(), bCreatePreviewActor);
 
-	RequestOutputMappingPreviewUpdate();
-}
-
-
-void FDisplayClusterConfiguratorBlueprintEditor::RequestOutputMappingPreviewUpdate()
-{
-	//@todo: now RootActor has handling func GetPreviewRenderTargetableTexture_RenderThread(), use it to sync texture surfaces update
-	const int16 MaxTicksToCapture = 2;
-
-	// Only if prev frame copied
-	if (TicksForPreviewRenderCapture <= 0)
-	{
-		TicksForPreviewRenderCapture = MaxTicksToCapture;
-	}
-}
-
-void FDisplayClusterConfiguratorBlueprintEditor::ReselectObjects()
-{
-	SelectObjects(SelectedObjects, false);
-}
-
-void FDisplayClusterConfiguratorBlueprintEditor::UpdateOutputMappingPreview()
-{
-	CleanupOutputMappingPreview();
+	AActor* NewPreviewActor = GetPreviewActor();
 	
-	if (UDisplayClusterConfigurationData* const Config = GetConfig())
-	{
-		TSharedRef<IDisplayClusterConfiguratorViewOutputMapping> OutputMappingView = GetViewOutputMapping();
+	// For the new preview actor, update the state of its Xform gizmos to match the
+	// project settings for the display cluster editor
+	UpdateXformGizmos();
 
-		if (ADisplayClusterRootActor* RootActor = Cast<ADisplayClusterRootActor>(GetPreviewActor()))
+	CurrentPreviewActor = NewPreviewActor;
+}
+
+void FDisplayClusterConfiguratorBlueprintEditor::RestoreLastEditedState()
+{
+	check(IsEditingSingleBlueprint());
+
+	UBlueprint* Blueprint = GetBlueprintObj();
+	for (const FEditedDocumentInfo& Document : Blueprint->LastEditedDocuments)
+	{
+		if (UObject* Obj = Document.EditedObjectPath.ResolveObject())
 		{
-			for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& NodePair : Config->Cluster->Nodes)
-			{
-				for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportPair : NodePair.Value->Viewports)
-				{
-					if (UDisplayClusterPreviewComponent* PreviewComp = RootActor->GetPreviewComponent(NodePair.Key, ViewportPair.Key))
-					{
-						if (UTexture2D* Texture = PreviewComp->GetOrCreateRenderTexture2D())
-						{
-							OutputMappingView->SetViewportPreviewTexture(NodePair.Key, ViewportPair.Key, Texture);
-						}
-					}
-				}
-			}
+			TSharedPtr<SDockTab> TabWithGraph = OpenDocument(Obj, FDocumentTracker::RestorePreviousDocument);
 		}
+	}
+
+	// Small hack to make sure our viewport is focused by default. Restoring documents seem to override
+	// the focused tab from blueprint editor modes.
+	if (TabManager->HasTabSpawner(FDisplayClusterConfiguratorBlueprintModeBase::TabID_Viewport) &&
+		TabManager->FindExistingLiveTab(FDisplayClusterConfiguratorBlueprintModeBase::TabID_Viewport))
+	{
+		TabManager->TryInvokeTab(FDisplayClusterConfiguratorBlueprintModeBase::TabID_Viewport);
 	}
 }
 
-void FDisplayClusterConfiguratorBlueprintEditor::CleanupOutputMappingPreview()
+void FDisplayClusterConfiguratorBlueprintEditor::UpdateXformGizmos()
 {
-	if (UDisplayClusterConfigurationData* const Config = GetConfig())
+	if (ADisplayClusterRootActor* RootActor = Cast<ADisplayClusterRootActor>(GetPreviewActor()))
 	{
-		if (!Config->Cluster)
-		{
-			return;
-		}
-		
-		TSharedRef<IDisplayClusterConfiguratorViewOutputMapping> OutputMappingView = GetViewOutputMapping();
-		for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& NodePair : Config->Cluster->Nodes)
-		{
-			for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportPair : NodePair.Value->Viewports)
-			{
-				OutputMappingView->SetViewportPreviewTexture(NodePair.Key, ViewportPair.Key, nullptr);
-			}
-		}
+		const UDisplayClusterConfiguratorEditorSettings* Settings = GetDefault<UDisplayClusterConfiguratorEditorSettings>();
+
+		RootActor->EditorViewportXformGizmoScale = Settings->VisXformScale;
+		RootActor->bEditorViewportXformGizmoVisibility = Settings->bShowVisXforms;
+		RootActor->UpdateXformGizmos();
 	}
 }
 
@@ -471,7 +557,7 @@ bool FDisplayClusterConfiguratorBlueprintEditor::LoadFromFile(const FString& Fil
 	check(LoadedBlueprint.IsValid());
 	if (ADisplayClusterRootActor* NewRootActor = FDisplayClusterConfiguratorUtils::GenerateRootActorFromConfigFile(FilePath))
 	{
-		LoadedBlueprint->SetConfigData(const_cast<UDisplayClusterConfigurationData*>(NewRootActor->GetConfigData()));
+		LoadedBlueprint->SetConfigData(const_cast<UDisplayClusterConfigurationData*>(NewRootActor->GetConfigData()), true);
 		FDisplayClusterConfiguratorUtils::AddRootActorComponentsToBlueprint(LoadedBlueprint.Get(), NewRootActor);
 		return true;
 	}
@@ -510,11 +596,16 @@ bool FDisplayClusterConfiguratorBlueprintEditor::CanExportConfig() const
 bool FDisplayClusterConfiguratorBlueprintEditor::SaveToFile(const FString& InFilePath)
 {
 	UDisplayClusterConfiguratorEditorSubsystem* EditorSubsystem = GEditor->GetEditorSubsystem<UDisplayClusterConfiguratorEditorSubsystem>();
-	if (EditorSubsystem != nullptr && EditorSubsystem->SaveConfig(GetEditorData(), InFilePath))
+	UDisplayClusterConfigurationData* Data = GetEditorData();
+	if (EditorSubsystem && Data)
 	{
-		// Store again so updated file path saved.
-		LoadedBlueprint->SetConfigData(GetEditorData());
-		return true;
+		Data->Meta.ExportAssetPath = LoadedBlueprint->GetPathName();
+
+		if (EditorSubsystem->SaveConfig(Data, InFilePath))
+		{
+			LoadedBlueprint->SetConfigPath(Data->PathToConfig);
+			return true;
+		}
 	}
 
 	return false;
@@ -569,10 +660,127 @@ bool FDisplayClusterConfiguratorBlueprintEditor::SaveWithOpenFileDialog()
 
 void FDisplayClusterConfiguratorBlueprintEditor::OnReadOnlyChanged(bool bReadOnly)
 {
-	ViewGeneral->SetEnabled(!bReadOnly);
 	ViewOutputMapping->SetEnabled(!bReadOnly);
 	ViewCluster->SetEnabled(!bReadOnly);
-	ViewInput->SetEnabled(!bReadOnly);
+}
+
+void FDisplayClusterConfiguratorBlueprintEditor::OnRenameVariable(UBlueprint* Blueprint, UClass* VariableClass, const FName& OldVariableName, const FName& NewVariableName)
+{
+	if (Blueprint != LoadedBlueprint)
+	{
+		return;
+	}
+
+	// Check the configuration's viewports for any matching references to the component variable being renamed, and update those references
+	// to the new variable name
+	if (UDisplayClusterConfigurationData* Config = GetConfig())
+	{
+		for (TPair<FString, UDisplayClusterConfigurationClusterNode*> ClusterNodePair : Config->Cluster->Nodes)
+		{
+			UDisplayClusterConfigurationClusterNode* ClusterNode = ClusterNodePair.Value;
+			for (TPair<FString, UDisplayClusterConfigurationViewport*> ViewportPair : ClusterNode->Viewports)
+			{
+				UDisplayClusterConfigurationViewport* Viewport = ViewportPair.Value;
+
+				// Don't attempt to replace variable names in custom projection policies as users should be in complete control
+				// of the parameters in the custom case
+				if (!Viewport->ProjectionPolicy.bIsCustom)
+				{
+					TMap<FString, FString> PolicyCopy = Viewport->ProjectionPolicy.Parameters;
+
+					const TSharedPtr<ISinglePropertyView> ProjectPolicyView =
+						DisplayClusterConfiguratorPropertyUtils::GetPropertyView(
+							Viewport, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, ProjectionPolicy));
+					check(ProjectPolicyView);
+					
+					const TSharedPtr<IPropertyHandle> ParametersHandle = ProjectPolicyView->GetPropertyHandle()->GetChildHandle(GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationProjection, Parameters));
+					check(ParametersHandle);
+
+					FStructProperty* StructProperty = FindFProperty<FStructProperty>(Viewport->GetClass(), GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, ProjectionPolicy));
+					check(StructProperty);
+					uint8* MapContainer = StructProperty->ContainerPtrToValuePtr<uint8>(Viewport);
+					
+					for (TPair<FString, FString>& PolicyParameters : PolicyCopy)
+					{
+						if (PolicyParameters.Value == OldVariableName.ToString())
+						{
+							DisplayClusterConfiguratorPropertyUtils::RemoveKeyFromMap(MapContainer, ParametersHandle, PolicyParameters.Key);
+							DisplayClusterConfiguratorPropertyUtils::AddKeyValueToMap(MapContainer, ParametersHandle, PolicyParameters.Key, NewVariableName.ToString());
+						}
+					}
+				}
+
+				if (Viewport->Camera == OldVariableName.ToString())
+				{
+					DisplayClusterConfiguratorPropertyUtils::SetPropertyHandleValue(Viewport, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, Camera), NewVariableName.ToString());
+				}
+			}
+		}
+	}
+}
+
+void FDisplayClusterConfiguratorBlueprintEditor::OnFocusChanged(const FFocusEvent& FocusEvent, const FWeakWidgetPath& OldFocusedWidgetPath, const TSharedPtr<SWidget>& OldFocusedWidget, const FWidgetPath& NewFocusedWidgetPath, const TSharedPtr<SWidget>& NewFocusedWidget)
+{
+	if (NewFocusedWidget.IsValid())
+	{
+		// If the SCSEditor or the Cluster View are being focused, update the property inspector to show the items currently selected in the respective tree view.
+		// This ensures that if any item as selected as part of an ancillary selection, the user can still "select" it and have its properties show up in the
+		// inspector, since already selected items don't fire a OnSelectionChanged event where we would normally update the property inspector
+		if (NewFocusedWidgetPath.ContainsWidget(SCSEditor.ToSharedRef()))
+		{
+			TArray<FSCSEditorTreeNodePtrType> SelectedNodes = SCSEditor->GetSelectedNodes();
+			if (Inspector.IsValid())
+			{
+				// Convert the selection set to an array of UObject* pointers
+				FText InspectorTitle = FText::GetEmpty();
+				TArray<UObject*> InspectorObjects;
+				bool bShowComponents = true;
+				InspectorObjects.Empty(SelectedNodes.Num());
+				for (FSCSEditorTreeNodePtrType NodePtr : SelectedNodes)
+				{
+					if (NodePtr.IsValid())
+					{
+						if (NodePtr->IsActorNode())
+						{
+							if (AActor* DefaultActor = NodePtr->GetEditableObjectForBlueprint<AActor>(GetBlueprintObj()))
+							{
+								InspectorObjects.Add(DefaultActor);
+
+								FString Title;
+								DefaultActor->GetName(Title);
+								InspectorTitle = FText::FromString(Title);
+								bShowComponents = false;
+
+								TryInvokingDetailsTab();
+							}
+						}
+						else
+						{
+							UActorComponent* EditableComponent = NodePtr->GetOrCreateEditableComponentTemplate(GetBlueprintObj());
+							if (EditableComponent)
+							{
+								InspectorTitle = FText::FromString(NodePtr->GetDisplayString());
+								InspectorObjects.Add(EditableComponent);
+							}
+						}
+					}
+				}
+
+				// Update the details panel
+				SKismetInspector::FShowDetailsOptions Options(InspectorTitle, true);
+				Options.bShowComponents = bShowComponents;
+				Inspector->ShowDetailsForObjects(InspectorObjects, Options);
+			}
+		}
+		else if (NewFocusedWidgetPath.ContainsWidget(ViewCluster->GetWidget()))
+		{
+			TArray<UObject*> SelectedClusterObjects;
+			ViewCluster->GetSelectedObjects(SelectedClusterObjects);
+
+			SKismetInspector::FShowDetailsOptions Options;
+			Inspector->ShowDetailsForObjects(SelectedClusterObjects, Options);
+		}
+	}
 }
 
 void FDisplayClusterConfiguratorBlueprintEditor::BindCommands()
@@ -596,20 +804,11 @@ void FDisplayClusterConfiguratorBlueprintEditor::CreateWidgets()
 {
 	TSharedRef<FDisplayClusterConfiguratorBlueprintEditor> ThisRef(SharedThis(this));
 
-	ViewGeneral			= MakeShared<FDisplayClusterConfiguratorViewGeneral>(ThisRef);
 	ViewOutputMapping	= MakeShared<FDisplayClusterConfiguratorViewOutputMapping>(ThisRef);
 	ViewCluster			= MakeShared<FDisplayClusterConfiguratorViewCluster>(ThisRef);
-	ViewInput			= MakeShared<FDisplayClusterConfiguratorViewInput>(ThisRef);
 
-	ViewGeneral->CreateWidget();
 	ViewOutputMapping->CreateWidget();
 	ViewCluster->CreateWidget();
-	ViewInput->CreateWidget();
-
-	// Register delegates
-	UpdateOutputMappingHandle = ViewOutputMapping->RegisterOnOutputMappingBuilt(
-		IDisplayClusterConfiguratorViewOutputMapping::FOnOutputMappingBuiltDelegate::CreateSP(this,
-			&FDisplayClusterConfiguratorBlueprintEditor::RequestOutputMappingPreviewUpdate));
 	
 	FDisplayClusterConfiguratorModule::RegisterOnReadOnly(FOnDisplayClusterConfiguratorReadOnlyChangedDelegate::CreateSP(this, &FDisplayClusterConfiguratorBlueprintEditor::OnReadOnlyChanged));
 
@@ -617,10 +816,8 @@ void FDisplayClusterConfiguratorBlueprintEditor::CreateWidgets()
 	{
 		bool bReadOnly = false;// FConsoleManager::Get().FindConsoleVariable(TEXT("nDisplay.configurator.ReadOnly"))->GetBool();
 
-		ViewGeneral->SetEnabled(!bReadOnly);
 		ViewOutputMapping->SetEnabled(!bReadOnly);
 		ViewCluster->SetEnabled(!bReadOnly);
-		ViewInput->SetEnabled(!bReadOnly);
 	}
 	
 	OnConfigReloaded.Broadcast();
@@ -661,8 +858,36 @@ void FDisplayClusterConfiguratorBlueprintEditor::ExtendToolbar()
 
 void FDisplayClusterConfiguratorBlueprintEditor::OnPostCompiled(UBlueprint* InBlueprint)
 {
-	// Reselect / trigger UI refresh.
-	ReselectObjects();
+	TArray<UObject*> PrevSelectedObjects = SelectedObjects;
+	OnConfigReloaded.Broadcast();
+
+	UDisplayClusterConfigurationData* CurrentConfigData = GetConfig();
+	check(CurrentConfigData);
+	
+	TArray<UObject*> NewObjects;
+	for (UObject* Object : SelectedObjects)
+	{
+		if (Object->GetPackage() != GetTransientPackage())
+		{
+			// Object wasn't trashed, okay to re-add.
+			NewObjects.Add(Object);
+			continue;
+		}
+		
+		// The object is trashed, first find the original config data.
+		if (UDisplayClusterConfigurationData* OuterStop = Object->GetTypedOuter<UDisplayClusterConfigurationData>())
+		{
+			// Build out the full name based on the original config data.
+			FString FullPathName = Object->GetPathName(OuterStop);
+			if (UObject* ReInstancedObject = StaticFindObject(Object->GetClass(), CurrentConfigData, *FullPathName))
+			{
+				// Find the current one from the new config data.
+				NewObjects.Add(ReInstancedObject);
+			}
+		}
+	}
+
+	SelectObjects(NewObjects);
 }
 
 void FDisplayClusterConfiguratorBlueprintEditor::RegisterTabSpawners(const TSharedRef<FTabManager>& InTabManager)
@@ -672,7 +897,7 @@ void FDisplayClusterConfiguratorBlueprintEditor::RegisterTabSpawners(const TShar
 
 void FDisplayClusterConfiguratorBlueprintEditor::SaveAsset_Execute()
 {
-	if (IsExportOnSaveSet() && CanExportConfig())
+	if (CanExportConfig() && IsExportOnSaveSet())
 	{
 		ExportConfig();
 	}
@@ -682,32 +907,12 @@ void FDisplayClusterConfiguratorBlueprintEditor::SaveAsset_Execute()
 
 void FDisplayClusterConfiguratorBlueprintEditor::Tick(float DeltaTime)
 {
-	if (TicksForPreviewRenderCapture > 0)
-	{
-		if (--TicksForPreviewRenderCapture == 0)
-		{
-			// Output mapping needs a valid render target which can take more than one frame to capture.
-			UpdateOutputMappingPreview();
-		}
-	}
-
 	AActor* PreviewActor = GetPreviewActor();
 	if (CurrentPreviewActor != PreviewActor || CurrentPreviewActor.IsStale() || PreviewActor == nullptr)
 	{
 		// Create or update preview actor. Parent tick does this but we want to also update the config data and refresh output mapping.
 		// The preview actor can also be out of date after being reinstanced such as from a compile.
-		const bool bFullRefresh = PreviewActor == nullptr;
-		RefreshDisplayClusterPreviewActor(bFullRefresh);
-
-		// Store the current preview to determine if it goes out of date.
-		CurrentPreviewActor = PreviewActor = GetPreviewActor();
-
-		{
-			// Set bindings to auto refresh outputmapping textures.
-			ADisplayClusterRootActor* RootActor = CastChecked<ADisplayClusterRootActor>(PreviewActor);
-			RootActor->GetOnPreviewGenerated().BindSP(this, &FDisplayClusterConfiguratorBlueprintEditor::RequestOutputMappingPreviewUpdate);
-			RootActor->GetOnPreviewDestroyed().BindSP(this, &FDisplayClusterConfiguratorBlueprintEditor::CleanupOutputMappingPreview);
-		}
+		RefreshDisplayClusterPreviewActor();
 	}
 
 	FBlueprintEditor::Tick(DeltaTime);
@@ -763,49 +968,40 @@ TStatId FDisplayClusterConfiguratorBlueprintEditor::GetStatId() const
 
 bool FDisplayClusterConfiguratorBlueprintEditor::OnRequestClose()
 {
-	bool bShouldClose = FBlueprintEditor::OnRequestClose();
-
-	// If we are closing the blueprint editor, take the time to remove any unused host display data objects.
-	if (bShouldClose)
-	{
-		if (UDisplayClusterConfigurationData* Config = GetConfig())
-		{
-			bool bIsDirty = LoadedBlueprint->GetOutermost()->IsDirty();
-			bool bHostDataRemoved = FDisplayClusterConfiguratorClusterUtils::RemoveUnusedHostDisplayData(Config->Cluster);
-
-			// If the blueprint wasn't dirty before, removing the unused host display data will have make it dirty, which is confusing to the user.
-			// In this case, immediately save the host display data removal to the blueprint.
-			if (!bIsDirty && CanSaveAsset() && bHostDataRemoved)
-			{
-				SaveAsset_Execute();
-			}
-		}
-	}
-
-	return bShouldClose;
+	return FBlueprintEditor::OnRequestClose();
 }
 
-void FDisplayClusterConfiguratorBlueprintEditor::OnBlueprintChangedImpl(UBlueprint* InBlueprint,
-	bool bIsJustBeingCompiled)
+void FDisplayClusterConfiguratorBlueprintEditor::OnClose()
 {
-	FBlueprintEditor::OnBlueprintChangedImpl(InBlueprint, bIsJustBeingCompiled);
-
+	// When closing the blueprint editor, take the time to remove any unused host display data objects.
+	if (UDisplayClusterConfigurationData* Config = GetConfig())
 	{
-		/* Output mapping can contain stale data in certain situations, such as if the BP was structurally modified
-		* and PIE was started without compiling first. In this event the preview actor never regenerates its
-		* preview components until PIE is stopped.
-		*
-		* Cleaning up the output mapping immediately will prevent stale
-		* slate image data and a possible crash, but the output mapping preview may be black until recompiled. */
-		
-		CleanupOutputMappingPreview();
-		RequestOutputMappingPreviewUpdate();
+		bool bIsDirty = LoadedBlueprint->GetOutermost()->IsDirty();
+		bool bHostDataRemoved = FDisplayClusterConfiguratorClusterUtils::RemoveUnusedHostDisplayData(Config->Cluster);
+
+		// If the blueprint wasn't dirty before, removing the unused host display data will have make it dirty, which is confusing to the user.
+		// In this case, immediately save the host display data removal to the blueprint.
+		if (!bIsDirty && CanSaveAsset() && bHostDataRemoved)
+		{
+			SaveAsset_Execute();
+		}
 	}
+}
+
+void FDisplayClusterConfiguratorBlueprintEditor::Compile()
+{
+	const FSelectionScope SelectionScope(this, ESelectionSource::Refresh);
+	FBlueprintEditor::Compile();
 }
 
 void FDisplayClusterConfiguratorBlueprintEditor::OnSelectionUpdated(
 	const TArray<TSharedPtr<FSCSEditorTreeNode>>& SelectedNodes)
 {
+	if (CurrentSelectionSource == ESelectionSource::Refresh)
+	{
+		return;
+	}
+
 	if (ViewportTabContent.IsValid())
 	{
 		TFunction<void(FName, TSharedPtr<IEditorViewportLayoutEntity>)> OnCompSelectionChangeFunc =
@@ -822,8 +1018,7 @@ void FDisplayClusterConfiguratorBlueprintEditor::OnSelectionUpdated(
 	check(Blueprint != nullptr && Blueprint->SimpleConstructionScript != nullptr);
 
 	// Update the selection visualization
-	AActor* EditorActorInstance = Blueprint->SimpleConstructionScript->GetComponentEditorActorInstance();
-	if (EditorActorInstance != nullptr)
+	if (ADisplayClusterRootActor* EditorActorInstance = Cast<ADisplayClusterRootActor>(Blueprint->SimpleConstructionScript->GetComponentEditorActorInstance()))
 	{
 		auto IsComponentSelected = [SelectedNodes, EditorActorInstance](UActorComponent* InComponent) -> bool
 		{
@@ -847,27 +1042,15 @@ void FDisplayClusterConfiguratorBlueprintEditor::OnSelectionUpdated(
 				{
 					/*
 					 *  Check for display cluster visualization components which should be highlighted on selection.
-					 *  To get them to have an outline around them we have to 'select' the owning actor so `ShouldRenderSelected`
-					 *  of the component is true. There isn't a good way around this without overloading `ShouldRenderSelected`
-					 *  of the component or `IsSelectedInEditor` of the owning actor.
 					 */
 					
 					if (UActorComponent* OwningComp = Cast<UActorComponent>(PrimitiveComponent->GetOuter()))
 					{
 						if (IsComponentSelected(OwningComp))
 						{
-							const bool bIsActorSelected = GSelectedActorAnnotation.Get(EditorActorInstance);
-							if (!bIsActorSelected)
-							{
-								GSelectedActorAnnotation.Set(EditorActorInstance);
-							}
-
+							EditorActorInstance->SetIsSelectedInEditor(true);
 							PrimitiveComponent->PushSelectionToProxy();
-
-							if (!bIsActorSelected)
-							{
-								GSelectedActorAnnotation.Clear(EditorActorInstance);
-							}
+							EditorActorInstance->SetIsSelectedInEditor(false);
 							
 							continue;
 						}
@@ -880,7 +1063,7 @@ void FDisplayClusterConfiguratorBlueprintEditor::OnSelectionUpdated(
 		}
 	}
 
-	if (Inspector.IsValid())
+	if (Inspector.IsValid() && CurrentSelectionSource != ESelectionSource::Ancillary)
 	{
 		// Clear the my blueprints selection
 		if (SelectedNodes.Num() > 0)
@@ -891,6 +1074,7 @@ void FDisplayClusterConfiguratorBlueprintEditor::OnSelectionUpdated(
 		// Convert the selection set to an array of UObject* pointers
 		FText InspectorTitle = FText::GetEmpty();
 		TArray<UObject*> InspectorObjects;
+		TArray<FString> SelectedComponentNames;
 		bool bShowComponents = true;
 		InspectorObjects.Empty(SelectedNodes.Num());
 		for (FSCSEditorTreeNodePtrType NodePtr : SelectedNodes)
@@ -918,6 +1102,10 @@ void FDisplayClusterConfiguratorBlueprintEditor::OnSelectionUpdated(
 					{
 						InspectorTitle = FText::FromString(NodePtr->GetDisplayString());
 						InspectorObjects.Add(EditableComponent);
+
+						FString ComponentName = EditableComponent->GetName();
+						ComponentName.RemoveFromEnd(UActorComponent::ComponentTemplateNameSuffix);
+						SelectedComponentNames.Add(ComponentName);
 					}
 
 					if (ViewportTabContent.IsValid())
@@ -941,16 +1129,20 @@ void FDisplayClusterConfiguratorBlueprintEditor::OnSelectionUpdated(
 			// Only do this if items are being selected, not if the selection is being cleared
 			if (SelectedNodes.Num())
 			{
-				bSCSEditorSelecting = true;
+				const FSelectionScope SelectionScope(this, ESelectionSource::Internal);
 				SelectObjects(InspectorObjects);
-				bSCSEditorSelecting = false;
 			}
 		}
-		
+
 		// Update the details panel
-		SKismetInspector::FShowDetailsOptions Options(InspectorTitle, true);
+		SKismetInspector::FShowDetailsOptions Options(InspectorTitle);
 		Options.bShowComponents = bShowComponents;
 		Inspector->ShowDetailsForObjects(InspectorObjects, Options);
+
+		if (SelectedComponentNames.Num())
+		{
+			SelectAncillaryViewports(SelectedComponentNames);
+		}
 	}
 }
 
@@ -1032,6 +1224,14 @@ TSharedRef<SWidget> FDisplayClusterConfiguratorBlueprintEditor::CreateSCSEditorE
 
 					bool bAddedComponent = false;
 
+					// Rename the asset to our display names by creating a template.
+					// Otherwise the DisplayCluster class name is used, not the custom nDisplay display name.
+					if (AssetOverride == nullptr && NewClass->IsClassGroupName(TEXT("DisplayCluster")))
+					{
+						const FString DisplayName =  FDisplayClusterConfiguratorUtils::FormatNDisplayComponentName(NewClass);
+						AssetOverride = NewObject<UActorComponent>(GetTransientPackage(), NewClass, *DisplayName);
+					}
+					
 					// This adds components according to the type selected in the drop down. If the user
 					// has the appropriate objects selected in the content browser then those are added,
 					// else we go down the previous route of adding components by type.
@@ -1062,7 +1262,7 @@ TSharedRef<SWidget> FDisplayClusterConfiguratorBlueprintEditor::CreateSCSEditorE
 						// As the SCS splits up the scene and actor components, can now add directly
 						NewComponent = SCSEditor->AddNewComponent(NewClass, AssetOverride);
 					}
-
+					
 					SCSEditor->UpdateTree();
 				}
 

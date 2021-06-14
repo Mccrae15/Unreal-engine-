@@ -11,8 +11,7 @@
 #include "Components/DisplayClusterXformComponent.h"
 #include "Components/DisplayClusterCameraComponent.h"
 
-#include "Components/DisplayClusterICVFX_CineCameraComponent.h"
-#include "Components/DisplayClusterICVFX_RefCineCameraComponent.h"
+#include "Components/DisplayClusterICVFXCameraComponent.h"
 
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Images/SImage.h"
@@ -261,7 +260,7 @@ void SDisplayClusterConfiguratorComponentClassCombo::OnAddComponentSelectionChan
 		// We don't want the item to remain selected
 		ClearSelection();
 
-		// The filtered list won't always clear & regenerate. Seems to be a UE4 bug.
+		// The filtered list won't always clear & regenerate. Seems to be a UE bug.
 		{
 			const FText EmptyText;
 			TextFilter->SetFilterText(EmptyText);
@@ -438,8 +437,7 @@ void SDisplayClusterConfiguratorComponentClassCombo::GenerateComponentClassList(
 	AddDCComp(UDisplayClusterCameraComponent::StaticClass());
 
 	AddHeader("nDisplay ICVFX Components");
-	AddDCComp(UDisplayClusterICVFX_CineCameraComponent::StaticClass());
-	AddDCComp(UDisplayClusterICVFX_RefCineCameraComponent::StaticClass());
+	AddDCComp(UDisplayClusterICVFXCameraComponent::StaticClass());
 
 	int32 CompIterationIdx = 0;
 	for (const TSharedPtr<FComponentClassComboEntry>& Comp : *ComponentClassListPtr)

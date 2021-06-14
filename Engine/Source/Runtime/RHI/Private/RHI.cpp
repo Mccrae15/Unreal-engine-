@@ -752,6 +752,18 @@ static TAutoConsoleVariable<int32> CVarGPUCrashDebuggingAftermathTrackAll(
 	ECVF_ReadOnly
 );
 
+static FAutoConsoleVariableRef CVarEnableVariableRateShading(
+	TEXT("r.VRS.Enable"),
+	GRHIVariableRateShadingEnabled,
+	TEXT("Toggle to enable Variable Rate Shading."),
+	ECVF_RenderThreadSafe);
+
+static FAutoConsoleVariableRef CVarEnableAttachmentVariableRateShading(
+	TEXT("r.VRS.EnableImage"),
+	GRHIAttachmentVariableRateShadingEnabled,
+	TEXT("Toggle to enable image-based Variable Rate Shading."),
+	ECVF_RenderThreadSafe);
+
 namespace RHIConfig
 {
 	bool ShouldSaveScreenshotAfterProfilingGPU()
@@ -873,6 +885,8 @@ bool GRHISupportsBackBufferWithCustomDepthStencil = true;
 bool GRHIIsHDREnabled = false;
 bool GRHISupportsHDROutput = false;
 
+bool GRHIVariableRateShadingEnabled = true;
+bool GRHIAttachmentVariableRateShadingEnabled = true;
 bool GRHISupportsPipelineVariableRateShading = false;
 bool GRHISupportsAttachmentVariableRateShading = false;
 bool GRHISupportsComplexVariableRateShadingCombinerOps = false;
@@ -1096,7 +1110,6 @@ static FName NAME_PLATFORM_XBOXONE(TEXT("XboxOne"));
 static FName NAME_PLATFORM_ANDROID(TEXT("Android"));
 static FName NAME_PLATFORM_IOS(TEXT("IOS"));
 static FName NAME_PLATFORM_MAC(TEXT("Mac"));
-static FName NAME_PLATFORM_SWITCH(TEXT("Switch"));
 static FName NAME_PLATFORM_TVOS(TEXT("TVOS"));
 static FName NAME_PLATFORM_LUMIN(TEXT("Lumin"));
 
@@ -1125,9 +1138,6 @@ FName ShaderPlatformToPlatformName(EShaderPlatform Platform)
 	case SP_METAL_MACES3_1:
 	case SP_METAL_MRT_MAC:
 		return NAME_PLATFORM_MAC;
-	case SP_SWITCH:
-	case SP_SWITCH_FORWARD:
-		return NAME_PLATFORM_SWITCH;
 	case SP_VULKAN_SM5_LUMIN:
 	case SP_VULKAN_ES3_1_LUMIN:
 		return NAME_PLATFORM_LUMIN;
@@ -1242,6 +1252,13 @@ RHI_API uint32 RHIGetShaderLanguageVersion(const FStaticShaderPlatform Platform)
 				{
 					MaxShaderVersion = 0;
 				}
+                
+                // If we are using Mobile desktop rendering, we need a minimum of Metal 2.1
+                if(IsMetalSM5Platform(Platform))
+                {
+                    MinShaderVersion = 4;
+                }
+                
 				MaxShaderVersion = FMath::Max(MinShaderVersion, MaxShaderVersion);
 			}
 			Version = (uint32)MaxShaderVersion;
@@ -1494,8 +1511,6 @@ FString LexToString(EShaderPlatform Platform, bool bError)
 	case SP_PCD3D_ES3_1: return TEXT("PCD3D_ES3_1");
 	case SP_OPENGL_PCES3_1: return TEXT("OPENGL_PCES3_1");
 	case SP_OPENGL_ES3_1_ANDROID: return TEXT("OPENGL_ES3_1_ANDROID");
-	case SP_SWITCH: return TEXT("SWITCH");
-	case SP_SWITCH_FORWARD: return TEXT("SWITCH_FORWARD");
 	case SP_METAL: return TEXT("METAL");
 	case SP_METAL_MRT: return TEXT("METAL_MRT");
 	case SP_METAL_TVOS: return TEXT("METAL_TVOS");
@@ -1609,6 +1624,12 @@ void FGenericDataDrivenShaderPlatformInfo::SetDefaultValues()
 {
 	MaxFeatureLevel = ERHIFeatureLevel::Num;
 	bSupportsMSAA = true;
+
+	bNeedsToSwitchVerticalAxisOnMobileOpenGL = true;
+	bSupportsDOFHybridScattering = true;
+	bSupportsHZBOcclusion = true;
+	bSupportsWaterIndirectDraw = true;
+	bSupportsAsyncPipelineCompilation = true;
 }
 
 void FGenericDataDrivenShaderPlatformInfo::ParseDataDrivenShaderInfo(const FConfigSection& Section, FGenericDataDrivenShaderPlatformInfo& Info)
@@ -1663,8 +1684,21 @@ void FGenericDataDrivenShaderPlatformInfo::ParseDataDrivenShaderInfo(const FConf
 	GET_SECTION_BOOL_HELPER(bSupportsTessellation);
 	GET_SECTION_BOOL_HELPER(bSupportsPerPixelDBufferMask);
 	GET_SECTION_BOOL_HELPER(bIsHlslcc);
+	GET_SECTION_BOOL_HELPER(bSupportsVariableRateShading);
 	GET_SECTION_INT_HELPER(NumberOfComputeThreads);
 
+	GET_SECTION_BOOL_HELPER(bWaterUsesSimpleForwardShading);
+	GET_SECTION_BOOL_HELPER(bNeedsToSwitchVerticalAxisOnMobileOpenGL);
+	GET_SECTION_BOOL_HELPER(bSupportsHairStrandGeometry);
+	GET_SECTION_BOOL_HELPER(bSupportsDOFHybridScattering);
+	GET_SECTION_BOOL_HELPER(bNeedsExtraMobileFrames);
+	GET_SECTION_BOOL_HELPER(bSupportsHZBOcclusion);
+	GET_SECTION_BOOL_HELPER(bSupportsWaterIndirectDraw);
+	GET_SECTION_BOOL_HELPER(bSupportsAsyncPipelineCompilation);
+	GET_SECTION_BOOL_HELPER(bSupportsManualVertexFetch);
+	GET_SECTION_BOOL_HELPER(bRequiresReverseCullingOnMobile);
+	GET_SECTION_BOOL_HELPER(bOverrideFMaterial_NeedsGBufferEnabled);
+	GET_SECTION_BOOL_HELPER(bSupportsMobileDistanceField);
 #undef GET_SECTION_BOOL_HELPER
 #undef GET_SECTION_INT_HELPER
 

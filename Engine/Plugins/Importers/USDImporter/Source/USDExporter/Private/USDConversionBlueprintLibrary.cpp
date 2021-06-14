@@ -2,7 +2,7 @@
 
 #include "USDConversionBlueprintLibrary.h"
 
-#include "UnrealUsdWrapper.h"
+#include "UnrealUSDWrapper.h"
 #include "USDConversionUtils.h"
 #include "USDLayerUtils.h"
 #include "USDLog.h"
@@ -11,6 +11,47 @@
 #include "UsdWrappers/SdfPath.h"
 #include "UsdWrappers/UsdPrim.h"
 #include "UsdWrappers/UsdStage.h"
+
+#include "Engine/LevelStreaming.h"
+#include "Engine/World.h"
+
+TSet<AActor*> UUsdConversionBlueprintLibrary::GetActorsToConvert( UWorld* World )
+{
+	TSet<AActor*> Result;
+	if ( !World )
+	{
+		return Result;
+	}
+
+	const bool bForce = true;
+	World->LoadSecondaryLevels(bForce);
+
+	auto CollectActors = [ &Result ]( ULevel* Level )
+	{
+		if ( !Level )
+		{
+			return;
+		}
+
+		Result.Append( Level->Actors );
+	};
+
+	CollectActors( World->PersistentLevel );
+
+	for ( ULevelStreaming* StreamingLevel : World->GetStreamingLevels() )
+	{
+		if ( StreamingLevel )
+		{
+			if ( ULevel* Level = StreamingLevel->GetLoadedLevel() )
+			{
+				CollectActors( Level );
+			}
+		}
+	}
+
+	Result.Remove( nullptr );
+	return Result;
+}
 
 FString UUsdConversionBlueprintLibrary::MakePathRelativeToLayer( const FString& AnchorLayerPath, const FString& PathToMakeRelative )
 {
@@ -34,6 +75,11 @@ FString UUsdConversionBlueprintLibrary::MakePathRelativeToLayer( const FString& 
 void UUsdConversionBlueprintLibrary::InsertSubLayer( const FString& ParentLayerPath, const FString& SubLayerPath, int32 Index /*= -1 */ )
 {
 #if USE_USD_SDK
+	if ( ParentLayerPath.IsEmpty() || SubLayerPath.IsEmpty() )
+	{
+		return;
+	}
+
 	if ( UE::FSdfLayer Layer = UE::FSdfLayer::FindOrOpen( *ParentLayerPath ) )
 	{
 		UsdUtils::InsertSubLayer( Layer, *SubLayerPath, Index );
@@ -48,19 +94,22 @@ void UUsdConversionBlueprintLibrary::InsertSubLayer( const FString& ParentLayerP
 void UUsdConversionBlueprintLibrary::AddPayload( const FString& ReferencingStagePath, const FString& ReferencingPrimPath, const FString& TargetStagePath )
 {
 #if USE_USD_SDK
+	TArray<UE::FUsdStage> PreviouslyOpenedStages = UnrealUSDWrapper::GetAllStagesFromCache();
+
+	// Open using the stage cache as it's very likely this stage is already in there anyway
 	UE::FUsdStage ReferencingStage = UnrealUSDWrapper::OpenStage( *ReferencingStagePath, EUsdInitialLoadSet::LoadAll );
-	UE::FUsdStage TargetStage = UnrealUSDWrapper::OpenStage( *TargetStagePath, EUsdInitialLoadSet::LoadAll );
-	if ( !ReferencingStage || !TargetStage )
+	if ( ReferencingStage )
 	{
-		return;
+		if ( UE::FUsdPrim ReferencingPrim = ReferencingStage.GetPrimAtPath( UE::FSdfPath( *ReferencingPrimPath ) ) )
+		{
+			UsdUtils::AddPayload( ReferencingPrim, *TargetStagePath );
+		}
 	}
 
-	UE::FUsdPrim ReferencingPrim = ReferencingStage.GetPrimAtPath( UE::FSdfPath( *ReferencingPrimPath ) );
-	if ( !ReferencingPrim )
+	// Cleanup or else the stage cache will keep these stages open forever
+	if ( !PreviouslyOpenedStages.Contains( ReferencingStage ) )
 	{
-		return;
+		UnrealUSDWrapper::EraseStageFromCache( ReferencingStage );
 	}
-
-	UsdUtils::AddPayload( ReferencingPrim, *TargetStagePath );
 #endif // USE_USD_SDK
 }

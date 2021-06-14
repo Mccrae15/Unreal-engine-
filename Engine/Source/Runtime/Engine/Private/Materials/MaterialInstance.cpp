@@ -26,6 +26,8 @@
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialUniformExpressions.h"
 #include "Materials/MaterialInstanceSupport.h"
+#include "Materials/MaterialExpressionCollectionParameter.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "Engine/SubsurfaceProfile.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "Interfaces/ITargetPlatform.h"
@@ -38,7 +40,6 @@
 #include "Curves/CurveLinearColorAtlas.h"
 #include "HAL/ThreadHeartBeat.h"
 #include "Misc/ScopedSlowTask.h"
-#include "Materials/MaterialStaticParameterValueResolver.h"
 #include "ShaderPlatformQualitySettings.h"
 #include "MaterialShaderQualitySettings.h"
 
@@ -459,6 +460,49 @@ static void SwapLayerParameterIndicesArray(TArray<ParameterType>& Parameters, in
 	}
 }
 
+template<typename ParameterType>
+static void RemoveLayerParameterIndicesArray(TArray<ParameterType>& Parameters, int32 RemoveIndex)
+{
+	int32 ParameterIndex = 0;
+	while (ParameterIndex < Parameters.Num())
+	{
+		ParameterType& Parameter = Parameters[ParameterIndex];
+		bool bRemovedParameter = false;
+		if (Parameter.ParameterInfo.Association == LayerParameter)
+		{
+			const int32 Index = Parameter.ParameterInfo.Index;
+			if (Index == RemoveIndex)
+			{
+				bRemovedParameter = true;
+			}
+			else if (Index > RemoveIndex)
+			{
+				Parameter.ParameterInfo.Index--;
+			}
+		}
+		else if (Parameter.ParameterInfo.Association == BlendParameter)
+		{
+			const int32 Index = Parameter.ParameterInfo.Index + 1;
+			if (Index == RemoveIndex)
+			{
+				bRemovedParameter = true;
+			}
+			else if (Index > RemoveIndex)
+			{
+				Parameter.ParameterInfo.Index--;
+			}
+		}
+		if (bRemovedParameter)
+		{
+			Parameters.RemoveAt(ParameterIndex);
+		}
+		else
+		{
+			++ParameterIndex;
+		}
+	}
+}
+
 void UMaterialInstance::SwapLayerParameterIndices(int32 OriginalIndex, int32 NewIndex)
 {
 	if (OriginalIndex != NewIndex)
@@ -469,8 +513,23 @@ void UMaterialInstance::SwapLayerParameterIndices(int32 OriginalIndex, int32 New
 		SwapLayerParameterIndicesArray(RuntimeVirtualTextureParameterValues, OriginalIndex, NewIndex);
 		SwapLayerParameterIndicesArray(FontParameterValues, OriginalIndex, NewIndex);
 		SwapLayerParameterIndicesArray(StaticParameters.StaticSwitchParameters, OriginalIndex, NewIndex);
+		SwapLayerParameterIndicesArray(StaticParameters.StaticComponentMaskParameters, OriginalIndex, NewIndex);
+		SwapLayerParameterIndicesArray(StaticParameters.TerrainLayerWeightParameters, OriginalIndex, NewIndex);
 		SwapLayerParameterIndicesArray(StaticParameters.MaterialLayersParameters, OriginalIndex, NewIndex);
 	}
+}
+
+void UMaterialInstance::RemoveLayerParameterIndex(int32 Index)
+{
+	RemoveLayerParameterIndicesArray(ScalarParameterValues, Index);
+	RemoveLayerParameterIndicesArray(VectorParameterValues, Index);
+	RemoveLayerParameterIndicesArray(TextureParameterValues, Index);
+	RemoveLayerParameterIndicesArray(RuntimeVirtualTextureParameterValues, Index);
+	RemoveLayerParameterIndicesArray(FontParameterValues, Index);
+	RemoveLayerParameterIndicesArray(StaticParameters.StaticSwitchParameters, Index);
+	RemoveLayerParameterIndicesArray(StaticParameters.StaticComponentMaskParameters, Index);
+	RemoveLayerParameterIndicesArray(StaticParameters.TerrainLayerWeightParameters, Index);
+	RemoveLayerParameterIndicesArray(StaticParameters.MaterialLayersParameters, Index);
 }
 #endif // WITH_EDITOR
 
@@ -547,6 +606,8 @@ bool UMaterialInstance::UpdateParameters()
 						RemapLayerParameterIndicesArray(RuntimeVirtualTextureParameterValues, RemapLayerIndices);
 						RemapLayerParameterIndicesArray(FontParameterValues, RemapLayerIndices);
 						RemapLayerParameterIndicesArray(StaticParameters.StaticSwitchParameters, RemapLayerIndices);
+						RemapLayerParameterIndicesArray(StaticParameters.StaticComponentMaskParameters, RemapLayerIndices);
+						RemapLayerParameterIndicesArray(StaticParameters.TerrainLayerWeightParameters, RemapLayerIndices);
 						RemapLayerParameterIndicesArray(StaticParameters.MaterialLayersParameters, RemapLayerIndices);
 						bDirty = true;
 					}
@@ -786,14 +847,13 @@ bool UMaterialInstance::GetScalarParameterValue(const FHashedMaterialParameterIn
 	}
 	
 	// Instance-included default
-	if (ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
+	if (!bOveriddenOnly && ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
 	{
 		const int32 ParameterIndex = CachedLayerParameters.FindParameterIndex(EMaterialParameterType::Scalar, ParameterInfo);
 		if (ParameterIndex != INDEX_NONE)
 		{
-			const bool bResult = CachedLayerParameters.IsParameterValid(EMaterialParameterType::Scalar, ParameterIndex, bOveriddenOnly);
 			OutValue = CachedLayerParameters.ScalarValues[ParameterIndex];
-			return bResult;
+			return true;
 		}
 	}
 	
@@ -880,14 +940,13 @@ bool UMaterialInstance::GetVectorParameterValue(const FHashedMaterialParameterIn
 	}
 	
 	// Instance-included default
-	if (ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
+	if (!bOveriddenOnly && ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
 	{
 		const int32 ParameterIndex = CachedLayerParameters.FindParameterIndex(EMaterialParameterType::Vector, ParameterInfo);
 		if (ParameterIndex != INDEX_NONE)
 		{
-			const bool bResult = CachedLayerParameters.IsParameterValid(EMaterialParameterType::Vector, ParameterIndex, bOveriddenOnly);
 			OutValue = CachedLayerParameters.VectorValues[ParameterIndex];
-			return bResult;
+			return true;
 		}
 	}
 	
@@ -982,14 +1041,13 @@ bool UMaterialInstance::GetTextureParameterValue(const FHashedMaterialParameterI
 	}
 	
 	// Instance-included default
-	if (ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
+	if (!bOveriddenOnly && ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
 	{
 		const int32 ParameterIndex = CachedLayerParameters.FindParameterIndex(EMaterialParameterType::Texture, ParameterInfo);
 		if (ParameterIndex != INDEX_NONE)
 		{
-			const bool bResult = CachedLayerParameters.IsParameterValid(EMaterialParameterType::Texture, ParameterIndex, bOveriddenOnly);
 			OutValue = CachedLayerParameters.TextureValues[ParameterIndex];
-			return bResult;
+			return true;
 		}
 	}
 	
@@ -1023,14 +1081,13 @@ bool UMaterialInstance::GetRuntimeVirtualTextureParameterValue(const FHashedMate
 	}
 
 	// Instance-included default
-	if (ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
+	if (!bOveriddenOnly && ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
 	{
 		const int32 ParameterIndex = CachedLayerParameters.FindParameterIndex(EMaterialParameterType::RuntimeVirtualTexture, ParameterInfo);
 		if (ParameterIndex != INDEX_NONE)
 		{
-			const bool bResult = CachedLayerParameters.IsParameterValid(EMaterialParameterType::RuntimeVirtualTexture, ParameterIndex, bOveriddenOnly);
 			OutValue = CachedLayerParameters.RuntimeVirtualTextureValues[ParameterIndex];
-			return bResult;
+			return true;
 		}
 	}
 
@@ -1099,15 +1156,14 @@ bool UMaterialInstance::GetFontParameterValue(const FHashedMaterialParameterInfo
 	}
 	
 	// Instance-included default
-	if (ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
+	if (!bOveriddenOnly && ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
 	{
 		const int32 ParameterIndex = CachedLayerParameters.FindParameterIndex(EMaterialParameterType::Font, ParameterInfo);
 		if (ParameterIndex != INDEX_NONE)
 		{
-			const bool bResult = CachedLayerParameters.IsParameterValid(EMaterialParameterType::Font, ParameterIndex, bOveriddenOnly);
 			OutFontValue = CachedLayerParameters.FontValues[ParameterIndex];
 			OutFontPage = CachedLayerParameters.FontPageValues[ParameterIndex];
-			return bResult;
+			return true;
 		}
 	}
 	
@@ -2035,25 +2091,17 @@ void UMaterialInstance::GetStaticParameterValues(FStaticParameterSet& OutStaticP
 		GetAllStaticSwitchParameterInfo(OutParameterInfo, Guids);
 		OutStaticParameters.StaticSwitchParameters.AddZeroed(OutParameterInfo.Num());
 
-		// make a temporary hashed verison of OutParameterInfo
-		TArray<FHashedMaterialParameterInfo> StaticSwitchHashedParameterInfo;
-		for (const FMaterialParameterInfo& Info : OutParameterInfo)
-		{
-			new (StaticSwitchHashedParameterInfo) FHashedMaterialParameterInfo(Info);
-		}
-
-		FStaticParamEvaluationContext SwitchEvalContext(StaticSwitchHashedParameterInfo.Num(), StaticSwitchHashedParameterInfo.GetData());
-		TBitArray<> StaticSwitchValues(false, OutParameterInfo.Num());
-		ensure(GetStaticSwitchParameterValues(SwitchEvalContext, StaticSwitchValues, Guids.GetData()));
 		for(int32 ParameterIdx=0; ParameterIdx<OutParameterInfo.Num(); ParameterIdx++)
 		{
 			FStaticSwitchParameter& ParentParameter = OutStaticParameters.StaticSwitchParameters[ParameterIdx];
 			FMaterialParameterInfo& ParameterInfo = OutParameterInfo[ParameterIdx];
+			FGuid ExpressionId = Guids[ParameterIdx];
 
 			ParentParameter.bOverride = false;
 			ParentParameter.ParameterInfo = ParameterInfo;
 
-			ParentParameter.Value = StaticSwitchValues[ParameterIdx];
+			GetStaticSwitchParameterValue(ParameterInfo, ParentParameter.Value, ExpressionId);
+
 			ParentParameter.ExpressionGUID = Guids[ParameterIdx];
 
 			// If the SourceInstance is overriding this parameter, use its settings
@@ -2076,29 +2124,17 @@ void UMaterialInstance::GetStaticParameterValues(FStaticParameterSet& OutStaticP
 		GetAllStaticComponentMaskParameterInfo(OutParameterInfo, Guids);
 		OutStaticParameters.StaticComponentMaskParameters.AddZeroed(OutParameterInfo.Num());
 
-		// make a temporary hashed verison of OutParameterInfo
-		TArray<FHashedMaterialParameterInfo> StaticComponentMaskHashedParameterInfo;
-		for (const FMaterialParameterInfo& Info : OutParameterInfo)
-		{
-			new (StaticComponentMaskHashedParameterInfo) FHashedMaterialParameterInfo(Info);
-		}
-
-		FStaticParamEvaluationContext ComponentMaskEvalContext(StaticComponentMaskHashedParameterInfo.Num(), StaticComponentMaskHashedParameterInfo.GetData());
-		TBitArray<> StaticComponentMaskValues(false, OutParameterInfo.Num()*4);
-		ensure(GetStaticComponentMaskParameterValues(ComponentMaskEvalContext, StaticComponentMaskValues, Guids.GetData()));
 		for(int32 ParameterIdx=0; ParameterIdx<OutParameterInfo.Num(); ParameterIdx++)
 		{
 			FStaticComponentMaskParameter& ParentParameter = OutStaticParameters.StaticComponentMaskParameters[ParameterIdx];
 			FMaterialParameterInfo& ParameterInfo = OutParameterInfo[ParameterIdx];
+			FGuid ExpressionId = Guids[ParameterIdx];
 
 			ParentParameter.bOverride = false;
 			ParentParameter.ParameterInfo = ParameterInfo;
 			
-			int32 ParamRGBAIndex = ParameterIdx * 4;
-			ParentParameter.R = StaticComponentMaskValues[ParamRGBAIndex + 0];
-			ParentParameter.G = StaticComponentMaskValues[ParamRGBAIndex + 1];
-			ParentParameter.B = StaticComponentMaskValues[ParamRGBAIndex + 2];
-			ParentParameter.A = StaticComponentMaskValues[ParamRGBAIndex + 3];
+			GetStaticComponentMaskParameterValue(ParameterInfo, ParentParameter.R, ParentParameter.G, ParentParameter.B, ParentParameter.A, ExpressionId);
+
 			ParentParameter.ExpressionGUID = Guids[ParameterIdx];
 			
 			// If the SourceInstance is overriding this parameter, use its settings
@@ -2187,22 +2223,12 @@ void UMaterialInstance::GetAllMaterialLayersParameterInfo(TArray<FMaterialParame
 
 void UMaterialInstance::GetAllStaticSwitchParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const
 {
-	OutParameterInfo.Empty();
-	OutParameterIds.Empty();
-	if (const UMaterial* Material = GetMaterial())
-	{
-		Material->GetAllParameterInfo<UMaterialExpressionStaticBoolParameter>(OutParameterInfo, OutParameterIds, &StaticParameters.MaterialLayersParameters);
-	}
+	GetAllParametersOfType(EMaterialParameterType::StaticSwitch, OutParameterInfo, OutParameterIds);
 }
 
 void UMaterialInstance::GetAllStaticComponentMaskParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const
 {
-	OutParameterInfo.Empty();
-	OutParameterIds.Empty();
-	if (const UMaterial* Material = GetMaterial())
-	{
-		Material->GetAllParameterInfo<UMaterialExpressionStaticComponentMaskParameter>(OutParameterInfo, OutParameterIds, &StaticParameters.MaterialLayersParameters);
-	}
+	GetAllParametersOfType(EMaterialParameterType::StaticComponentMask, OutParameterInfo, OutParameterIds);
 }
 
 bool UMaterialInstance::IterateDependentFunctions(TFunctionRef<bool(UMaterialFunctionInterface*)> Predicate) const
@@ -2495,35 +2521,7 @@ bool UMaterialInstance::GetStaticSwitchParameterDefaultValue(const FHashedMateri
 
 	// In the case of duplicate parameters with different values, this will return the
 	// first matching expression found, not necessarily the one that's used for rendering
-	UMaterialExpressionStaticBoolParameter* Parameter = nullptr;
-
-	if (ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
-	{
-		// Parameters introduced by this instance's layer stack
-		for (const FStaticMaterialLayersParameter& LayersParam : StaticParameters.MaterialLayersParameters)
-		{
-			if (LayersParam.bOverride)
-			{
-				UMaterialFunctionInterface* Function = LayersParam.GetParameterAssociatedFunction(ParameterInfo);
-				UMaterialFunctionInterface* ParameterOwner = nullptr;
-
-				if (Function && Function->OverrideNamedStaticSwitchParameter(ParameterInfo, OutValue, OutExpressionGuid))
-				{
-					return true;
-				}
-
-				if (Function && Function->GetNamedParameterOfType(ParameterInfo, Parameter, &ParameterOwner))
-				{
-					if (!ParameterOwner->OverrideNamedStaticSwitchParameter(ParameterInfo, OutValue, OutExpressionGuid))
-					{
-						Parameter->IsNamedParameter(ParameterInfo, OutValue, OutExpressionGuid);
-					}
-					return true;
-				}
-			}
-		}
-	}
-	else if (bCheckOwnedGlobalOverrides)
+	if (bCheckOwnedGlobalOverrides)
 	{
 		// Parameters overridden by this instance
 		for (const FStaticSwitchParameter& SwitchParam : StaticParameters.StaticSwitchParameters)
@@ -2534,6 +2532,17 @@ bool UMaterialInstance::GetStaticSwitchParameterDefaultValue(const FHashedMateri
 				OutExpressionGuid = SwitchParam.ExpressionGUID;
 				return true;
 			}
+		}
+	}
+
+	if (ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
+	{
+		const int32 ParameterIndex = CachedLayerParameters.FindParameterIndex(EMaterialParameterType::StaticSwitch, ParameterInfo);
+		if (ParameterIndex != INDEX_NONE)
+		{
+			OutExpressionGuid = CachedLayerParameters.GetExpressionGuid(EMaterialParameterType::StaticSwitch, ParameterIndex);
+			OutValue = CachedLayerParameters.StaticSwitchValues[ParameterIndex];
+			return true;
 		}
 	}
 	
@@ -2555,35 +2564,7 @@ bool UMaterialInstance:: GetStaticComponentMaskParameterDefaultValue(const FHash
 
 	// In the case of duplicate parameters with different values, this will return the
 	// first matching expression found, not necessarily the one that's used for rendering
-	UMaterialExpressionStaticComponentMaskParameter* Parameter = nullptr;
-
-	if (ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
-	{
-		// Parameters introduced by this instance's layer stack
-		for (const FStaticMaterialLayersParameter& LayersParam : StaticParameters.MaterialLayersParameters)
-		{
-			if (LayersParam.bOverride)
-			{
-				UMaterialFunctionInterface* Function = LayersParam.GetParameterAssociatedFunction(ParameterInfo);
-				UMaterialFunctionInterface* ParameterOwner = nullptr;
-
-				if (Function && Function->OverrideNamedStaticComponentMaskParameter(ParameterInfo, OutR, OutG, OutB, OutA, OutExpressionGuid))
-				{
-					return true;
-				}
-
-				if (Function && Function->GetNamedParameterOfType(ParameterInfo, Parameter, &ParameterOwner))
-				{
-					if (!ParameterOwner->OverrideNamedStaticComponentMaskParameter(ParameterInfo, OutR, OutG, OutB, OutA, OutExpressionGuid))
-					{
-						Parameter->IsNamedParameter(ParameterInfo, OutR, OutG, OutB, OutA, OutExpressionGuid);
-					}
-					return true;
-				}
-			}
-		}
-	}
-	else if (bCheckOwnedGlobalOverrides)
+	if (bCheckOwnedGlobalOverrides)
 	{
 		// Parameters overridden by this instance
 		for (const FStaticComponentMaskParameter& ComponentMaskParam : StaticParameters.StaticComponentMaskParameters)
@@ -2597,6 +2578,20 @@ bool UMaterialInstance:: GetStaticComponentMaskParameterDefaultValue(const FHash
 				OutExpressionGuid = ComponentMaskParam.ExpressionGUID;
 				return true;
 			}
+		}
+	}
+
+	if (ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
+	{
+		const int32 ParameterIndex = CachedLayerParameters.FindParameterIndex(EMaterialParameterType::StaticComponentMask, ParameterInfo);
+		if (ParameterIndex != INDEX_NONE)
+		{
+			OutExpressionGuid = CachedLayerParameters.GetExpressionGuid(EMaterialParameterType::StaticComponentMask, ParameterIndex);
+			OutR = CachedLayerParameters.StaticComponentMaskValues[ParameterIndex].R;
+			OutG = CachedLayerParameters.StaticComponentMaskValues[ParameterIndex].G;
+			OutB = CachedLayerParameters.StaticComponentMaskValues[ParameterIndex].B;
+			OutA = CachedLayerParameters.StaticComponentMaskValues[ParameterIndex].A;
+			return true;
 		}
 	}
 	
@@ -2948,71 +2943,33 @@ void UMaterialInstance::CacheShadersForResources(EShaderPlatform ShaderPlatform,
 }
 
 #if WITH_EDITORONLY_DATA
-bool UMaterialInstance::GetStaticSwitchParameterValues(FStaticParamEvaluationContext& EvalContext, TBitArray<>& OutValues, FGuid* OutExpressionGuids, bool bCheckParent /*= true*/) const
+bool UMaterialInstance::GetStaticSwitchParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue, FGuid& OutExpressionGuid, bool bOveriddenOnly, bool bCheckParent) const
 {
-	if (EvalContext.AllResolved())
-	{
-		return true;
-	}
-
 	if (GetReentrantFlag())
 	{
 		return false;
 	}
 
-	check(OutValues.Num() >= EvalContext.GetTotalParameterNum());
-	check(OutExpressionGuids);
-
 	// Instance override
-	for (int32 ValueIndex = 0; ValueIndex < StaticParameters.StaticSwitchParameters.Num(); ValueIndex++)
+	for (const FStaticSwitchParameter& Param : StaticParameters.StaticSwitchParameters)
 	{
-		const FStaticSwitchParameter& Param = StaticParameters.StaticSwitchParameters[ValueIndex];
-		if (Param.bOverride)
+		if (Param.ParameterInfo == ParameterInfo)
 		{
-			EvalContext.ForEachPendingParameter([&EvalContext, &Param, &OutValues, &OutExpressionGuids](int32 ParamIndex, const FHashedMaterialParameterInfo& ParameterInfo) -> bool
-				{
-					if (Param.ParameterInfo == ParameterInfo)
-					{
-						OutValues[ParamIndex] = Param.Value;
-						OutExpressionGuids[ParamIndex] = Param.ExpressionGUID;
-						EvalContext.MarkParameterResolved(ParamIndex, true);
-						return !EvalContext.AllResolved();
-					}
-					return true;
-				});
-
-			if (EvalContext.AllResolved())
-			{
-				return true;
-			}
+			OutExpressionGuid = Param.ExpressionGUID;
+			OutValue = Param.Value;
+			return true;
 		}
 	}
 
 	// Instance-included default
-	UMaterialExpressionStaticBoolParameter* Parameter = nullptr;
-	for (const FStaticMaterialLayersParameter& LayersParam : StaticParameters.MaterialLayersParameters)
+	if (!bOveriddenOnly && ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
 	{
-		if (LayersParam.bOverride)
+		const int32 ParameterIndex = CachedLayerParameters.FindParameterIndex(EMaterialParameterType::StaticSwitch, ParameterInfo);
+		if (ParameterIndex != INDEX_NONE)
 		{
-			TMaterialStaticParameterValueResolver<UMaterialExpressionStaticBoolParameter, TBitArray<>> ValueResolver(EvalContext, OutValues, OutExpressionGuids);
-
-			EvalContext.ForEachPendingParameter([&EvalContext, &LayersParam, &ValueResolver, &OutValues, &OutExpressionGuids](int32 ParamIndex, const FHashedMaterialParameterInfo& ParameterInfo) -> bool
-				{
-					if (ParameterInfo.Association == EMaterialParameterAssociation::GlobalParameter)
-					{
-						return true;
-					}
-
-					ValueResolver.AttemptResolve(ParamIndex, ParameterInfo, LayersParam.GetParameterAssociatedFunction(ParameterInfo));
-					return !EvalContext.AllResolved();
-				});
-
-			ValueResolver.ResolveQueued();
-
-			if (EvalContext.AllResolved())
-			{
-				return true;
-			}
+			OutExpressionGuid = CachedLayerParameters.GetExpressionGuid(EMaterialParameterType::StaticSwitch, ParameterIndex);
+			OutValue = CachedLayerParameters.StaticSwitchValues[ParameterIndex];
+			return true;
 		}
 	}
 
@@ -3020,81 +2977,45 @@ bool UMaterialInstance::GetStaticSwitchParameterValues(FStaticParamEvaluationCon
 	if (Parent && bCheckParent)
 	{
 		FMICReentranceGuard	Guard(this);
-		return Parent->GetStaticSwitchParameterValues(EvalContext, OutValues, OutExpressionGuids);
+		return Parent->GetStaticSwitchParameterValue(ParameterInfo, OutValue, OutExpressionGuid, bOveriddenOnly, true);
 	}
 
-	return EvalContext.AllResolved();
+	return false;
 }
 
-bool UMaterialInstance::GetStaticComponentMaskParameterValues(FStaticParamEvaluationContext& EvalContext, TBitArray<>& OutRGBAOrderedValues, FGuid* OutExpressionGuids, bool bCheckParent /*= true*/) const
+bool UMaterialInstance::GetStaticComponentMaskParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, bool& R, bool& G, bool& B, bool& A, FGuid& OutExpressionGuid, bool bOveriddenOnly, bool bCheckParent) const
 {
-	if (EvalContext.AllResolved())
-	{
-		return true;
-	}
-
 	if (GetReentrantFlag())
 	{
 		return false;
 	}
 
-	check(OutRGBAOrderedValues.Num() >= (EvalContext.GetTotalParameterNum()*4));
-	check(OutExpressionGuids);
-
 	// Instance override
-	for (int32 ValueIndex = 0; ValueIndex < StaticParameters.StaticComponentMaskParameters.Num(); ValueIndex++)
+	for (const FStaticComponentMaskParameter& Param : StaticParameters.StaticComponentMaskParameters)
 	{
-		const FStaticComponentMaskParameter& Param = StaticParameters.StaticComponentMaskParameters[ValueIndex];
-		if (Param.bOverride)
+		if (Param.ParameterInfo == ParameterInfo)
 		{
-			EvalContext.ForEachPendingParameter([&EvalContext, &Param, &OutRGBAOrderedValues, &OutExpressionGuids](int32 ParamIndex, const FHashedMaterialParameterInfo& ParameterInfo) -> bool
-				{
-					if (Param.ParameterInfo == ParameterInfo)
-					{
-						int32 ParamRGBAIndex = ParamIndex * 4;
-						OutRGBAOrderedValues[ParamRGBAIndex + 0] = Param.R;
-						OutRGBAOrderedValues[ParamRGBAIndex + 1] = Param.G;
-						OutRGBAOrderedValues[ParamRGBAIndex + 2] = Param.B;
-						OutRGBAOrderedValues[ParamRGBAIndex + 3] = Param.A;
-						OutExpressionGuids[ParamIndex] = Param.ExpressionGUID;
-						EvalContext.MarkParameterResolved(ParamIndex, true);
-						return !EvalContext.AllResolved();
-					}
-					return true;
-				});
-
-			if (EvalContext.AllResolved())
-			{
-				return true;
-			}
+			OutExpressionGuid = Param.ExpressionGUID;
+			R = Param.R;
+			G = Param.G;
+			B = Param.B;
+			A = Param.A;
+			return true;
 		}
 	}
 
 	// Instance-included default
-	UMaterialExpressionStaticBoolParameter* Parameter = nullptr;
-	for (const FStaticMaterialLayersParameter& LayersParam : StaticParameters.MaterialLayersParameters)
+	if (!bOveriddenOnly && ParameterInfo.Association != EMaterialParameterAssociation::GlobalParameter)
 	{
-		if (LayersParam.bOverride)
+		const int32 ParameterIndex = CachedLayerParameters.FindParameterIndex(EMaterialParameterType::StaticComponentMask, ParameterInfo);
+		if (ParameterIndex != INDEX_NONE)
 		{
-			TMaterialStaticParameterValueResolver<UMaterialExpressionStaticComponentMaskParameter, TBitArray<>> ValueResolver(EvalContext, OutRGBAOrderedValues, OutExpressionGuids);
-
-			EvalContext.ForEachPendingParameter([&EvalContext, &LayersParam, &ValueResolver, &OutRGBAOrderedValues, &OutExpressionGuids](int32 ParamIndex, const FHashedMaterialParameterInfo& ParameterInfo) -> bool
-				{
-					if (ParameterInfo.Association == EMaterialParameterAssociation::GlobalParameter)
-					{
-						return true;
-					}
-
-					ValueResolver.AttemptResolve(ParamIndex, ParameterInfo, LayersParam.GetParameterAssociatedFunction(ParameterInfo));
-					return !EvalContext.AllResolved();
-				});
-
-			ValueResolver.ResolveQueued();
-
-			if (EvalContext.AllResolved())
-			{
-				return true;
-			}
+			OutExpressionGuid = CachedLayerParameters.GetExpressionGuid(EMaterialParameterType::StaticComponentMask, ParameterIndex);
+			R = CachedLayerParameters.StaticComponentMaskValues[ParameterIndex].R;
+			G = CachedLayerParameters.StaticComponentMaskValues[ParameterIndex].G;
+			B = CachedLayerParameters.StaticComponentMaskValues[ParameterIndex].B;
+			A = CachedLayerParameters.StaticComponentMaskValues[ParameterIndex].A;
+			return true;
 		}
 	}
 
@@ -3102,10 +3023,10 @@ bool UMaterialInstance::GetStaticComponentMaskParameterValues(FStaticParamEvalua
 	if (Parent && bCheckParent)
 	{
 		FMICReentranceGuard	Guard(this);
-		return Parent->GetStaticComponentMaskParameterValues(EvalContext, OutRGBAOrderedValues, OutExpressionGuids);
+		return Parent->GetStaticComponentMaskParameterValue(ParameterInfo, R, G, B, A, OutExpressionGuid, bOveriddenOnly, true);
 	}
 
-	return EvalContext.AllResolved();
+	return false;
 }
 
 bool UMaterialInstance::GetMaterialLayersParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, FMaterialLayersFunctions& OutLayers, FGuid& OutExpressionGuid, bool bCheckParent /*= true*/) const
@@ -4048,7 +3969,7 @@ void UMaterialInstance::UpdateCachedLayerParameters()
 	bool bCachedDataValid = true;
 	for (FStaticMaterialLayersParameter& LayerParameters : StaticParameters.MaterialLayersParameters)
 	{
-		FMaterialCachedExpressionContext Context(Parent);
+		FMaterialCachedExpressionContext Context;
 		if (ParentInstance)
 		{
 			FMaterialCachedParameters_UpdateForLayerParameters(CachedExpressionData.Parameters, Context, ParentInstance, LayerParameters);
@@ -4087,6 +4008,7 @@ void UMaterialInstance::UpdateParameterNames()
 		InitResources();
 	}
 }
+
 #endif // WITH_EDITOR
 
 void UMaterialInstance::RecacheUniformExpressions(bool bRecreateUniformBuffer) const
@@ -4959,6 +4881,96 @@ void UMaterialInstance::CopyMaterialUniformParametersInternal(UMaterialInterface
 		InitResources();
 	}
 }
+
+#if WITH_EDITOR
+
+void FindCollectionExpressionRecursive(TArray<FGuid>& OutGuidList, const TArray<UMaterialExpression*>& InMaterialExpression)
+{
+	for (int32 ExpressionIndex = 0; ExpressionIndex < InMaterialExpression.Num(); ExpressionIndex++)
+	{
+		const UMaterialExpression* ExpressionPtr = InMaterialExpression[ExpressionIndex];
+		const UMaterialExpressionCollectionParameter* CollectionPtr = Cast<UMaterialExpressionCollectionParameter>(ExpressionPtr);
+		const UMaterialExpressionMaterialFunctionCall* MaterialFunctionCall = Cast<UMaterialExpressionMaterialFunctionCall>(ExpressionPtr);
+		const UMaterialExpressionMaterialAttributeLayers* MaterialLayers = Cast<UMaterialExpressionMaterialAttributeLayers>(ExpressionPtr);
+
+		if (CollectionPtr)
+		{
+			if (CollectionPtr->Collection)
+			{
+				OutGuidList.Add(CollectionPtr->Collection->StateId);
+			}
+			return;
+		}
+		else if (MaterialFunctionCall && MaterialFunctionCall->MaterialFunction)
+		{
+			if (const TArray<UMaterialExpression*>* FunctionExpressions = MaterialFunctionCall->MaterialFunction->GetFunctionExpressions())
+			{
+				FindCollectionExpressionRecursive(OutGuidList, *FunctionExpressions);
+			}
+		}
+		else if (MaterialLayers)
+		{
+			const TArray<UMaterialFunctionInterface*>& Layers = MaterialLayers->GetLayers();
+			const TArray<UMaterialFunctionInterface*>& Blends = MaterialLayers->GetBlends();
+
+			for (const UMaterialFunctionInterface* Layer : Layers)
+			{
+				if (Layer)
+				{
+					if (const TArray<UMaterialExpression*>* FunctionExpressions = Layer->GetFunctionExpressions())
+					{
+						FindCollectionExpressionRecursive(OutGuidList, *FunctionExpressions);
+					}
+				}
+			}
+
+			for (const UMaterialFunctionInterface* Blend : Blends)
+			{
+				if (Blend)
+				{
+					if (const TArray<UMaterialExpression*>* FunctionExpressions = Blend->GetFunctionExpressions())
+					{
+						FindCollectionExpressionRecursive(OutGuidList, *FunctionExpressions);
+					}
+				}
+			}
+		}
+	}
+}
+
+void UMaterialInstance::AppendReferencedParameterCollectionIdsTo(TArray<FGuid>& OutIds) const
+{
+	const UMaterial* Material = GetMaterial();
+	if (!Material)
+	{
+		return;
+	}
+
+	for (const FStaticMaterialLayersParameter& LayerParameter : StaticParameters.MaterialLayersParameters)
+	{
+		for (const UMaterialFunctionInterface* Layer : LayerParameter.Value.Layers)
+		{
+			if (Layer)
+			{
+				if (const TArray<UMaterialExpression*>* FunctionExpressions = Layer->GetFunctionExpressions())
+				{
+					FindCollectionExpressionRecursive(OutIds, *FunctionExpressions);
+				}
+			}
+		}
+		for (const UMaterialFunctionInterface* Blend : LayerParameter.Value.Blends)
+		{
+			if (Blend)
+			{
+				if (const TArray<UMaterialExpression*>* FunctionExpressions = Blend->GetFunctionExpressions())
+				{
+					FindCollectionExpressionRecursive(OutIds, *FunctionExpressions);
+				}
+			}
+		}
+	}
+}
+#endif // WITH_EDITOR
 
 #if WITH_EDITORONLY_DATA
 UMaterialInstance::FCustomStaticParametersGetterDelegate UMaterialInstance::CustomStaticParametersGetters;

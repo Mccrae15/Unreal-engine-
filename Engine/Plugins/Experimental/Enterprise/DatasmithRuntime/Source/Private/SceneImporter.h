@@ -13,6 +13,7 @@
 #include "Containers/Queue.h"
 #include "HAL/ThreadSafeBool.h"
 #include "HAL/ThreadSafeCounter.h"
+#include "MeshDescription.h"
 #include "PixelFormat.h"
 #include "RHI.h"
 #include "Templates/Casts.h"
@@ -25,6 +26,7 @@ class IDatasmithActorElement;
 class IDatasmithElement;
 class IDatasmithCameraActorElement;
 class IDatasmithLightActorElement;
+class IDatasmithMetaDataElement;
 class IDatasmithMeshActorElement;
 class IDatasmithScene;
 class IDatasmithTranslator;
@@ -133,6 +135,7 @@ namespace DatasmithRuntime
 		Actor       = 5,
 		MeshActor   = 6,
 		LightActor  = 7,
+		Metadata    = 8,
 	};
 
 	/**
@@ -172,8 +175,15 @@ namespace DatasmithRuntime
 		{
 		}
 
+		EDataType GetType() const { return EDataType(Type); }
 		FSceneGraphId GetId() const { return (FSceneGraphId)ElementId; }
 	};
+
+	FORCEINLINE bool operator==(const FReferencer& Lhs, const FReferencer& Rhs)
+	{
+		return Lhs.ElementId == Rhs.ElementId && Lhs.Slot == Rhs.Slot;
+	}
+
 
 	typedef std::atomic<EAssetState> FDataState;
 
@@ -184,6 +194,9 @@ namespace DatasmithRuntime
 	{
 		/** Identifier of the associated Datasmith element */
 		FSceneGraphId ElementId;
+
+		/** Identifier of the associated metadata element */
+		FSceneGraphId MetadataId;
 
 		EDataType Type;
 
@@ -198,6 +211,7 @@ namespace DatasmithRuntime
 
 		FBaseData(FSceneGraphId InElementId, EDataType InType = EDataType::None)
 			: ElementId(InElementId)
+			, MetadataId(DirectLink::InvalidId)
 			, Type(InType)
 		{
 			DataState.store(EAssetState::Unknown);
@@ -206,6 +220,7 @@ namespace DatasmithRuntime
 		FBaseData(const FBaseData& Other)
 		{
 			ElementId = Other.ElementId;
+			MetadataId = Other.MetadataId;
 			Type = Other.Type;
 			Object = Other.Object;
 			DataState.store(Other.DataState.load());
@@ -233,7 +248,7 @@ namespace DatasmithRuntime
 		}
 
 		template<typename T = UObject>
-		T* GetObject()
+		T* GetObject() const
 		{
 			return Cast< T >(Object.Get());
 		}
@@ -248,10 +263,10 @@ namespace DatasmithRuntime
 		int32 Requirements = 0;
 
 		/** Hash of associated element used to prevent the duplication of assets */
-		DirectLink::FElementHash Hash = 0;
+		uint32 Hash = 0;
 
 		/** Hash of potential resource of associated element used to prevent recreation of assets */
-		DirectLink::FElementHash ResourceHash = 0;
+		uint32 ResourceHash = 0;
 
 		FAssetData(FSceneGraphId InElementId, EDataType InType = EDataType::None)
 			: FBaseData(InElementId, InType)
@@ -512,6 +527,9 @@ namespace DatasmithRuntime
 		/** Delete the asset created from the given FAssetData */
 		bool DeleteAsset(FAssetData& AssetData);
 
+		/** Remove given referencer from the list of referencers of the asset */
+		void RemoveFromReferencer(FSceneGraphId* AssetIdPtr, FSceneGraphId ReferencerId);
+
 		/**
 		 * Creates the FAssetData and FActorData required to import the associated Datasmith scene
 		 * This is the first task  after StartImport has been called
@@ -523,9 +541,11 @@ namespace DatasmithRuntime
 
 		void PrepareIncrementalUpdate(FUpdateContext& UpdateContext);
 
-		void IncrementalAdditions(TArray<TSharedPtr<IDatasmithElement>>& Additions);
+		void IncrementalAdditions(TArray<TSharedPtr<IDatasmithElement>>& Additions, TArray<TSharedPtr<IDatasmithElement>>& Updates);
 
 		void IncrementalModifications(TArray<TSharedPtr<IDatasmithElement>>& Modifications);
+
+		void IncrementalDeletions(TArray<DirectLink::FSceneGraphId>& Deletions);
 
 		/** Add an FAssetData object associated with the element's id to the map */
 		void AddAsset(TSharedPtr<IDatasmithElement>&& ElementPtr, const FString& Prefix, EDataType InType = EDataType::None);
@@ -571,6 +591,12 @@ namespace DatasmithRuntime
 		/** Asynchronous build of a static mesh */
 		bool CreateStaticMesh(FSceneGraphId ElementId);
 
+		/** Update StaticMaterials array based on mesh description and mesh element */
+		void FillStaticMeshMaterials(FAssetData& MeshData, TArray< FMeshDescription >& MeshDescriptions);
+
+		/** Update StaticMaterials array based on mesh description and mesh element */
+		void UpdateStaticMeshMaterials(FAssetData& MeshData);
+
 		/** Create and add a static mesh component to the root component */
 		EActionResult::Type CreateMeshComponent(FSceneGraphId ActorId, UStaticMesh* StaticMesh);
 
@@ -603,7 +629,7 @@ namespace DatasmithRuntime
 			++QueuedTaskCount;
 			if (ActionTask.GetAssetId() != DirectLink::InvalidId)
 			{
-				AssetDataList[ActionTask.GetAssetId()].Referencers.Add(ActionTask.GetReferencer());
+				AssetDataList[ActionTask.GetAssetId()].Referencers.AddUnique(ActionTask.GetReferencer());
 			}
 			ActionQueues[WhichQueue].Enqueue(MoveTemp(ActionTask));
 		}
@@ -628,6 +654,12 @@ namespace DatasmithRuntime
 		}
 
 		FActorData& FindOrAddActorData(const TSharedPtr< IDatasmithActorElement >& ActorElement);
+
+		/** Add metadata to the tracking system if it applies to any tracked asset or actor or the scene */
+		void ProcessMetdata(const TSharedPtr< IDatasmithMetaDataElement >& MetadataElement);
+
+		/** Apply metadata to input object if applicable */
+		void ApplyMetadata(FSceneGraphId MetadataId, UObject* Object);
 
 	private:
 		/** DatasmithRuntime actor associated with this importer */
@@ -671,6 +703,7 @@ namespace DatasmithRuntime
 		/** Array of queues dequeued during the import process */
 		TQueue< FActionTask, EQueueMode::Mpsc > ActionQueues[EQueueTask::MaxQueues];
 
+		/** Array of asynchronous tasks started during the import */
 		TArray<TFuture<bool>> OnGoingTasks;
 
 		/** Flag used to properly sequence the import process */
@@ -681,6 +714,9 @@ namespace DatasmithRuntime
 
 		/** Specifies options to use during the import */
 		FDatasmithRuntimeImportOptions ImportOptions;
+
+		/** Future for asynchronous task to collect metadata */
+		TFuture<void> MetadataCollect;
 
 		/** Miscellaneous counters used to report progress */
 		float& OverallProgress;

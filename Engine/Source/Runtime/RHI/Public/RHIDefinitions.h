@@ -16,6 +16,10 @@
 #define USE_STATIC_SHADER_PLATFORM_ENUMS 0
 #endif
 
+#ifndef USE_STATIC_SHADER_PLATFORM_INFO
+#define USE_STATIC_SHADER_PLATFORM_INFO 0
+#endif
+
 #ifndef RHI_RAYTRACING
 #define RHI_RAYTRACING 0
 #endif
@@ -73,8 +77,8 @@ enum EShaderPlatform
 	SP_METAL_MACES3_1 				= 22,
 	SP_METAL_MACES2_REMOVED			UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 23,
 	SP_OPENGL_ES3_1_ANDROID			= 24,
-	SP_SWITCH						= 25,
-	SP_SWITCH_FORWARD				= 26,
+	SP_SWITCH_REMOVED				UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 25,
+	SP_SWITCH_FORWARD_REMOVED		UE_DEPRECATED(4.27, "ShaderPlatform is removed; please don't use.") = 26,
 	SP_METAL_MRT_MAC				= 27,
 	SP_VULKAN_SM5_LUMIN				= 28,
 	SP_VULKAN_ES3_1_LUMIN			= 29,
@@ -348,7 +352,22 @@ class RHI_API FGenericDataDrivenShaderPlatformInfo
 	uint32 bSupportsTessellation : 1;
 	uint32 bSupportsPerPixelDBufferMask : 1;
 	uint32 bIsHlslcc : 1;
+	uint32 bSupportsVariableRateShading : 1;
 	uint32 NumberOfComputeThreads : 10;
+	uint32 bWaterUsesSimpleForwardShading : 1;
+	uint32 bNeedsToSwitchVerticalAxisOnMobileOpenGL : 1;
+	uint32 bSupportsHairStrandGeometry : 1;
+	uint32 bSupportsDOFHybridScattering : 1;
+	uint32 bNeedsExtraMobileFrames : 1;
+	uint32 bSupportsHZBOcclusion : 1;
+	uint32 bSupportsWaterIndirectDraw : 1;
+	uint32 bSupportsAsyncPipelineCompilation : 1;
+	uint32 bSupportsManualVertexFetch : 1;
+	uint32 bRequiresReverseCullingOnMobile : 1;
+	uint32 bOverrideFMaterial_NeedsGBufferEnabled : 1;
+	uint32 bSupportsMobileDistanceField : 1;
+
+		
 #if WITH_EDITOR
 	FText FriendlyName;
 #endif
@@ -614,9 +633,74 @@ public:
 		return Infos[Platform].bIsHlslcc;
 	}
 
+	static FORCEINLINE_DEBUGGABLE const bool GetSupportsVariableRateShading(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bSupportsVariableRateShading;
+	}
+
 	static FORCEINLINE_DEBUGGABLE const uint32 GetNumberOfComputeThreads(const FStaticShaderPlatform Platform)
 	{
 		return Infos[Platform].NumberOfComputeThreads;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetWaterUsesSimpleForwardShading(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bWaterUsesSimpleForwardShading;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetNeedsToSwitchVerticalAxisOnMobileOpenGL(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bNeedsToSwitchVerticalAxisOnMobileOpenGL;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetSupportsHairStrandGeometry(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bSupportsHairStrandGeometry;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetSupportsDOFHybridScattering(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bSupportsDOFHybridScattering;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetNeedsExtraMobileFrames(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bNeedsExtraMobileFrames;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetSupportsHZBOcclusion(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bSupportsHZBOcclusion;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetSupportsWaterIndirectDraw(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bSupportsWaterIndirectDraw;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetSupportsAsyncPipelineCompilation(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bSupportsAsyncPipelineCompilation;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetSupportsManualVertexFetch(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bSupportsManualVertexFetch;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetRequiresReverseCullingOnMobile(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bRequiresReverseCullingOnMobile;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetOverrideFMaterial_NeedsGBufferEnabled(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bOverrideFMaterial_NeedsGBufferEnabled;
+	}
+
+	static FORCEINLINE_DEBUGGABLE const uint32 GetSupportsMobileDistanceField(const FStaticShaderPlatform Platform)
+	{
+		return Infos[Platform].bSupportsMobileDistanceField;
 	}
 
 #if WITH_EDITOR
@@ -636,7 +720,7 @@ public:
 	}
 };
 
-#if USE_STATIC_SHADER_PLATFORM_ENUMS
+#if USE_STATIC_SHADER_PLATFORM_ENUMS || USE_STATIC_SHADER_PLATFORM_INFO
 
 #define IMPLEMENT_DDPSPI_SETTING_WITH_RETURN_TYPE(ReturnType, Function, Value) \
 	static FORCEINLINE_DEBUGGABLE const ReturnType Function(const FStaticShaderPlatform Platform) \
@@ -1232,11 +1316,8 @@ enum EBufferUsageFlags
 	 */
 	BUF_KeepCPUAccessible		= 0x0400,
 
-	/**
-	 * Provide information that this buffer will contain only one vertex, which should be delivered to every primitive drawn.
-	 * This is necessary for OpenGL implementations, which need to handle this case very differently (and can't handle GL_HALF_FLOAT in such vertices at all).
-	 */
-	BUF_ZeroStride				= 0x0800,
+	// Unused
+	//BUF_ZeroStride			= 0x0800,
 
 	/** Buffer should go in fast vram (hint only). Requires BUF_Transient */
 	BUF_FastVRAM				= 0x1000,
@@ -1504,12 +1585,11 @@ inline bool IsPCPlatform(const FStaticShaderPlatform Platform)
 /** Whether the shader platform corresponds to the ES3.1/Metal/Vulkan feature level. */
 inline bool IsMobilePlatform(const EShaderPlatform Platform)
 {
-	return 
+	return
 		Platform == SP_METAL || Platform == SP_METAL_MACES3_1 || Platform == SP_METAL_TVOS
 		|| Platform == SP_PCD3D_ES3_1
 		|| Platform == SP_OPENGL_PCES3_1 || Platform == SP_OPENGL_ES3_1_ANDROID
 		|| Platform == SP_VULKAN_ES3_1_ANDROID || Platform == SP_VULKAN_PCES3_1 || Platform == SP_VULKAN_ES3_1_LUMIN
-		|| Platform == SP_SWITCH_FORWARD
 		|| FDataDrivenShaderPlatformInfo::GetIsMobile(Platform);
 }
 
@@ -1551,10 +1631,13 @@ inline bool IsConsolePlatform(const FStaticShaderPlatform Platform)
 	return FDataDrivenShaderPlatformInfo::GetIsConsole(Platform);
 }
 
+UE_DEPRECATED(4.27, "IsSwitchPlatform() is deprecated; please use DataDrivenShaderPlatformInfo instead.")
 inline bool IsSwitchPlatform(const FStaticShaderPlatform Platform)
 {
-	return Platform == SP_SWITCH || Platform == SP_SWITCH_FORWARD
-		|| FDataDrivenShaderPlatformInfo::GetIsLanguageNintendo(Platform);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return Platform == SP_SWITCH_REMOVED || Platform == SP_SWITCH_FORWARD_REMOVED || 
+		FDataDrivenShaderPlatformInfo::GetIsLanguageNintendo(Platform);	
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 UE_DEPRECATED(4.27, "IsPS4Platform() is deprecated; please use DataDrivenShaderPlatformInfo instead.") 
@@ -1634,7 +1717,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 inline bool IsHlslccShaderPlatform(const FStaticShaderPlatform Platform)
 {
-	return IsMetalPlatform(Platform) || IsVulkanPlatform(Platform) || IsSwitchPlatform(Platform) || IsOpenGLPlatform(Platform) || FDataDrivenShaderPlatformInfo::GetIsHlslcc(Platform);
+	return IsMetalPlatform(Platform) || IsVulkanPlatform(Platform) || IsOpenGLPlatform(Platform) || FDataDrivenShaderPlatformInfo::GetIsHlslcc(Platform);
 }
 
 UE_DEPRECATED(4.27, "Removed; please don't use.") 
@@ -1660,7 +1743,6 @@ inline FStaticFeatureLevel GetMaxSupportedFeatureLevel(const FStaticShaderPlatfo
 	case SP_METAL_SM5_NOTESS:
 	case SP_VULKAN_SM5:
 	case SP_VULKAN_SM5_LUMIN:
-	case SP_SWITCH:
 	case SP_VULKAN_SM5_ANDROID:
 		return ERHIFeatureLevel::SM5;
 	case SP_METAL:
@@ -1672,7 +1754,6 @@ inline FStaticFeatureLevel GetMaxSupportedFeatureLevel(const FStaticShaderPlatfo
 	case SP_VULKAN_ES3_1_ANDROID:
 	case SP_VULKAN_ES3_1_LUMIN:
 	case SP_OPENGL_ES3_1_ANDROID:
-	case SP_SWITCH_FORWARD:
 		return ERHIFeatureLevel::ES3_1;
 	default:
 		return FDataDrivenShaderPlatformInfo::GetMaxFeatureLevel(InShaderPlatform);
@@ -1735,7 +1816,7 @@ inline bool RHINeedsToSwitchVerticalAxis(const FStaticShaderPlatform Platform)
 
 	// ES3.1 need to flip when rendering to an RT that will be post processed
 	return IsOpenGLPlatform(Platform) && IsMobilePlatform(Platform) && !IsPCPlatform(Platform) && !IsMetalMobilePlatform(Platform) && !IsVulkanPlatform(Platform)
-		   && Platform != SP_SWITCH && Platform != SP_SWITCH_FORWARD;
+			&& FDataDrivenShaderPlatformInfo::GetNeedsToSwitchVerticalAxisOnMobileOpenGL(Platform);
 }
 
 inline bool RHISupportsSeparateMSAAAndResolveTextures(const FStaticShaderPlatform Platform)
@@ -1802,21 +1883,6 @@ inline bool RHISupportsMultithreadedShaderCreation(const FStaticShaderPlatform P
 inline uint32 GetExpectedFeatureLevelMaxTextureSamplers(const FStaticFeatureLevel FeatureLevel)
 {
 	return 16;
-}
-
-inline int32 GetFeatureLevelMaxNumberOfBones(const FStaticFeatureLevel FeatureLevel)
-{
-	switch (FeatureLevel)
-	{
-	case ERHIFeatureLevel::ES3_1:
-		return 75;	
-	case ERHIFeatureLevel::SM5:
-		return 65536; // supports uint16
-	default:
-		checkf(0, TEXT("Unknown FeatureLevel %d"), (int32)FeatureLevel);
-	}
-
-	return 0;
 }
 
 /** Returns whether the shader parameter type references an RDG texture. */

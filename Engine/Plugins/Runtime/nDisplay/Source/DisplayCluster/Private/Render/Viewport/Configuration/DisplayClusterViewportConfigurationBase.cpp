@@ -1,12 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DisplayClusterViewportConfigurationBase.h"
+
+#include "Render/Viewport/DisplayClusterViewport.h"
+#include "Render/Viewport/DisplayClusterViewportManager.h"
+
 #include "DisplayClusterViewportConfigurationHelpers.h"
-
-
-#include "IDisplayClusterProjection.h"
-#include "Render/Projection/IDisplayClusterProjectionPolicy.h"
-
+#include "DisplayClusterConfigurationTypes.h"
 
 ///////////////////////////////////////////////////////////////////
 // FDisplayClusterViewportConfigurationBase
@@ -24,7 +24,10 @@ void FDisplayClusterViewportConfigurationBase::Update(const TArray<FString>& InC
 		{
 			for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportIt : ClusterNode->Viewports)
 			{
-				DesiredViewports.Add(ViewportIt.Key, ViewportIt.Value);
+				if (ViewportIt.Key.Len() && ViewportIt.Value)
+				{
+					DesiredViewports.Add(ViewportIt.Key, ViewportIt.Value);
+				}
 			}
 		}
 	}
@@ -56,7 +59,7 @@ void FDisplayClusterViewportConfigurationBase::Update(const TArray<FString>& InC
 		FDisplayClusterViewport* ExistViewport = ViewportManager.ImplFindViewport(CfgIt.Key);
 		if (ExistViewport)
 		{
-			FDisplayClusterViewportConfigurationBase::UpdateViewportConfiguration(ViewportManager, ExistViewport, CfgIt.Value);
+			FDisplayClusterViewportConfigurationBase::UpdateViewportConfiguration(ViewportManager, RootActor, ExistViewport, CfgIt.Value);
 		}
 		else
 		{
@@ -66,46 +69,14 @@ void FDisplayClusterViewportConfigurationBase::Update(const TArray<FString>& InC
 }
 
 // Assign new configuration to this viewport <Runtime>
-bool FDisplayClusterViewportConfigurationBase::UpdateViewportConfiguration(FDisplayClusterViewportManager& ViewportManager, FDisplayClusterViewport* DesiredViewport, const UDisplayClusterConfigurationViewport* ConfigurationViewport)
+bool FDisplayClusterViewportConfigurationBase::UpdateViewportConfiguration(FDisplayClusterViewportManager& ViewportManager, ADisplayClusterRootActor& RootActor, FDisplayClusterViewport* DesiredViewport, const UDisplayClusterConfigurationViewport* ConfigurationViewport)
 {
 	check(IsInGameThread());
 	check(DesiredViewport);
 	check(ConfigurationViewport);
 
-	DisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(*DesiredViewport, *ConfigurationViewport);
-
-	bool bNeedUpdateProjectionPolicy = false;
-
-	if (DesiredViewport->ProjectionPolicy.IsValid())
-	{
-		// Current projection policy valid
-		bNeedUpdateProjectionPolicy = DesiredViewport->ProjectionPolicy->IsConfigurationChanged(&ConfigurationViewport->ProjectionPolicy);
-	}
-	else
-	if (DesiredViewport->UninitializedProjectionPolicy.IsValid())
-	{
-		// Current projection policy valid
-		bNeedUpdateProjectionPolicy = DesiredViewport->UninitializedProjectionPolicy->IsConfigurationChanged(&ConfigurationViewport->ProjectionPolicy);
-	}
-
-	if (bNeedUpdateProjectionPolicy)
-	{
-		// Release current projection
-		DesiredViewport->HandleEndScene();
-		DesiredViewport->UninitializedProjectionPolicy.Reset();
-
-		// Create new projection type interface
-		DesiredViewport->UninitializedProjectionPolicy = ViewportManager.CreateProjectionPolicy(DesiredViewport->GetId(), &ConfigurationViewport->ProjectionPolicy);
-		DesiredViewport->HandleStartScene();
-	}
-	else
-	{
-		if (!DesiredViewport->ProjectionPolicy.IsValid())
-		{
-			// Try initialize proj policy every tick (mesh deffered load, etc)
-			DesiredViewport->HandleStartScene();
-		}
-	}
+	FDisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(*DesiredViewport, RootActor, *ConfigurationViewport);
+	FDisplayClusterViewportConfigurationHelpers::UpdateProjectionPolicy(*DesiredViewport, &(ConfigurationViewport->ProjectionPolicy));
 
 	return true;
 }

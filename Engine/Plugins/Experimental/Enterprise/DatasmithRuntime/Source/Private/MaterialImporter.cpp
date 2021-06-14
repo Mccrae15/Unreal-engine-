@@ -26,11 +26,11 @@ namespace DatasmithRuntime
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(FSceneImporter::ProcessMaterialData);
 
-		// Clear PendingDelete flag if it is set. Something is wrong. Better safe than sorry
+		// Something is wrong. Do not go any further
 		if (MaterialData.HasState(EAssetState::PendingDelete))
 		{
-			MaterialData.ClearState(EAssetState::PendingDelete);
-			UE_LOG(LogDatasmithRuntime, Warning, TEXT("A material marked for deletion is actually used by the scene"));
+			UE_LOG(LogDatasmithRuntime, Error, TEXT("A material marked for deletion is actually used by the scene"));
+			return;
 		}
 
 		if (MaterialData.HasState(EAssetState::Processed))
@@ -46,8 +46,7 @@ namespace DatasmithRuntime
 
 		if ( !MaterialData.Object.IsValid() )
 		{
-			//MaterialData.Hash = Element->GetStore().Snapshot().Hash();
-			MaterialData.Hash = GetTypeHash(Element->CalculateElementHash(true));
+			MaterialData.Hash = GetTypeHash(Element->CalculateElementHash(true), EDataType::Material);
 
 			if (UObject* Asset = FAssetRegistry::FindObjectFromHash(MaterialData.Hash))
 			{
@@ -69,6 +68,9 @@ namespace DatasmithRuntime
 				MaterialData.Object = TWeakObjectPtr<UObject>( UMaterialInstanceDynamic::Create( nullptr, nullptr) );
 #endif
 				check(MaterialData.Object.IsValid());
+
+				// Load metadata on newly created material asset if any
+				ApplyMetadata(MaterialData.MetadataId, MaterialData.GetObject());
 			}
 		}
 
@@ -106,7 +108,7 @@ namespace DatasmithRuntime
 		}
 		else if( Element->IsA( EDatasmithElementType::MasterMaterial ) )
 		{
-			MaterialData.Requirements = ProcessMaterialElement(StaticCastSharedPtr<IDatasmithMasterMaterialElement>(Element), *Host, TextureCallback);
+			MaterialData.Requirements = ProcessMaterialElement(StaticCastSharedPtr<IDatasmithMasterMaterialElement>(Element), TextureCallback);
 		}
 
 		MaterialData.SetState(EAssetState::Processed);
@@ -152,7 +154,17 @@ namespace DatasmithRuntime
 
 			TSharedPtr< IDatasmithMasterMaterialElement > MaterialElement = StaticCastSharedPtr< IDatasmithMasterMaterialElement >( Element );
 
-			bCreationSuccessful = LoadMasterMaterial(MaterialInstance, MaterialElement, SceneElement->GetHost());
+			bCreationSuccessful = LoadMasterMaterial(MaterialInstance, MaterialElement);
+
+			// Add tracking on material's properties
+			if (bCreationSuccessful)
+			{
+				for (int Index = 0; Index < MaterialElement->GetPropertiesCount(); ++Index)
+				{
+					const TSharedPtr< IDatasmithKeyValueProperty >& Property = MaterialElement->GetProperty(Index);
+					DependencyList.Add(Property->GetNodeId(), { EDataType::Material, ElementId, 0xffff });
+				}
+			}
 		}
 		else if ( Element->IsA( EDatasmithElementType::UEPbrMaterial ) )
 		{
@@ -249,31 +261,31 @@ namespace DatasmithRuntime
 			{
 				MaterialUpdateContext.AddMaterialInstance( MaterialInstance );
 
-#if WITH_EDITOR
-				// If BlendMode override property has been changed, make sure this combination of the parent material is compiled
-				if ( MaterialInstance->BasePropertyOverrides.bOverride_BlendMode == true )
-				{
-					MaterialInstance->ForceRecompileForRendering();
-				}
-				else
-				{
-					// If a switch is overridden, we need to recompile
-					FStaticParameterSet StaticParameters;
-					MaterialInstance->GetStaticParameterValues( StaticParameters );
-
-					for ( FStaticSwitchParameter& Switch : StaticParameters.StaticSwitchParameters )
-					{
-						if ( Switch.bOverride )
-						{
-							MaterialInstance->ForceRecompileForRendering();
-							break;
-						}
-					}
-				}
-
-				MaterialInstance->PreEditChange( nullptr );
-				MaterialInstance->PostEditChange();
-#endif
+//#if WITH_EDITOR
+//				// If BlendMode override property has been changed, make sure this combination of the parent material is compiled
+//				if ( MaterialInstance->BasePropertyOverrides.bOverride_BlendMode == true )
+//				{
+//					MaterialInstance->ForceRecompileForRendering();
+//				}
+//				else
+//				{
+//					// If a switch is overridden, we need to recompile
+//					FStaticParameterSet StaticParameters;
+//					MaterialInstance->GetStaticParameterValues( StaticParameters );
+//
+//					for ( FStaticSwitchParameter& Switch : StaticParameters.StaticSwitchParameters )
+//					{
+//						if ( Switch.bOverride )
+//						{
+//							MaterialInstance->ForceRecompileForRendering();
+//							break;
+//						}
+//					}
+//				}
+//
+//				MaterialInstance->PreEditChange( nullptr );
+//				MaterialInstance->PostEditChange();
+//#endif
 			}
 		}
 	}

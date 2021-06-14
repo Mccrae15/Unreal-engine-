@@ -218,23 +218,6 @@ USkeletalMeshComponent::USkeletalMeshComponent(const FObjectInitializer& ObjectI
 	
 #endif//#if WITH_APEX_CLOTHING || WITH_CHAOS_CLOTHING
 
-	MassMode_DEPRECATED = EClothMassMode::Density;
-	UniformMass_DEPRECATED = 1.f;
-	TotalMass_DEPRECATED = 100.0f;
-	Density_DEPRECATED = 0.1f;
-	MinPerParticleMass_DEPRECATED = 0.0001f;
-	EdgeStiffness_DEPRECATED = 1.f;
-	BendingStiffness_DEPRECATED = 1.f;
-	AreaStiffness_DEPRECATED = 1.f;
-	VolumeStiffness_DEPRECATED = 0.f;
-	StrainLimitingStiffness_DEPRECATED = 1.f;
-	ShapeTargetStiffness_DEPRECATED = 0.f;
-	bUseBendingElements_DEPRECATED = false;
-	bUseTetrahedralConstraints_DEPRECATED = false;
-	bUseThinShellVolumeConstraints_DEPRECATED = false;
-	bUseSelfCollisions_DEPRECATED = false;
-	bUseContinuousCollisionDetection_DEPRECATED = false;
-
 #if WITH_EDITORONLY_DATA
 	DefaultPlayRate_DEPRECATED = 1.0f;
 	bDefaultPlaying_DEPRECATED = true;
@@ -3846,24 +3829,8 @@ void USkeletalMeshComponent::ParallelDuplicateAndInterpolate(FAnimationEvaluatio
 			FAnimationRuntime::LerpBoneTransforms(InAnimEvaluationContext.BoneSpaceTransforms, InAnimEvaluationContext.CachedBoneSpaceTransforms, Alpha, RequiredBones);
 			FillComponentSpaceTransforms(InAnimEvaluationContext.SkeletalMesh, InAnimEvaluationContext.BoneSpaceTransforms, InAnimEvaluationContext.ComponentSpaceTransforms);
 
-			if (INTEL_ISPC)
-			{
-#if INTEL_ISPC
-				ispc::LerpCurves(
-					InAnimEvaluationContext.Curve.CurveWeights.GetData(),
-					InAnimEvaluationContext.Curve.ValidCurveWeights.GetData(),
-					InAnimEvaluationContext.CachedCurve.CurveWeights.GetData(),
-					InAnimEvaluationContext.CachedCurve.ValidCurveWeights.GetData(),
-					InAnimEvaluationContext.Curve.CurveWeights.Num(),
-					Alpha
-				);
-#endif
-			}
-			else
-			{
-				// interpolate curve
-				InAnimEvaluationContext.Curve.LerpTo(InAnimEvaluationContext.CachedCurve, Alpha);
-			}
+			// interpolate curve
+			InAnimEvaluationContext.Curve.LerpTo(InAnimEvaluationContext.CachedCurve, Alpha);
 
 			FCustomAttributesRuntime::InterpolateAttributes(InAnimEvaluationContext.CachedCustomAttributes, InAnimEvaluationContext.CustomAttributes, Alpha);
 		}
@@ -4012,7 +3979,11 @@ void USkeletalMeshComponent::FinalizeBoneTransform()
 
 	ConditionallyDispatchQueuedAnimEvents();
 
-	OnBoneTransformsFinalized.Broadcast();
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	OnBoneTransformsFinalized.Broadcast();  // Deprecated in 4.27
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	OnBoneTransformsFinalizedMC.Broadcast();
 
 	TRACE_SKELETAL_MESH_COMPONENT(this);
 }
@@ -4087,6 +4058,15 @@ void USkeletalMeshComponent::UnregisterOnTeleportDelegate(const FDelegateHandle&
 	OnSkelMeshPhysicsTeleported.Remove(DelegateHandle);
 }
 
+FDelegateHandle USkeletalMeshComponent::RegisterOnBoneTransformsFinalizedDelegate(const FOnBoneTransformsFinalizedMultiCast::FDelegate& Delegate)
+{
+	return OnBoneTransformsFinalizedMC.Add(Delegate);
+}
+
+void USkeletalMeshComponent::UnregisterOnBoneTransformsFinalizedDelegate(const FDelegateHandle& DelegateHandle)
+{
+	OnBoneTransformsFinalizedMC.Remove(DelegateHandle);
+}
 
 bool USkeletalMeshComponent::MoveComponentImpl(const FVector& Delta, const FQuat& NewRotation, bool bSweep, FHitResult* OutHit /*= nullptr*/, EMoveComponentFlags MoveFlags /*= MOVECOMP_NoFlags*/, ETeleportType Teleport /*= ETeleportType::None*/)
 {

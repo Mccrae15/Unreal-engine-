@@ -10,18 +10,25 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 
 class AActor;
-class FExposedEntityDragDrop;
 struct EVisibility;
-struct FListEntry;
 struct FAssetData;
+class FExposedEntityDragDrop;
+struct FListEntry;
+class FRCPanelWidgetRegistry;
+struct FRemoteControlEntity;
 class FReply;
 class IPropertyRowGenerator;
 class IPropertyHandle;
+class SBox;
+class SClassViewer;
+class SComboButton;
 struct SRCPanelTreeNode;
 class SRCPanelFunctionPicker;
 class SRemoteControlPanel;
 class SRCPanelExposedEntitiesList;
+class STextBlock;
 class URemoteControlPreset;
+
 
 DECLARE_DELEGATE_TwoParams(FOnEditModeChange, TSharedPtr<SRemoteControlPanel> /* Panel */, bool /* bEditModeChange */);
 
@@ -114,19 +121,66 @@ private:
 	/** Exposes a function.  */
 	void ExposeFunction(UObject* Object, UFunction* Function);
 
-	/** Handles exposing an actor. */
+	/** Handles exposing an actor from asset data. */
 	void OnExposeActor(const FAssetData& AssetData);
 
+	/** Handle exposing an actor. */
+	void ExposeActor(AActor* Actor);
 
-	/** Handles disbabling CPU throttling. */
+	/** Handles disabling CPU throttling. */
 	FReply OnClickDisableUseLessCPU() const;
 
 	/** Creates a widget that warns the user when CPU throttling is enabled.  */
 	TSharedRef<SWidget> CreateCPUThrottleButton() const;
+
+	/** Create expose button, allowing to expose blueprints and actor functions. */
+	TSharedRef<SWidget> CreateExposeButton();
+
+	/** Create expose by class menu content */
+	TSharedRef<SWidget> CreateExposeByClassWidget();
+
+	/** Cache the classes (and parent classes) of all actors in the level. */
+	void CacheLevelClasses();
+	
+	//~ Handlers for various level actor events.
+	void OnActorAddedToLevel(AActor* Actor);
+	void OnLevelActorsRemoved(AActor* Actor);
+	void OnLevelActorListChanged();
+
+	/** Handles caching an actor's class and parent classes. */
+	void CacheActorClass(AActor* Actor);
+
+	/** Handles refreshing the class picker when the map is changed. */
+	void OnMapChange(uint32);
+
+	/** Create the details view for the entity currently selected. */
+	TSharedRef<SWidget> CreateEntityDetailsView();
+	
+	/** Update the details view following entity selection change.  */
+	void UpdateEntityDetailsView(const TSharedPtr<SRCPanelTreeNode>& SelectedNode);
+
+	/** Returns whether the preset has any unbound property or function. */
+	void UpdateRebindButtonVisibility();
+
+	/** Handle user clicking on the rebind all button. */
+	FReply OnClickRebindAllButton();
+
+	//~ Handlers called in order to clear the exposed property cache.
+	void OnEntityExposed(URemoteControlPreset* InPreset, const FGuid& InEntityId);
+	void OnEntityUnexposed(URemoteControlPreset* InPreset, const FGuid& InEntityId);
+	
+	/** Toggles the logging part of UI */
+	void OnLogCheckboxToggle(ECheckBoxState State);
+
+	/** Triggers a next frame update of the actor function picker to ensure that added actors are valid. */
+	void UpdateActorFunctionPicker();
+	
+	/** Handle updating the preset name textblock when it's renamed. */
+	void OnAssetRenamed(const FAssetData& Asset, const FString&);
+
 private:
 	/** Holds the preset asset. */
 	TStrongObjectPtr<URemoteControlPreset> Preset;
-	/** Holds all the field groups. */
 	/** Whether the panel is in edit mode. */
 	bool bIsInEditMode = true;
 	/** Whether objects need to be re-resolved because PIE Started or ended. */
@@ -141,4 +195,27 @@ private:
 	TSharedPtr<SRCPanelFunctionPicker> SubsystemFunctionPicker;
 	/** Holds the exposed entity list view. */
 	TSharedPtr<SRCPanelExposedEntitiesList> EntityList;
+	/** Holds the combo button that allows exposing functions and actors. */
+	TSharedPtr<SComboButton> ExposeComboButton;
+	/** Caches all the classes of actors in the current level. */
+	TSet<TWeakObjectPtr<const UClass>> CachedClassesInLevel;
+	/** Holds the class picker used to expose all actors of class. */
+	TSharedPtr<SClassViewer> ClassPicker;
+	/** Holds the field's details. */
+	TSharedPtr<class IStructureDetailsView> EntityDetailsView;
+	/** Holds the field's protocol details. */
+	TSharedPtr<SBox> EntityProtocolDetails;
+	/**
+	 * Pointer to the currently selected node.
+	 * Used in order to ensure that the generated details view keeps a valid pointer to the selected entity.
+	 */
+	TSharedPtr<FRemoteControlEntity> SelectedEntity;
+	/** Whether to show the rebind all button. */
+	bool bShowRebindButton = false;
+	/** Cache of exposed properties. */
+	TSet<TWeakPtr<IPropertyHandle>> CachedExposedProperties;
+	/** Preset name widget. */
+	TSharedPtr<STextBlock> PresetNameTextBlock;
+	/** Holds a cache of widgets. */
+	TSharedPtr<FRCPanelWidgetRegistry> WidgetRegistry;
 };

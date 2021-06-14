@@ -5,8 +5,23 @@
 #include <CoreMinimal.h>
 #include <HAL/Thread.h>
 
+#if PLATFORM_DESKTOP && !PLATFORM_APPLE
+
 THIRD_PARTY_INCLUDES_START
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Windows/PreWindowsApi.h"
+#endif
+
 #include <nvEncodeAPI.h>
+
+#if PLATFORM_WINDOWS
+#include "Windows/PostWindowsApi.h"
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
+
+
 THIRD_PARTY_INCLUDES_END
 
 // helper macro to define and clear NVENC structures
@@ -53,3 +68,5 @@ namespace AVEncoder
 	};
 
 } /* namespace AVEncoder */
+
+#endif // PLATFORM_DESKTOP && !PLATFORM_APPLE

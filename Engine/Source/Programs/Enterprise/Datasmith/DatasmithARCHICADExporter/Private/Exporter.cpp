@@ -2,7 +2,7 @@
 
 #include <stddef.h>
 
-#include "WarningsDisabler.h"
+#include "Utils/WarningsDisabler.h"
 
 DISABLE_SDK_WARNINGS_START
 
@@ -13,6 +13,7 @@ DISABLE_SDK_WARNINGS_END
 
 #include "Exporter.h"
 #include "ResourcesIDs.h"
+#include "Utils/TimeStat.h"
 
 #ifdef TicksPerSecond
 	#undef TicksPerSecond
@@ -83,6 +84,8 @@ void FExporter::DoExport(const ModelerAPI::Model& InModel, const API_IOParams& I
 // Export the AC model in the specified file
 void FExporter::DoExport(const ModelerAPI::Model& InModel, const IO::Location& InDestFile)
 {
+	FTimeStat DoExportStart;
+
 	// The exporter
 	FDatasmithSceneExporter SceneExporter;
 	SceneExporter.PreExport();
@@ -104,20 +107,30 @@ void FExporter::DoExport(const ModelerAPI::Model& InModel, const IO::Location& I
 	FProgression Progression(kStrListProgression, kExportTitle, kNbPhases, FProgression::kThrowOnCancel,
 							 &OutUserCancelled);
 
-	FSyncDatabase SyncDatabase(*FilePath, *LabelString, SceneExporter.GetAssetsOutputPath());
+	FSyncDatabase SyncDatabase(*FilePath, *LabelString, SceneExporter.GetAssetsOutputPath(),
+							   FSyncDatabase::GetCachePath());
 
-	FSyncContext SyncContext(InModel, SyncDatabase, &Progression);
+	FSyncContext SyncContext(false, InModel, SyncDatabase, &Progression);
 
 	TSharedRef< IDatasmithScene > Scene = SyncDatabase.GetScene();
 
 	SyncDatabase.SetSceneInfo();
 	SyncDatabase.Synchronize(SyncContext);
 
+	FTimeStat DoExportSyncEnd;
+
 	SyncContext.NewPhase(kExportSaving);
 
 	// Datasmith do the save
 	SceneExporter.Export(Scene);
 	SyncContext.Stats.Print();
+
+	FTimeStat DoExportEnd;
+
+	DoExportSyncEnd.PrintDiff("Synchronization", DoExportStart);
+	DoExportEnd.PrintDiff("Scene Export", DoExportSyncEnd);
+	DoExportEnd.PrintDiff("Total DoExport", DoExportStart);
+	SyncDatabase.GetMeshIndexor().SaveToFile();
 }
 
 // Export the AC model in the specified file
@@ -125,17 +138,17 @@ GSErrCode FExporter::DoChooseDestination(IO::Location* OutDestFile)
 {
 	DG::FileDialog fileDialog(DG::FileDialog::Save);
 
-	IO::fileSystem.GetSpecialLocation(IO::FileSystem::CurrentFolder, OutDestFile);
+	// IO::fileSystem.GetSpecialLocation(IO::FileSystem::CurrentFolder, OutDestFile);
 
 	FTM::FileTypeManager templateFileFTM("TemplateFileFTM");
-	FTM::TypeID			 datasmithTypeID =
-		templateFileFTM.AddType(FTM::FileType("Datasmith file", "udatasmith", 0, 0, -1, NULL));
+	FTM::TypeID			 datasmithTypeID = templateFileFTM.AddType(
+		 FTM::FileType(GetStdName(kName_DatasmithFileTypeName), "udatasmith", 0, 0, kIconDSFile));
 
-	fileDialog.SetTitle("Export BCF File");
+	fileDialog.SetTitle(GetGSName(kName_ExportToDatasmithFile));
 	fileDialog.AddFilter(datasmithTypeID);
 	fileDialog.AddFilter(FTM::RootGroup);
 	fileDialog.SelectFilter(0);
-	fileDialog.SetFolder(*OutDestFile);
+	//	fileDialog.SetFolder(*OutDestFile);
 
 	if (!fileDialog.Invoke())
 		return Cancel;

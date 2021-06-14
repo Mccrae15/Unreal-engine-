@@ -456,11 +456,11 @@ bool FAudioDevice::Init(Audio::FDeviceId InDeviceID, int32 InMaxSources)
 		bSpatializationInterfaceEnabled = true;
 		bSpatializationIsExternalSend = SpatializationPluginFactory->IsExternalSend();
 		MaxChannelsSupportedBySpatializationPlugin = SpatializationPluginFactory->GetMaxSupportedChannels();
-		UE_LOG(LogAudio, Log, TEXT("Using Audio Spatialization Plugin: %s is external send: %d"), *(SpatializationPluginFactory->GetDisplayName()), bSpatializationIsExternalSend);
+		UE_LOG(LogAudio, Display, TEXT("Audio Spatialization Plugin: %s is external send: %d"), *(SpatializationPluginFactory->GetDisplayName()), bSpatializationIsExternalSend);
 	}
 	else
 	{
-		UE_LOG(LogAudio, Log, TEXT("Using built-in audio spatialization."));
+		UE_LOG(LogAudio, Display, TEXT("Audio Spatialization Plugin: None (built-in)."));
 	}
 
 	//Get the requested reverb plugin and set it up:
@@ -470,11 +470,11 @@ bool FAudioDevice::Init(Audio::FDeviceId InDeviceID, int32 InMaxSources)
 		ReverbPluginInterface = ReverbPluginFactory->CreateNewReverbPlugin(this);
 		bReverbInterfaceEnabled = true;
 		bReverbIsExternalSend = ReverbPluginFactory->IsExternalSend();
-		UE_LOG(LogAudio, Log, TEXT("Audio Reverb Plugin: %s"), *(ReverbPluginFactory->GetDisplayName()));
+		UE_LOG(LogAudio, Display, TEXT("Audio Reverb Plugin: %s"), *(ReverbPluginFactory->GetDisplayName()));
 	}
 	else
 	{
-		UE_LOG(LogAudio, Log, TEXT("Using built-in audio reverb."));
+		UE_LOG(LogAudio, Display, TEXT("Audio Reverb Plugin: None (built-in)."));
 	}
 
 	//Get the requested occlusion plugin and set it up.
@@ -488,7 +488,7 @@ bool FAudioDevice::Init(Audio::FDeviceId InDeviceID, int32 InMaxSources)
 	}
 	else
 	{
-		UE_LOG(LogAudio, Display, TEXT("Using built-in audio occlusion."));
+		UE_LOG(LogAudio, Display, TEXT("Audio Occlusion Plugin: None (built-in)."));
 	}
 
 	//Get the requested modulation plugin and set it up.
@@ -1966,9 +1966,10 @@ bool FAudioDevice::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 #if !UE_BUILD_SHIPPING
 	auto ParseAudioExecCmd = [](const TCHAR** InCmd, const TCHAR* InMatch)
 	{
+		const TCHAR* PreParseCmd = *InCmd;
 		if (FParse::Command(InCmd, InMatch))
 		{
-			UE_LOG(LogAudio, Warning, TEXT("The Exec command '%s' is deprecated. Use 'au.Debug.%s' instead"), InCmd);
+			UE_LOG(LogAudio, Warning, TEXT("The Exec command '%s' is deprecated. Use 'au.Debug.%s' instead"), PreParseCmd, InMatch);
 			return true;
 		}
 
@@ -6015,6 +6016,8 @@ void FAudioDevice::Precache(USoundWave* SoundWave, bool bSynchronous, bool bTrac
 
 		float CompressedDurationThreshold = GetCompressionDurationThreshold(SoundGroup);
 
+		static FName NAME_OGG(TEXT("OGG"));
+		SoundWave->bDecompressedFromOgg = GetRuntimeFormat(SoundWave) == NAME_OGG;
 
 		// handle audio decompression
 		if (FPlatformProperties::SupportsAudioStreaming() && SoundWave->IsStreaming(nullptr))
@@ -6062,9 +6065,6 @@ void FAudioDevice::Precache(USoundWave* SoundWave, bool bSynchronous, bool bTrac
 				SoundWave->AudioDecompressor->StartBackgroundTask();
 				PrecachingSoundWaves.Add(SoundWave);
 			}
-
-			static FName NAME_OGG(TEXT("OGG"));
-			SoundWave->bDecompressedFromOgg = GetRuntimeFormat(SoundWave) == NAME_OGG;
 
 			// the audio decompressor will track memory
 			if (SoundWave->DecompressionType == DTYPE_Native)
@@ -6361,6 +6361,12 @@ bool FAudioDevice::IsAudioDeviceMuted() const
 		const bool bIsAlwaysPlayNonRealtime = DeviceManager->IsAlwaysPlayNonRealtimeDeviceAudio() && IsNonRealtime();
 
 		if (bIsPlayAllDeviceAudio || bIsAlwaysPlayNonRealtime)
+		{
+			return false;
+		}
+
+		// If we have one active device, ignore device muting
+		if (DeviceManager->GetNumActiveAudioDevices() == 1)
 		{
 			return false;
 		}

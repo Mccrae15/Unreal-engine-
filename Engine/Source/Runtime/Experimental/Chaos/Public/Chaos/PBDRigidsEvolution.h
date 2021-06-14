@@ -309,9 +309,19 @@ public:
 		NumIterations = InNumIterations;
 	}
 
+	CHAOS_API int32 GetNumIterations() const
+	{
+		return NumIterations;
+	}
+
 	CHAOS_API void SetNumPushOutIterations(int32 InNumIterations)
 	{
 		NumPushOutIterations = InNumIterations;
+	}
+
+	CHAOS_API int32 GetNumPushOutIterations() const
+	{
+		return NumPushOutIterations;
 	}
 
 	CHAOS_API void EnableParticle(FGeometryParticleHandle* Particle, const FGeometryParticleHandle* ParentParticle)
@@ -373,16 +383,20 @@ public:
 			}
 		}
 
-		//TODO: distinguish between new particles and dirty particles
-		const FUniqueIdx UniqueIdx = Particle.UniqueIdx();
-		FPendingSpatialData& SpatialData = InternalAccelerationQueue.FindOrAdd(UniqueIdx);
-		ensure(SpatialData.bDelete == false);
-		SpatialData.AccelerationHandle = FAccelerationStructureHandle(Particle);
-		SpatialData.SpatialIdx = Particle.SpatialIdx();
+		//only add to acceleration structure if it has collision
+		if (Particle.HasCollision())
+		{
+			//TODO: distinguish between new particles and dirty particles
+			const FUniqueIdx UniqueIdx = Particle.UniqueIdx();
+			FPendingSpatialData& SpatialData = InternalAccelerationQueue.FindOrAdd(UniqueIdx);
+			ensure(SpatialData.bDelete == false);
+			SpatialData.AccelerationHandle = FAccelerationStructureHandle(Particle);
+			SpatialData.SpatialIdx = Particle.SpatialIdx();
 
-		auto& AsyncSpatialData = AsyncAccelerationQueue.FindOrAdd(UniqueIdx);
-		ensure(SpatialData.bDelete == false);
-		AsyncSpatialData = SpatialData;
+			auto& AsyncSpatialData = AsyncAccelerationQueue.FindOrAdd(UniqueIdx);
+			ensure(SpatialData.bDelete == false);
+			AsyncSpatialData = SpatialData;
+		}
 	}
 
 	CHAOS_API void DestroyParticle(FGeometryParticleHandle* Particle)
@@ -684,6 +698,18 @@ public:
 			{
 				Rigid->PreV() = Rigid->V();
 				Rigid->PreW() = Rigid->W();
+
+				// Update the world bounds
+				if (Rigid->HasBounds())
+				{
+					const FAABB3& LocalBounds = Rigid->LocalBounds();
+					FAABB3 WorldSpaceBounds = LocalBounds.TransformedAABB(FRigidTransform3(Rigid->X(), Rigid->R()));
+					if (Rigid->CCDEnabled())
+					{
+						WorldSpaceBounds.ThickenSymmetrically(Rigid->V() * Dt);
+					}
+					Rigid->SetWorldSpaceInflatedBounds(WorldSpaceBounds);
+				}
 			}
 		}
 	}
@@ -735,6 +761,7 @@ protected:
 		return NumConstraints;
 	}
 
+public:
 	template <bool bPersistent>
 	FORCEINLINE_DEBUGGABLE void RemoveParticleFromAccelerationStructure(TGeometryParticleHandleImp<FReal, 3, bPersistent>& ParticleHandle)
 	{
@@ -754,6 +781,8 @@ protected:
 		//TODO: if we distinguished between first time adds we could avoid this. We could also make the RemoveElementFrom more strict and ensure when it fails
 		InternalAcceleration->RemoveElementFrom(SpatialData.AccelerationHandle, SpatialData.SpatialIdx);
 	}
+
+protected:
 
 	void UpdateConstraintPositionBasedState(FReal Dt)
 	{
@@ -895,7 +924,8 @@ protected:
 			, FAccelerationStructure* InInternalAccelerationStructure
 			, FAccelerationStructure* InExternalAccelerationStructure
 			, bool InForceFullBuild
-			, bool InIsSingleThreaded);
+			, bool InIsSingleThreaded
+			, bool bNeedsReset);
 		static FORCEINLINE TStatId GetStatId();
 		static FORCEINLINE ENamedThreads::Type GetDesiredThread();
 		static FORCEINLINE ESubsequentsMode::Type GetSubsequentsMode();
@@ -907,6 +937,7 @@ protected:
 		FAccelerationStructure* ExternalStructure;
 		bool IsForceFullBuild;
 		bool bIsSingleThreaded;
+		bool bNeedsReset;
 
 	private:
 		void UpdateStructure(FAccelerationStructure* AccelerationStructure);

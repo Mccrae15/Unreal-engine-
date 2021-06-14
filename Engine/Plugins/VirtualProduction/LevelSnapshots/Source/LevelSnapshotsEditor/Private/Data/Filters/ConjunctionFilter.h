@@ -3,8 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-
-#include "EditorFilter.h"
+#include "LevelSnapshotFilters.h"
 #include "ConjunctionFilter.generated.h"
 
 class UNegatableFilter;
@@ -14,11 +13,15 @@ class UNegatableFilter;
  * It is valid to have no children: in this case, this filter return false.
  */
 UCLASS(meta = (InternalSnapshotFilter))
-class UConjunctionFilter : public UEditorFilter
+class UConjunctionFilter : public ULevelSnapshotFilter
 {
 	GENERATED_BODY()
 public:
 
+	static FName GetChildrenMemberName();
+	
+	void MarkTransactional();
+	
 	/** Creates a new instance of FilterClass and places it in a new negatable filter.
 	 * The resulting negatable filter is added as child.
 	 */
@@ -26,17 +29,19 @@ public:
 	/** Removes filter created by CreateChild. */
 	void RemoveChild(UNegatableFilter* Child);
 	const TArray<UNegatableFilter*>& GetChildren() const;
+
+	void SetIsIgnored(bool Value);
+	bool IsIgnored() const { return bIgnoreFilter; }
+	
+	void OnRemoved();
+
 	
 	//~ Begin ULevelSnapshotFilter Interface
-	EFilterResult::Type IsActorValid(const FIsActorValidParams& Params) const override;
-	EFilterResult::Type IsPropertyValid(const FIsPropertyValidParams& Params) const override;
+	virtual EFilterResult::Type IsActorValid(const FIsActorValidParams& Params) const override;
+	virtual EFilterResult::Type IsPropertyValid(const FIsPropertyValidParams& Params) const override;
+	virtual EFilterResult::Type IsDeletedActorValid(const FIsDeletedActorValidParams& Params) const override;
+	virtual EFilterResult::Type IsAddedActorValid(const FIsAddedActorValidParams& Params) const override;
 	//~ End ULevelSnapshotFilter Interface
-
-	//~ Begin UEditorFilter Interface
-	virtual TArray<UEditorFilter*> GetEditorChildren();
-	virtual void IncrementEditorFilterBehavior(const bool bIncludeChildren = false) override;
-	virtual void SetEditorFilterBehavior(const EEditorFilterBehavior InFilterBehavior, const bool bIncludeChildren = false);
-	//~ Begin UEditorFilter Interface
 
 	DECLARE_EVENT_OneParam(UConjunctionFilter, FOnChildModified, UNegatableFilter*);
 	FOnChildModified OnChildAdded;
@@ -46,4 +51,7 @@ private:
 
 	UPROPERTY()
 	TArray<UNegatableFilter*> Children;
+
+	UPROPERTY()
+	bool bIgnoreFilter = false;
 };

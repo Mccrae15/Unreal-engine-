@@ -9,25 +9,11 @@
 #include "HAL/PlatformTime.h"
 #include "HAL/ThreadSafeBool.h"
 #include "HAL/ThreadSafeCounter.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/CriticalSection.h"
 
-
-// HACK (M84FIX): to be added back later
-// #if PLATFORM_WINDOWS || PLATFORM_XBOXONE
-// #include "WmfIncludes.h"
-// #endif
-
-// HACK (M84FIX): this warning suppression should happen inside WebRTCInclude.h and seemingly it does, but for the life of me I cannot make it suppress from inside that header.
-THIRD_PARTY_INCLUDES_START
-// C4596 'name': illegal qualified name in member declaration in abseil-cpp
-#pragma warning(push)
-#pragma warning(disable: 4596 4583)
 #include "WebRTCIncludes.h"
-#pragma warning(pop)
-THIRD_PARTY_INCLUDES_END
-
 
 #include "WebRTCLogging.h"
 #include "Utils.h"

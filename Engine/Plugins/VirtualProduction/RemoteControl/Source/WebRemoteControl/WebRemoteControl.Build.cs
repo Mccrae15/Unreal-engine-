@@ -10,13 +10,13 @@ public class WebRemoteControl : ModuleRules
 			new string[] {
 				"Core",
 				"CoreUObject",
+				"HTTPServer"
 			}
 		);
 
         PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"AssetRegistry",
-				"HTTPServer",
 				"RemoteControl",
 				"Serialization",
 				"Sockets",
@@ -30,6 +30,7 @@ public class WebRemoteControl : ModuleRules
 				new string[] {
 					"Engine",
 					"ImageWrapper",
+					"RemoteControlUI",
 					"Settings",
 					"Slate",
 					"SlateCore",

@@ -55,7 +55,7 @@ void UNiagaraNodeOutputTag::Compile(class FHlslNiagaraTranslator* Translator, TA
 		}
 		else
 		{
-			Translator->WriteCompilerTag(CompiledInput, InputPin);
+			Translator->WriteCompilerTag(CompiledInput, InputPin, bEmitMessageOnFailure, FailureSeverity);
 		}
 	}
 
@@ -126,6 +126,7 @@ bool UNiagaraNodeOutputTag::CommitEditablePinName(const FText& InName, UEdGraphP
 		InGraphPinObj->Modify();
 
 		InGraphPinObj->PinName = *NewPinName;
+		InGraphPinObj->PinFriendlyName = InName;
 		if (bSuppressEvents == false)
 			OnPinRenamed(InGraphPinObj, OldPinName);
 

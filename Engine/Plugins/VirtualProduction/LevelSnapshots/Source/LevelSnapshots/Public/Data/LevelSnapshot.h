@@ -3,8 +3,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ActorSnapshot.h"
-#include "PreviewScene.h"
 #include "WorldSnapshotData.h"
 #include "LevelSnapshot.generated.h"
 
@@ -18,15 +16,12 @@ class LEVELSNAPSHOTS_API ULevelSnapshot : public UObject
 	GENERATED_BODY()
 public:
 
-	/* Should this actor supported for the snapshot system? */
-	static bool IsActorDesirableForCapture(const AActor* Actor);
-	static bool IsComponentDesirableForCapture(const UActorComponent* Component);
-	/* Whether this property is supported for restoring. */
-	static bool IsRestorableProperty(const FProperty* Property);
+	DECLARE_DELEGATE_OneParam(FActorPathConsumer, const FSoftObjectPath& /*OriginalActorPath*/);
+	DECLARE_DELEGATE_OneParam(FActorConsumer, AActor* /*WorldActor*/);
 	
 	
 	/* Applies this snapshot to the given world. We assume the world matches. SelectionSet specifies which properties to roll back. */
-	void ApplySnapshotToWorld(UWorld* TargetWorld, ULevelSnapshotSelectionSet* SelectionSet);
+	void ApplySnapshotToWorld(UWorld* TargetWorld, const FPropertySelectionMap& SelectionSet);
 	/* Captures the current state of the given world. */
 	void SnapshotWorld(UWorld* TargetWorld);
 
@@ -38,16 +33,22 @@ public:
 	* Checks whether the snapshot and original property value should be considered equal.
 	* Primitive properties are trivial. Special support is needed for object references.
 	*/
-	bool AreSnapshotAndOriginalPropertiesEquivalent(const FProperty* Property, void* SnapshotContainer, void* WorldContainer, AActor* SnapshotActor, AActor* WorldActor) const;
+	bool AreSnapshotAndOriginalPropertiesEquivalent(const FProperty* LeafProperty, void* SnapshotContainer, void* WorldContainer, AActor* SnapshotActor, AActor* WorldActor) const;
 	
 	
 	
 	/* Given an actor path in the world, gets the equivalent actor from the snapshot. */
 	TOptional<AActor*> GetDeserializedActor(const FSoftObjectPath& OriginalActorPath);
-	/* Gets the number of saved actors */
+	
 	int32 GetNumSavedActors() const;
-	/* Iterates all saved actors.*/
-	void ForEachOriginalActor(TFunction<void (const FSoftObjectPath& ActorPath)> HandleOriginalActorPath) const;
+	/**
+	 * Compares this snapshot to the world and calls the appropriate callbacks:
+	 * @param World to check in
+	 *	@param HandleMatchedActor Actor exists both in world and snapshot. Receives the original actor path.
+	 *	@param HandleRemovedActor Actor exists in snapshot but not in world. Receives the original actor path.
+	 *	@param HandleAddedActor Actor exists in world but not in snapshot. Receives reference to world actor.
+	 */
+	void DiffWorld(UWorld* World, FActorPathConsumer HandleMatchedActor, FActorPathConsumer HandleRemovedActor, FActorConsumer HandleAddedActor) const;
 
 	
 	
@@ -58,11 +59,15 @@ public:
 	void SetSnapshotDescription(const FString& InSnapshotDescription);
 
 	UFUNCTION(BlueprintPure, Category = "Level Snapshots")
-	FDateTime GetCaptureTime() const;
+	FSoftObjectPath GetMapPath() const { return MapPath; }
 	UFUNCTION(BlueprintPure, Category = "Level Snapshots")
-	FName GetSnapshotName() const;
+	FDateTime GetCaptureTime() const { return CaptureTime; }
 	UFUNCTION(BlueprintPure, Category = "Level Snapshots")
-	FString GetSnapshotDescription() const;
+	FName GetSnapshotName() const { return SnapshotName; }
+	UFUNCTION(BlueprintPure, Category = "Level Snapshots")
+	FString GetSnapshotDescription() const { return SnapshotDescription; }
+
+	const FWorldSnapshotData& GetSerializedData() const { return SerializedData; }
 
 	
 	//~ Begin UObject Interface
@@ -73,16 +78,6 @@ private:
 
 	void EnsureWorldInitialised();
 	void DestroyWorld();
-	
-	/****************************** Start legacy members ******************************/
-
-	void LegacyApplySnapshotToWorld(ULevelSnapshotSelectionSet* SelectionSet);
-	
-	// Map of Actor Snapshots mapping from the object path to the actual snapshot
-	UPROPERTY(VisibleAnywhere, Category = "Snapshot|Deprecated")
-	TMap<FSoftObjectPath, FLevelSnapshot_Actor> ActorSnapshots;
-
-	/****************************** End legacy members ******************************/
 
 	
 	/* The world we will be adding temporary actors to */
@@ -96,7 +91,7 @@ private:
 	FWorldSnapshotData SerializedData;
 
 	/* Path of the map that the snapshot was taken in */
-	UPROPERTY(VisibleAnywhere, AssetRegistrySearchable, Category = "Snapshot")
+	UPROPERTY(VisibleAnywhere, BlueprintGetter = "GetMapPath", AssetRegistrySearchable, Category = "Snapshot")
 	FSoftObjectPath MapPath;
 	
 	/* UTC Time that the snapshot was taken */

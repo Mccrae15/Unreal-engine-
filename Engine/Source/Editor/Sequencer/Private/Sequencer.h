@@ -142,7 +142,7 @@ public:
 	virtual void SetSelectionRangeStart() override;
 
 	/** Clear and reset the selection range. */
-	void ResetSelectionRange();
+	void ClearSelectionRange();
 
 	/** Select all keys that fall into the current selection range. */
 	void SelectInSelectionRange(bool bSelectKeys, bool bSelectSections);
@@ -468,8 +468,6 @@ public:
 	/** Called when an actor is dropped into Sequencer */
 	void OnActorsDropped( const TArray<TWeakObjectPtr<AActor> >& Actors );
 
-	void RecordSelectedActors();
-
 	/** Functions to push on to the transport controls we use */
 	FReply OnRecord();
 	FReply OnPlayForward(bool bTogglePlay);
@@ -489,15 +487,6 @@ public:
 
 	void OnTogglePilotCamera();
 	bool IsPilotCamera() const;
-
-	/** Get the visibility of the record button */
-	EVisibility GetRecordButtonVisibility() const;
-
-	/** Delegate handler for recording starting */
-	void HandleRecordingStarted(UMovieSceneSequence* Sequence);
-
-	/** Delegate handler for recording finishing */
-	void HandleRecordingFinished(UMovieSceneSequence* Sequence);
 
 	/** Set the new global time, accounting for looping options */
 	void SetLocalTimeLooped(FFrameTime InTime);
@@ -549,9 +538,11 @@ public:
 
 	/** @return The list of nodes which must be moved to move the current selected nodes */
 	TArray<TSharedRef<FSequencerDisplayNode> > GetSelectedNodesToMove();
+	TArray<TSharedRef<FSequencerDisplayNode> > GetSelectedNodesInFolders();
 
 	/** Called when a user executes the move to new folder menu item */
 	void MoveSelectedNodesToNewFolder();
+	void RemoveSelectedNodesFromFolders();
 	void MoveNodeToFolder(TSharedRef<FSequencerDisplayNode> NodeToMove, UMovieSceneFolder* DestinationFolder);
 	void MoveSelectedNodesToFolder(UMovieSceneFolder* DestinationFolder);
 
@@ -665,8 +656,8 @@ public:
 	/** Create camera and set it as the current camera cut. */
 	void CreateCamera();
 
-	/** Called when a new camera is added. Locks the viewport to the NewCamera is not null. */
-	void NewCameraAdded(FGuid CameraGuid, ACameraActor* NewCamera = nullptr);
+	/** Called when a new camera is added. Locks the viewport to the NewCamera. */
+	void NewCameraAdded(ACameraActor* NewCamera, FGuid CameraGuid);
 
 	/** Attempts to automatically fix up broken actor references in the current scene. */
 	void FixActorReferences();
@@ -748,6 +739,7 @@ public:
 	virtual UMovieSceneSubSection* FindSubSection(FMovieSceneSequenceID SequenceID) const override;
 	virtual UMovieSceneSequence* GetRootMovieSceneSequence() const override;
 	virtual UMovieSceneSequence* GetFocusedMovieSceneSequence() const override;
+	virtual FMovieSceneSequenceTransform GetFocusedMovieSceneSequenceTransform() const override;
 	virtual FMovieSceneRootEvaluationTemplateInstance& GetEvaluationTemplate() override { return RootTemplateInstance; }
 	virtual void ResetToNewRootSequence(UMovieSceneSequence& NewSequence) override;
 	virtual void FocusSequenceInstance(UMovieSceneSubSection& InSubSection) override;
@@ -758,8 +750,6 @@ public:
 	virtual void SetAllowEditsMode(EAllowEditsMode AllowEditsMode) override;
 	virtual EKeyGroupMode GetKeyGroupMode() const override;
 	virtual void SetKeyGroupMode(EKeyGroupMode) override;
-	virtual bool GetKeyInterpPropertiesOnly() const override;
-	virtual void SetKeyInterpPropertiesOnly(bool bKeyInterpPropertiesOnly) override;
 	virtual EMovieSceneKeyInterpolation GetKeyInterpolation() const override;
 	virtual void SetKeyInterpolation(EMovieSceneKeyInterpolation) override;
 	virtual bool GetInfiniteKeyAreas() const override;
@@ -821,6 +811,7 @@ public:
 	virtual FOnGlobalTimeChanged& OnGlobalTimeChanged() override { return OnGlobalTimeChangedDelegate; }
 	virtual FOnPlayEvent& OnPlayEvent() override { return OnPlayDelegate; }
 	virtual FOnStopEvent& OnStopEvent() override { return OnStopDelegate; }
+	virtual FOnRecordEvent& OnRecordEvent() override { return OnRecordDelegate; }
 	virtual FOnBeginScrubbingEvent& OnBeginScrubbingEvent() override { return OnBeginScrubbingDelegate; }
 	virtual FOnEndScrubbingEvent& OnEndScrubbingEvent() override { return OnEndScrubbingDelegate; }
 	virtual FOnMovieSceneDataChanged& OnMovieSceneDataChanged() override { return OnMovieSceneDataChangedDelegate; }
@@ -1079,6 +1070,8 @@ public:
 	void AddSelectedNodesToExistingNodeGroup(UMovieSceneNodeGroup* NodeGroup);
 	void AddNodesToExistingNodeGroup(const TArray<TSharedRef<FSequencerDisplayNode>>& Nodes, UMovieSceneNodeGroup* NodeGroup);
 
+	void ClearFilters();
+
 private:
 
 	/** Updates a viewport client from camera cut data */
@@ -1288,6 +1281,8 @@ private:
 	FCurveSequence OverlayAnimation;
 	FCurveHandle OverlayCurve;
 
+	FCurveSequence RecordingAnimation;
+
 	/** Whether we are playing, recording, etc. */
 	EMovieScenePlayerStatus::Type PlaybackState;
 
@@ -1343,6 +1338,9 @@ private:
 
 	/** A delegate which is called whenever the user stops playing the sequence. */
 	FOnStopEvent OnStopDelegate;
+
+	/** A delegate which is called whenever the user toggles recording. */
+	FOnRecordEvent OnRecordDelegate;
 
 	/** A delegate which is called whenever the treeview changes. */
 	FOnTreeViewChanged OnTreeViewChangedDelegate;
@@ -1483,9 +1481,9 @@ private:
 	struct FViewModifierInfo
 	{
 		bool bApplyViewModifier = false;
-		FVector ViewModifierLocation = FVector::ZeroVector;
-		FRotator ViewModifierRotation = FRotator::ZeroRotator;
-		float ViewModifierFOV = 0.f;
+		float BlendFactor = 1.f;
+		TWeakObjectPtr<AActor> PreviousCamera;
+		TWeakObjectPtr<AActor> NextCamera;
 	};
 	/** Information for previewing camera cut blends. This will be applied to the editor viewport during blends. */
 	FViewModifierInfo ViewModifierInfo;

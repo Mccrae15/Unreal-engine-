@@ -293,7 +293,7 @@ bool USequencerToolsFunctionLibrary::ExportAnimSequence(UWorld* World, ULevelSeq
 	Player->State.AssignSequence(MovieSceneSequenceID::Root, *Sequence, *Player);
 
 	bool bResult = false;
-	FScopedTransaction ExportAnimSequenceTransaction(NSLOCTEXT("Sequencer", "ExportAnimSequence", "Export Anim Sequence"));
+	
 	{
 		FSpawnableRestoreState SpawnableRestoreState(MovieScene);
  
@@ -344,7 +344,7 @@ TArray<FGuid> AddActors(UWorld* World, UMovieSceneSequence* InSequence, UMovieSc
 
 				if (Actor->IsA<ACameraActor>())
 				{
-					MovieSceneToolHelpers::CameraAdded(InMovieScene, PossessableGuid, 0);
+					MovieSceneToolHelpers::CreateCameraCutSectionForCamera(InMovieScene, PossessableGuid, 0);
 				}
 			}
 		}

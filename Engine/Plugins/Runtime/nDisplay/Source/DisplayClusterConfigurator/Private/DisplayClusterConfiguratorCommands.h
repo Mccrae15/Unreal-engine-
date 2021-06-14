@@ -32,13 +32,12 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleLockClusterNodesInHosts;
 	TSharedPtr<FUICommandInfo> ToggleLockViewports;
 	TSharedPtr<FUICommandInfo> ToggleLockClusterNodes;
+	TSharedPtr<FUICommandInfo> ToggleTintViewports;
 	TSharedPtr<FUICommandInfo> ZoomToFit;
 	TSharedPtr<FUICommandInfo> BrowseDocumentation;
 
 	TSharedPtr<FUICommandInfo> ToggleAdjacentEdgeSnapping;
 	TSharedPtr<FUICommandInfo> ToggleSameEdgeSnapping;
-
-	TSharedPtr<FUICommandInfo> ToggleZoomToSelectedItems;
 
 	TSharedPtr<FUICommandInfo> FillParentNode;
 	TSharedPtr<FUICommandInfo> SizeToChildNodes;
@@ -48,10 +47,12 @@ public:
 	TSharedPtr<FUICommandInfo> AddNewViewport;
 
 	// Viewport Preview commands
-	TSharedPtr< FUICommandInfo > ResetCamera;
-	TSharedPtr< FUICommandInfo > ShowFloor;
-	TSharedPtr< FUICommandInfo > ShowGrid;
-	TSharedPtr< FUICommandInfo > ShowOrigin;
-	TSharedPtr< FUICommandInfo > ShowPreview;
-	TSharedPtr< FUICommandInfo > Show3DViewportNames;
+	TSharedPtr<FUICommandInfo> ResetCamera;
+	TSharedPtr<FUICommandInfo> ShowFloor;
+	TSharedPtr<FUICommandInfo> ShowGrid;
+	TSharedPtr<FUICommandInfo> ShowOrigin;
+	TSharedPtr<FUICommandInfo> EnableAA;
+	TSharedPtr<FUICommandInfo> ShowPreview;
+	TSharedPtr<FUICommandInfo> Show3DViewportNames;
+	TSharedPtr<FUICommandInfo> ToggleShowXformGizmos;
 };

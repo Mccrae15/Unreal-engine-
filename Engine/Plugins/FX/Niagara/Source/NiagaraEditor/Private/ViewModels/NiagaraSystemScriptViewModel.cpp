@@ -12,15 +12,15 @@
 #include "ViewModels/NiagaraScriptViewModel.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
 
-FNiagaraSystemScriptViewModel::FNiagaraSystemScriptViewModel()
-	: FNiagaraScriptViewModel(NSLOCTEXT("SystemScriptViewModel", "GraphName", "System"), ENiagaraParameterEditMode::EditAll)
+FNiagaraSystemScriptViewModel::FNiagaraSystemScriptViewModel(bool bInIsForDataProcessingOnly)
+	: FNiagaraScriptViewModel(NSLOCTEXT("SystemScriptViewModel", "GraphName", "System"), ENiagaraParameterEditMode::EditAll, bInIsForDataProcessingOnly)
 {
 }
 
 void FNiagaraSystemScriptViewModel::Initialize(UNiagaraSystem& InSystem)
 {
 	System = &InSystem;
-	SetScript({System->GetSystemSpawnScript(), FGuid()});
+	SetScript(FVersionedNiagaraScript(System->GetSystemSpawnScript()));
 	System->OnSystemCompiled().AddSP(this, &FNiagaraSystemScriptViewModel::OnSystemVMCompiled);
 }
 

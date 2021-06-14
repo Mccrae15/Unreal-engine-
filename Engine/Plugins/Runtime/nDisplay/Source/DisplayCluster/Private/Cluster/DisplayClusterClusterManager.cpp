@@ -13,8 +13,6 @@
 #include "Config/IPDisplayClusterConfigManager.h"
 #include "DisplayClusterConfigurationTypes.h"
 
-#include "Input/IPDisplayClusterInputManager.h"
-
 #include "Dom/JsonObject.h"
 
 #include "Misc/DisplayClusterTypesConverter.h"
@@ -39,12 +37,12 @@ FDisplayClusterClusterManager::FDisplayClusterClusterManager()
 	// Set internal system events handler
 	OnClusterEventJson.Add(FDisplayClusterClusterEventHandler::Get().GetJsonListenerDelegate());
 
-	NativeInputDataAvailableEvent = FPlatformProcess::CreateSynchEvent(true);
+	NativeInputDataAvailableEvent = FPlatformProcess::GetSynchEventFromPool(true);
 }
 
 FDisplayClusterClusterManager::~FDisplayClusterClusterManager()
 {
-	delete NativeInputDataAvailableEvent;
+	FPlatformProcess::ReturnSynchEventToPool(NativeInputDataAvailableEvent);
 }
 
 
@@ -194,9 +192,6 @@ void FDisplayClusterClusterManager::PreTick(float DeltaSeconds)
 		ClusterEventsBinaryNonDiscardedPoolOut = ClusterEventsBinaryNonDiscardedPoolMain;
 		ClusterEventsBinaryNonDiscardedPoolMain.Reset();
 	}
-
-	// Update input state in the cluster
-	SyncInput();
 
 	// Sync cluster objects (PreTick)
 	SyncObjects(EDisplayClusterSyncGroup::PreTick);
@@ -371,6 +366,33 @@ void FDisplayClusterClusterManager::EmitClusterEventBinary(const FDisplayCluster
 	}
 }
 
+void FDisplayClusterClusterManager::SendClusterEventTo(const FString& Address, const int32 Port, const FDisplayClusterClusterEventJson& Event, bool bMasterOnly)
+{
+	if (CurrentOperationMode == EDisplayClusterOperationMode::Cluster || CurrentOperationMode == EDisplayClusterOperationMode::Editor)
+	{
+		if (Controller)
+		{
+			if (IsMaster() || !bMasterOnly)
+			{
+				Controller->SendClusterEventTo(Address, Port, Event, bMasterOnly);
+			}
+		}
+	}
+}
+
+void FDisplayClusterClusterManager::SendClusterEventTo(const FString& Address, const int32 Port, const FDisplayClusterClusterEventBinary& Event, bool bMasterOnly)
+{
+	if (CurrentOperationMode == EDisplayClusterOperationMode::Cluster || CurrentOperationMode == EDisplayClusterOperationMode::Editor)
+	{
+		if (Controller)
+		{
+			if (IsMaster() || !bMasterOnly)
+			{
+				Controller->SendClusterEventTo(Address, Port, Event, bMasterOnly);
+			}
+		}
+	}
+}
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IPDisplayClusterClusterManager
@@ -514,26 +536,6 @@ void FDisplayClusterClusterManager::SyncObjects(EDisplayClusterSyncGroup SyncGro
 		{
 			// Perform data load (objects state update)
 			ImportSyncData(SyncData, SyncGroup);
-		}
-	}
-}
-
-void FDisplayClusterClusterManager::SyncInput()
-{
-	if (Controller)
-	{
-		TMap<FString, FString> InputData;
-
-		// Get input data from a provider
-		UE_LOG(LogDisplayClusterCluster, Verbose, TEXT("Downloading synchronization data (input)..."));
-		Controller->GetInputData(InputData);
-		UE_LOG(LogDisplayClusterCluster, Verbose, TEXT("Downloading finished. Available %d records (input)."), InputData.Num());
-
-		// We don't have to import data here unless input data provider is located on master node
-		if (IsSlave())
-		{
-			// Perform data load (objects state update)
-			GDisplayCluster->GetPrivateInputMgr()->ImportInputData(InputData);
 		}
 	}
 }

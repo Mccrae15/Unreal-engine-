@@ -2,22 +2,39 @@
 
 #include "PropertySelectionMap.h"
 
-void FPropertySelectionMap::AddObjectProperties(UObject* WorldObject, const TArray<TFieldPath<FProperty>>& SelectedPropertyPaths)
+#include "LevelSnapshotsStats.h"
+
+#include "GameFramework/Actor.h"
+#include "UObject/UObjectHash.h"
+
+void FPropertySelectionMap::AddDeletedActorToRespawn(const FSoftObjectPath& Original)
 {
-	if (SelectedPropertyPaths.Num() == 0)
+	DeletedActorsToRespawn.Add(Original);
+}
+
+void FPropertySelectionMap::RemoveDeletedActorToRespawn(const FSoftObjectPath& Original)
+{
+	DeletedActorsToRespawn.Remove(Original);
+}
+
+void FPropertySelectionMap::AddNewActorToDespawn(AActor* WorldActor)
+{
+	NewActorsToDespawn.Add(WorldActor);
+}
+
+void FPropertySelectionMap::RemoveNewActorToDespawn(AActor* WorldActor)
+{
+	NewActorsToDespawn.Remove(WorldActor);
+}
+
+bool FPropertySelectionMap::AddObjectProperties(UObject* WorldObject, const FPropertySelection& SelectedProperties)
+{
+	if (!SelectedProperties.IsEmpty() && ensure(WorldObject))
 	{
-		return;
+		SelectedWorldObjectsToSelectedProperties.FindOrAdd(WorldObject) = SelectedProperties;
+		return true;
 	}
-	if (!ensure(WorldObject))
-	{
-		return;
-	}
-	
-	FPropertySelection& PropertySelection = SelectedWorldObjectsToSelectedProperties.FindOrAdd(WorldObject);
-	for (const TFieldPath<FProperty>& PropertyPath : SelectedPropertyPaths)
-	{
-		PropertySelection.SelectedPropertyPaths.AddUnique(PropertyPath);
-	}
+	return false;
 }
 
 void FPropertySelectionMap::RemoveObjectPropertiesFromMap(UObject* WorldObject)
@@ -27,12 +44,44 @@ void FPropertySelectionMap::RemoveObjectPropertiesFromMap(UObject* WorldObject)
 
 const FPropertySelection* FPropertySelectionMap::GetSelectedProperties(UObject* WorldObject) const
 {
-	return SelectedWorldObjectsToSelectedProperties.Find(WorldObject); 
+	return GetSelectedProperties(FSoftObjectPath(WorldObject));
 }
 
-TArray<TWeakObjectPtr<UObject>> FPropertySelectionMap::GetKeys() const
+const FPropertySelection* FPropertySelectionMap::GetSelectedProperties(const FSoftObjectPath& WorldObjectPath) const
 {
-	TArray<TWeakObjectPtr<UObject>> Result;
+	return SelectedWorldObjectsToSelectedProperties.Find(WorldObjectPath); 
+}
+
+TArray<FSoftObjectPath> FPropertySelectionMap::GetKeys() const
+{
+	TArray<FSoftObjectPath> Result;
 	SelectedWorldObjectsToSelectedProperties.GenerateKeyArray(Result);
 	return Result;
+}
+
+void FPropertySelectionMap::Empty(bool bCanShrink)
+{
+	SelectedWorldObjectsToSelectedProperties.Empty(bCanShrink ? SelectedWorldObjectsToSelectedProperties.Num() : 0);
+	DeletedActorsToRespawn.Empty(bCanShrink ? DeletedActorsToRespawn.Num() : 0);
+	NewActorsToDespawn.Empty(bCanShrink ? NewActorsToDespawn.Num() : 0);
+}
+
+TArray<UObject*> FPropertySelectionMap::GetDirectSubobjectsWithProperties(UObject* Root) const
+{
+	// TODO post 4.27: Profile this and possibly build a TMap<UObject*, TArray<UObject*>> as the map is created
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("GetDirectSubobjectsWithProperties"), STAT_GetDirectSubobjectsWithProperties, STATGROUP_LevelSnapshots);
+	
+	TArray<UObject*> Subobjects;
+	GetObjectsWithOuter(Root, Subobjects, true);
+
+	for (int32 i = Subobjects.Num() - 1; i > 0; --i)
+	{
+		const bool bHasSelectedProperties = GetSelectedProperties(Subobjects[i]) != nullptr;
+		if (!bHasSelectedProperties)
+		{
+			Subobjects.RemoveAt(i);
+		}
+	}
+
+	return Subobjects;
 }

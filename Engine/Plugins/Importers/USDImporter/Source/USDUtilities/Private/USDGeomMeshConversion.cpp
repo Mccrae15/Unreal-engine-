@@ -188,10 +188,10 @@ namespace UE
 					// Vertex colors
 					if ( LODRenderMesh.bHasColorVertexData )
 					{
-						pxr::UsdAttribute DisplayColorAttribute = UsdMesh.CreateDisplayColorAttr();
-						pxr::UsdAttribute DisplayOpacityAttribute = UsdMesh.CreateDisplayOpacityAttr();
+						pxr::UsdGeomPrimvar DisplayColorPrimvar = UsdMesh.CreateDisplayColorPrimvar( pxr::UsdGeomTokens->vertex );
+						pxr::UsdGeomPrimvar DisplayOpacityPrimvar = UsdMesh.CreateDisplayOpacityPrimvar( pxr::UsdGeomTokens->vertex );
 
-						if ( DisplayColorAttribute )
+						if ( DisplayColorPrimvar )
 						{
 							pxr::VtArray< pxr::GfVec3f > DisplayColors;
 							DisplayColors.reserve( VertexCount );
@@ -208,8 +208,8 @@ namespace UE
 								DisplayOpacities.push_back( Color[ 3 ] );
 							}
 
-							DisplayColorAttribute.Set( DisplayColors, TimeCode );
-							DisplayOpacityAttribute.Set( DisplayOpacities, TimeCode );
+							DisplayColorPrimvar.Set( DisplayColors, TimeCode );
+							DisplayOpacityPrimvar.Set( DisplayOpacities, TimeCode );
 						}
 					}
 				}
@@ -805,11 +805,6 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 
 				// Vertex color
 				{
-					auto ConvertToLinear = []( const pxr::GfVec3f& UsdColor ) -> FLinearColor
-					{
-						return FLinearColor( FLinearColor( UsdToUnreal::ConvertColor( UsdColor ) ).ToFColor( false ) );
-					};
-
 					const int32 ValueIndex = UsdGeomMeshImpl::GetPrimValueIndex( ColorInterpolation, ControlPointIndex, CurrentVertexInstanceIndex, PolygonIndex );
 
 					GfVec3f UsdColor( 1.f, 1.f, 1.f );
@@ -819,7 +814,7 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 						UsdColor = UsdColors[ ValueIndex ];
 					}
 
-					MeshDescriptionColors[ AddedVertexInstanceId ] = ConvertToLinear( UsdColor );
+					MeshDescriptionColors[ AddedVertexInstanceId ] = UsdToUnreal::ConvertColor( UsdColor );
 				}
 
 				// Vertex opacity
@@ -1017,7 +1012,7 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments( c
 				UE_LOG( LogUsd, Warning, TEXT( "String array attribute 'unrealMaterials' is deprecated: Use the singular string 'unrealMaterial' attribute" ) );
 				if ( UEMaterials.size() > 1 )
 				{
-					UE_LOG( LogUsd, Warning, TEXT( "Found more than on Unreal material assigned to Mesh '%s'. The first material ('%s') will be chosen, and the rest ignored." ),
+					UE_LOG( LogUsd, Warning, TEXT( "Found more than one Unreal material assigned to Mesh '%s'. The first material ('%s') will be chosen, and the rest ignored." ),
 						*UsdToUnreal::ConvertPath( UsdPrim.GetPath() ), *ValidPackagePath );
 				}
 			}
@@ -1312,7 +1307,6 @@ bool UnrealToUsd::ConvertStaticMesh( const UStaticMesh* StaticMesh, pxr::UsdPrim
 	FScopedUsdAllocs UsdAllocs;
 
 	pxr::UsdStageRefPtr Stage = UsdPrim.GetStage();
-
 	if ( !Stage )
 	{
 		return false;
@@ -1400,6 +1394,17 @@ bool UnrealToUsd::ConvertStaticMesh( const UStaticMesh* StaticMesh, pxr::UsdPrim
 			EditContext.Emplace( VariantSet.GetVariantEditContext() );
 		}
 
+		// Author material bindings on the dedicated stage if we have one
+		pxr::UsdStageRefPtr MaterialStage;
+		if ( StageForMaterialAssignments )
+		{
+			MaterialStage = *StageForMaterialAssignments;
+		}
+		else
+		{
+			MaterialStage = Stage;
+		}
+
 		pxr::UsdGeomMesh TargetMesh;
 		pxr::UsdPrim MaterialPrim = UsdPrim;
 		if ( bExportMultipleLODs )
@@ -1408,11 +1413,7 @@ bool UnrealToUsd::ConvertStaticMesh( const UStaticMesh* StaticMesh, pxr::UsdPrim
 			pxr::UsdPrim UsdLODPrim = Stage->DefinePrim( LODPrimPath, UnrealToUsd::ConvertToken( TEXT("Mesh") ).Get() );
 			TargetMesh = pxr::UsdGeomMesh{ UsdLODPrim };
 
-			if ( StageForMaterialAssignments )
-			{
-				pxr::UsdStageRefPtr MaterialStage{ *StageForMaterialAssignments };
-				MaterialPrim = MaterialStage->OverridePrim( LODPrimPath );
-			}
+			MaterialPrim = MaterialStage->OverridePrim( LODPrimPath );
 		}
 		else
 		{
@@ -1420,11 +1421,7 @@ bool UnrealToUsd::ConvertStaticMesh( const UStaticMesh* StaticMesh, pxr::UsdPrim
 			UsdPrim = Stage->DefinePrim( UsdPrim.GetPath(), UnrealToUsd::ConvertToken( TEXT("Mesh") ).Get() );
 			TargetMesh = pxr::UsdGeomMesh{ UsdPrim };
 
-			if ( StageForMaterialAssignments )
-			{
-				pxr::UsdStageRefPtr MaterialStage{ *StageForMaterialAssignments };
-				MaterialPrim = MaterialStage->OverridePrim( UsdPrim.GetPath() );
-			}
+			MaterialPrim = MaterialStage->OverridePrim( UsdPrim.GetPath() );
 		}
 
 		UsdGeomMeshImpl::ConvertStaticMeshLOD( LODIndex, RenderMesh, TargetMesh, MaterialAssignments, TimeCode, MaterialPrim );
@@ -1593,8 +1590,6 @@ bool UsdUtils::IsGeomMeshALOD( const pxr::UsdPrim& UsdMeshPrim )
 
 	FScopedUsdAllocs Allocs;
 
-	std::string MeshName = UsdMeshPrim.GetName();
-
 	pxr::UsdPrim ParentPrim = UsdMeshPrim.GetParent();
 	if ( !ParentPrim )
 	{
@@ -1609,15 +1604,14 @@ bool UsdUtils::IsGeomMeshALOD( const pxr::UsdPrim& UsdMeshPrim )
 		return false;
 	}
 
-	for ( const std::string& VariantName : VariantSets.GetVariantSet( LODString ).GetVariantNames() )
+	std::string Selection = VariantSets.GetVariantSet( LODString ).GetVariantSelection();
+	int32 LODIndex = UsdGeomMeshImpl::GetLODIndexFromName( Selection );
+	if ( LODIndex == INDEX_NONE )
 	{
-		if ( VariantName == MeshName )
-		{
-			return true;
-		}
+		return false;
 	}
 
-	return false;
+	return true;
 }
 
 int32 UsdUtils::GetNumberOfLODVariants( const pxr::UsdPrim& Prim )
@@ -1669,7 +1663,31 @@ bool UsdUtils::IterateLODMeshes( const pxr::UsdPrim& ParentPrim, TFunction<bool(
 
 		LODVariantSet.SetVariantSelection( LODVariantName );
 
-		pxr::UsdGeomMesh LODMesh = pxr::UsdGeomMesh(ParentPrim.GetChild( pxr::TfToken( LODVariantName ) ));
+		pxr::UsdGeomMesh LODMesh;
+		pxr::TfToken TargetChildNameToken{ LODVariantName };
+
+		// Search for our LOD child mesh
+		pxr::UsdPrimSiblingRange PrimRange = ParentPrim.GetChildren();
+		for ( pxr::UsdPrimSiblingRange::iterator PrimRangeIt = PrimRange.begin(); PrimRangeIt != PrimRange.end(); ++PrimRangeIt )
+		{
+			const pxr::UsdPrim& Child = *PrimRangeIt;
+			if ( pxr::UsdGeomMesh ChildMesh{ Child } )
+			{
+				if ( Child.GetName() == TargetChildNameToken )
+				{
+					LODMesh = ChildMesh;
+					// Don't break here so we can show warnings if the user has other prims here (that we may end up ignoring)
+					// USD doesn't allow name collisions anyway, so there won't be any other prim named TargetChildNameToken
+				}
+				else
+				{
+					UE_LOG(LogUsd, Warning, TEXT("Unexpected prim '%s' inside LOD variant '%s'. For automatic parsing of LODs, each LOD variant should contain only a single Mesh prim named the same as the variant!"),
+						*UsdToUnreal::ConvertPath( Child.GetPath() ),
+						*UsdToUnreal::ConvertString( LODVariantName )
+					);
+				}
+			}
+		}
 		if ( !LODMesh )
 		{
 			continue;

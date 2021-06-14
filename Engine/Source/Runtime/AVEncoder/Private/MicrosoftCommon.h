@@ -2,60 +2,11 @@
 
 #pragma once
 
-//#include "AVEncoder.h"
-//#include "AVEncoderCommon.h"
+#include "Containers/UnrealString.h"
 
-#if PLATFORM_WINDOWS || PLATFORM_XBOXONE
+#if PLATFORM_WINDOWS || (PLATFORM_XBOXONE && WITH_LEGACY_XDK) || PLATFORM_HOLOLENS
 
-//
-// Windows only include
-//
-#if PLATFORM_WINDOWS
-	THIRD_PARTY_INCLUDES_START
-	#include "Windows/AllowWindowsPlatformTypes.h"
-	#include "Windows/PreWindowsApi.h"
-		#include <d3d11.h>
-		#include <mftransform.h>
-		#include <mfapi.h>
-		#include <mferror.h>
-		#include <mfidl.h>
-		#include <codecapi.h>
-		#include <shlwapi.h>
-		#include <mfreadwrite.h>
-		#include <d3d11_1.h>
-		#include <d3d12.h>
-		#include <dxgi1_4.h>
-	#include "Windows/PostWindowsApi.h"
-	#include "Windows/HideWindowsPlatformTypes.h"
-	THIRD_PARTY_INCLUDES_END
-
-	//#include "D3D11State.h"
-	//#include "D3D11Resources.h"
-#endif
-
-//
-// XboxOne only includes
-//
-#if PLATFORM_XBOXONE
-
-#include "XboxCommonAllowPlatformTypes.h"
-#include "XboxCommonPreApi.h"
-		#include <d3d11_x.h>
-		#include <d3d12_x.h>
-		#include <d3dcompiler_x.h>
-		#include <d3dx12_x.h>
-		#include <mftransform.h>
-		#include <mfapi.h>
-		#include <mferror.h>
-		#include <mfidl.h>
-		#include <codecapi.h>
-		#include <mfreadwrite.h>
-#include "XboxCommonPostApi.h"
-#include "XboxCommonHidePlatformTypes.h"
-
-#endif
-
-#define WMFMEDIA_SUPPORTED_PLATFORM (PLATFORM_WINDOWS && (WINVER >= 0x0600 /*Vista*/) && !UE_SERVER)
+#include "VideoCommon.h"
 
 namespace AVEncoder
 {
@@ -80,7 +31,7 @@ inline const FString GetComErrorDescription(HRESULT Res)
 	}
 }
 
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 	#include "Windows/AllowWindowsPlatformTypes.h"
 #elif PLATFORM_XBOXONE
 	#include "XboxCommonAllowPlatformTypes.h"
@@ -130,7 +81,7 @@ inline const FString GetComErrorDescription(HRESULT Res)
 		}\
 	}
 
-#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 	#include "Windows/HideWindowsPlatformTypes.h"
 #elif PLATFORM_XBOXONE
 	#include "XboxCommonHidePlatformTypes.h"
@@ -213,6 +164,6 @@ const GUID CLSID_VideoProcessorMFT = { 0x88753b26, 0x5b24, 0x49bd, { 0xb2, 0xe7,
 } // namespace AVEncoder
 
 
-#endif // PLATFORM_WINDOWS || PLATFORM_XBOXONE
+#endif // PLATFORM_WINDOWS || (PLATFORM_XBOXONE && WITH_LEGACY_XDK)
 
 

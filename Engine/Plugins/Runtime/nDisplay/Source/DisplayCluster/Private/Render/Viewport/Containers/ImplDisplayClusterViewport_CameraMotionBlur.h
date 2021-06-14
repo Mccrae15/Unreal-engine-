@@ -16,18 +16,25 @@ public:
 		switch (BlurSetup.Mode)
 		{
 		case EDisplayClusterViewport_CameraMotionBlur::Off:
+			//The value in shader maps to this: CAMERA_MOTION_BLUR_MODE = 0
 			InOutView.bCameraMotionBlur = false;
 			break;
 
 		case EDisplayClusterViewport_CameraMotionBlur::On:
+			//The value in shader maps to this: CAMERA_MOTION_BLUR_MODE = 1
 			InOutView.bCameraMotionBlur = true;
 			break;
 
 		case EDisplayClusterViewport_CameraMotionBlur::Override:
+			//The value in shader maps to this: CAMERA_MOTION_BLUR_MODE = 2
 			InOutView.bCameraMotionBlur = true;
 			{
 				FViewMatrices::FMinimalInitializer Initializer;
-				Initializer.ViewRotationMatrix = FRotationMatrix::Make(BlurSetup.CameraRotation);
+				Initializer.ViewRotationMatrix = FInverseRotationMatrix(BlurSetup.CameraRotation) * FMatrix(
+					FPlane(0, 0, 1, 0),
+					FPlane(1, 0, 0, 0),
+					FPlane(0, 1, 0, 0),
+					FPlane(0, 0, 0, 1));
 				Initializer.ViewOrigin = BlurSetup.CameraLocation;
 				Initializer.ProjectionMatrix = ViewportContext.ProjectionMatrix;
 				FViewMatrices ViewMatrices(Initializer);

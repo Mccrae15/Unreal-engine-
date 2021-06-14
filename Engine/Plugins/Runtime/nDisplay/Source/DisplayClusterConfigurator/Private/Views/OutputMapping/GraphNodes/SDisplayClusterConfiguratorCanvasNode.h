@@ -25,14 +25,14 @@ public:
 
 	//~ SGraphNode interface
 	virtual void UpdateGraphNode() override;
-	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter) override;
+	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty = true) override;
 	virtual FVector2D ComputeDesiredSize(float) const override;
 	virtual FVector2D GetPosition() const override;
 	virtual TArray<FOverlayWidgetInfo> GetOverlayWidgets(bool bSelected, const FVector2D& WidgetSize) const override;
 	//~ End SGraphNode interface
 
 	//~ Begin SDisplayClusterConfiguratorBaseNode interface
-	virtual int32 GetNodeLayerIndex() const override { return DefaultZOrder; }
+	virtual bool CanNodeBeResized() const { return false; }
 	//~ End of SDisplayClusterConfiguratorBaseNode interface
 
 private:
@@ -44,7 +44,4 @@ private:
 	TSharedPtr<SWidget> CanvasSizeTextWidget;
 
 	FMargin CanvasPadding;
-
-public:
-	static int32 const DefaultZOrder;
 };

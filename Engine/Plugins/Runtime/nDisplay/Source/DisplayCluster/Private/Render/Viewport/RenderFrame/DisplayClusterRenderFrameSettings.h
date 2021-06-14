@@ -24,11 +24,17 @@ struct FDisplayClusterRenderFrameSettings
 	// Multiply all downscale ratio inside all viewports settings for whole cluster
 	float ClusterRenderTargetRatioMult = 1.f;
 
+	// Multiply all downscale ratio inside all viewports settings for whole cluster
+	float ClusterICVFXOuterViewportRenderTargetRatioMult = 1.f;
+
 	// Multiply all buffer ratios for whole cluster by this value
 	float ClusterBufferRatioMult = 1.f;
 
 	// Allow warpblend render
 	bool bAllowWarpBlend = true;
+
+	// Render in Editor mode
+	bool bIsRenderingInEditor = false;
 
 	// Performance: Allow merge multiple viewports on single RTT with atlasing (required for bAllowViewFamilyMergeOptimization)
 	bool bAllowRenderTargetAtlasing = false;
@@ -41,6 +47,9 @@ struct FDisplayClusterRenderFrameSettings
 	// (icvfx has child viewports: lightcard and chromakey with prj_view matrices copied from parent viewport. May sense to use same viewfamily?)
 	// [not implemented yet] Experimental
 	bool bShouldUseParentViewportRenderFamily = false;
+
+	// Cluster node name for render
+	FString ClusterNodeId;
 };
 
 

@@ -298,7 +298,7 @@ FArchive& operator<<(FArchive& Ar, FReflectionCaptureMapBuildData& ReflectionCap
 
 	TArray<FName> Formats;
 
-	if (Ar.IsSaving() && Ar.IsCooking())
+	if (Ar.IsCooking())
 	{
 		// Get all the reflection capture formats that the target platform wants
 		Ar.CookingTarget()->GetReflectionCaptureFormats(Formats);
@@ -316,15 +316,7 @@ FArchive& operator<<(FArchive& Ar, FReflectionCaptureMapBuildData& ReflectionCap
 
 	if (Ar.CustomVer(FMobileObjectVersion::GUID) >= FMobileObjectVersion::StoreReflectionCaptureCompressedMobile)
 	{
-		if (Ar.IsCooking() && !Formats.Contains(EncodedHDR))
-		{
-			UTextureCube* StrippedData = NULL;
-			Ar << StrippedData;
-		}
-		else
-		{
-			Ar << ReflectionCaptureMapBuildData.EncodedCaptureData;
-		}
+		Ar << ReflectionCaptureMapBuildData.EncodedCaptureData;
 	}
 	else
 	{
@@ -763,6 +755,21 @@ void UMapBuildDataRegistry::InvalidateSurfaceLightmaps(UWorld* World, bool bRecr
 			}
 		}
 
+		// Invalidate the LightmapResourceClusters
+		{
+			// LightmapResourceClusters needs to be cleared at RT to avoid a flush in GT because the RenderResource in a ResourceCluster needs to be released before the destructor of FLightmapResourceCluster
+			ENQUEUE_RENDER_COMMAND(FReleaseLightmapResourceClustersCmd)(
+				[LocalLightmapResourceClusters = MoveTemp(LightmapResourceClusters)](FRHICommandListImmediate& RHICmdList) mutable
+			{
+				for (auto& ResourceCluster : LocalLightmapResourceClusters)
+				{
+					ResourceCluster.ReleaseResource();
+				}
+			});
+
+			LightmapResourceClusters.Empty();
+		}
+
 		MarkPackageDirty();
 	}
 }
@@ -794,8 +801,10 @@ bool UMapBuildDataRegistry::IsLegacyBuildData() const
 	return GetOutermost()->ContainsMap();
 }
 
-bool UMapBuildDataRegistry::IsVTLightingValid() const
+bool UMapBuildDataRegistry::IsLightingValid(ERHIFeatureLevel::Type InFeatureLevel) const
 {
+	const bool bUsingVTLightmaps = UseVirtualTextureLightmap(InFeatureLevel);
+
 	// this code checks if AT LEAST 1 virtual textures is valid. 
 	for (auto MeshBuildDataPair : MeshBuildData)
 	{
@@ -805,7 +814,7 @@ bool UMapBuildDataRegistry::IsVTLightingValid() const
 			const FLightMap2D* Lightmap2D = Data.LightMap->GetLightMap2D();
 			if (Lightmap2D)
 			{
-				if (Lightmap2D->IsVirtualTextureValid())
+				if ((bUsingVTLightmaps && Lightmap2D->IsVirtualTextureValid()) || (!bUsingVTLightmaps && (Lightmap2D->IsValid(0) || Lightmap2D->IsValid(1))))
 				{
 					return true;
 				}

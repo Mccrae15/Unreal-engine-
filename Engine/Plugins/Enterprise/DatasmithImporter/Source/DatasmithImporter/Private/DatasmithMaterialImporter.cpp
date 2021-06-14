@@ -23,6 +23,7 @@
 
 #include "ObjectTools.h"
 
+#define LOCTEXT_NAMESPACE "DatasmithMaterialImporter"
 
 namespace DatasmithMaterialImporterUtils
 {
@@ -244,21 +245,42 @@ UMaterialInterface* FDatasmithMaterialImporter::ImportMasterMaterial( FDatasmith
 	FString Host = FDatasmithMasterMaterialManager::Get().GetHostFromString(ImportContext.Scene->GetHost());
 	TSharedPtr< FDatasmithMasterMaterialSelector > MaterialSelector = FDatasmithMasterMaterialManager::Get().GetSelector( *Host );
 
-	const FDatasmithMasterMaterial* MasterMaterial = nullptr;
+	if (!MaterialSelector.IsValid())
+	{
+		FText FailReason = FText::Format(LOCTEXT("NoSelectorForHost", "No Material selector found for Host {0}. Skipping material {1} ..."), FText::FromString(Host), FText::FromString(MaterialElement->GetName()));
+		ImportContext.LogError(FailReason);
+		return nullptr;
+	}
+
+	const FDatasmithMasterMaterial* ParentMaterial = nullptr;
 	FDatasmithMasterMaterial CustomMasterMaterial; // MasterMaterial might point on this so keep them in the same scope
 
 	if ( MaterialElement->GetMaterialType() == EDatasmithMasterMaterialType::Custom )
 	{
 		CustomMasterMaterial.FromSoftObjectPath( FSoftObjectPath( MaterialElement->GetCustomMaterialPathName() ) );
+		if (!CustomMasterMaterial.IsValid())
+		{
+			ImportContext.LogError(FText::Format(LOCTEXT("NoMasterForPath", "No compatible asset for path '{0}'. Skipping material {1} ..."), FText::FromString(MaterialElement->GetCustomMaterialPathName()), FText::FromString(MaterialElement->GetName())));
+			return nullptr;
+		}
 
-		MasterMaterial = &CustomMasterMaterial;
+		ParentMaterial = &CustomMasterMaterial;
 	}
-	else if ( MaterialSelector.IsValid() && MaterialSelector->IsValid() )
+	else
 	{
-		MasterMaterial = &MaterialSelector->GetMasterMaterial(MaterialElement);
+		if ( MaterialSelector->IsValid() )
+		{
+			ParentMaterial = &MaterialSelector->GetMasterMaterial(MaterialElement);
+		}
+		else
+		{
+			FText FailReason = FText::Format(LOCTEXT("NoValidSelectorForHost", "No valid Material selector found for Host {0}. Skipping material {1} ..."), FText::FromString(Host), FText::FromString(MaterialElement->GetName()));
+			ImportContext.LogError(FailReason);
+			return nullptr;
+		}
 	}
 
-	if ( MasterMaterial && MasterMaterial->IsValid() )
+	if ( ParentMaterial && ParentMaterial->IsValid() )
 	{
 		const FString MaterialLabel = MaterialElement->GetLabel();
 		const FString MaterialName = MaterialLabel.Len() > 0 ? ImportContext.AssetsContext.MaterialNameProvider.GenerateUniqueName(MaterialLabel) : MaterialElement->GetName();
@@ -276,7 +298,7 @@ UMaterialInterface* FDatasmithMaterialImporter::ImportMasterMaterial( FDatasmith
 		if (MaterialInstance == nullptr)
 		{
 			MaterialInstance = NewObject<UMaterialInstanceConstant>(ImportContext.AssetsContext.MaterialsImportPackage.Get(), *MaterialName, ImportContext.ObjectFlags);
-			MaterialInstance->Parent = MasterMaterial->GetMaterial();
+			MaterialInstance->Parent = ParentMaterial->GetMaterial();
 
 			FAssetRegistryModule::AssetCreated(MaterialInstance);
 		}
@@ -297,7 +319,7 @@ UMaterialInterface* FDatasmithMaterialImporter::ImportMasterMaterial( FDatasmith
 			FString PropertyName(Property->GetName());
 
 			// Vector Params
-			if ( MasterMaterial->VectorParams.Contains(PropertyName) )
+			if ( ParentMaterial->VectorParams.Contains(PropertyName) )
 			{
 				FLinearColor Color;
 				if ( MaterialSelector->GetColor( Property, Color ) )
@@ -306,7 +328,7 @@ UMaterialInterface* FDatasmithMaterialImporter::ImportMasterMaterial( FDatasmith
 				}
 			}
 			// Scalar Params
-			else if ( MasterMaterial->ScalarParams.Contains(PropertyName) )
+			else if ( ParentMaterial->ScalarParams.Contains(PropertyName) )
 			{
 				float Value;
 				if ( MaterialSelector->GetFloat( Property, Value ) )
@@ -315,7 +337,7 @@ UMaterialInterface* FDatasmithMaterialImporter::ImportMasterMaterial( FDatasmith
 				}
 			}
 			// Bool Params
-			else if (MasterMaterial->BoolParams.Contains(PropertyName))
+			else if (ParentMaterial->BoolParams.Contains(PropertyName))
 			{
 				bool bValue;
 				if ( MaterialSelector->GetBool( Property, bValue ) )
@@ -324,7 +346,7 @@ UMaterialInterface* FDatasmithMaterialImporter::ImportMasterMaterial( FDatasmith
 				}
 			}
 			// Texture Params
-			else if (MasterMaterial->TextureParams.Contains(PropertyName))
+			else if (ParentMaterial->TextureParams.Contains(PropertyName))
 			{
 				FString TexturePath;
 				if ( MaterialSelector->GetTexture( Property, TexturePath ) )
@@ -352,10 +374,7 @@ UMaterialInterface* FDatasmithMaterialImporter::ImportMasterMaterial( FDatasmith
 
 		MaterialInstanceTemplate->Apply( MaterialInstance );
 
-		if (MaterialSelector.IsValid() && MaterialSelector->IsValid())
-		{
-			MaterialSelector->FinalizeMaterialInstance(MaterialElement, MaterialInstance);
-		}
+		MaterialSelector->FinalizeMaterialInstance(MaterialElement, MaterialInstance);
 
 		return MaterialInstance;
 	}
@@ -457,3 +476,5 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	return MaterialRequirement;
 }
+
+#undef LOCTEXT_NAMESPACE

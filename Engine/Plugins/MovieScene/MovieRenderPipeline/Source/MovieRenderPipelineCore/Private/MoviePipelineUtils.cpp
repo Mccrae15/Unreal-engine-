@@ -191,6 +191,14 @@ namespace MoviePipeline
 			}
 		}
 
+		// Cache any sections that we will auto-expand later.
+		for (UMovieSceneSection* Section : InSequence->GetMovieScene()->GetAllSections())
+		{
+			if (Section->GetSupportsInfiniteRange())
+			{
+				InNode->AdditionalSectionsToExpand.Add(MakeTuple(Section, Section->GetRange()));
+			}
+		}
 	}
 
 	void SaveOrRestoreSubSectionHierarchy(TSharedPtr<FCameraCutSubSectionHierarchyNode> InLeaf, const bool bInSave)
@@ -246,6 +254,16 @@ namespace MoviePipeline
 					Node->CameraCutSection->SetIsActive(Node->bOriginalCameraCutIsActive);
 
 					Node->CameraCutSection->MarkAsChanged();
+				}
+			}
+
+			if(!bInSave)
+			{
+				// These are restored, but they're not saved using this function. This is because they're cached earlier
+				for (const TTuple<UMovieSceneSection*, TRange<FFrameNumber>>& Pair : Node->AdditionalSectionsToExpand)
+				{
+					Pair.Key->SetRange(Pair.Value);
+					Pair.Key->MarkAsChanged();
 				}
 			}
 
@@ -335,6 +353,18 @@ namespace MoviePipeline
 					continue;
 				}
 
+				// If the section can be made infinite, it will automatically get expanded when the shot is activated, so no need to warn.
+				if (Section->GetSupportsInfiniteRange())
+				{
+					continue;
+				}
+
+				// camera cut and sub-sections also will get the expansion manually, no need to warn
+				if (Section == Node->Section || Section == Node->CameraCutSection)
+				{
+					continue;
+				}
+
 				if (Section->GetRange().HasLowerBound())
 				{
 					const bool bOverlaps = CheckRange.Contains(Section->GetRange().GetLowerBoundValue());
@@ -360,7 +390,7 @@ namespace MoviePipeline
 						FFrameNumber LowerCheckBoundFrame = FFrameRate::TransformTime(LowerCheckBound, InShot->ShotInfo.CachedTickResolution, InMasterDisplayRate).FloorToFrame();
 						FFrameNumber UpperCheckBoundFrame = FFrameRate::TransformTime(UpperCheckBound, InShot->ShotInfo.CachedTickResolution, InMasterDisplayRate).FloorToFrame();
 
-						UE_LOG(LogMovieRenderPipeline, Warning, TEXT("[%s %s] Due to Temporal sub-sampling or handle frames, evaluation will occur outside of shot boundaries (from frame %d to %d). Section %s (Binding: %s) starts during this time period. Please extend this section to start on frame %d. (All times listed are relative to the master sequence)"),
+						UE_LOG(LogMovieRenderPipeline, Warning, TEXT("[%s %s] Due to Temporal sub-sampling or handle frames, evaluation will occur outside of shot boundaries (from frame %d to %d). Section %s (Binding: %s) starts during this time period and cannot be auto-expanded. Please extend this section to start on frame %d. (All times listed are relative to the master sequence)"),
 							*InShot->OuterName, *InShot->InnerName, LowerCheckBoundFrame.Value, UpperCheckBoundFrame.Value,
 							*SectionName, *BindingName, LowerCheckBoundFrame.Value);
 					}
@@ -401,7 +431,7 @@ namespace MoviePipeline
 		}
 	}
 
-	void GetNameForShot(const FMovieSceneSequenceHierarchy& InHierarchy, UMovieSceneSequence* InRootSequence, TSharedPtr<FCameraCutSubSectionHierarchyNode> InSubSectionHierarchy, TArray<TTuple<FString, FString>>& OutGeneratedNames)
+	TTuple<FString, FString> GetNameForShot(const FMovieSceneSequenceHierarchy& InHierarchy, UMovieSceneSequence* InRootSequence, TSharedPtr<FCameraCutSubSectionHierarchyNode> InSubSectionHierarchy)
 	{
 		FString InnerName;
 		FString OuterName;
@@ -485,26 +515,14 @@ namespace MoviePipeline
 			}
 		}
 
-		OuterName = StringBuilder.ToString();
-		FString ThisTry = OuterName;
-
-		// We don't want to generate duplicate inner and outer names. There are certain situations (such as a master sequence with
-		// multiple copies of a sub-scene that have a camera track) that generate identical inner/outer names. That causes the same
-		// shot to be 'found' multiple times when trying to match the existing shot list to the new one, which then causes re-used
-		// shots which is invalid. So here, we try to generate a unique name by examining all the names we've generated for shots so far
-		int32 DuplicateIndex = 1;
-		while (true)
+		// If you don't have any shots, then StringBuilder will be empty.
+		if (StringBuilder.Len() == 0)
 		{
-			TTuple<FString, FString> Result = TTuple<FString, FString>(InnerName, ThisTry);
-			if (!OutGeneratedNames.Contains(Result))
-			{
-				OutGeneratedNames.Add(Result);
-				return;
-			}
-
-			ThisTry = FString::Printf(TEXT("%s_(%d)"), *OuterName, DuplicateIndex);
-			++DuplicateIndex;
+			StringBuilder.Append(TEXT("no shot"));
 		}
+		OuterName = StringBuilder.ToString();
+
+		return TTuple<FString, FString>(InnerName, OuterName);
 	}
 
 	TRange<FFrameNumber> GetCameraWarmUpRangeFromSequence(UMovieSceneSequence* InSequence, FFrameNumber InSectionEnd, FMovieSceneTimeTransform InInnerToOuterTransform)
@@ -569,19 +587,110 @@ namespace MoviePipeline
 			}
 		}
 
-		TSharedPtr<FCameraCutSubSectionHierarchyNode> ParentNode;
-		if (!ParentNode)
-		{
-			ParentNode = MakeShared<FCameraCutSubSectionHierarchyNode>();
-		}
-
-		OutSubsectionHierarchy->SetParent(ParentNode);
 		OutSubsectionHierarchy->MovieScene = TWeakObjectPtr<UMovieScene>(Sequence->GetMovieScene());
 		OutSubsectionHierarchy->NodeID = InSequenceId;
 
-		BuildSectionHierarchyRecursive(InHierarchy, InRootSequence, SequenceNode->ParentID, InSequenceId, ParentNode);
+		// Only try assigning the parent and diving in if this node isn't already the root, roots have no parents.
+		if (InSequenceId != MovieSceneSequenceID::Root)
+		{
+			TSharedPtr<FCameraCutSubSectionHierarchyNode> ParentNode = MakeShared<FCameraCutSubSectionHierarchyNode>();
+			OutSubsectionHierarchy->SetParent(ParentNode);
+
+			BuildSectionHierarchyRecursive(InHierarchy, InRootSequence, SequenceNode->ParentID, InSequenceId, ParentNode);
+		}
 	}
 
 
 } // MoviePipeline
 //} // UE
+
+namespace UE
+{
+	namespace MoviePipeline
+	{
+		void ValidateOutputFormatString(FString& InOutFilenameFormatString, const bool bTestRenderPass, const bool bTestFrameNumber)
+		{
+			const FString FrameNumberIdentifiers[] = { TEXT("{frame_number}"), TEXT("{frame_number_shot}"), TEXT("{frame_number_rel}"), TEXT("{frame_number_shot_rel}") };
+
+			// If there is more than one file being written for this frame, make sure they uniquely identify.
+			if (bTestRenderPass)
+			{
+				if (!InOutFilenameFormatString.Contains(TEXT("{render_pass}"), ESearchCase::IgnoreCase))
+				{
+					UE_LOG(LogMovieRenderPipeline, Warning, TEXT("Multiple render passes exported but no {render_pass} format found. Automatically adding!"));
+
+					// Search for a frame number in the output string
+					int32 FrameNumberIndex = INDEX_NONE;
+					for (const FString& Identifier : FrameNumberIdentifiers)
+					{
+						FrameNumberIndex = InOutFilenameFormatString.Find(Identifier, ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+						if (FrameNumberIndex != INDEX_NONE)
+						{
+							break;
+						}
+					}
+
+					if (FrameNumberIndex == INDEX_NONE)
+					{
+						// No frame number found, so just append render_pass
+						InOutFilenameFormatString += TEXT("{render_pass}");
+					}
+					else
+					{
+						// If a frame number is found, we need to insert render_pass first before it, so various editing
+						// software will still be able to identify if this is an image sequence
+						InOutFilenameFormatString.InsertAt(FrameNumberIndex, TEXT("{render_pass}."));
+					}
+				}
+			}
+
+			if (bTestFrameNumber)
+			{
+				// Ensure there is a frame number in the output string somewhere to uniquely identify individual files in an image sequence.
+				int32 FrameNumberIndex = INDEX_NONE;
+				for (const FString& Identifier : FrameNumberIdentifiers)
+				{
+					FrameNumberIndex = InOutFilenameFormatString.Find(Identifier, ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+					if (FrameNumberIndex != INDEX_NONE)
+					{
+						break;
+					}
+				}
+
+				// We want to insert a {file_dup} before the frame number. This instructs the name resolver to put the (2) before
+				// the frame number, so that they're still properly recognized as image sequences by other software. It will resolve
+				// to "" if not needed.
+				if (FrameNumberIndex == INDEX_NONE)
+				{
+					// Previously, the frame number identifier would be inserted so that files would not be overwritten. However, users prefer to have exact control over the filename.
+					//InOutFilenameFormatString.Append(TEXT("{file_dup}.{frame_number}"));
+					UE_LOG(LogMovieRenderPipeline, Warning, TEXT("Frame number identifier not found. Files may be overwritten."));
+				}
+				else
+				{
+					// The user had already specified a frame number identifier, so we need to insert the
+					// file_dup tag before it.
+					InOutFilenameFormatString.InsertAt(FrameNumberIndex, TEXT("{file_dup}"));
+				}
+			}
+
+			if (!InOutFilenameFormatString.Contains(TEXT("{file_dup}"), ESearchCase::IgnoreCase))
+			{
+				InOutFilenameFormatString.Append(TEXT("{file_dup}"));
+			}
+		}
+
+		void RemoveFrameNumberFormatStrings(FString& InOutFilenameFormatString, const bool bIncludeShots)
+		{
+			// Strip {frame_number} related separators from their file name, otherwise it will create one output file per frame.
+			InOutFilenameFormatString.ReplaceInline(TEXT("{frame_number}"), TEXT(""));
+			InOutFilenameFormatString.ReplaceInline(TEXT("{frame_number_rel}"), TEXT(""));
+
+			if (bIncludeShots)
+			{
+				InOutFilenameFormatString.ReplaceInline(TEXT("{frame_number_shot}"), TEXT(""));
+				InOutFilenameFormatString.ReplaceInline(TEXT("{frame_number_shot_rel}"), TEXT(""));
+			}
+		}
+	}
+}

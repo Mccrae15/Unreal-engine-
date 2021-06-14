@@ -27,9 +27,9 @@ typedef FOnClusterEventBinary::FDelegate FOnClusterEventBinaryListener;
 class IDisplayClusterClusterManager
 {
 public:
-	virtual ~IDisplayClusterClusterManager() = 0
-	{ }
+	virtual ~IDisplayClusterClusterManager() = default;
 
+public:
 	/** Returns true if current node is master. */
 	virtual bool IsMaster() const = 0;
 	/** Returns true if current node is slave. */
@@ -73,4 +73,10 @@ public:
 
 	/** Emits binary cluster event. */
 	virtual void EmitClusterEventBinary(const FDisplayClusterClusterEventBinary& Event, bool bMasterOnly) = 0;
+
+	/** Sends JSON cluster event to a specific target (outside of the cluster). */
+	virtual void SendClusterEventTo(const FString& Address, const int32 Port, const FDisplayClusterClusterEventJson& Event, bool bMasterOnly) = 0;
+
+	/** Sends binary cluster event to a specific target (outside of the cluster). */
+	virtual void SendClusterEventTo(const FString& Address, const int32 Port, const FDisplayClusterClusterEventBinary& Event, bool bMasterOnly) = 0;
 };

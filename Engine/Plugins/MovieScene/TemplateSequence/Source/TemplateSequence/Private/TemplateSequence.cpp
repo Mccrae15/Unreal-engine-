@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TemplateSequence.h"
+#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Components/ActorComponent.h"
 #include "GameFramework/Actor.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
 #include "MovieScene.h"
+#include "MovieSceneCommonHelpers.h"
 #include "MovieSceneTrack.h"
 #include "Tracks/MovieSceneSpawnTrack.h"
 
@@ -209,6 +211,26 @@ bool UTemplateSequence::AllowsSpawnableObjects() const
 	return true;
 }
 
+UObject* UTemplateSequence::MakeSpawnableTemplateFromInstance(UObject& InSourceObject, FName ObjectName)
+{
+	return MovieSceneHelpers::MakeSpawnableTemplateFromInstance(InSourceObject, MovieScene, ObjectName);
+}
+
+void UTemplateSequence::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
+{
+	Super::GetAssetRegistryTags(OutTags);
+
+	if (BoundActorClass.IsValid())
+	{
+		FAssetRegistryTag Tag("BoundActorClass", BoundActorClass->GetName(), FAssetRegistryTag::TT_Alphabetical);
+		OutTags.Add(Tag);
+	}
+	else
+	{
+		OutTags.Emplace("BoundActorClass", "(None)", FAssetRegistryTag::TT_Alphabetical);
+	}
+}
+
 #if WITH_EDITOR
 FText UTemplateSequence::GetDisplayName() const
 {
@@ -223,21 +245,6 @@ ETrackSupport UTemplateSequence::IsTrackSupported(TSubclassOf<class UMovieSceneT
 	}
 
 	return Super::IsTrackSupported(InTrackClass);
-}
-
-void UTemplateSequence::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
-{
-	Super::GetAssetRegistryTags(OutTags);
-
-	if (BoundActorClass != nullptr)
-	{
-		FAssetRegistryTag Tag("BoundActorClass", BoundActorClass->GetName(), FAssetRegistryTag::TT_Alphabetical);
-		OutTags.Add(Tag);
-	}
-	else
-	{
-		OutTags.Emplace("BoundActorClass", "(None)", FAssetRegistryTag::TT_Alphabetical);
-	}
 }
 
 void UTemplateSequence::GetAssetRegistryTagMetadata(TMap<FName, FAssetRegistryTagMetadata>& OutMetadata) const

@@ -18,6 +18,7 @@
 #include "Subsystems/EngineSubsystem.h"
 #include "RHI.h"
 #include "AudioDeviceManager.h"
+#include "Templates/UniqueObj.h"
 #include "Engine.generated.h"
 
 #define WITH_DYNAMIC_RESOLUTION (!UE_SERVER)
@@ -2059,11 +2060,18 @@ public:
 	 */
 	virtual void UpdateTimeAndHandleMaxTickRate();
 
-	void SetGameLatencyMarkerStart(uint64 FrameNumber);
-	void SetGameLatencyMarkerEnd(uint64 FrameNumber);
+	void SetInputSampleLatencyMarker(uint64 FrameNumber);
 
-	void SetRenderLatencyMarkerStart(uint64 FrameNumber);
-	void SetRenderLatencyMarkerEnd(uint64 FrameNumber);
+	void SetSimulationLatencyMarkerStart(uint64 FrameNumber);
+	void SetSimulationLatencyMarkerEnd(uint64 FrameNumber);
+
+	void SetPresentLatencyMarkerStart(uint64 FrameNumber);
+	void SetPresentLatencyMarkerEnd(uint64 FrameNumber);
+
+	void SetRenderSubmitLatencyMarkerStart(uint64 FrameNumber);
+	void SetRenderSubmitLatencyMarkerEnd(uint64 FrameNumber);
+
+	void SetFlashIndicatorLatencyMarker(uint64 FrameNumber);
 
 	/**
 	 * Allows games to correct the negative delta
@@ -3208,7 +3216,7 @@ public:
 	UEngineSubsystem* GetEngineSubsystemBase(TSubclassOf<UEngineSubsystem> SubsystemClass) const
 	{
 		checkSlow(this != nullptr);
-		return EngineSubsystemCollection.GetSubsystem<UEngineSubsystem>(SubsystemClass);
+		return EngineSubsystemCollection->GetSubsystem<UEngineSubsystem>(SubsystemClass);
 	}
 
 	/**
@@ -3218,7 +3226,7 @@ public:
 	TSubsystemClass* GetEngineSubsystem() const
 	{
 		checkSlow(this != nullptr);
-		return EngineSubsystemCollection.GetSubsystem<TSubsystemClass>(TSubsystemClass::StaticClass());
+		return EngineSubsystemCollection->GetSubsystem<TSubsystemClass>(TSubsystemClass::StaticClass());
 	}
 
 	/**
@@ -3227,11 +3235,15 @@ public:
 	template <typename TSubsystemClass>
 	const TArray<TSubsystemClass*>& GetEngineSubsystemArray() const
 	{
-		return EngineSubsystemCollection.GetSubsystemArray<TSubsystemClass>(TSubsystemClass::StaticClass());
+		return EngineSubsystemCollection->GetSubsystemArray<TSubsystemClass>(TSubsystemClass::StaticClass());
 	}
 
 private:
-	FSubsystemCollection<UEngineSubsystem> EngineSubsystemCollection;
+	// TUniqueObj is used here to work around a hot reload issue caused by FSubsystemCollection inheriting FGCObject.
+	// When hot reload occurs, the CDO for this type can be reconstructed over the same object at the same address without
+	// destroying it first, which breaks FGCObject.
+	// TUniquePtr makes sure the object is allocated on the heap, giving it a unique address.
+	TUniqueObj<FSubsystemCollection<UEngineSubsystem>> EngineSubsystemCollection;
 
 public:
 	/**

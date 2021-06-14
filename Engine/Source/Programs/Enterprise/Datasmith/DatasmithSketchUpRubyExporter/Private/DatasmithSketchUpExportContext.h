@@ -11,6 +11,8 @@
 #include "Containers/UnrealString.h"
 #include "Templates/SharedPointer.h"
 
+#include "Async/Future.h"
+
 class FDatasmithSceneExporter;
 
 class IDatasmithActorElement;
@@ -46,23 +48,27 @@ namespace DatasmithSketchUp
 	public:
 		FComponentInstanceCollection(FExportContext& InContext) : Context(InContext) {}
 
-		TSharedPtr<FComponentInstance> AddComponentInstance(SUComponentInstanceRef InComponentInstanceRef); // Register ComponentInstanceRef in the collection
-		bool RemoveComponentInstance(FComponentInstanceIDType ComponentInstanceId);
+		TSharedPtr<FComponentInstance> AddComponentInstance(FDefinition& ParentDefinition, SUComponentInstanceRef InComponentInstanceRef); // Register ComponentInstance as a child of ParentDefinition
+		bool RemoveComponentInstance(FComponentInstanceIDType ParentEntityId, FComponentInstanceIDType ComponentInstanceId); // Take note that ComponentInstance removed from ParentDefinition children
+		void RemoveComponentInstance(TSharedPtr<FComponentInstance> ComponentInstance);
 
 		bool InvalidateComponentInstanceProperties(FComponentInstanceIDType ComponentInstanceID);
 		void InvalidateComponentInstanceGeometry(FComponentInstanceIDType ComponentInstanceID);
+		void InvalidateComponentInstanceMetadata(FComponentInstanceIDType ComponentInstanceID);
 		void UpdateProperties();
 		void UpdateGeometry();
+
+		void LayerModified(DatasmithSketchUp::FEntityIDType LayerId);
 
 		TSharedPtr<FComponentInstance>* FindComponentInstance(FComponentInstanceIDType ComponentInstanceID)
 		{
 			return ComponentInstanceMap.Find(ComponentInstanceID);
 		}
 
+		TMap<FComponentInstanceIDType, TSharedPtr<FComponentInstance>> ComponentInstanceMap;
 	private:
 		FExportContext& Context;
 
-		TMap<FComponentInstanceIDType, TSharedPtr<FComponentInstance>> ComponentInstanceMap;
 	};
 
 	class FComponentDefinitionCollection
@@ -94,7 +100,7 @@ namespace DatasmithSketchUp
 
 		TSharedPtr<FTexture> FindOrAdd(SUTextureRef);
 
-		FTexture* AddTexture(SUTextureRef TextureRef);
+		FTexture* AddTexture(SUTextureRef TextureRef, FString MaterialName);
 
 		// This texture is used in a colorized material so image will be saved in material-specific filename
 		FTexture* AddColorizedTexture(SUTextureRef TextureRef, FString MaterialName); 
@@ -103,6 +109,11 @@ namespace DatasmithSketchUp
 		void AddImageFileForTexture(TSharedPtr<FTexture> Texture); 
 
 		void Update();
+
+		// Track texture usage
+		void RegisterMaterial(FMaterial*);
+		void UnregisterMaterial(FMaterial*);
+
 
 	private:
 		FExportContext& Context;
@@ -118,12 +129,16 @@ namespace DatasmithSketchUp
 
 		TSharedPtr<DatasmithSketchUp::FEntities> AddEntities(FDefinition& InDefinition, SUEntitiesRef EntitiesRef);
 
-		void RegisterEntitiesFaces(DatasmithSketchUp::FEntities&, const TSet<int32>& FaceIds);
+		void RegisterEntities(DatasmithSketchUp::FEntities&);
+		void UnregisterEntities(DatasmithSketchUp::FEntities&);
 		DatasmithSketchUp::FEntities* FindFace(int32 FaceId);
+
+		void LayerModified(FEntityIDType LayerId);
 
 	private:
 		FExportContext& Context;
 		TMap<int32, DatasmithSketchUp::FEntities*> FaceIdForEntitiesMap; // Identify Entities for each Face
+		TMap<DatasmithSketchUp::FEntityIDType, TSet<DatasmithSketchUp::FEntities*>> LayerIdForEntitiesMap; // Identify Entities for each Face
 	};
 
 	// Tracks information related to SketchUp "Scenes"(or "Pages" in older UI)
@@ -192,8 +207,8 @@ namespace DatasmithSketchUp
 		void Populate(); // Create Datasmith scene from the Model
 		void Update(); // Update Datasmith scene to reflect iterative changes done to the Model 
 
-		DatasmithSketchUp::FDefinition* GetEntityDefinition(SUEntityRef Entity);
-
+		FDefinition* GetDefinition(SUEntityRef Entity);
+		FDefinition* GetDefinition(FEntityIDType DefinitionEntityId);
 
 		SUModelRef ModelRef = SU_INVALID;
 
@@ -210,5 +225,7 @@ namespace DatasmithSketchUp
 		FMaterialCollection Materials;
 		FSceneCollection Scenes;
 		FTextureCollection Textures;
+
+		TArray<TFuture<bool>> MeshExportTasks;
 	};
 }

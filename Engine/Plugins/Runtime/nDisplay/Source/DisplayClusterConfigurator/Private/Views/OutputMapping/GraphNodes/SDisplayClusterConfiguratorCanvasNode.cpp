@@ -13,8 +13,6 @@
 
 #define LOCTEXT_NAMESPACE "SDisplayClusterConfiguratorCanvasNode"
 
-int32 const SDisplayClusterConfiguratorCanvasNode::DefaultZOrder = 0;
-
 void SDisplayClusterConfiguratorCanvasNode::Construct(const FArguments& InArgs, UDisplayClusterConfiguratorCanvasNode* InNode, const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit)
 {	
 	SDisplayClusterConfiguratorBaseNode::Construct(SDisplayClusterConfiguratorBaseNode::FArguments(), InNode, InToolkit);
@@ -77,12 +75,12 @@ void SDisplayClusterConfiguratorCanvasNode::UpdateGraphNode()
 	];
 }
 
-void SDisplayClusterConfiguratorCanvasNode::MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter)
+void SDisplayClusterConfiguratorCanvasNode::MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty)
 {
 	// Canvas node is not allowed to be moved in general, so add it to the node filter
 	NodeFilter.Add(SharedThis(this));
 
-	SGraphNode::MoveTo(NewPosition, NodeFilter);
+	SGraphNode::MoveTo(NewPosition, NodeFilter, bMarkDirty);
 }
 
 FVector2D SDisplayClusterConfiguratorCanvasNode::ComputeDesiredSize(float) const

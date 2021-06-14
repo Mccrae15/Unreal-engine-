@@ -20,28 +20,23 @@ class UFilteredResults : public UObject
 	GENERATED_BODY()
 public:
 
-	UFilteredResults(const FObjectInitializer& ObjectInitializer);
 	void CleanReferences();
 	
 	void SetActiveLevelSnapshot(ULevelSnapshot* InActiveLevelSnapshot);
 	void SetUserFilters(ULevelSnapshotFilter* InUserFilters);
 
 	/* Extracts DeserializedActorsAndDesiredPaths and FilterResults is modified. */  
-	void UpdateFilteredResults();
+	void UpdateFilteredResults(UWorld* SelectedWorld);
 
-	void UpdatePropertiesToRollback(ULevelSnapshotSelectionSet* InSelectionSet);
+	void SetPropertiesToRollback(const FPropertySelectionMap& InSelectionSet);
+	const FPropertySelectionMap& GetPropertiesToRollback() const;
 	
 	FFilterListData& GetFilteredData();
 	TWeakObjectPtr<ULevelSnapshotFilter> GetUserFilters() const;
-	ULevelSnapshotSelectionSet* GetSelectionSet() const;
-
-	void SetSelectedWorld(UWorld* InWorld);
 
 private:
 
 	TWeakObjectPtr<ULevelSnapshot> UserSelectedSnapshot;
-
-	TWeakObjectPtr<UWorld> SelectedWorld;
 
 	/* Stores partially filtered data for displaying in filter results view. */
 	FFilterListData FilteredData;
@@ -50,6 +45,6 @@ private:
 	
 	/* Null until UpdatePropertiesToRollback is called. */ 
 	UPROPERTY()
-	ULevelSnapshotSelectionSet* PropertiesToRollback;
+	FPropertySelectionMap PropertiesToRollback;
 	
 };

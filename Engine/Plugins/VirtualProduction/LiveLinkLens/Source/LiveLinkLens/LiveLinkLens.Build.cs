@@ -11,8 +11,8 @@ public class LiveLinkLens : ModuleRules
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
+				"CameraCalibrationCore",
 				"CinematicCamera",
-				"LensDistortion",
 				"LiveLinkComponents",
 				"LiveLinkInterface"
 			}
@@ -24,7 +24,10 @@ public class LiveLinkLens : ModuleRules
 			{
 				"Core",
 				"CoreUObject",
-				"Engine"
+				"Engine",
+				"LiveLinkMovieScene",
+				"MovieScene",
+				"MovieSceneTracks",
 			}
 		);
 	}

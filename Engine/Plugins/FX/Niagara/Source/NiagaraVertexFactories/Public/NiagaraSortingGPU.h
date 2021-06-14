@@ -13,9 +13,9 @@ NiagaraSortingGPU.h: Niagara sorting shaders
 
 struct FNiagaraGPUSortInfo;
 
-extern NIAGARAVERTEXFACTORIES_API int32 GNiagaraGPUCulling;
 extern NIAGARAVERTEXFACTORIES_API int32 GNiagaraGPUSortingUseMaxPrecision;
 extern NIAGARAVERTEXFACTORIES_API int32 GNiagaraGPUSortingCPUToGPUThreshold;
+extern NIAGARAVERTEXFACTORIES_API int32 GNiagaraGPUCullingCPUToGPUThreshold;
 
 #define NIAGARA_KEY_GEN_THREAD_COUNT 64
 #define NIAGARA_COPY_BUFFER_THREAD_COUNT 64

@@ -68,12 +68,17 @@ bool USkeletalMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type,
 	// "C:/MyFolder/file_payload.usda" and create an "asset" file "C:/MyFolder/file.usda" that uses it
 	// as a payload, pointing at the default prim
 	FString PayloadFilename = UExporter::CurrentFilename;
-	if ( Options && Options->bUsePayload )
+	if ( Options && Options->Inner.bUsePayload )
 	{
 		FString PathPart;
 		FString FilenamePart;
 		FString ExtensionPart;
 		FPaths::Split( PayloadFilename, PathPart, FilenamePart, ExtensionPart );
+
+		if ( FormatExtension.Contains( Options->Inner.PayloadFormat ) )
+		{
+			ExtensionPart = Options->Inner.PayloadFormat;
+		}
 
 		PayloadFilename = FPaths::Combine( PathPart, FilenamePart + TEXT( "_payload." ) + ExtensionPart );
 	}
@@ -86,11 +91,11 @@ bool USkeletalMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type,
 
 	if ( Options )
 	{
-		UsdUtils::SetUsdStageMetersPerUnit( UsdStage, Options->StageOptions.MetersPerUnit );
-		UsdUtils::SetUsdStageUpAxis( UsdStage, Options->StageOptions.UpAxis );
+		UsdUtils::SetUsdStageMetersPerUnit( UsdStage, Options->Inner.StageOptions.MetersPerUnit );
+		UsdUtils::SetUsdStageUpAxis( UsdStage, Options->Inner.StageOptions.UpAxis );
 	}
 
-	FString RootPrimPath = ( TEXT( "/" ) + SkeletalMesh->GetName() );
+	FString RootPrimPath = ( TEXT( "/" ) + UsdUtils::SanitizeUsdIdentifier( *SkeletalMesh->GetName() ) );
 
 	FScopedUsdAllocs Allocs;
 
@@ -104,12 +109,12 @@ bool USkeletalMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type,
 
 	// Using payload: Convert mesh data through the asset stage (that references the payload) so that we can
 	// author mesh data on the payload layer and material data on the asset layer
-	if ( Options && Options->bUsePayload )
+	if ( Options && Options->Inner.bUsePayload )
 	{
 		if ( UE::FUsdStage AssetStage = UnrealUSDWrapper::NewStage( *UExporter::CurrentFilename ) )
 		{
-			UsdUtils::SetUsdStageMetersPerUnit( AssetStage, Options->StageOptions.MetersPerUnit );
-			UsdUtils::SetUsdStageUpAxis( AssetStage, Options->StageOptions.UpAxis );
+			UsdUtils::SetUsdStageMetersPerUnit( AssetStage, Options->Inner.StageOptions.MetersPerUnit );
+			UsdUtils::SetUsdStageUpAxis( AssetStage, Options->Inner.StageOptions.UpAxis );
 
 			if ( UE::FUsdPrim AssetRootPrim = AssetStage.DefinePrim( UE::FSdfPath( *RootPrimPath ) ) )
 			{

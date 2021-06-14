@@ -18,6 +18,7 @@ class SDisplayClusterConfiguratorWindowNode
 	: public SDisplayClusterConfiguratorBaseNode
 {
 public:
+	friend class SCornerImage;
 	friend class SNodeInfo;
 
 	~SDisplayClusterConfiguratorWindowNode();
@@ -32,35 +33,34 @@ public:
 
 	//~ Begin SGraphNode interface
 	virtual void UpdateGraphNode() override;
-	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter) override;
+	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty = true) override;
 	virtual bool CanBeSelected(const FVector2D& MousePositionInNode) const override;
 	virtual FVector2D ComputeDesiredSize(float) const override;
 	virtual FVector2D GetPosition() const override;
-	virtual TArray<FOverlayWidgetInfo> GetOverlayWidgets(bool bSelected, const FVector2D& WidgetSize) const override;
 	//~ End SGraphNode interface
 
 	//~ Begin SDisplayClusterConfiguratorBaseNode interface
-	virtual int32 GetNodeLayerIndex() const override;
-	virtual bool CanNodeOverlapSiblings() const override { return false; }
-	virtual bool CanNodeExceedParentBounds() const override;
 	virtual bool CanNodeBeSnapAligned() const override { return true; }
+	virtual bool CanNodeBeResized() const { return !IsClusterNodeLocked(); }
+	virtual bool IsAspectRatioFixed() const override;
+
+protected:
+	virtual int32 GetNodeLogicalLayer() const override;
 	//~ End SDisplayClusterConfiguratorBaseNode interface
 
 private:
-	TSharedRef<SWidget> CreateCornerImageWidget();
-	TSharedRef<SWidget> CreateInfoWidget();
 	TSharedRef<SWidget> CreateBackground(const TAttribute<FSlateColor>& ColorAndOpacity);
 
 	const FSlateBrush* GetBorderBrush() const;
 	int32 GetBorderLayerOffset() const;
 	const FSlateBrush* GetNodeShadowBrush() const;
 	FMargin GetBackgroundPosition() const;
-	FMargin GetAreaResizeHandlePosition() const;
-	EVisibility GetAreaResizeHandleVisibility() const;
-	bool IsAspectRatioFixed() const;
 	FSlateColor GetCornerColor() const;
 	FVector2D GetPreviewImageSize() const;
 	EVisibility GetPreviewImageVisibility() const;
+	int32 GetNodeTitleLayerOffset() const;
+	EVisibility GetNodeInfoVisibility() const;
+	EVisibility GetCornerImageVisibility() const;
 
 	bool CanShowInfoWidget() const;
 	bool CanShowCornerImageWidget() const;
@@ -69,14 +69,11 @@ private:
 	void OnPreviewImageChanged();
 
 private:
-	TSharedPtr<SWidget> CornerImageWidget;
-	TSharedPtr<SWidget> InfoWidget;
 	TSharedPtr<SDisplayClusterConfiguratorExternalImage> PreviewImageWidget;
 
 	FVector2D WindowScaleFactor;
 
 	FDelegateHandle ImageChangedHandle;
 
-public:
-	static int32 const DefaultZOrder;
+	bool bLayerAboveViewports = false;
 };

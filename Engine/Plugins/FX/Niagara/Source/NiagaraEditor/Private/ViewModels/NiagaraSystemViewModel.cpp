@@ -7,6 +7,7 @@
 #include "NiagaraEmitterEditorData.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraSimulationStageBase.h"
+#include "NiagaraEditorData.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraDataInterfaceCurveBase.h"
 #include "ViewModels/NiagaraEmitterHandleViewModel.h"
@@ -17,6 +18,7 @@
 #include "ViewModels/Stack/NiagaraStackViewModel.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "ViewModels/Stack/NiagaraStackEntry.h"
+#include "ViewModels/NiagaraPlaceholderDataInterfaceManager.h"
 #include "NiagaraSystemScriptViewModel.h"
 #include "NiagaraScriptGraphViewModel.h"
 #include "NiagaraSequence.h"
@@ -33,6 +35,7 @@
 #include "EdGraphSchema_NiagaraSystemOverview.h"
 #include "EdGraphUtilities.h"
 #include "ViewModels/NiagaraScratchPadUtilities.h"
+#include "NiagaraParameterDefinitions.h"
 
 #include "Editor.h"
 
@@ -52,6 +55,8 @@
 #include "NiagaraMessageUtilities.h"
 #include "ViewModels/NiagaraOverviewGraphViewModel.h"
 #include "Framework/Application/SlateApplication.h"
+#include "NiagaraScriptVariable.h"
+#include "NiagaraParameterDefinitionsSubscriber.h"
 
 DECLARE_CYCLE_STAT(TEXT("Niagara - SystemViewModel - CompileSystem"), STAT_NiagaraEditor_SystemViewModel_CompileSystem, STATGROUP_NiagaraEditor);
 
@@ -62,6 +67,7 @@ template<> TMap<UNiagaraSystem*, TArray<FNiagaraSystemViewModel*>> TNiagaraViewM
 FNiagaraSystemViewModelOptions::FNiagaraSystemViewModelOptions()
 	: bCanAutoCompile(true)
 	, bCanSimulate(true)
+	, bIsForDataProcessingOnly(false)
 {
 }
 
@@ -84,7 +90,6 @@ FNiagaraSystemViewModel::FNiagaraSystemViewModel()
 	, ScriptScratchPadViewModel(nullptr)
 	, bPendingAssetMessagesChanged(true)
 {
-	GEditor->RegisterForUndo(this);
 }
 
 void FNiagaraSystemViewModel::Initialize(UNiagaraSystem& InSystem, FNiagaraSystemViewModelOptions InOptions)
@@ -97,15 +102,21 @@ void FNiagaraSystemViewModel::Initialize(UNiagaraSystem& InSystem, FNiagaraSyste
 	bCanSimulate = InOptions.bCanSimulate;
 	EditMode = InOptions.EditMode;
 	OnGetSequencerAddMenuContent = InOptions.OnGetSequencerAddMenuContent;
-	SystemMessageLogGuidKey = InOptions.MessageLogGuid;	
-	
+	SystemMessageLogGuidKey = InOptions.MessageLogGuid;
+	bIsForDataProcessingOnly = InOptions.bIsForDataProcessingOnly;
+
+	if (bIsForDataProcessingOnly == false)
+	{
+		GEditor->RegisterForUndo(this);
+	}
+
 	SystemChangedDelegateHandle = System->OnSystemPostEditChange().AddSP(this, &FNiagaraSystemViewModel::SystemChanged);
 
 	SelectionViewModel = NewObject<UNiagaraSystemSelectionViewModel>(GetTransientPackage());
 	SelectionViewModel->Initialize(this->AsShared());
 	SelectionViewModel->OnEmitterHandleIdSelectionChanged().AddSP(this, &FNiagaraSystemViewModel::SystemSelectionChanged);
 
-	SystemScriptViewModel = MakeShared<FNiagaraSystemScriptViewModel>();
+	SystemScriptViewModel = MakeShared<FNiagaraSystemScriptViewModel>(bIsForDataProcessingOnly);
 	SystemScriptViewModel->Initialize(GetSystem());
 
 	OverviewGraphViewModel = MakeShared<FNiagaraOverviewGraphViewModel>();
@@ -122,10 +133,17 @@ void FNiagaraSystemViewModel::Initialize(UNiagaraSystem& InSystem, FNiagaraSyste
 	CurveSelectionViewModel = NewObject<UNiagaraCurveSelectionViewModel>(GetTransientPackage());
 	CurveSelectionViewModel->Initialize(this->AsShared());
 
+	PlaceholderDataInterfaceManager = MakeShared<FNiagaraPlaceholderDataInterfaceManager>(this->AsShared());
+
 	SetupPreviewComponentAndInstance();
 	SetupSequencer();
 	RefreshAll();
 	AddSystemEventHandlers();
+}
+
+bool FNiagaraSystemViewModel::IsValid() const
+{
+	return SystemInstance != nullptr;
 }
 
 void FNiagaraSystemViewModel::DumpToText(FString& ExportText)
@@ -137,8 +155,6 @@ void FNiagaraSystemViewModel::DumpToText(FString& ExportText)
 
 void FNiagaraSystemViewModel::Cleanup()
 {
-	UE_LOG(LogNiagaraEditor, Warning, TEXT("Cleanup System view model %p"), this);
-
 	if (SystemInstance)
 	{
 		SystemInstance->OnInitialized().RemoveAll(this);
@@ -153,7 +169,10 @@ void FNiagaraSystemViewModel::Cleanup()
 		PreviewComponent = nullptr;
 	}
 
-	GEditor->UnregisterForUndo(this);
+	if(bIsForDataProcessingOnly == false)
+	{
+		GEditor->UnregisterForUndo(this);
+	}
 
 	if (System)
 	{
@@ -216,14 +235,29 @@ void FNiagaraSystemViewModel::Cleanup()
 		CurveSelectionViewModel = nullptr;
 	}
 
+	if (PlaceholderDataInterfaceManager.IsValid())
+	{
+		PlaceholderDataInterfaceManager.Reset();
+	}
+
 	System = nullptr;
 }
 
 FNiagaraSystemViewModel::~FNiagaraSystemViewModel()
 {
 	Cleanup();
+}
 
-	UE_LOG(LogNiagaraEditor, Warning, TEXT("Deleting System view model %p"), this);
+INiagaraParameterDefinitionsSubscriber* FNiagaraSystemViewModel::GetParameterDefinitionsSubscriber()
+{
+	if(EditMode == ENiagaraSystemViewModelEditMode::SystemAsset)
+	{ 
+		return System;
+	}
+	else /**EditMode == ENiagaraSystemViewModelEditMode::EmitterAsset */
+	{
+		return GetEmitterHandleViewModels()[0]->GetEmitterHandle()->GetInstance();
+	}
 }
 
 FText FNiagaraSystemViewModel::GetDisplayName() const
@@ -231,7 +265,7 @@ FText FNiagaraSystemViewModel::GetDisplayName() const
 	return FText::FromString(System->GetName());
 }
 
-const TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& FNiagaraSystemViewModel::GetEmitterHandleViewModels()
+const TArray<TSharedRef<FNiagaraEmitterHandleViewModel>>& FNiagaraSystemViewModel::GetEmitterHandleViewModels() const
 {
 	return EmitterHandleViewModels;
 }
@@ -332,19 +366,19 @@ TSharedPtr<FNiagaraEmitterHandleViewModel> FNiagaraSystemViewModel::AddEmitter(U
 
 	// When editing an emitter asset the system is a placeholder and we don't want to make adding an emitter to it undoable.
 	bool bSystemIsPlaceholder = EditMode == ENiagaraSystemViewModelEditMode::EmitterAsset;
-	if (false == bSystemIsPlaceholder)
+	if (false == bSystemIsPlaceholder && false == bIsForDataProcessingOnly)
 	{
 		GEditor->BeginTransaction(LOCTEXT("AddEmitter", "Add emitter"));
 	}
 
-	const FGuid NewEmitterHandleId = FNiagaraEditorUtilities::AddEmitterToSystem(GetSystem(), Emitter);
+	const FGuid NewEmitterHandleId = FNiagaraEditorUtilities::AddEmitterToSystem(GetSystem(), Emitter, EditMode != ENiagaraSystemViewModelEditMode::EmitterDuringMerge);
 
-	if (false == bSystemIsPlaceholder)
+	if (false == bSystemIsPlaceholder && false == bIsForDataProcessingOnly)
 	{
 		GEditor->EndTransaction();
 	}
 
-	if (GetSystem().GetNumEmitters() == 1 && EditorSettings->GetAutoPlay())
+	if (GetSystem().GetNumEmitters() == 1 && EditorSettings->GetAutoPlay() && Sequencer.IsValid())
 	{
 		// When adding a new emitter to an empty system start playing.
 		Sequencer->SetPlaybackStatus(EMovieScenePlayerStatus::Playing);
@@ -362,10 +396,13 @@ TSharedPtr<FNiagaraEmitterHandleViewModel> FNiagaraSystemViewModel::AddEmitter(U
 
 	TGuardValue<bool> UpdateGuard(bUpdatingSequencerFromEmitterDataChange, true);
 
-	FFrameTime NewStartFrame = NewSystemPlaybackRange.GetLowerBoundValue() * NiagaraSequence->GetMovieScene()->GetTickResolution();
-	int32 NewDuration = (NewSystemPlaybackRange.Size<float>() * NiagaraSequence->GetMovieScene()->GetTickResolution()).FrameNumber.Value;
+	if (NiagaraSequence)
+	{
+		FFrameTime NewStartFrame = NewSystemPlaybackRange.GetLowerBoundValue() * NiagaraSequence->GetMovieScene()->GetTickResolution();
+		int32 NewDuration = (NewSystemPlaybackRange.Size<float>() * NiagaraSequence->GetMovieScene()->GetTickResolution()).FrameNumber.Value;
 
-	NiagaraSequence->GetMovieScene()->SetPlaybackRange(NewStartFrame.RoundToFrame(), NewDuration);
+		NiagaraSequence->GetMovieScene()->SetPlaybackRange(NewStartFrame.RoundToFrame(), NewDuration);
+	}
 
 	TSharedPtr<FNiagaraEmitterHandleViewModel> NewEmitterHandleViewModel = GetEmitterHandleViewModelById(NewEmitterHandleId);
 	TArray<UNiagaraStackEntry*> SelectedStackEntries;
@@ -669,6 +706,11 @@ void FNiagaraSystemViewModel::Tick(float DeltaTime)
 		SelectionViewModel->Tick();
 	}
 
+	if (CurveSelectionViewModel != nullptr)
+	{
+		CurveSelectionViewModel->Tick();
+	}
+
 	if (bPendingAssetMessagesChanged)
 	{
 		bPendingAssetMessagesChanged = false;
@@ -769,6 +811,17 @@ const TArray<FNiagaraStackModuleData>& FNiagaraSystemViewModel::BuildAndCacheSta
 	return StackModuleData;
 }
 
+UNiagaraEditorParametersAdapter* FNiagaraSystemViewModel::GetEditorOnlyParametersAdapter() const
+{
+	if (EditMode == ENiagaraSystemViewModelEditMode::SystemAsset)
+	{
+		return CastChecked<UNiagaraEditorParametersAdapter>(System->GetEditorParameters());
+	}
+	/** else EditMode == ENiagaraSystemViewModelEditMode::EmitterAsset */
+	UNiagaraEmitter* Emitter = GetEmitterHandleViewModels()[0]->GetEmitterHandle()->GetInstance();
+	return CastChecked<UNiagaraEditorParametersAdapter>(Emitter->GetEditorParameters());
+}
+
 void FNiagaraSystemViewModel::GetOrderedScriptsForEmitterHandleId(FGuid EmitterHandleId, TArray<UNiagaraScript*>& OutScripts)
 {
 	UNiagaraEmitter* Emitter = nullptr;
@@ -828,6 +881,16 @@ TArray<float> FNiagaraSystemViewModel::OnGetPlaybackSpeeds() const
 TStatId FNiagaraSystemViewModel::GetStatId() const
 {
 	RETURN_QUICK_DECLARE_CYCLE_STAT(FNiagaraSystemViewModel, STATGROUP_Tickables);
+}
+
+TSharedRef<FNiagaraPlaceholderDataInterfaceManager> FNiagaraSystemViewModel::GetPlaceholderDataInterfaceManager()
+{
+	return PlaceholderDataInterfaceManager.ToSharedRef();
+}
+
+bool FNiagaraSystemViewModel::GetIsForDataProcessingOnly() const
+{
+	return bIsForDataProcessingOnly;
 }
 
 void FNiagaraSystemViewModel::SendLastCompileMessageJobs() const
@@ -1177,12 +1240,15 @@ void FNiagaraSystemViewModel::ResetEmitterHandleViewModelsAndTracks()
 		EmitterHandleViewModel->Reset();
 	}
 
-	TArray<UMovieSceneTrack*> MasterTracks = NiagaraSequence->GetMovieScene()->GetMasterTracks();
-	for (UMovieSceneTrack* MasterTrack : MasterTracks)
+	if (NiagaraSequence)
 	{
-		if (MasterTrack != nullptr)
+		TArray<UMovieSceneTrack*> MasterTracks = NiagaraSequence->GetMovieScene()->GetMasterTracks();
+		for (UMovieSceneTrack* MasterTrack : MasterTracks)
 		{
-			NiagaraSequence->GetMovieScene()->RemoveMasterTrack(*MasterTrack);
+			if (MasterTrack != nullptr)
+			{
+				NiagaraSequence->GetMovieScene()->RemoveMasterTrack(*MasterTrack);
+			}
 		}
 	}
 }
@@ -1206,7 +1272,7 @@ void FNiagaraSystemViewModel::RefreshEmitterHandleViewModels()
 		bool bAdd = OldViewModels.Num() <= i;
 		if (bAdd)
 		{
-			ViewModel = MakeShared<FNiagaraEmitterHandleViewModel>();
+			ViewModel = MakeShared<FNiagaraEmitterHandleViewModel>(bIsForDataProcessingOnly);
 			ViewModel->OnPropertyChanged().AddRaw(this, &FNiagaraSystemViewModel::EmitterHandlePropertyChanged, EmitterHandle->GetId());
 			ViewModel->OnNameChanged().AddRaw(this, &FNiagaraSystemViewModel::EmitterHandleNameChanged);
 			ViewModel->GetEmitterViewModel()->OnPropertyChanged().AddRaw(this, &FNiagaraSystemViewModel::EmitterPropertyChanged);
@@ -1221,7 +1287,7 @@ void FNiagaraSystemViewModel::RefreshEmitterHandleViewModels()
 		}
 
 		EmitterHandleViewModels.Add(ViewModel.ToSharedRef());
-		ViewModel->Initialize(this->AsShared(), EmitterHandle, Simulation);
+		ViewModel->Initialize(this->AsShared(), i, Simulation);
 	}
 
 	check(EmitterHandleViewModels.Num() == GetSystem().GetNumEmitters());
@@ -1289,37 +1355,39 @@ void FNiagaraSystemViewModel::RefreshSequencerTracks()
 {
 	TGuardValue<bool> UpdateGuard(bUpdatingSequencerFromEmitterDataChange, true);
 
-	TArray<UMovieSceneTrack*> MasterTracks = NiagaraSequence->GetMovieScene()->GetMasterTracks();
-	for (UMovieSceneTrack* MasterTrack : MasterTracks)
+	if (Sequencer.IsValid())
 	{
-		if (MasterTrack != nullptr)
+		TArray<UMovieSceneTrack*> MasterTracks = NiagaraSequence->GetMovieScene()->GetMasterTracks();
+		for (UMovieSceneTrack* MasterTrack : MasterTracks)
 		{
-			NiagaraSequence->GetMovieScene()->RemoveMasterTrack(*MasterTrack);
+			if (MasterTrack != nullptr)
+			{
+				NiagaraSequence->GetMovieScene()->RemoveMasterTrack(*MasterTrack);
+			}
 		}
+
+		TMap<FGuid, UMovieSceneNiagaraEmitterTrack*> EmitterHandleIdToTrackMap;
+		for (TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel : EmitterHandleViewModels)
+		{
+			UMovieSceneNiagaraEmitterTrack* EmitterTrack = Cast<UMovieSceneNiagaraEmitterTrack>(NiagaraSequence->GetMovieScene()->AddMasterTrack(UMovieSceneNiagaraEmitterTrack::StaticClass()));
+			EmitterTrack->Initialize(*this, EmitterHandleViewModel, NiagaraSequence->GetMovieScene()->GetTickResolution());
+			EmitterHandleIdToTrackMap.Add(EmitterHandleViewModel->GetId(), EmitterTrack);
+		}
+
+		TArray<UMovieSceneFolder*>& MovieSceneRootFolders = NiagaraSequence->GetMovieScene()->GetRootFolders();
+		MovieSceneRootFolders.Empty();
+
+		const UNiagaraSystemEditorData& SystemEditorData = GetEditorData();
+		UNiagaraSystemEditorFolder& RootFolder = SystemEditorData.GetRootFolder();
+		for (const UNiagaraSystemEditorFolder* RootChildFolder : RootFolder.GetChildFolders())
+		{
+			UMovieSceneFolder* MovieSceneRootFolder = NewObject<UMovieSceneFolder>(NiagaraSequence->GetMovieScene(), RootChildFolder->GetFolderName(), RF_Transactional);
+			MovieSceneRootFolder->SetFolderName(RootChildFolder->GetFolderName());
+			MovieSceneRootFolders.Add(MovieSceneRootFolder);
+			PopulateChildMovieSceneFoldersFromNiagaraFolders(RootChildFolder, MovieSceneRootFolder, EmitterHandleIdToTrackMap);
+		}
+		Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
 	}
-
-	TMap<FGuid, UMovieSceneNiagaraEmitterTrack*> EmitterHandleIdToTrackMap;
-	for (TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel : EmitterHandleViewModels)
-	{
-		UMovieSceneNiagaraEmitterTrack* EmitterTrack = Cast<UMovieSceneNiagaraEmitterTrack>(NiagaraSequence->GetMovieScene()->AddMasterTrack(UMovieSceneNiagaraEmitterTrack::StaticClass()));
-		EmitterTrack->Initialize(*this, EmitterHandleViewModel, NiagaraSequence->GetMovieScene()->GetTickResolution());
-		EmitterHandleIdToTrackMap.Add(EmitterHandleViewModel->GetId(), EmitterTrack);
-	}
-
-	TArray<UMovieSceneFolder*>& MovieSceneRootFolders = NiagaraSequence->GetMovieScene()->GetRootFolders();
-	MovieSceneRootFolders.Empty();
-
-	const UNiagaraSystemEditorData& SystemEditorData = GetEditorData();
-	UNiagaraSystemEditorFolder& RootFolder = SystemEditorData.GetRootFolder();
-	for (const UNiagaraSystemEditorFolder* RootChildFolder : RootFolder.GetChildFolders())
-	{
-		UMovieSceneFolder* MovieSceneRootFolder = NewObject<UMovieSceneFolder>(NiagaraSequence->GetMovieScene(), RootChildFolder->GetFolderName(), RF_Transactional);
-		MovieSceneRootFolder->SetFolderName(RootChildFolder->GetFolderName());
-		MovieSceneRootFolders.Add(MovieSceneRootFolder);
-		PopulateChildMovieSceneFoldersFromNiagaraFolders(RootChildFolder, MovieSceneRootFolder, EmitterHandleIdToTrackMap);
-	}
-
-	Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
 
 	// Since we just rebuilt all of the sequencer tracks, these updates don't need to be done.
 	EmitterIdsRequiringSequencerTrackUpdate.Empty();
@@ -1327,26 +1395,32 @@ void FNiagaraSystemViewModel::RefreshSequencerTracks()
 
 void FNiagaraSystemViewModel::UpdateSequencerTracksForEmitters(const TArray<FGuid>& EmitterIdsRequiringUpdate)
 {
-	TGuardValue<bool> UpdateGuard(bUpdatingSequencerFromEmitterDataChange, true);
-	for (UMovieSceneTrack* Track : NiagaraSequence->GetMovieScene()->GetMasterTracks())
+	if (Sequencer.IsValid())
 	{
-		UMovieSceneNiagaraEmitterTrack* EmitterTrack = CastChecked<UMovieSceneNiagaraEmitterTrack>(Track);
-		if (EmitterIdsRequiringUpdate.Contains(EmitterTrack->GetEmitterHandleViewModel()->GetId()))
+		TGuardValue<bool> UpdateGuard(bUpdatingSequencerFromEmitterDataChange, true);
+		for (UMovieSceneTrack* Track : NiagaraSequence->GetMovieScene()->GetMasterTracks())
 		{
-			EmitterTrack->UpdateTrackFromEmitterGraphChange(NiagaraSequence->GetMovieScene()->GetTickResolution());
+			UMovieSceneNiagaraEmitterTrack* EmitterTrack = CastChecked<UMovieSceneNiagaraEmitterTrack>(Track);
+			if (EmitterIdsRequiringUpdate.Contains(EmitterTrack->GetEmitterHandleViewModel()->GetId()))
+			{
+				EmitterTrack->UpdateTrackFromEmitterGraphChange(NiagaraSequence->GetMovieScene()->GetTickResolution());
+			}
 		}
+		Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
 	}
-	Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
 }
 
 UMovieSceneNiagaraEmitterTrack* FNiagaraSystemViewModel::GetTrackForHandleViewModel(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleViewModel)
 {
-	for (UMovieSceneTrack* Track : NiagaraSequence->GetMovieScene()->GetMasterTracks())
+	if (NiagaraSequence)
 	{
-		UMovieSceneNiagaraEmitterTrack* EmitterTrack = CastChecked<UMovieSceneNiagaraEmitterTrack>(Track);
-		if (EmitterTrack->GetEmitterHandleViewModel() == EmitterHandleViewModel)
+		for (UMovieSceneTrack* Track : NiagaraSequence->GetMovieScene()->GetMasterTracks())
 		{
-			return EmitterTrack;
+			UMovieSceneNiagaraEmitterTrack* EmitterTrack = CastChecked<UMovieSceneNiagaraEmitterTrack>(Track);
+			if (EmitterTrack->GetEmitterHandleViewModel() == EmitterHandleViewModel)
+			{
+				return EmitterTrack;
+			}
 		}
 	}
 	return nullptr;
@@ -1354,6 +1428,11 @@ UMovieSceneNiagaraEmitterTrack* FNiagaraSystemViewModel::GetTrackForHandleViewMo
 
 void FNiagaraSystemViewModel::SetupSequencer()
 {
+	if (EditMode == ENiagaraSystemViewModelEditMode::EmitterDuringMerge)
+	{
+		// we don't need a sequencer when merging emitters
+		return;
+	}
 	NiagaraSequence = NewObject<UNiagaraSequence>(GetTransientPackage());
 	UMovieScene* MovieScene = NewObject<UMovieScene>(NiagaraSequence, FName("Niagara System MovieScene"), RF_Transactional);
 	MovieScene->SetDisplayRate(FFrameRate(240, 1));
@@ -1403,7 +1482,7 @@ void FNiagaraSystemViewModel::SetupSequencer()
 void FNiagaraSystemViewModel::SnapToNextSpeed(const FString& PropertyName, const UNiagaraEditorSettings* Settings)
 {
 	// we update the speed in any case
-	if (Sequencer != nullptr)
+	if (Sequencer.IsValid())
 	{
 		Sequencer->SnapToClosestPlaybackSpeed();
 	}
@@ -1428,19 +1507,23 @@ void FNiagaraSystemViewModel::ResetSystem()
 
 void FNiagaraSystemViewModel::ResetSystem(ETimeResetMode TimeResetMode, EMultiResetMode MultiResetMode, EReinitMode ReinitMode)
 {
-	bool bResetAge = TimeResetMode == ETimeResetMode::AllowResetTime && (Sequencer->GetPlaybackStatus() == EMovieScenePlayerStatus::Playing || Sequencer->GetPlaybackStatus() == EMovieScenePlayerStatus::Stopped || EditorSettings->GetResimulateOnChangeWhilePaused() == false);
-	if (bResetAge)
+	bool bResetAge = false;
+	if (Sequencer.IsValid())
 	{
-		TGuardValue<bool> Guard(bSettingSequencerTimeDirectly, true);
-		if (Sequencer->GetPlaybackStatus() == EMovieScenePlayerStatus::Playing)
+		bResetAge = TimeResetMode == ETimeResetMode::AllowResetTime && (Sequencer->GetPlaybackStatus() == EMovieScenePlayerStatus::Playing || Sequencer->GetPlaybackStatus() == EMovieScenePlayerStatus::Stopped || EditorSettings->GetResimulateOnChangeWhilePaused() == false);
+		if (bResetAge)
 		{
-			Sequencer->SetPlaybackStatus(EMovieScenePlayerStatus::Paused);
-			Sequencer->SetGlobalTime(0);
-			Sequencer->SetPlaybackStatus(EMovieScenePlayerStatus::Playing);
-		}
-		else
-		{
-			Sequencer->SetGlobalTime(0);
+			TGuardValue<bool> Guard(bSettingSequencerTimeDirectly, true);
+			if (Sequencer->GetPlaybackStatus() == EMovieScenePlayerStatus::Playing)
+			{
+				Sequencer->SetPlaybackStatus(EMovieScenePlayerStatus::Paused);
+				Sequencer->SetGlobalTime(0);
+				Sequencer->SetPlaybackStatus(EMovieScenePlayerStatus::Playing);
+			}
+			else
+			{
+				Sequencer->SetGlobalTime(0);
+			}
 		}
 	}
 
@@ -1451,34 +1534,33 @@ void FNiagaraSystemViewModel::ResetSystem(ETimeResetMode TimeResetMode, EMultiRe
 		System->CacheFromCompiledData();
 	}
 
-	TArray<UNiagaraComponent*> ReferencingComponents;
-	if (MultiResetMode == EMultiResetMode::ResetThisInstance)
-	{
-		if (PreviewComponent != nullptr)
-		{
-			ReferencingComponents.Add(PreviewComponent);
-		}
-	}
-	else
-	{
-		ReferencingComponents = FNiagaraEditorUtilities::GetComponentsThatReferenceSystem(GetSystem());
-	}
+	FNiagaraSystemUpdateContext UpdateContext;
 
-	for (auto Component : ReferencingComponents)
-	{
-		if (ReinitMode == EReinitMode::ResetSystem)
+	//TODO: Some path through the system sim init code is causing this to break running systems.
+	UpdateContext.SetDestroySystemSim(false);
+
+	UpdateContext.GetPostWork().BindLambda(
+		[ReinitMode, bResetAge](UNiagaraComponent* Component)
 		{
-			Component->ResetSystem();
-			if (bResetAge && Component->GetAgeUpdateMode() == ENiagaraAgeUpdateMode::DesiredAge)
+			if (ReinitMode == EReinitMode::ResetSystem && bResetAge  && Component->GetAgeUpdateMode() == ENiagaraAgeUpdateMode::DesiredAge)
 			{
 				Component->SetDesiredAge(0);
 			}
 		}
-		else if (ReinitMode == EReinitMode::ReinitializeSystem)
+	);
+	if (MultiResetMode == EMultiResetMode::ResetThisInstance)
+	{
+		if (PreviewComponent != nullptr)
 		{
-			Component->ReinitializeSystem();
+			UpdateContext.Add(PreviewComponent, ReinitMode == EReinitMode::ReinitializeSystem);
 		}
 	}
+	else
+	{
+		UpdateContext.Add(&GetSystem(), ReinitMode == EReinitMode::ReinitializeSystem);
+	}
+
+	UpdateContext.CommitUpdate();
 
 	if (EditMode == ENiagaraSystemViewModelEditMode::EmitterAsset && MultiResetMode == EMultiResetMode::AllowResetAllInstances && EditorSettings->GetResetDependentSystemsWhenEditingEmitters())
 	{
@@ -1589,7 +1671,7 @@ void FNiagaraSystemViewModel::EmitterHandlePropertyChanged(FGuid OwningEmitterHa
 {
 	// When the emitter handle changes, refresh the System scripts emitter nodes and the sequencer tracks just in case the
 	// property that changed was the handles emitter.
-	if (bUpdatingEmittersFromSequencerDataChange == false)
+	if (bUpdatingEmittersFromSequencerDataChange == false && NiagaraSequence)
 	{
 		TGuardValue<bool> UpdateGuard(bUpdatingSequencerFromEmitterDataChange, true);
 		for (UMovieSceneTrack* Track : NiagaraSequence->GetMovieScene()->GetMasterTracks())
@@ -1646,7 +1728,9 @@ void FNiagaraSystemViewModel::EmitterScriptGraphChanged(const FEdGraphEditAction
 	// Remove from cache on graph change 
 	GuidToCachedStackModuleData.Remove(OwningEmitterHandleId);
 	InvalidateCachedCompileStatus();
-	CurveSelectionViewModel->Refresh();
+
+	// Do a deferred refresh when responding to graph changes since we may be mid change and the graph could be invalid.
+	CurveSelectionViewModel->RefreshDeferred();
 
 	bPendingAssetMessagesChanged = true;
 }
@@ -1655,7 +1739,8 @@ void FNiagaraSystemViewModel::SystemScriptGraphChanged(const FEdGraphEditAction&
 {
 	GuidToCachedStackModuleData.Empty();
 	InvalidateCachedCompileStatus();
-	CurveSelectionViewModel->Refresh();
+	// Do a deferred refresh when responding to graph changes since we may be mid change and the graph could be invalid.
+	CurveSelectionViewModel->RefreshDeferred();
 	bPendingAssetMessagesChanged = true;
 }
 
@@ -1667,7 +1752,7 @@ void FNiagaraSystemViewModel::EmitterParameterStoreChanged(const FNiagaraParamet
 		{
 			UpdateSequencerTracksForEmitters(EmitterIdsRequiringSequencerTrackUpdate);
 		}
-		else
+		else if (Sequencer.IsValid())
 		{
 			TGuardValue<bool> UpdateGuard(bUpdatingSequencerFromEmitterDataChange, true);
 			for (UMovieSceneTrack* Track : NiagaraSequence->GetMovieScene()->GetMasterTracks())
@@ -1675,6 +1760,7 @@ void FNiagaraSystemViewModel::EmitterParameterStoreChanged(const FNiagaraParamet
 				UMovieSceneNiagaraEmitterTrack* EmitterTrack = CastChecked<UMovieSceneNiagaraEmitterTrack>(Track);
 				EmitterTrack->UpdateTrackFromEmitterParameterChange(NiagaraSequence->GetMovieScene()->GetTickResolution());
 			}
+			
 			Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::TrackValueChanged);
 		}
 	}
@@ -1691,7 +1777,7 @@ void FNiagaraSystemViewModel::UpdateSimulationFromParameterChange()
 	}
 	else
 	{
-		if (Sequencer->GetPlaybackStatus() == EMovieScenePlayerStatus::Stopped)
+		if (Sequencer && Sequencer->GetPlaybackStatus() == EMovieScenePlayerStatus::Stopped)
 		{
 			// TODO: Update the view when paused and reset on change is turned off.
 		}
@@ -1761,7 +1847,7 @@ void PopulateNiagaraFoldersFromMovieSceneFolders(const TArray<UMovieSceneFolder*
 
 void FNiagaraSystemViewModel::SequencerDataChanged(EMovieSceneDataChangeType DataChangeType)
 {
-	if (bUpdatingSequencerFromEmitterDataChange == false && GIsTransacting == false)
+	if (bUpdatingSequencerFromEmitterDataChange == false && GIsTransacting == false && NiagaraSequence)
 	{
 		TGuardValue<bool> UpdateGuard(bUpdatingEmittersFromSequencerDataChange, true);
 
@@ -1871,7 +1957,7 @@ void FNiagaraSystemViewModel::SequencerDataChanged(EMovieSceneDataChangeType Dat
 
 void FNiagaraSystemViewModel::SequencerTimeChanged()
 {
-	if (!PreviewComponent || !PreviewComponent->GetSystemInstance() || !PreviewComponent->GetSystemInstance()->GetAreDataInterfacesInitialized())
+	if (!PreviewComponent || !PreviewComponent->GetSystemInstance() || !PreviewComponent->GetSystemInstance()->GetAreDataInterfacesInitialized()|| !Sequencer.IsValid())
 	{
 		return;
 	}
@@ -1949,6 +2035,11 @@ void FNiagaraSystemViewModel::SequencerSectionSelectionChanged(TArray<UMovieScen
 
 void FNiagaraSystemViewModel::UpdateEmitterHandleSelectionFromSequencer()
 {
+	if (!Sequencer.IsValid())
+	{
+		return;
+	}
+	
 	TArray<FGuid> NewSelectedEmitterHandleIds;
 
 	TArray<UMovieSceneTrack*> SelectedTracks;
@@ -2006,6 +2097,10 @@ void FNiagaraSystemViewModel::UpdateEmitterHandleSelectionFromSequencer()
 
 void FNiagaraSystemViewModel::UpdateSequencerFromEmitterHandleSelection()
 {
+	if (!Sequencer.IsValid())
+	{
+		return;
+	}
 	TGuardValue<bool> UpdateGuard(bUpdatingSequencerSelectionFromSystem, true);
 	Sequencer->EmptySelection();
 	for (FGuid SelectedEmitterHandleId : SelectionViewModel->GetSelectedEmitterHandleIds())
@@ -2065,7 +2160,9 @@ void FNiagaraSystemViewModel::UpdateEmitterFixedBounds()
 {
 	for (TSharedRef<FNiagaraEmitterHandleViewModel>& EmitterHandleViewModel : EmitterHandleViewModels)
 	{
-		if (SelectionViewModel->GetSelectedEmitterHandleIds().Contains(EmitterHandleViewModel->GetId()) == false)
+		// if we are an emitter asset we don't require pre-selection
+		// if we are a system asset instead we filter out unselected emitters
+		if (EditMode != ENiagaraSystemViewModelEditMode::EmitterAsset && SelectionViewModel->GetSelectedEmitterHandleIds().Contains(EmitterHandleViewModel->GetId()) == false)
 		{
 			continue;
 		}
@@ -2081,6 +2178,26 @@ void FNiagaraSystemViewModel::UpdateEmitterFixedBounds()
 	}
 	PreviewComponent->MarkRenderTransformDirty();
 	ResetSystem(ETimeResetMode::KeepCurrentTime, EMultiResetMode::ResetThisInstance, EReinitMode::ResetSystem);
+}
+
+void FNiagaraSystemViewModel::UpdateSystemFixedBounds()
+{
+	// early out as we only allow system fixed bounds update on system assets
+	if(GetEditMode() != ENiagaraSystemViewModelEditMode::SystemAsset)
+	{
+		return;
+	}
+
+	if(SystemInstance != nullptr)
+	{
+		GetSystem().Modify();
+		
+		GetSystem().bFixedBounds = true;
+		GetSystem().SetFixedBounds(SystemInstance->GetLocalBounds());
+
+		PreviewComponent->MarkRenderTransformDirty();
+		ResetSystem(ETimeResetMode::KeepCurrentTime, EMultiResetMode::ResetThisInstance, EReinitMode::ResetSystem);
+	}
 }
 
 void FNiagaraSystemViewModel::ClearEmitterStats()
@@ -2198,9 +2315,9 @@ void FNiagaraSystemViewModel::SystemChanged(UNiagaraSystem* ChangedSystem)
 	}
 }
 
-void FNiagaraSystemViewModel::StackViewModelStructureChanged()
+void FNiagaraSystemViewModel::StackViewModelStructureChanged(ENiagaraStructureChangedFlags Flags)
 {
-	if (SelectionViewModel != nullptr)
+	if ((Flags & StructureChanged) != 0 && SelectionViewModel != nullptr)
 	{
 		SelectionViewModel->RefreshDeferred();
 	}

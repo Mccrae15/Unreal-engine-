@@ -157,11 +157,18 @@ public:
 
 	TArray<FIntegerParameterNameAndCurve>& GetIntegerParameterNamesAndCurves();
 	const TArray<FIntegerParameterNameAndCurve>& GetIntegerParameterNamesAndCurves() const;
-public:
+
+private:
 
 	/** Control Rig that controls us*/
 	UPROPERTY()
 	UControlRig* ControlRig;
+
+public:
+
+	/** The class of control rig to instantiate */
+	UPROPERTY(EditAnywhere, Category = "Animation")
+	TSubclassOf<UControlRig> ControlRigClass;
 
 	/** Mask for controls themselves*/
 	UPROPERTY()
@@ -170,18 +177,6 @@ public:
 	/** Mask for Transform Mask*/
 	UPROPERTY()
 	FMovieSceneTransformMask TransformMask;
-
-	/** Blend this track in additively (using the reference pose as a base) */
-	UPROPERTY(EditAnywhere, Category = "Animation")
-	bool bAdditive;
-
-	/** Only apply bones that are in the filter */
-	UPROPERTY(EditAnywhere, Category = "Animation")
-	bool bApplyBoneFilter;
-
-	/** Per-bone filter to apply to our animation */
-	UPROPERTY(EditAnywhere, Category = "Animation", meta=(EditCondition=bApplyBoneFilter))
-	FInputBlendPose BoneFilter;
 
 	/** The weight curve for this animation controller section */
 	UPROPERTY()
@@ -273,8 +268,14 @@ public:
 	}
 
 public:
+
 	/** Recreate with this Control Rig*/
 	void RecreateWithThisControlRig(UControlRig* InControlRig, bool bSetDefault);
+
+	/* Set the control rig for this section */
+	void SetControlRig(UControlRig* InControlRig);
+	/* Get the control rig for this section */
+	UControlRig* GetControlRig() const { return ControlRig; }
 
 	/** Whether or not to key currently, maybe evaluating so don't*/
 	void  SetDoNotKey(bool bIn) const { bDoNotKey = bIn; }

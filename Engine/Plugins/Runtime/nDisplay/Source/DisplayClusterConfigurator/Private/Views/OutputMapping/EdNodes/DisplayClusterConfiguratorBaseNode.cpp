@@ -8,27 +8,39 @@
 
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
 
-void UDisplayClusterConfiguratorBaseNode::Initialize(const FString& InNodeName, UObject* InObject, const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit)
+void UDisplayClusterConfiguratorBaseNode::Initialize(const FString& InNodeName, int32 InNodeZIndex, UObject* InObject, const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit)
 {
 	ObjectToEdit = InObject;
 	NodeName = InNodeName;
+	NodeZIndex = InNodeZIndex;
 	ToolkitPtr = InToolkit;
 }
 
+void UDisplayClusterConfiguratorBaseNode::BeginDestroy()
+{
+	Super::BeginDestroy();
+
+	Cleanup();
+}
 
 #if WITH_EDITOR
 void UDisplayClusterConfiguratorBaseNode::PostEditUndo()
 {
 	Super::PostEditUndo();
 
-	UpdateObject();
-
-	// Don't update the child nodes if this node is auto-positioned because this node is probably in the undo stack as part of
-	// a change to a child, and we don't want to overwrite the child's undo. If the children need updating, it will be handled on
-	// the next position tick.
-	if (!IsNodeAutoPositioned())
+	// Make sure the undo operation isn't going to a state where this node or the object it edits isn't valid
+	// before attempting to update the object or its children
+	if (IsObjectValid())
 	{
-		UpdateChildNodes();
+		UpdateObject();
+
+		// Don't update the child nodes if this node is auto-positioned because this node is probably in the undo stack as part of
+		// a change to a child, and we don't want to overwrite the child's undo. If the children need updating, it will be handled on
+		// the next position tick.
+		if (!IsNodeAutoPositioned())
+		{
+			UpdateChildNodes();
+		}
 	}
 }
 #endif
@@ -178,6 +190,55 @@ FNodeAlignmentAnchors UDisplayClusterConfiguratorBaseNode::GetNodeAlignmentAncho
 	Anchors.Right = Anchors.Center + FVector2D(NodeExtent.X, 0);
 
 	return Anchors;
+}
+
+int32 UDisplayClusterConfiguratorBaseNode::GetNodeLayer(const TSet<UObject*>& SelectionSet, bool bIncludeZIndex) const
+{
+	int32 ZIndex = 0;
+	if (bIncludeZIndex)
+	{
+		// Don't let the z-index exceed a value that would push the node into the next layer.
+		ZIndex = FMath::Min(NodeZIndex * DisplayClusterConfiguratorGraphLayers::ZIndexSize, DisplayClusterConfiguratorGraphLayers::LayerSize - DisplayClusterConfiguratorGraphLayers::ZIndexSize);
+	}
+
+	bool bIsSelected = SelectionSet.Contains(this);
+
+	if (Parent.IsValid())
+	{
+		int32 LayerIndex = Parent->GetNodeLayer(SelectionSet, false) + DisplayClusterConfiguratorGraphLayers::LayerSize + ZIndex;
+
+		if (bIsSelected && LayerIndex < DisplayClusterConfiguratorGraphLayers::SelectedLayerIndex)
+		{
+			LayerIndex += DisplayClusterConfiguratorGraphLayers::SelectedLayerIndex;
+		}
+
+		return LayerIndex;
+	}
+
+	return bIsSelected ? DisplayClusterConfiguratorGraphLayers::SelectedLayerIndex + ZIndex : DisplayClusterConfiguratorGraphLayers::BaseLayerIndex + ZIndex;
+}
+
+int32 UDisplayClusterConfiguratorBaseNode::GetAuxiliaryLayer(const TSet<UObject*>& SelectionSet) const
+{
+	bool bIsChildSelected = false;
+	for (UDisplayClusterConfiguratorBaseNode* Child : Children)
+	{
+		if (SelectionSet.Contains(Child))
+		{
+			bIsChildSelected = true;
+			break;
+		}
+	}
+
+	int32 LayerIndex = GetNodeLayer(SelectionSet);
+	int32 AuxLayerIndex = DisplayClusterConfiguratorGraphLayers::AuxiliaryLayerIndex;
+
+	if (LayerIndex >= DisplayClusterConfiguratorGraphLayers::SelectedLayerIndex || bIsChildSelected)
+	{
+		AuxLayerIndex += DisplayClusterConfiguratorGraphLayers::SelectedLayerIndex;
+	}
+
+	return AuxLayerIndex;
 }
 
 void UDisplayClusterConfiguratorBaseNode::FillParent(bool bRepositionNode)
@@ -361,7 +422,7 @@ bool UDisplayClusterConfiguratorBaseNode::IsUserInteractingWithNode(bool bCheckD
 
 void UDisplayClusterConfiguratorBaseNode::UpdateNode()
 {
-	if (!IsPendingKill())
+	if (IsObjectValid())
 	{
 		ReadNodeStateFromObject();
 
@@ -371,7 +432,7 @@ void UDisplayClusterConfiguratorBaseNode::UpdateNode()
 
 void UDisplayClusterConfiguratorBaseNode::UpdateObject()
 {
-	if (!IsPendingKill())
+	if (IsObjectValid())
 	{
 		WriteNodeStateToObject();
 
@@ -380,6 +441,11 @@ void UDisplayClusterConfiguratorBaseNode::UpdateObject()
 			ObjectToEdit->MarkPackageDirty();
 		}
 	}
+}
+
+bool UDisplayClusterConfiguratorBaseNode::IsObjectValid() const
+{
+	return !IsPendingKill() && ObjectToEdit.IsValid();
 }
 
 void UDisplayClusterConfiguratorBaseNode::OnNodeAligned(bool bUpdateChildren)
@@ -505,7 +571,7 @@ FVector2D UDisplayClusterConfiguratorBaseNode::FindNonOverlappingSize(UDisplayCl
 	return BestSize;
 }
 
-FVector2D UDisplayClusterConfiguratorBaseNode::FindNonOverlappingOffsetFromParent(const FVector2D& InDesiredOffset)
+FVector2D UDisplayClusterConfiguratorBaseNode::FindNonOverlappingOffsetFromParent(const FVector2D& InDesiredOffset, const TSet<UDisplayClusterConfiguratorBaseNode*>& NodesToIgnore)
 {
 	FVector2D BestOffset = InDesiredOffset;
 
@@ -522,7 +588,7 @@ FVector2D UDisplayClusterConfiguratorBaseNode::FindNonOverlappingOffsetFromParen
 		}
 
 		// Skip siblings that are not visible or enabled, as they are not visible in the graph editor and is confusing when a node is blocked by something invisible.
-		if (!SiblingNode->IsNodeEnabled() || !SiblingNode->IsNodeVisible())
+		if (!SiblingNode->IsNodeEnabled() || !SiblingNode->IsNodeVisible() || NodesToIgnore.Contains(SiblingNode))
 		{
 			continue;
 		}
@@ -546,7 +612,7 @@ FVector2D UDisplayClusterConfiguratorBaseNode::FindNonOverlappingOffsetFromParen
 		}
 
 		// Skip siblings that are not visible or enabled, as they are not visible in the graph editor and is confusing when a node is blocked by something invisible.
-		if (!SiblingNode->IsNodeEnabled() || !SiblingNode->IsNodeVisible())
+		if (!SiblingNode->IsNodeEnabled() || !SiblingNode->IsNodeVisible() || NodesToIgnore.Contains(SiblingNode))
 		{
 			continue;
 		}
@@ -576,6 +642,7 @@ FVector2D UDisplayClusterConfiguratorBaseNode::FindBoundedOffsetFromParent(const
 	const FVector2D Center = Bounds.GetCenter();
 	
 	const bool bIsParentAutosized = Parent->IsNodeAutosized();
+	const bool bCanExceedBottomRightBounds = CanNodeExceedParentBounds() && !CanNodeHaveNegativePosition();
 
 	if (IsOutside(Bounds, ParentBounds))
 	{
@@ -596,7 +663,7 @@ FVector2D UDisplayClusterConfiguratorBaseNode::FindBoundedOffsetFromParent(const
 			{
 				DesiredParentSizeChange.X = Bounds.Max.X - ParentBounds.Max.X;
 			}
-			else
+			else if (!bCanExceedBottomRightBounds)
 			{
 				XShift = ParentBounds.Max.X - Bounds.Max.X;
 			}
@@ -613,7 +680,7 @@ FVector2D UDisplayClusterConfiguratorBaseNode::FindBoundedOffsetFromParent(const
 			{
 				DesiredParentSizeChange.Y = Bounds.Max.Y - ParentBounds.Max.Y;
 			}
-			else
+			else if (!bCanExceedBottomRightBounds)
 			{
 				YShift = ParentBounds.Max.Y - Bounds.Max.Y;
 			}
@@ -818,13 +885,13 @@ FVector2D UDisplayClusterConfiguratorBaseNode::FindBoundedSizeFromChildren(const
 	return BestSize;
 }
 
-FNodeAlignmentPair UDisplayClusterConfiguratorBaseNode::GetTranslationAlignments(const FVector2D& InOffset, const FNodeAlignmentParams& AlignmentParams) const
+FNodeAlignmentPair UDisplayClusterConfiguratorBaseNode::GetTranslationAlignments(const FVector2D& InOffset, const FNodeAlignmentParams& AlignmentParams, const TSet<UDisplayClusterConfiguratorBaseNode*>& NodesToIgnore) const
 {
 	const FNodeAlignmentAnchors ShiftedAnchors = GetNodeAlignmentAnchors().ShiftBy(InOffset);
-	return GetAlignments(ShiftedAnchors, AlignmentParams);
+	return GetAlignments(ShiftedAnchors, AlignmentParams, NodesToIgnore);
 }
 
-FNodeAlignmentPair UDisplayClusterConfiguratorBaseNode::GetResizeAlignments(const FVector2D& InSizeChange, const FNodeAlignmentParams& AlignmentParams) const
+FNodeAlignmentPair UDisplayClusterConfiguratorBaseNode::GetResizeAlignments(const FVector2D& InSizeChange, const FNodeAlignmentParams& AlignmentParams, const TSet<UDisplayClusterConfiguratorBaseNode*>& NodesToIgnore) const
 {
 	const FNodeAlignmentAnchors ExpandedAnchors = GetNodeAlignmentAnchors().ExpandBy(InSizeChange);
 
@@ -835,10 +902,10 @@ FNodeAlignmentPair UDisplayClusterConfiguratorBaseNode::GetResizeAlignments(cons
 	NewParams.AnchorsToIgnore.Add(EAlignmentAnchor::Top);
 	NewParams.AnchorsToIgnore.Add(EAlignmentAnchor::Left);
 
-	return GetAlignments(ExpandedAnchors, NewParams);
+	return GetAlignments(ExpandedAnchors, NewParams, NodesToIgnore);
 }
 
-FNodeAlignmentPair UDisplayClusterConfiguratorBaseNode::GetAlignments(const FNodeAlignmentAnchors& TransformedAnchors, const FNodeAlignmentParams& AlignmentParams) const
+FNodeAlignmentPair UDisplayClusterConfiguratorBaseNode::GetAlignments(const FNodeAlignmentAnchors& TransformedAnchors, const FNodeAlignmentParams& AlignmentParams, const TSet<UDisplayClusterConfiguratorBaseNode*>& NodesToIgnore) const
 {
 	FDisplayClusterConfiguratorNodeAlignmentHelper AlignmentHelper(this, TransformedAnchors, AlignmentParams);
 
@@ -856,7 +923,7 @@ FNodeAlignmentPair UDisplayClusterConfiguratorBaseNode::GetAlignments(const FNod
 		}
 
 		// Skip siblings that are not visible or enabled, as they are not visible in the graph editor and is confusing when a node snap aligns to an invisible node.
-		if (!SiblingNode->IsNodeEnabled() || !SiblingNode->IsNodeVisible())
+		if (!SiblingNode->IsNodeEnabled() || !SiblingNode->IsNodeVisible() || NodesToIgnore.Contains(SiblingNode))
 		{
 			continue;
 		}

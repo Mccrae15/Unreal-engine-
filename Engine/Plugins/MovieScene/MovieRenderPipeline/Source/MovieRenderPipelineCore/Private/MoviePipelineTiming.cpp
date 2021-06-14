@@ -33,11 +33,13 @@ void UMoviePipeline::ProcessOutstandingFutures()
 		{
 			CompletedOutputFutures.Add(Index);
 
+			const MoviePipeline::FMoviePipelineOutputFutureData& FutureData = OutputFuture.Get<1>();
+
 			// The future was completed, time to add it to our shot output data.
 			FMoviePipelineShotOutputData* ShotOutputData = nullptr;
 			for (int32 OutputDataIndex = 0; OutputDataIndex < GeneratedShotOutputData.Num(); OutputDataIndex++)
 			{
-				if (OutputFuture.Get<2>() == GeneratedShotOutputData[OutputDataIndex].Shot)
+				if (FutureData.Shot == GeneratedShotOutputData[OutputDataIndex].Shot)
 				{
 					ShotOutputData = &GeneratedShotOutputData[OutputDataIndex];
 				}
@@ -47,11 +49,11 @@ void UMoviePipeline::ProcessOutstandingFutures()
 			{
 				GeneratedShotOutputData.Add(FMoviePipelineShotOutputData());
 				ShotOutputData = &GeneratedShotOutputData.Last();
-				ShotOutputData->Shot = OutputFuture.Get<2>();
+				ShotOutputData->Shot = FutureData.Shot;
 			}
 
 			// Add the filepath to the renderpass data.
-			ShotOutputData->RenderPassData.FindOrAdd(OutputFuture.Get<3>()).FilePaths.Add(OutputFuture.Get<1>());
+			ShotOutputData->RenderPassData.FindOrAdd(FutureData.PassIdentifier).FilePaths.Add(FutureData.FilePath);
 
 			if (!OutputFuture.Get<0>().Get())
 			{
@@ -697,6 +699,9 @@ void UMoviePipeline::CalculateFrameNumbersForOutputState(const MoviePipeline::FF
 
 	{
 		FFrameNumber CenteredTick = InCameraCut->ShotInfo.CurrentTickInMaster - CenteringOffset;
+
+		// Convert from master space back into shot space - based on the inner most detected shot.
+		CenteredTick = (CenteredTick * InCameraCut->ShotInfo.OuterToInnerTransform).FloorToFrame();
 
 		InOutOutputState.CurrentShotSourceFrameNumber = FFrameRate::TransformTime(CenteredTick, InFrameMetrics.TickResolution, SourceDisplayRate).RoundToFrame().Value;
 		InOutOutputState.CurrentShotSourceTimeCode = FTimecode::FromFrameNumber(InOutOutputState.CurrentShotSourceFrameNumber, InFrameMetrics.FrameRate, false);

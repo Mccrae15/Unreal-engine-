@@ -15,6 +15,7 @@
 #include "NiagaraGraph.h"
 #include "NiagaraSystem.h"
 #include "NiagaraSystemInstance.h"
+#include "NiagaraParameterDefinitions.h"
 
 #include "ScopedTransaction.h"
 #include "IContentBrowserSingleton.h"
@@ -37,8 +38,8 @@ namespace NiagaraCommands
 	static FAutoConsoleVariable EmitterStatsFormat(TEXT("Niagara.EmitterStatsFormat"), 1, TEXT("0 shows the particles count, ms, mb and state. 1 shows particles count."));
 }
 
-FNiagaraEmitterViewModel::FNiagaraEmitterViewModel()
-	: SharedScriptViewModel(MakeShareable(new FNiagaraScriptViewModel(LOCTEXT("SharedDisplayName", "Graph"), ENiagaraParameterEditMode::EditAll)))
+FNiagaraEmitterViewModel::FNiagaraEmitterViewModel(bool bInIsForDataProcessingOnly)
+	: SharedScriptViewModel(MakeShareable(new FNiagaraScriptViewModel(LOCTEXT("SharedDisplayName", "Graph"), ENiagaraParameterEditMode::EditAll, bInIsForDataProcessingOnly)))
 	, bUpdatingSelectionInternally(false)
 	, ExecutionStateEnum(StaticEnum<ENiagaraExecutionState>())
 {	
@@ -70,6 +71,7 @@ bool FNiagaraEmitterViewModel::Initialize(UNiagaraEmitter* InEmitter, TWeakPtr<F
 {
 	SetEmitter(InEmitter);
 	SetSimulation(InSimulation);
+
 	return true;
 }
 
@@ -79,6 +81,11 @@ void FNiagaraEmitterViewModel::Reset()
 	SetSimulation(nullptr);
 }
 
+INiagaraParameterDefinitionsSubscriber* FNiagaraEmitterViewModel::GetParameterDefinitionsSubscriber()
+{
+	return GetEmitter();
+}
+
 FNiagaraEmitterViewModel::~FNiagaraEmitterViewModel()
 {
 	Cleanup();
@@ -86,7 +93,6 @@ FNiagaraEmitterViewModel::~FNiagaraEmitterViewModel()
 
 	//UE_LOG(LogNiagaraEditor, Warning, TEXT("Deleting Emitter view model %p"), this);
 }
-
 
 void FNiagaraEmitterViewModel::SetEmitter(UNiagaraEmitter* InEmitter)
 {

@@ -28,7 +28,6 @@
 #include "LightmapUniformShaderParameters.h"
 #include "DynamicBufferAllocator.h"
 #include "Rendering/SkyAtmosphereCommonData.h"
-#include "Rendering/SkyLightImportanceSampling.h"
 
 class FCanvas;
 class FLightMap;
@@ -1037,8 +1036,6 @@ inline bool DoesPlatformSupportDistanceFields(const FStaticShaderPlatform Platfo
 	return Platform == SP_PCD3D_SM5
 		|| IsMetalSM5Platform(Platform)
 		|| IsVulkanSM5Platform(Platform)
-		|| Platform == SP_SWITCH
-		|| Platform == SP_SWITCH_FORWARD
 		|| FDataDrivenShaderPlatformInfo::GetSupportsDistanceFields(Platform);
 }
 
@@ -1116,9 +1113,6 @@ public:
 	uint32 CaptureCubeMapResolution;
 	FLinearColor LowerHemisphereColor;
 	bool bLowerHemisphereIsSolidColor;
-#if RHI_RAYTRACING
-	FSkyLightImportanceSamplingData* ImportanceSamplingData;
-#endif
 
 	bool IsMovable() { return bMovable; }
 

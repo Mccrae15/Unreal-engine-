@@ -7,10 +7,7 @@ public class DisplayCluster : ModuleRules
 {
 	public DisplayCluster(ReadOnlyTargetRules ROTargetRules) : base(ROTargetRules)
 	{
-		PublicIncludePathModuleNames.AddRange(
-			new string[] {
-				"ActorLayerUtilities"
-			});
+		PublicDefinitions.Add("WITH_OCIO=0");
 
 		PrivateIncludePaths.AddRange(
 			new string[] {
@@ -28,22 +25,18 @@ public class DisplayCluster : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-				"D3D11RHI",
-				"D3D12RHI",
 				"HeadMountedDisplay",
 				"InputCore",
 				"Json",
 				"JsonUtilities",
 				"Networking",
+				"OpenColorIO",
 				"Renderer",
 				"RenderCore",
 				"RHI",
 				"Slate",
 				"SlateCore",
 				"Sockets",
-				"TextureShare",
-				"TextureShareCore",
-				"OpenColorIO",
 			});
 
 		if (Target.bBuildEditor == true)
@@ -54,31 +47,22 @@ public class DisplayCluster : ModuleRules
 			PrivateDependencyModuleNames.Add("LevelEditor");
 		}
 
-		AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11");
-		AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
-		AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
-		AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAPI");
-		AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
-		AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
+		if (Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[] {
+					"D3D11RHI",
+					"D3D12RHI",
+					"TextureShare",
+					"TextureShareCore",
+			});
 
-		PublicDefinitions.Add("WITH_OCIO=0");
-
-		// 3rd party dependencies
-		AddThirdPartyDependencies(ROTargetRules);
-	}
-
-	public void AddThirdPartyDependencies(ReadOnlyTargetRules ROTargetRules)
-	{
-		string ThirdPartyPath = Path.GetFullPath(Path.Combine(ModuleDirectory, "../../ThirdParty/"));
-
-		string PathLib = string.Empty;
-		string PathInc = string.Empty;
-
-		// VRPN
-		PathLib = Path.Combine(ThirdPartyPath, "VRPN/Lib");
-		PathInc = Path.Combine(ThirdPartyPath, "VRPN/Include");
-		PublicAdditionalLibraries.Add(Path.Combine(PathLib, "vrpn.lib"));
-		PublicAdditionalLibraries.Add(Path.Combine(PathLib, "quat.lib"));
-		PublicIncludePaths.Add(PathInc);
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAPI");
+		}
 	}
 }

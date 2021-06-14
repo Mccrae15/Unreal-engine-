@@ -302,6 +302,8 @@ public:
 	bool bAllowJoinViaPresenceFriendsOnly;
 	/** Whether the server employs anti-cheat (punkbuster, vac, etc) */
 	bool bAntiCheatProtected;
+	/** Whether to prefer lobbies APIs if the platform supports them */
+	bool bUseLobbiesIfAvailable;
 	/** Used to keep different builds from seeing each other during searches */
 	int32 BuildUniqueId;
 	/** Array of custom session settings */
@@ -325,6 +327,7 @@ public:
 		, bAllowJoinViaPresence(false)
 		, bAllowJoinViaPresenceFriendsOnly(false)
 		, bAntiCheatProtected(false)
+		, bUseLobbiesIfAvailable(false)
 		, BuildUniqueId(0)
 	{
 		// Example usage of settings
@@ -634,6 +637,8 @@ public:
 #define SEARCH_XBOX_LIVE_SESSION_TEMPLATE_NAME FName(TEXT("LIVESESSIONTEMPLATE"))
 /** Selection method used to determine which match to join when multiple are returned (valid only on Switch) */
 #define SEARCH_SWITCH_SELECTION_METHOD FName(TEXT("SWITCHSELECTIONMETHOD"))
+/** Whether to use lobbies vs sessions */
+#define SEARCH_LOBBIES FName(TEXT("LOBBYSEARCH"))
 
 // User attributes for searching (FSessionMatchmakingUser::Attributes)
 /** Team a user is searching for */

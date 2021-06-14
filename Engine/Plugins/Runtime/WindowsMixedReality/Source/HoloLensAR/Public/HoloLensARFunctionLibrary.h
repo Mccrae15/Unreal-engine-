@@ -89,25 +89,25 @@ public:
 	 * Turn the camera on.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "HoloLensAR", meta = (Keywords = "hololensar wmr ar all", DeprecatedFunction, DeprecationMessage = "Use ToggleARCapture"))
-	static void StartCameraCapture();
+	static bool StartCameraCapture();
 
 	/**
 	 * Turn the camera off.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "HoloLensAR", meta = (Keywords = "hololensar wmr ar all", DeprecatedFunction, DeprecationMessage = "Use ToggleARCapture"))
-	static void StopCameraCapture();
+	static bool StopCameraCapture();
 	
 	/**
 	 * Start looking for QRCodes.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "HoloLensAR", meta = (Keywords = "hololensar wmr ar all", DeprecatedFunction, DeprecationMessage = "Use ToggleARCapture"))
-	static void StartQRCodeCapture();
+	static bool StartQRCodeCapture();
 
 	/**
 	 * Stop looking for QRCodes.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "HoloLensAR", meta = (Keywords = "hololensar wmr ar all", DeprecatedFunction, DeprecationMessage = "Use ToggleARCapture"))
-	static void StopQRCodeCapture();
+	static bool StopQRCodeCapture();
 	
 	/**
 	 * Show on screen system keyboard.
@@ -124,4 +124,8 @@ public:
 	static bool HideKeyboard();
 
 	static UWMRARPin* CreateNamedARPinAroundAnchor(FName Name, const FString& AnchorId);
+
+	// Use the legacy MRMesh support for rendering the hand tracker.  Otherwise, default to XRVisualization.
+	UFUNCTION(BlueprintCallable, Category = "HoloLensAR", meta = (Keywords = "hololensar hand mesh ar all"))
+	static void SetUseLegacyHandMeshVisualization(bool UseLegacyHandMeshVisualization);
 };

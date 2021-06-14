@@ -77,7 +77,7 @@ public:
 	 * The map holds protocol bindings stores the protocol mapping and protocol-specific mapping
 	 */
 	UPROPERTY()
-	TSet<FRemoteControlProtocolBinding> ProtocolBinding;
+	TSet<FRemoteControlProtocolBinding> ProtocolBindings;
 	
 protected:
 	/**
@@ -141,7 +141,7 @@ public:
 	TSharedPtr<IRemoteControlPropertyHandle> GetPropertyHandle() const;
 	
 	/** Returns whether the property is editable in a packaged build. */
-	bool IsEditableInPackaged() const { return bIsEditableInPackaged; }
+	bool IsEditableInPackaged() const;
 
 	bool Serialize(FArchive& Ar);
 	void PostSerialize(const FArchive& Ar);
@@ -186,6 +186,17 @@ struct REMOTECONTROL_API FRemoteControlFunction : public FRemoteControlField
 	/** Returns whether the function is callable in a packaged build. */
 	bool IsCallableInPackaged() const { return bIsCallableInPackaged; }
 
+	/** Returns the underlying exposed function. */
+	UFunction* GetFunction() const;
+
+#if WITH_EDITOR
+	/**
+	 * Recreates the function arguments but tries to preserve old values when possible.
+	 * Useful for updating function arguments after a blueprint recompile.
+	 */
+	void RegenerateArguments();
+#endif
+
 	friend FArchive& operator<<(FArchive& Ar, FRemoteControlFunction& RCFunction);
 	bool Serialize(FArchive& Ar);
 	void PostSerialize(const FArchive& Ar);
@@ -194,8 +205,10 @@ public:
 	/**
 	 * The exposed function.
 	 */
-	UPROPERTY(BlueprintReadOnly, Category = "RemoteControlEntity")
-	UFunction* Function = nullptr;
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	mutable UFunction* Function_DEPRECATED = nullptr;
+#endif
 
 	/**
 	 * The function arguments.
@@ -203,13 +216,30 @@ public:
 	TSharedPtr<class FStructOnScope> FunctionArguments;
 
 private:
-	/** Whether the function is callable in a packaged build. */
-	UPROPERTY()
-	bool bIsCallableInPackaged = false;	
+	/** Parse function metadata to get the function's default parameters */
+	void AssignDefaultFunctionArguments();
+
+#if WITH_EDITOR
+	/** Hash function arguments using their type and size. */
+	static uint32 HashFunctionArguments(UFunction* InFunction);
+#endif
 
 private:
-	/** Parse function metadata to get the function`s default parameters */
-	void AssignDefaultFunctionArguments();
+	/** Whether the function is callable in a packaged build. */
+	UPROPERTY()
+	bool bIsCallableInPackaged = false;
+	
+	/** The exposed function. */
+	UPROPERTY()
+	FSoftObjectPath FunctionPath;
+
+	/** Cached resolved underlying function used to avoid doing a findobject while serializing. */
+	mutable TWeakObjectPtr<UFunction> CachedFunction;
+
+#if WITH_EDITORONLY_DATA
+	/** Hash of the underlying function arguments used to check if it has changed after a recompile. */
+	uint32 CachedFunctionArgsHash = 0;
+#endif
 };
 
 template<> struct TStructOpsTypeTraits<FRemoteControlFunction> : public TStructOpsTypeTraitsBase2<FRemoteControlFunction>
@@ -227,5 +257,5 @@ template<> struct TStructOpsTypeTraits<FRemoteControlProperty> : public TStructO
 	{
 		WithSerializer = true,
 		WithPostSerialize = true
-    };
+	};
 };

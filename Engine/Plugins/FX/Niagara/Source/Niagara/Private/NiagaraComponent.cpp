@@ -605,11 +605,10 @@ void UNiagaraComponent::ReleaseToPool()
 
 	if (PoolingMethod != ENCPoolMethod::ManualRelease)
 	{		
-		if (UNiagaraComponentPool::Enabled())//Only emit this warning if pooling is enabled. If it's not, all components will have PoolingMethod none.
+		// Only emit this warning if pooling is enabled. If it's not, all components will have PoolingMethod none.
+		if (UNiagaraComponentPool::Enabled())
 		{	
-			UE_LOG(LogNiagara, Warning, TEXT("Manually releasing a PSC to the pool that was not spawned with ENCPoolMethod::ManualRelease. Asset=%s Component=%s"),
-				Asset ? *Asset->GetPathName() : TEXT("NULL"), *GetPathName()
-			);
+			UE_LOG(LogNiagara, Warning, TEXT("ReleaseToPool called but PoolingMethod is (%s) when it should be ENCPoolMethod::ManualRelease. Asset=%s Component=%s"), *StaticEnum<ENCPoolMethod>()->GetNameStringByValue(int64(PoolingMethod)), *GetPathNameSafe(Asset), *GetPathName());
 		}
 		return;
 	}
@@ -934,6 +933,16 @@ void UNiagaraComponent::Activate(bool bReset /* = false */)
 
 void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScalabilityCull)
 {
+	// Handle component ticking correct
+	struct FScopedComponentTickEnabled
+	{
+		FScopedComponentTickEnabled(UNiagaraComponent* InComponent) : Component(InComponent) {}
+		~FScopedComponentTickEnabled() { Component->SetComponentTickEnabled(bTickEnabled); }
+		UNiagaraComponent* Component = nullptr;
+		bool bTickEnabled = false;
+	};
+	FScopedComponentTickEnabled ScopedComponentTickEnabled(this);
+
 	bAwaitingActivationDueToNotReady = false;
 
 	// Reset our local bounds on reset
@@ -957,7 +966,6 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 		{
 			UE_LOG(LogNiagara, Warning, TEXT("Failed to activate Niagara Component due to missing or invalid asset! (%s)"), *GetFullName());
 		}
-		SetComponentTickEnabled(false);
 		return;
 	}
 
@@ -1003,7 +1011,7 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 	{
 		bAwaitingActivationDueToNotReady = true;
 		bActivateShouldResetWhenReady = bReset;
-		SetComponentTickEnabled(true);
+		ScopedComponentTickEnabled.bTickEnabled = true;
 		return;
 	}
 
@@ -1019,7 +1027,13 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 		return;
 	}
 
-	bIsCulledByScalability = false; 
+	bIsCulledByScalability = false;
+	
+	//We reset last render time to the current time so that any visibility culling on a delay will function correctly.
+	//Leaving as the default of -1000 causes the visibility code to always assume this should be culled until it's first rendered and initialized by the RT.
+	//Set the component last render time *before* preculling otherwise there are cases where we can pre cull incorrectly.
+	SetLastRenderTime(GetWorld()->GetTimeSeconds());
+
 	if (ShouldPreCull())
 	{
 		//We have decided to pre cull the system.
@@ -1037,9 +1051,12 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 		return;
 	}
 
-	Super::Activate(bReset);
-
-	//UE_LOG(LogNiagara, Log, TEXT("Activate: %p - %s - %s"), this, *Asset->GetName(), bIsScalabilityCull ? TEXT("Scalability") : TEXT(""));
+	// We can't call 'Super::Activate(bReset);' as this will enable the component tick
+	if (bReset || ShouldActivate() == true)
+	{
+		SetActiveFlag(true);
+		OnComponentActivated.Broadcast(this, bReset);
+	}
 	
 	// Auto attach if requested
 	const bool bWasAutoAttached = bDidAutoAttach;
@@ -1094,7 +1111,6 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 
 	//We reset last render time to the current time so that any visibility culling on a delay will function correctly.
 	//Leaving as the default of -1000 causes the visibility code to always assume this should be culled until it's first rendered and initialized by the RT.
-	SetLastRenderTime(GetWorld()->GetTimeSeconds());
 	SystemInstance->SetLastRenderTime(GetLastRenderTime());
 
 	RegisterWithScalabilityManager();
@@ -1108,12 +1124,8 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 		PrimaryComponentTick.TickGroup = FMath::Max(GNiagaraSoloTickEarly ? TG_PrePhysics : TG_DuringPhysics, SoloTickGroup);
 		PrimaryComponentTick.EndTickGroup = GNiagaraSoloAllowAsyncWorkToEndOfFrame ? TG_LastDemotable : ETickingGroup(PrimaryComponentTick.TickGroup);
 
-		/** We only need to tick the component if we require solo mode. */
-		SetComponentTickEnabled(true);
-	}
-	else
-	{
-		SetComponentTickEnabled(false);
+		// Solo instances require the component tick to be enabled
+		ScopedComponentTickEnabled.bTickEnabled = true;
 	}
 }
 
@@ -1383,7 +1395,7 @@ void UNiagaraComponent::OnSystemComplete(bool bExternalCompletion)
 					//Only trigger warning if we're not being deactivated/completed from the outside and this is a natural completion by the system itself.
 					if (EffectType->CullReaction == ENiagaraCullReaction::DeactivateImmediateResume || EffectType->CullReaction == ENiagaraCullReaction::DeactivateResume)
 					{
-						if (GNiagaraComponentWarnAsleepCullReaction == 1)
+						if (GNiagaraComponentWarnAsleepCullReaction == 1 && GetAsset())
 						{
 							//If we're completing naturally, i.e. we're a burst/non-looping system then we shouldn't be using a mode reactivates the effect.
 							UE_LOG(LogNiagara, Warning, TEXT("Niagara Effect has completed naturally but has an effect type with the \"Asleep\" cull reaction. If an effect like this is culled before it can complete then it could leak into the scalability manager and be reactivated incorrectly. Please verify this is using the correct EffectType.\nComponent:%s\nSystem:%s")
@@ -2829,25 +2841,27 @@ void UNiagaraComponent::FixDataInterfaceOuters()
 
 #endif
 
-void UNiagaraComponent::CopyParametersFromAsset()
+void UNiagaraComponent::CopyParametersFromAsset(bool bResetExistingOverrideParameters)
 {
+	TArray<FNiagaraVariable> ExistingVars;
+	OverrideParameters.GetParameters(ExistingVars);
+
 	TArray<FNiagaraVariable> SourceVars;
 	Asset->GetExposedParameters().GetParameters(SourceVars);
 	for (FNiagaraVariable& Param : SourceVars)
 	{
-		OverrideParameters.AddParameter(Param, true);
-	}
+		bool bNewParam = OverrideParameters.AddParameter(Param, true);
 
-	TArray<FNiagaraVariable> ExistingVars;
-	OverrideParameters.GetParameters(ExistingVars);
+		bool bCopyAssetValue = bResetExistingOverrideParameters || bNewParam;
+		if (bCopyAssetValue)
+		{
+			Asset->GetExposedParameters().CopyParameterData(OverrideParameters, Param);
+		}
+	}
 
 	for (FNiagaraVariable ExistingVar : ExistingVars)
 	{
-		if (SourceVars.Contains(ExistingVar))
-		{
-			Asset->GetExposedParameters().CopyParameterData(OverrideParameters, ExistingVar);
-		}
-		else
+		if (!SourceVars.Contains(ExistingVar))
 		{
 			OverrideParameters.RemoveParameter(ExistingVar);
 		}
@@ -3005,6 +3019,34 @@ FNiagaraVariant UNiagaraComponent::FindParameterOverride(const FNiagaraVariableB
 	}
 
 	return FNiagaraVariant();
+}
+
+FNiagaraVariant UNiagaraComponent::GetCurrentParameterValue(const FNiagaraVariableBase& InKey) const
+{
+	FNiagaraVariableBase UserVariable = InKey;
+	if (OverrideParameters.RedirectUserVariable(UserVariable) == false)
+	{
+		return FNiagaraVariant();
+	}
+
+	int32 ParameterOffset = OverrideParameters.IndexOf(UserVariable);
+	if (ParameterOffset == INDEX_NONE)
+	{
+		return FNiagaraVariant();
+	}
+
+	if (InKey.GetType().IsDataInterface())
+	{
+		return FNiagaraVariant(OverrideParameters.GetDataInterface(ParameterOffset));
+	}
+	else if (InKey.GetType().IsUObject())
+	{
+		return FNiagaraVariant(OverrideParameters.GetUObject(ParameterOffset));
+	}
+	else
+	{
+		return FNiagaraVariant(OverrideParameters.GetParameterData(ParameterOffset), InKey.GetSizeInBytes());
+	}
 }
 
 void UNiagaraComponent::SetOverrideParameterStoreValue(const FNiagaraVariableBase& InKey, const FNiagaraVariant& InValue)
@@ -3204,16 +3246,19 @@ void UNiagaraComponent::PostLoadNormalizeOverrideNames()
 
 #endif // WITH_EDITOR
 
-void UNiagaraComponent::SetAsset(UNiagaraSystem* InAsset)
+void UNiagaraComponent::SetAsset(UNiagaraSystem* InAsset, bool bResetExistingOverrideParameters)
 {
 	if (Asset == InAsset)
 	{
 		return;
 	}
 
-	if ( PoolingMethod != ENCPoolMethod::None )
+	if (FNiagaraUtilities::LogVerboseWarnings())
 	{
-		UE_LOG(LogNiagara, Warning, TEXT("SetAsset called on pooled component '%s' Before '%s' New '%s', pleased fix calling code to not do this."), *GetFullNameSafe(this), *GetFullNameSafe(Asset), * GetFullNameSafe(InAsset));
+		if ( PoolingMethod != ENCPoolMethod::None )
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("SetAsset called on pooled component '%s' Before '%s' New '%s', pleased fix calling code to not do this."), *GetFullNameSafe(this), *GetFullNameSafe(Asset), * GetFullNameSafe(InAsset));
+		}
 	}
 
 #if WITH_EDITOR
@@ -3243,7 +3288,7 @@ void UNiagaraComponent::SetAsset(UNiagaraSystem* InAsset)
 #else
 	if (Asset != nullptr)
 	{
-		CopyParametersFromAsset();
+		CopyParametersFromAsset(bResetExistingOverrideParameters);
 		OverrideParameters.Rebind();
 	}
 #endif

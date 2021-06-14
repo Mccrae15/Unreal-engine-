@@ -66,9 +66,19 @@ namespace UE
 }
 namespace UnrealToUsdImpl = UE::USDExporter::Private;
 
+UUsdConversionBlueprintContext::~UUsdConversionBlueprintContext()
+{
+	Cleanup();
+}
+
 void UUsdConversionBlueprintContext::SetStageRootLayer( FFilePath StageRootLayerPath )
 {
+	Cleanup();
+
+	TArray< UE::FUsdStage > PreviouslyOpenedStages = UnrealUSDWrapper::GetAllStagesFromCache();
+
 	Stage = UnrealUSDWrapper::OpenStage( *StageRootLayerPath.FilePath, EUsdInitialLoadSet::LoadAll );
+	bEraseFromStageCache = !PreviouslyOpenedStages.Contains( Stage );
 }
 
 FFilePath UUsdConversionBlueprintContext::GetStageRootLayer()
@@ -110,6 +120,19 @@ FFilePath UUsdConversionBlueprintContext::GetEditTarget()
 
 	UE_LOG( LogUsd, Error, TEXT( "There is no stage currently open!" ) );
 	return {};
+}
+
+void UUsdConversionBlueprintContext::Cleanup()
+{
+	if ( Stage )
+	{
+		if ( bEraseFromStageCache )
+		{
+			UnrealUSDWrapper::EraseStageFromCache( Stage );
+		}
+
+		Stage = UE::FUsdStage();
+	}
 }
 
 bool UUsdConversionBlueprintContext::ConvertLightComponent( const ULightComponentBase* Component, const FString& PrimPath, float TimeCode )
@@ -217,6 +240,21 @@ bool UUsdConversionBlueprintContext::ConvertSceneComponent( const USceneComponen
 #endif // USE_USD_SDK
 }
 
+bool UUsdConversionBlueprintContext::ConvertHismComponent( const UHierarchicalInstancedStaticMeshComponent* Component, const FString& PrimPath, float TimeCode )
+{
+#if USE_USD_SDK
+	UE::FUsdPrim Prim = UnrealToUsdImpl::GetPrim( Stage, PrimPath );
+	if ( !Prim || !Component )
+	{
+		return false;
+	}
+
+	return UnrealToUsd::ConvertHierarchicalInstancedStaticMeshComponent( Component, Prim, TimeCode == FLT_MAX ? UsdUtils::GetDefaultTimeCode() : TimeCode );
+#else
+	return false;
+#endif // USE_USD_SDK
+}
+
 bool UUsdConversionBlueprintContext::ConvertMeshComponent( const UMeshComponent* Component, const FString& PrimPath )
 {
 #if USE_USD_SDK
@@ -247,7 +285,7 @@ bool UUsdConversionBlueprintContext::ConvertCineCameraComponent( const UCineCame
 #endif // USE_USD_SDK
 }
 
-bool UUsdConversionBlueprintContext::ConvertInstancedFoliageActor( const AInstancedFoliageActor* Actor, const FString& PrimPath, ULevel* InstancesLevel, float TimeCode )
+bool UUsdConversionBlueprintContext::ConvertInstancedFoliageActor( const AInstancedFoliageActor* Actor, const FString& PrimPath, float TimeCode )
 {
 #if USE_USD_SDK
 	UE::FUsdPrim Prim = UnrealToUsdImpl::GetPrim( Stage, PrimPath );
@@ -256,7 +294,7 @@ bool UUsdConversionBlueprintContext::ConvertInstancedFoliageActor( const AInstan
 		return false;
 	}
 
-	return UnrealToUsd::ConvertInstancedFoliageActor( *Actor, Prim, TimeCode == FLT_MAX ? UsdUtils::GetDefaultTimeCode() : TimeCode, InstancesLevel );
+	return UnrealToUsd::ConvertInstancedFoliageActor( *Actor, Prim, TimeCode == FLT_MAX ? UsdUtils::GetDefaultTimeCode() : TimeCode );
 #else
 	return false;
 #endif // USE_USD_SDK
@@ -300,9 +338,12 @@ bool UUsdConversionBlueprintContext::ConvertLandscapeProxyActorMesh( const ALand
 		}
 	}
 
-
 	// Inverse through FMatrix as non-uniform scalings are common for landscapes
-	FMatrix ActorToWorldInv{ Actor->LandscapeActorToWorld().ToInverseMatrixWithScale() };
+	// If we're a streaming proxy, we have an additional transform wrt. the parent ALandscapeProxy actor.
+	// If we were to use LandscapeActorToWorld here, it would use ActorToWorld() internally, but automatically compensate the offset from
+	// the parent actor, generating the same transform as the one you'd get from calling LandscapeActorToWorld() directly on it.
+	// We don't want this here: We want to specifically compensate the proxy actor's transform ourselves, so we need just ActorToWorld.
+	FMatrix ActorToWorldInv = Actor->ActorToWorld().ToInverseMatrixWithScale();
 	if ( !UnrealToUsd::ConvertMeshDescriptions( LODMeshDescriptions, Prim, ActorToWorldInv, TimeCode == FLT_MAX ? UsdUtils::GetDefaultTimeCode() : TimeCode ) )
 	{
 		return false;

@@ -646,10 +646,14 @@ void FD3D12MultiBuddyAllocator::DumpAllocatorStats(class FOutputDevice& Ar)
 
 void FD3D12MultiBuddyAllocator::UpdateMemoryStats(uint32& IOMemoryAllocated, uint32& IOMemoryUsed, uint32& IOMemoryFree, uint32& IOAlignmentWaste, uint32& IOAllocatedPageCount, uint32& IOFullPageCount)
 {
+#if defined(D3D12RHI_TRACK_DETAILED_STATS)
+	FScopeLock Lock(&CS);
+
 	for (FD3D12BuddyAllocator* Allocator : Allocators)
 	{
 		Allocator->UpdateMemoryStats(IOMemoryAllocated, IOMemoryUsed, IOMemoryFree, IOAlignmentWaste, IOAllocatedPageCount, IOFullPageCount);
 	}
+#endif
 }
 
 void FD3D12MultiBuddyAllocator::ReleaseAllResources()
@@ -1341,6 +1345,8 @@ HRESULT FD3D12TextureAllocatorPool::AllocateTexture(
 	if (!(Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET ||
 		Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL ||
 		Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) &&
+		//  4K align with NV12 causes a crash on HoloLens 2.
+		Desc.Format != DXGI_FORMAT_NV12 &&
 		Desc.SampleDesc.Count == 1)
 	{
 		// The top mip level must be less than 64 KB to use 4 KB alignment

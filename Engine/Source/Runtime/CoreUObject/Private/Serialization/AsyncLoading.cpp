@@ -4025,6 +4025,7 @@ EAsyncPackageState::Type FAsyncLoadingThread::ProcessAsyncLoading(int32& OutPack
 			{
 				// Update heartbeat after 32 events
 				FThreadHeartBeat::Get().HeartBeat();
+				FCoreDelegates::OnAsyncLoadingFlushUpdate.Broadcast();
 			}
 
 			bool bDidSomething = false;
@@ -4353,6 +4354,8 @@ EAsyncPackageState::Type FAsyncLoadingThread::ProcessLoadedPackages(bool bUseTim
 	bDidSomething = LoadedPackagesToProcess.Num() > 0;
 	for (int32 PackageIndex = 0; PackageIndex < LoadedPackagesToProcess.Num() && !IsAsyncLoadingSuspendedInternal(); ++PackageIndex)
 	{
+		FPlatformMisc::PumpEssentialAppMessages();
+
 		FAsyncPackage* Package = LoadedPackagesToProcess[PackageIndex];
 		if (Package->GetDependencyRefCount() == 0)
 		{
@@ -5252,10 +5255,12 @@ FAsyncPackage::~FAsyncPackage()
 
 void FAsyncPackage::AddReferencedObjects(FReferenceCollector& Collector)
 {
+	Collector.AllowEliminatingReferences(false);
 	Collector.AddReferencedObjects(ReferencedObjects);
 	Collector.AddReferencedObjects(DeferredFinalizeObjects);
 	Collector.AddReferencedObjects(PackageObjLoaded);
 	Collector.AddReferencedObjects(ImportedPackages);
+	Collector.AllowEliminatingReferences(true);
 }
 
 void FAsyncPackage::AddObjectReference(UObject* InObject)

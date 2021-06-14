@@ -18,17 +18,27 @@ struct FAPIInfoResponse
 	
 	FAPIInfoResponse() = default;
 
-	FAPIInfoResponse(const TArray<FRemoteControlRoute>& InRoutes)
+	FAPIInfoResponse(const TArray<FRemoteControlRoute>& InRoutes, bool bInPackaged, URemoteControlPreset* InActivePreset)
+		: IsPackaged(bInPackaged)
+		, ActivePreset(InActivePreset) 
 	{
 		HttpRoutes.Append(InRoutes);
 	}
 
 private:
 	/**
+	 * Whether this is a packaged build or not.
+	 */
+	bool IsPackaged = false;
+
+	/**
 	 * Descriptions for all the routes that make up the remote control API.
 	 */
 	UPROPERTY()
 	TArray<FRemoteControlRouteDescription> HttpRoutes;
+
+	UPROPERTY()
+	FRCShortPresetDescription ActivePreset;
 };
 
 USTRUCT()
@@ -137,7 +147,7 @@ struct FSearchActorResponse
 	}
 
 	UPROPERTY()
-	TArray<FRCActorDescription> Actors;
+	TArray<FRCObjectDescription> Actors;
 };
 
 USTRUCT()
@@ -173,6 +183,23 @@ struct FGetMetadataResponse
 };
 
 USTRUCT()
+struct FSetEntityLabelResponse
+{
+	GENERATED_BODY()
+
+	FSetEntityLabelResponse() = default;
+
+	FSetEntityLabelResponse(FString&& InString)
+		: AssignedLabel(MoveTemp(InString))
+	{
+	}
+
+	/** The label that was assigned when requesting to modify an entity's label. */
+	UPROPERTY()
+	FString AssignedLabel;
+};
+
+USTRUCT()
 struct FRCPresetFieldsRenamedEvent
 {
 	GENERATED_BODY()
@@ -195,7 +222,6 @@ struct FRCPresetFieldsRenamedEvent
 	UPROPERTY()
 	TArray<FRCPresetFieldRenamed> RenamedFields;
 };
-
 
 USTRUCT()
 struct FRCPresetMetadataModified
@@ -231,11 +257,12 @@ struct FRCPresetFieldsRemovedEvent
 
 	FRCPresetFieldsRemovedEvent() = default;
 
-	FRCPresetFieldsRemovedEvent(FName InPresetName, TArray<FName> InRemovedFields)
+	FRCPresetFieldsRemovedEvent(FName InPresetName, TArray<FName> InRemovedFields, const TArray<FGuid>& InRemovedFieldIDs)
 		: Type(TEXT("PresetFieldsRemoved"))
 		, PresetName(InPresetName)
 		, RemovedFields(MoveTemp(InRemovedFields))
 	{
+		Algo::Transform(InRemovedFieldIDs, RemovedFieldIds, [](const FGuid& Id){ return Id.ToString(); });
 	}
 
 	UPROPERTY()
@@ -246,6 +273,9 @@ struct FRCPresetFieldsRemovedEvent
 
 	UPROPERTY()
 	TArray<FName> RemovedFields;
+
+	UPROPERTY()
+	TArray<FString> RemovedFieldIds;
 };
 
 USTRUCT()
@@ -270,4 +300,48 @@ struct FRCPresetFieldsAddedEvent
 
 	UPROPERTY()
 	FRCPresetDescription Description;
+};
+
+/**
+ * Event triggered when an exposed entity struct is modified.
+ */
+USTRUCT()
+struct FRCPresetEntitiesModifiedEvent
+{
+	GENERATED_BODY()
+
+	FRCPresetEntitiesModifiedEvent() = default;
+
+	FRCPresetEntitiesModifiedEvent(URemoteControlPreset* InPreset, const TArray<FGuid>& InModifiedEntities)
+		: Type(TEXT("PresetEntitiesModified"))
+	{
+		checkSlow(InPreset);
+		PresetName = InPreset->GetFName();
+		PresetId = InPreset->GetPresetId().ToString();
+		ModifiedEntities = FRCPresetModifiedEntitiesDescription{InPreset, InModifiedEntities};
+	}
+
+	/**
+	 * Type of the event.
+	 */
+	UPROPERTY()
+	FString Type;
+
+	/**
+	 * Name of the preset which contains the modified entities.
+	 */
+	UPROPERTY()
+	FName PresetName;
+	
+	/**
+	 * ID of the preset that contains the modified entities.
+	 */
+	UPROPERTY()
+	FString PresetId;
+
+	/**
+	 * The entities that were modified in the last frame.
+	 */
+	UPROPERTY()
+	FRCPresetModifiedEntitiesDescription ModifiedEntities;
 };

@@ -166,14 +166,12 @@ namespace UE
 				return false;
 			}
 
-			std::shared_ptr<const char> ReadTextureBufferFromUsdzArchive( const FString& ResolvedTexturePath, uint64& OutBufferSize )
+			TUsdStore<std::shared_ptr<const char>> ReadTextureBufferFromUsdzArchive( const FString& ResolvedTexturePath, uint64& OutBufferSize )
 			{
-				FString TextureExtension;
-
 				pxr::ArResolver& Resolver = pxr::ArGetResolver();
 				std::shared_ptr<pxr::ArAsset> Asset = Resolver.OpenAsset( UnrealToUsd::ConvertString( *ResolvedTexturePath ).Get() );
 
-				std::shared_ptr<const char> Buffer = nullptr;
+				TUsdStore<std::shared_ptr<const char>> Buffer;
 
 				if ( Asset )
 				{
@@ -188,12 +186,12 @@ namespace UE
 			}
 
 			/** If ResolvedTexturePath points at a texture inside an usdz file, this will use USD to pull the asset from the file, and TextureFactory to import it directly from the binary buffer */
-			UTexture* ReadTextureFromUsdzArchiveEditor(const FString& ResolvedTexturePath, const FString& TextureExtension, UTextureFactory* TextureFactory )
+			UTexture* ReadTextureFromUsdzArchiveEditor(const FString& ResolvedTexturePath, const FString& TextureExtension, UTextureFactory* TextureFactory, UObject* Outer, EObjectFlags ObjectFlags )
 			{
 #if WITH_EDITOR
 				uint64 BufferSize = 0;
-				std::shared_ptr<const char> Buffer = ReadTextureBufferFromUsdzArchive(ResolvedTexturePath, BufferSize);
-				const uint8* BufferStart = reinterpret_cast< const uint8* >( Buffer.get() );
+				TUsdStore<std::shared_ptr<const char>> Buffer = ReadTextureBufferFromUsdzArchive(ResolvedTexturePath, BufferSize);
+				const uint8* BufferStart = reinterpret_cast< const uint8* >( Buffer.Get().get() );
 
 				if ( BufferSize == 0 || BufferStart == nullptr )
 				{
@@ -204,9 +202,9 @@ namespace UE
 
 				return Cast<UTexture>(TextureFactory->FactoryCreateBinary(
 					UTexture::StaticClass(),
-					GetTransientPackage(),
+					Outer,
 					NAME_None,
-					RF_Transient,
+					ObjectFlags,
 					nullptr,
 					*TextureExtension,
 					BufferStart,
@@ -219,8 +217,8 @@ namespace UE
 			UTexture* ReadTextureFromUsdzArchiveRuntime( const FString& ResolvedTexturePath )
 			{
 				uint64 BufferSize = 0;
-				std::shared_ptr<const char> Buffer = ReadTextureBufferFromUsdzArchive( ResolvedTexturePath, BufferSize );
-				const uint8* BufferStart = reinterpret_cast< const uint8* >( Buffer.get() );
+				TUsdStore<std::shared_ptr<const char>> Buffer = ReadTextureBufferFromUsdzArchive( ResolvedTexturePath, BufferSize );
+				const uint8* BufferStart = reinterpret_cast< const uint8* >( Buffer.Get().get() );
 
 				if ( BufferSize == 0 || BufferStart == nullptr )
 				{
@@ -294,6 +292,31 @@ namespace UE
 				}
 
 				return NewTexture;
+			}
+
+			// Computes and returns the hash string for the texture at the given path.
+			// Handles regular texture asset paths as well as asset paths identifying textures inside Usdz archives.
+			// Returns an empty string if the texture could not be hashed.
+			FString GetTextureHash(const FString& ResolvedTexturePath)
+			{
+				FString TextureExtension;
+				if (IsInsideUsdzArchive(ResolvedTexturePath, TextureExtension))
+				{
+					uint64 BufferSize = 0;
+					TUsdStore<std::shared_ptr<const char>> Buffer = ReadTextureBufferFromUsdzArchive(ResolvedTexturePath, BufferSize);
+					const uint8* BufferStart = reinterpret_cast<const uint8*>(Buffer.Get().get());
+
+					if (BufferSize > 0 && BufferStart != nullptr)
+					{
+						return FMD5::HashBytes(BufferStart, BufferSize);
+					}
+				}
+				else
+				{
+					return LexToString(FMD5Hash::HashFile(*ResolvedTexturePath));
+				}
+
+				return {};
 			}
 
 			// Will traverse the shade material graph backwards looking for a string/token value and return it.
@@ -421,7 +444,7 @@ namespace UE
 				if ( ShadeInput.GetConnectedSource( &Source, &SourceName, &AttributeType ) )
 				{
 					pxr::UsdShadeInput FileInput;
-			
+
 				    // UsdUVTexture: Get its file input
 				    if ( AttributeType == pxr::UsdShadeAttributeType::Output )
 				    {
@@ -432,7 +455,7 @@ namespace UE
 				    {
 					    FileInput = Source.GetInput( SourceName );
 				    }
-    
+
 				    if ( FileInput && FileInput.GetTypeName() == pxr::SdfValueTypeNames->Asset ) // Check that FileInput is of type Asset
 				    {
 						const FString TexturePath = UsdUtils::GetResolvedTexturePath( FileInput.GetAttr() );
@@ -448,7 +471,7 @@ namespace UE
 							return false;
 						}
 
-						const FString TextureHash = LexToString( FMD5Hash::HashFile( *TexturePath ) );
+						const FString TextureHash = GetTextureHash(TexturePath);
 
 						// We only actually want to retrieve the textures if we have a cache to put them in
 						if ( TexturesCache )
@@ -634,13 +657,13 @@ namespace UE
 			bool GetBoolParameterValue( pxr::UsdShadeConnectableAPI& Connectable, const pxr::TfToken& InputName, bool DefaultValue, FParameterValue& OutValue, UMaterialInterface* Material = nullptr, UUsdAssetCache* TexturesCache = nullptr, TMap<FString, int32>* PrimvarToUVIndex = nullptr)
 	        {
 		        FScopedUsdAllocs Allocs;
-        
+
 		        pxr::UsdShadeInput Input = Connectable.GetInput( InputName );
 		        if ( !Input )
 		        {
 			        return false;
 		        }
-        
+
 		        // If we have another shader/node connected
 		        pxr::UsdShadeConnectableAPI Source;
 		        pxr::TfToken SourceName;
@@ -656,10 +679,10 @@ namespace UE
 		        {
 			        bool InputValue = DefaultValue;
 			        Input.Get< bool >( &InputValue );
-        
+
 			        OutValue.Set< bool >( InputValue );
 		        }
-        
+
 		        return true;
 	        }
 
@@ -852,19 +875,19 @@ namespace UE
 			struct FSetPreviewSurfaceParameterValueVisitor : private FSetParameterValueVisitor
 			{
 				using FSetParameterValueVisitor::FSetParameterValueVisitor;
-        
+
 				void operator()( const float FloatValue ) const
 				{
 					FSetParameterValueVisitor::operator()( FloatValue );
 					SetScalarParameterValue( Material, *FString::Printf( TEXT( "Use%sTexture" ), ParameterName ), 0.0f );
 				}
-        
+
 				void operator()( const FVector& VectorValue ) const
 				{
 					FSetParameterValueVisitor::operator()( VectorValue );
 					SetScalarParameterValue( Material, *FString::Printf( TEXT( "Use%sTexture" ), ParameterName ), 0.0f );
 				}
-        
+
 				void operator()( const FTextureParameterValue& TextureValue ) const
 				{
 					SetTextureParameterValue( Material, *FString::Printf( TEXT( "%sTexture" ), ParameterName ), TextureValue.Texture );
@@ -924,37 +947,35 @@ namespace UE
 					const FString ResolvedTexturePath = UsdUtils::GetResolvedTexturePath( TextureAssetPathAttr );
 					if ( !ResolvedTexturePath.IsEmpty() )
 					{
-						// Try checking if the texture is inside an USDZ archive first, or else TextureFactory throws an error
+						EObjectFlags ObjectFlags = RF_Transactional;
+						if ( !Outer )
+						{
+							Outer = GetTransientPackage();
+						}
+
+						if ( Outer == GetTransientPackage() )
+						{
+							ObjectFlags = ObjectFlags | RF_Transient;
+						}
+
 						FString TextureExtension;
 						if ( IsInsideUsdzArchive( ResolvedTexturePath, TextureExtension ) )
 						{
 							// Always prefer using the TextureFactory if we can, as it may provide compression, which the runtime version never will
-							Texture = ReadTextureFromUsdzArchiveEditor( ResolvedTexturePath, TextureExtension, TextureFactory );
+							Texture = ReadTextureFromUsdzArchiveEditor( ResolvedTexturePath, TextureExtension, TextureFactory, Outer, ObjectFlags );
+						}
+						// Not inside an USDZ archive, just a regular texture
+						else
+						{
+							Texture = Cast< UTexture >( TextureFactory->ImportObject( UTexture::StaticClass(), Outer, NAME_None, ObjectFlags, ResolvedTexturePath, TEXT( "" ), bOutCancelled ) );
 						}
 
-						// Not inside an USDZ archive, just a regular texture
-						if ( !Texture )
+						if ( Texture )
 						{
-							EObjectFlags ObjectFlags = RF_Transactional;
-							if ( !Outer )
-							{
-								Outer = GetTransientPackage();
-							}
-
-							if ( Outer == GetTransientPackage() )
-							{
-								ObjectFlags = ObjectFlags | RF_Transient;
-							}
-
-							Texture = Cast< UTexture >( TextureFactory->ImportObject( UTexture::StaticClass(), Outer, NAME_None, ObjectFlags, ResolvedTexturePath, TEXT( "" ), bOutCancelled ) );
-
-							if ( Texture )
-							{
-								UUsdAssetImportData* ImportData = NewObject< UUsdAssetImportData >( Texture, TEXT( "USDAssetImportData" ) );
-								ImportData->PrimPath = PrimPath;
-								ImportData->UpdateFilenameOnly( ResolvedTexturePath );
-								Texture->AssetImportData = ImportData;
-							}
+							UUsdAssetImportData* ImportData = NewObject< UUsdAssetImportData >( Texture, TEXT( "USDAssetImportData" ) );
+							ImportData->PrimPath = PrimPath;
+							ImportData->UpdateFilenameOnly( ResolvedTexturePath );
+							Texture->AssetImportData = ImportData;
 						}
 					}
 				}
@@ -1083,7 +1104,13 @@ namespace UE
 
 				TArray<FBakeOutput> BakeOutputs;
 				IMaterialBakingModule& Module = FModuleManager::Get().LoadModuleChecked<IMaterialBakingModule>( "MaterialBaking" );
+				bool bLinearBake = true;
+				Module.SetLinearBake( bLinearBake );
 				Module.BakeMaterials( { &MatSet }, { &MeshSettings }, BakeOutputs );
+
+				// It's recommended to set this back to false as it's a global option
+				bLinearBake = false;
+				Module.SetLinearBake( bLinearBake );
 
 				if ( BakeOutputs.Num() < 1 )
 				{
@@ -1401,7 +1428,10 @@ namespace UE
 
 						pxr::UsdShadeInput TextureFileInput = UsdUVTextureShader.CreateInput( UnrealIdentifiers::File, pxr::SdfValueTypeNames->Asset );
 						FString TextureRelativePath = *TextureFilePath;
-						FPaths::MakePathRelativeTo( TextureRelativePath, *UsdFilePath );
+						if ( !UsdFilePath.IsEmpty() )
+						{
+							FPaths::MakePathRelativeTo( TextureRelativePath, *UsdFilePath );
+						}
 						TextureFileInput.Set( pxr::SdfAssetPath( UnrealToUsd::ConvertString( *TextureRelativePath ).Get() ) );
 
 						pxr::UsdShadeInput TextureStInput = UsdUVTextureShader.CreateInput( UnrealIdentifiers::St, pxr::SdfValueTypeNames->Float2 );
@@ -1781,7 +1811,7 @@ bool UsdToUnreal::ConvertShadeInputsToParameters( const pxr::UsdShadeMaterial& U
 			}
 		}
 		else if ( ShadeInput.GetTypeName() == pxr::SdfValueTypeNames->Float ||
-			ShadeInput.GetTypeName() == pxr::SdfValueTypeNames->Double || 
+			ShadeInput.GetTypeName() == pxr::SdfValueTypeNames->Double ||
 			ShadeInput.GetTypeName() == pxr::SdfValueTypeNames->Half )
 		{
 			if ( UsdShadeConversionImpl::GetFloatParameterValue( Connectable, ShadeInput.GetBaseName(), 1.f, ParameterValue, &MaterialInstance, TexturesCache ) )
@@ -1872,8 +1902,16 @@ FString UsdUtils::GetResolvedTexturePath( const pxr::UsdAttribute& TextureAssetP
 		FString TexturePath = UsdToUnreal::ConvertString( TextureAssetPath.GetAssetPath() );
 		FPaths::NormalizeFilename( TexturePath );
 
-		pxr::SdfLayerRefPtr TextureLayer = UsdUtils::FindLayerForAttribute( TextureAssetPathAttr, pxr::UsdTimeCode::EarliestTime().GetValue() );
-		ResolvedTexturePath = UsdShadeConversionImpl::ResolveAssetPath( TextureLayer, TexturePath );
+		if ( !TexturePath.IsEmpty() )
+		{
+			pxr::SdfLayerRefPtr TextureLayer = UsdUtils::FindLayerForAttribute( TextureAssetPathAttr, pxr::UsdTimeCode::EarliestTime().GetValue() );
+			ResolvedTexturePath = UsdShadeConversionImpl::ResolveAssetPath( TextureLayer, TexturePath );
+		}
+	}
+
+	if ( ResolvedTexturePath.IsEmpty() )
+	{
+		UE_LOG( LogUsd, Warning, TEXT( "Failed to resolve texture path on attribute '%s'" ), *UsdToUnreal::ConvertPath( TextureAssetPathAttr.GetPath() ) );
 	}
 
 	return ResolvedTexturePath;

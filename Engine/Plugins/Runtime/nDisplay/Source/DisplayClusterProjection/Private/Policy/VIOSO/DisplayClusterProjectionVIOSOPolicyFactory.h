@@ -12,12 +12,12 @@ class FDisplayClusterProjectionVIOSOPolicyFactory
 	: public IDisplayClusterProjectionPolicyFactory
 {
 public:
-	FDisplayClusterProjectionVIOSOPolicyFactory();
-	virtual ~FDisplayClusterProjectionVIOSOPolicyFactory();
+	FDisplayClusterProjectionVIOSOPolicyFactory() = default;
+	virtual ~FDisplayClusterProjectionVIOSOPolicyFactory() = default;
 
 public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// IDisplayClusterProjectionPolicyFactory
 	//////////////////////////////////////////////////////////////////////////////////////////////
-	virtual TSharedPtr<IDisplayClusterProjectionPolicy> Create(const FString& ProjectionPolicyId, const struct FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy) override;
+	virtual TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe> Create(const FString& ProjectionPolicyId, const struct FDisplayClusterConfigurationProjection* InConfigurationProjectionPolicy) override;
 };

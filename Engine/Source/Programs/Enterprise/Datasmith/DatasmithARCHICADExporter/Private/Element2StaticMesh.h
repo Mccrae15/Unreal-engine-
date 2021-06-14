@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "AddonTools.h"
+#include "Utils/AddonTools.h"
 
 #include "MaterialsDatabase.h"
 
@@ -10,10 +10,11 @@
 #include "Polygon.hpp"
 #include "AttributeIndex.hpp"
 #include "Transformation3D.hpp"
+#include "TextureCoordinate.hpp"
 
 #include "DatasmithMeshExporter.h"
 
-#include <map>
+#include "Map.h"
 
 BEGIN_NAMESPACE_UE_AC
 
@@ -23,6 +24,27 @@ BEGIN_NAMESPACE_UE_AC
 	#define DUMP_GEOMETRY 0
 #endif
 
+// Encapsulate ModelerAPI::TextureCoordinate to used as TMap Key
+class FTextureCoordinate : public ModelerAPI::TextureCoordinate
+{
+  public:
+	FTextureCoordinate() {}
+	FTextureCoordinate(const ModelerAPI::TextureCoordinate& InUV)
+		: ModelerAPI::TextureCoordinate(InUV)
+	{
+	}
+};
+
+inline uint32 GetTypeHash(const FTextureCoordinate& A)
+{
+	return FCrc::MemCrc_DEPRECATED(&A, sizeof(A));
+}
+
+inline bool operator==(const FTextureCoordinate& UVA, const FTextureCoordinate& UVB)
+{
+	return UVA.u == UVB.u && UVA.v == UVB.v;
+}
+
 class FSyncContext;
 
 // Class that will convert AC element to StaticMesh
@@ -30,7 +52,7 @@ class FElement2StaticMesh
 {
   public:
 	// Constructor
-	FElement2StaticMesh(const FSyncContext& InSyncContext, const Geometry::Transformation3D& InWorld2Local);
+	FElement2StaticMesh(const FSyncContext& InSyncContext);
 
 	// Destructor
 	~FElement2StaticMesh();
@@ -39,13 +61,13 @@ class FElement2StaticMesh
 	TSharedPtr< IDatasmithMeshElement > CreateMesh();
 
 	// Collect geometry of the element
-	void AddElementGeometry(const ModelerAPI::Element& InModelElement);
+	void AddElementGeometry(const ModelerAPI::Element& InModelElement, const Geometry::Transformation3D& InWorld2Local);
 
 	// Return the numbers of bugs detected during conversion
 	unsigned int GetBugsCount() const { return BugsCount; }
 
-	// Return true of we have at least on face.
-	bool HasGeometry() const { return GlobalMaterialsUsed.size() != 0; }
+	// Return true of we have at least one face.
+	bool HasGeometry() const { return GlobalMaterialsUsed.Num() != 0; }
 
 #if DUMP_GEOMETRY
 	// Return a mesh dump
@@ -106,7 +128,7 @@ class FElement2StaticMesh
 
 	Geometry::Transformation3D World2Local;
 	Geometry::Matrix33		   Matrix;
-	bool					   bIsIdentity = false;
+	bool					   bIsIdentity = true;
 
 	// Working variables
 	bool				 bSomeHasTextures; // True if at least one triangles need uv
@@ -114,7 +136,7 @@ class FElement2StaticMesh
 	bool				 bIsSurfaceBody; // Current body is a surface (ie need doble side material)
 	ModelerAPI::Polygon	 CurrentPolygon; // Current polygon that we collect geometry from
 	const FMaterialsDatabase::FMaterialSyncData* CurrentMaterial; // Current polygon global material
-	size_t										 LocalMaterialIndex = 0; // Current polygon local material
+	int32										 LocalMaterialIndex = 0; // Current polygon local material
 	FTriangle									 CurrentTriangle; // Current triangle data
 	int											 StartVertex; // Number of vertex collected before current body
 	unsigned int								 VertexCount; // Number of edges processed in the current polygon
@@ -125,37 +147,13 @@ class FElement2StaticMesh
 	// Vertex value and used flag or index
 	class FVertex;
 
-	struct FCompareUV
-	{
-		bool operator()(const ModelerAPI::TextureCoordinate& UVA, const ModelerAPI::TextureCoordinate& UVB) const
-		{
-#if 1
-			return UVA.u < UVB.u || (UVA.u == UVB.u && UVA.v < UVB.v);
-#else
-			// Using version with tolerance make Twinmotion hang in FStaticMeshOperations::ComputeTangentsAndNormals
-			const double tolerance = KINDA_SMALL_NUMBER;
-			if (UVA.u + tolerance < UVB.u)
-			{
-				return true;
-			}
-			if (UVA.u - tolerance > UVB.u)
-			{
-				return false;
-			}
+  public:
+	typedef TArray< FVertex > VecVertices;
 
-			if (UVA.v + tolerance < UVB.v)
-			{
-				return true;
-			}
-			return false;
-#endif
-		}
-	};
-
-	typedef std::vector< FVertex >										VecVertices;
-	typedef std::vector< FTriangle >									VecTriangles;
-	typedef std::map< ModelerAPI::TextureCoordinate, int, FCompareUV >	MapUVs;
-	typedef std::vector< const FMaterialsDatabase::FMaterialSyncData* > VecMaterialSyncData;
+  private:
+	typedef TArray< FTriangle >									   VecTriangles;
+	typedef TMap< FTextureCoordinate, int >						   MapUVs;
+	typedef TArray< const FMaterialsDatabase::FMaterialSyncData* > VecMaterialSyncData;
 
 	VecVertices			Vertices; // Vector of used vertices
 	VecTriangles		Triangles; // Vector of collected triangles

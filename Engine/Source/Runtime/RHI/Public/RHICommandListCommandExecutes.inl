@@ -99,10 +99,15 @@ void FRHICommandWaitForTemporalEffect::Execute(FRHICommandListBase& CmdList)
 	INTERNAL_DECORATOR(RHIWaitForTemporalEffect)(EffectName);
 }
 
-void FRHICommandBroadcastTemporalEffect::Execute(FRHICommandListBase& CmdList)
+template <> void FRHICommandBroadcastTemporalEffect<FRHITexture>::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(BroadcastTemporalEffect);
-	INTERNAL_DECORATOR(RHIBroadcastTemporalEffect)(EffectName, { Textures, NumTextures });
+	INTERNAL_DECORATOR(RHIBroadcastTemporalEffect)(EffectName, Resources);
+}
+template <> void FRHICommandBroadcastTemporalEffect<FRHIVertexBuffer>::Execute(FRHICommandListBase& CmdList)
+{
+	RHISTAT(BroadcastTemporalEffect);
+	INTERNAL_DECORATOR(RHIBroadcastTemporalEffect)(EffectName, Resources);
 }
 
 void FRHICommandTransferTextures::Execute(FRHICommandListBase& CmdList)
@@ -515,7 +520,7 @@ void FRHICommandSubmitCommandsHint::Execute(FRHICommandListBase& CmdList)
 void FRHICommandPostExternalCommandsReset::Execute(FRHICommandListBase& CmdList)
 {
 	RHISTAT(PostExternalCommandsReset);
-	INTERNAL_DECORATOR_COMPUTE(RHIPostExternalCommandsReset)();
+	INTERNAL_DECORATOR(RHIPostExternalCommandsReset)();
 }
 
 void FRHICommandPollOcclusionQueries::Execute(FRHICommandListBase& CmdList)

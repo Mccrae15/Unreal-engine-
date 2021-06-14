@@ -5,28 +5,15 @@
 #include "VideoEncoderCommon.h"
 #include "VideoEncoderFactory.h"
 #include "AVEncoderDebug.h"
+#include "Misc/Paths.h"
+#include "VideoCommon.h"
+
+#if PLATFORM_WINDOWS || PLATFORM_LINUX
+#include "VulkanRHIPrivate.h"
+#endif
 
 #if PLATFORM_WINDOWS
-#include "Windows/AllowWindowsPlatformTypes.h"
-#include "Windows/PreWindowsApi.h"
-	#include <d3d11.h>
-	#include <mftransform.h>
-	#include <mfapi.h>
-	#include <mferror.h>
-	#include <mfidl.h>
-	#include <codecapi.h>
-	#include <shlwapi.h>
-	#include <mfreadwrite.h>
-	#include <d3d11_1.h>
-	#include <d3d12.h>
-	#include <dxgi1_4.h>
-#include "Windows/PostWindowsApi.h"
-#include "Windows/HideWindowsPlatformTypes.h"
 #include "MicrosoftCommon.h"
-#endif /* PLATFORM_WINDOWS */
-
-#if WITH_CUDA
-#include "CudaModule.h"
 #endif
 
 namespace AVEncoder
@@ -333,6 +320,8 @@ void FVideoEncoderInputImpl::DestroyBuffer(FVideoEncoderInputFrame* InBuffer)
 
 FVideoEncoderInputFrame* FVideoEncoderInputImpl::ObtainInputFrame()
 {
+	static uint32 NextFrameID = 1;
+
 	FVideoEncoderInputFrameImpl*	Frame = nullptr;
 	FScopeLock						Guard(&ProtectFrames);
 	if (!AvailableFrames.IsEmpty())
@@ -346,6 +335,8 @@ FVideoEncoderInputFrame* FVideoEncoderInputImpl::ObtainInputFrame()
 	if (Frame)
 	{
 		ActiveFrames.Push(Frame);
+		Frame->SetFrameID(NextFrameID++);
+		if (NextFrameID == 0) ++NextFrameID; // skip 0 id
 		return const_cast<FVideoEncoderInputFrame*>(Frame->Obtain());
 	}
 	return nullptr;
@@ -558,22 +549,31 @@ CUcontext FVideoEncoderInputImpl::GetCUDAEncoderContext() const
 
 #endif
 
+#if PLATFORM_WINDOWS || PLATFORM_LINUX
+VkDevice FVideoEncoderInputImpl::GetVulkanDevice() const
+{
+	return FrameInfoVulkan.VulkanDevice;
+}
+#endif
+
 // *** FVideoEncoderInputFrame ********************************************************************
 
 FVideoEncoderInputFrame::FVideoEncoderInputFrame()
 	: FrameID(0)
+	, TimestampUs(0)
+	, TimestampRTP(0)
 	, NumReferences(0)
 	, Format(EVideoFrameFormat::Undefined)
 	, Width(0)
 	, Height(0)
 	, bFreeYUV420PData(false)
 {
-	static FThreadSafeCounter	NextFrameID = 0;
-	FrameID = NextFrameID.Increment();
 }
 
 FVideoEncoderInputFrame::FVideoEncoderInputFrame(const FVideoEncoderInputFrame& CloneFrom)
 	: FrameID(CloneFrom.FrameID)
+	, TimestampUs(CloneFrom.TimestampUs)
+	, TimestampRTP(CloneFrom.TimestampRTP)
 	, NumReferences(0)
 	, Format(CloneFrom.Format)
 	, Width(CloneFrom.Width)
@@ -605,6 +605,7 @@ FVideoEncoderInputFrame::~FVideoEncoderInputFrame()
 		YUV420P.Data[0] = YUV420P.Data[1] = YUV420P.Data[2] = nullptr;
 		bFreeYUV420PData = false;
 	}
+
 #if PLATFORM_WINDOWS
 	if (D3D11.EncoderTexture)
 	{
@@ -654,6 +655,20 @@ FVideoEncoderInputFrame::~FVideoEncoderInputFrame()
 	}
 #endif
 
+}
+
+void FVideoEncoderInputFrame::AllocateYUV420P()
+{
+	if (!bFreeYUV420PData)
+	{
+		YUV420P.StrideY = Width;
+		YUV420P.StrideU = (Width + 1) / 2;
+		YUV420P.StrideV = (Width + 1) / 2;;
+		YUV420P.Data[0] = new uint8[Height * YUV420P.StrideY];
+		YUV420P.Data[1] = new uint8[(Height + 1) / 2 * YUV420P.StrideU];
+		YUV420P.Data[2] = new uint8[(Height + 1) / 2 * YUV420P.StrideV];
+		bFreeYUV420PData = true;
+	}
 }
 
 void FVideoEncoderInputFrame::SetYUV420P(const uint8* InDataY, const uint8* InDataU, const uint8* InDataV, uint32 InStrideY, uint32 InStrideU, uint32 InStrideV)
@@ -792,6 +807,20 @@ void FVideoEncoderInputFrame::SetTexture(CUarray InTexture, FReleaseCUDATextureC
 #endif
 
 
+#if PLATFORM_WINDOWS || PLATFORM_LINUX
+void FVideoEncoderInputFrame::SetTexture(VkImage_T* InTexture, FReleaseVulkanTextureCallback InOnReleaseTexture)
+{
+	if (Format == EVideoFrameFormat::VULKAN_R8G8B8A8_UNORM)
+	{
+		Vulkan.EncoderTexture = InTexture;
+		OnReleaseVulkanTexture = InOnReleaseTexture;
+		if (!Vulkan.EncoderTexture)
+		{
+			UE_LOG(LogVideoEncoder, Warning, TEXT("SetTexture | Vulkan VkImage is null"));
+		}
+	}
+}
+#endif
 
 // *** FVideoEncoderInputFrameImpl ****************************************************************
 

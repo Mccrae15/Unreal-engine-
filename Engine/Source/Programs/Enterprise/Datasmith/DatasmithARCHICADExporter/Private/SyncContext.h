@@ -2,11 +2,11 @@
 
 #pragma once
 
-#include "AddonTools.h"
+#include "Utils/AddonTools.h"
 
 #include "SyncDatabase.h"
 #include "SyncData.h"
-#include "Progression.h"
+#include "Utils/Progression.h"
 #include "StatsCounter.h"
 
 class FDatasmithDirectLink;
@@ -55,13 +55,23 @@ class FSyncContext
 		TAtomicInt			  TotalMeshesCreated;
 		TAtomicInt			  TotalMeshesReused;
 		TAtomicInt			  TotalBugsCount;
+		TAtomicInt			  TotalMeshClassesCreated;
+		TAtomicInt			  TotalEmptyMeshClassesCreated;
+		TAtomicInt			  TotalInstancesCreated;
+		TAtomicInt			  TotalEmptyInstancesCreated;
+		TAtomicInt			  TotalMeshClassesForgot;
+		TAtomicInt			  TotalMeshClassesResactivated;
 	};
 
 	// Constructor
-	FSyncContext(const ModelerAPI::Model& InModel, FSyncDatabase& InSyncDatabase, FProgression* InProgression);
+	FSyncContext(bool bInIsSynchronizer, const ModelerAPI::Model& InModel, FSyncDatabase& InSyncDatabase,
+				 FProgression* InProgression);
 
 	// Destructor
 	~FSyncContext();
+
+	// Return true if it's a synchronizer context
+	bool IsSynchronizer() const { return bIsSynchronizer; }
 
 	// Accessors
 	const ModelerAPI::Model& GetModel() const { return Model; }
@@ -76,15 +86,19 @@ class FSyncContext
 	// Progression - Advance progression bar to the current value
 	void NewCurrentValue(int InCurrentValue = -1) const;
 
+	// Progression - Advance progression bar to the current value
+	FProgression* GetProgression() const { return Progression; }
+
   private:
 	// AC Model, can differ from one call to another
 	const ModelerAPI::Model& Model;
 	FProgression*			 Progression;
 	FSyncDatabase&			 SyncDatabase;
+	bool					 bIsSynchronizer = false;
 
   public:
 	Geometry::Point3D ModelOrigin = {0.0, 0.0, 0.0};
-	double			  ScaleLength = 100;
+	double			  ScaleLength = 100; // Meter 2 centimeter
 	bool			  bUseFingerPrint = true;
 	FStats&			  Stats;
 };

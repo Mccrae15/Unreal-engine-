@@ -46,21 +46,35 @@ void SDisplayClusterConfiguratorGraphEditor::PostUndo(bool bSuccess)
 	ClearSelectionSet();
 }
 
-void SDisplayClusterConfiguratorGraphEditor::SetViewportPreviewTexture(const FString& NodeId, const FString& ViewportId, UTexture* InTexture)
+void SDisplayClusterConfiguratorGraphEditor::FindAndSelectObjects(const TArray<UObject*>& ObjectsToSelect)
 {
 	UDisplayClusterConfiguratorGraph* ConfiguratorGraph = ClusterConfiguratorGraph.Get();
 	check(ConfiguratorGraph != nullptr);
 
-	ConfiguratorGraph->ForEachGraphNode([=](UDisplayClusterConfiguratorBaseNode* Node)
+	bSelectionSetDirectly = true;
+	ConfiguratorGraph->ForEachGraphNode([this, &ObjectsToSelect](UDisplayClusterConfiguratorBaseNode* Node)
 	{
-		if (UDisplayClusterConfiguratorViewportNode* ViewportNode = Cast<UDisplayClusterConfiguratorViewportNode>(Node))
+		if (ObjectsToSelect.Contains(Node->GetObject()))
 		{
-			if (ViewportNode->GetNodeName().Equals(ViewportId) && ViewportNode->GetParent() && ViewportNode->GetParent()->GetNodeName().Equals(NodeId))
-			{
-				ViewportNode->SetPreviewTexture(InTexture);
-			}
+			SetNodeSelection(Node, true);
+		}
+		else
+		{
+			SetNodeSelection(Node, false);
 		}
 	});
+	bSelectionSetDirectly = false;
+}
+
+void SDisplayClusterConfiguratorGraphEditor::JumpToObject(UObject* InObject)
+{
+	UDisplayClusterConfiguratorGraph* ConfiguratorGraph = ClusterConfiguratorGraph.Get();
+	check(ConfiguratorGraph != nullptr);
+
+	if (UDisplayClusterConfiguratorBaseNode* GraphNode = ConfiguratorGraph->GetNodeFromObject(InObject))
+	{
+		JumpToNode(GraphNode, false, false);
+	}
 }
 
 void SDisplayClusterConfiguratorGraphEditor::OnSelectedNodesChanged(const TSet<UObject*>& NewSelection)
@@ -81,6 +95,11 @@ void SDisplayClusterConfiguratorGraphEditor::OnSelectedNodesChanged(const TSet<U
 	}
 
 	ToolkitPtr.Pin()->SelectObjects(Selection);
+}
+
+void SDisplayClusterConfiguratorGraphEditor::OnNodeDoubleClicked(UEdGraphNode* ClickedNode)
+{
+	JumpToNode(ClickedNode, false, false);
 }
 
 void SDisplayClusterConfiguratorGraphEditor::OnObjectSelected()
@@ -115,21 +134,22 @@ void SDisplayClusterConfiguratorGraphEditor::OnObjectSelected()
 
 	TSharedPtr<FDisplayClusterConfiguratorViewOutputMapping> OutputMapping = ViewOutputMappingPtr.Pin();
 	check(OutputMapping.IsValid());
-
-	if (OutputMapping->GetOutputMappingSettings().bZoomToSelectedClusterItems)
-	{
-		ZoomToFit(true);
-	}
 }
 
 void SDisplayClusterConfiguratorGraphEditor::OnConfigReloaded()
 {
 	RebuildGraph();
+
+	// Reselect any graph nodes that correspond to the selected objects in the editor
+	FindAndSelectObjects(ToolkitPtr.Pin()->GetSelectedObjects());
 }
 
 void SDisplayClusterConfiguratorGraphEditor::OnClusterChanged()
 {
 	RebuildGraph();
+
+	// Reselect any graph nodes that correspond to the selected objects in the editor
+	FindAndSelectObjects(ToolkitPtr.Pin()->GetSelectedObjects());
 }
 
 void SDisplayClusterConfiguratorGraphEditor::RebuildGraph()
@@ -555,6 +575,7 @@ void SDisplayClusterConfiguratorGraphEditor::PasteNodes()
 		{
 			Toolkit->GetEditorData()->MarkPackageDirty();
 			Toolkit->ClusterChanged();
+			ClearSelectionSet();
 		}
 		else
 		{
@@ -835,6 +856,7 @@ void SDisplayClusterConfiguratorGraphEditor::Construct(const FArguments& InArgs,
 	SGraphEditor::FGraphEditorEvents GraphEvents;
 	GraphEvents.OnSelectionChanged = SGraphEditor::FOnSelectionChanged::CreateSP(this, &SDisplayClusterConfiguratorGraphEditor::OnSelectedNodesChanged);
 	GraphEvents.OnCreateNodeOrPinMenu = SGraphEditor::FOnCreateNodeOrPinMenu::CreateSP(this, &SDisplayClusterConfiguratorGraphEditor::OnCreateNodeOrPinMenu);
+	GraphEvents.OnNodeDoubleClicked = FSingleNodeEvent::CreateSP(this, &SDisplayClusterConfiguratorGraphEditor::OnNodeDoubleClicked);
 
 	FGraphAppearanceInfo AppearanceInfo;
 	AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText", "STEP 3");

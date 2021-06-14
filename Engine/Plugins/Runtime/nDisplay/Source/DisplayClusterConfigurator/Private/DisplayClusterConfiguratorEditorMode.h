@@ -40,7 +40,6 @@ public:
 	static const FName TabID_OutputMapping;
 	static const FName TabID_Scene;
 	static const FName TabID_Cluster;
-	static const FName TabID_Input;
 	static const FName TabID_Viewport;
 
 public:
@@ -50,7 +49,6 @@ protected:
 	TWeakPtr<class FDisplayClusterConfiguratorBlueprintEditor> Editor;
 	FWorkflowAllowedTabSet EditorTabFactories;
 };
-
 
 class FDisplayClusterConfiguratorEditorConfigurationMode : public FDisplayClusterConfiguratorBlueprintModeBase
 {
@@ -64,19 +62,4 @@ public:
 
 protected:
 	TSharedPtr<FTabManager::FLayout> BuildDefaultLayout(const FString& LayoutName);
-};
-
-class FDisplayClusterConfiguratorEditorBlueprintMode : public FDisplayClusterConfiguratorBlueprintModeBase
-{
-	
-public:
-	FDisplayClusterConfiguratorEditorBlueprintMode(TSharedPtr<class FDisplayClusterConfiguratorBlueprintEditor> EditorIn);
-
-	// FApplicationMode interface
-	virtual void RegisterTabFactories(TSharedPtr<FTabManager> InTabManager) override;
-	// End of FApplicationMode interface
-
-protected:
-	TSharedPtr<FTabManager::FLayout> BuildDefaultLayout(const FString& LayoutName);
-
 };

@@ -12,6 +12,7 @@
 #include "Containers/Queue.h"
 #include "Engine/EngineTypes.h"
 #include "GameFramework/Actor.h"
+#include "BodySetupEnums.h"
 
 #include <atomic>
 
@@ -122,17 +123,23 @@ struct FDatasmithRuntimeImportOptions
 
 	/**
 	 * Indicates the type of collision for components
-	 * Set to ECollisionEnabled::NoCollision (no collision) by default
+	 * Set to ECollisionEnabled::QueryOnly (spatial queries, no physics) by default
 	 */
 	UPROPERTY(Category = "DatasmithRuntime", EditDefaultsOnly, BlueprintReadWrite)
-	TEnumAsByte<ECollisionEnabled::Type> BuildCollisions = ECollisionEnabled::NoCollision;
+	TEnumAsByte<ECollisionEnabled::Type> BuildCollisions = ECollisionEnabled::QueryOnly;
 
 	/**
-	 * Indicates whether meta-data should be imported or not
-	 * Meta-data are not imported by default
+	 * Indicates the type of collision for static meshes
+	 * Set to ECollisionTraceFlag::CTF_UseComplexAsSimple by default
 	 */
 	UPROPERTY(Category = "DatasmithRuntime", EditDefaultsOnly, BlueprintReadWrite)
-	bool bImportMetaData = false;
+	TEnumAsByte<ECollisionTraceFlag> CollisionType = ECollisionTraceFlag::CTF_UseComplexAsSimple;
+	/**
+	 * Indicates whether meta-data should be imported or not
+	 * Meta-data are imported by default
+	 */
+	UPROPERTY(Category = "DatasmithRuntime", EditDefaultsOnly, BlueprintReadWrite)
+	bool bImportMetaData = true;
 };
 
 UCLASS(meta = (DisplayName = "Datasmith Destination"))
@@ -212,9 +219,6 @@ public:
 	static void OnStartupModule(bool bCADRuntimeSupported);
 
 private:
-	void EnableSelector(bool bEnable);
-
-private:
 	TSharedPtr< DatasmithRuntime::FSceneImporter > SceneImporter;
 
 	TSharedPtr<DatasmithRuntime::FDestinationProxy> DirectLinkHelper;
@@ -235,9 +239,6 @@ private:
 	int32 EnableThreadedImport = MAX_int32;
 	int32 EnableCADCache = MAX_int32;
 #endif
-
-	static TSharedPtr< FDatasmithMasterMaterialSelector > ExistingRevitSelector;
-	static TSharedPtr< FDatasmithMasterMaterialSelector > RuntimeRevitSelector;
 
 	static TUniquePtr<DatasmithRuntime::FTranslationThread> TranslationThread;
 

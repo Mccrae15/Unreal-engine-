@@ -4,18 +4,38 @@
 
 #include "ElementID.h"
 #include "Synchronizer.h"
-#include "ElementTools.h"
+#include "Commander.h"
+#include "Utils/ElementTools.h"
 #include "Element2StaticMesh.h"
 #include "MetaData.h"
 #include "GeometryUtil.h"
-#include "AutoChangeDatabase.h"
+#include "Utils/AutoChangeDatabase.h"
+#include "Utils/TimeStat.h"
+#include "TexturesCache.h"
+#include "Utils/TaskMgr.h"
 
 DISABLE_SDK_WARNINGS_START
 #include "Transformation.hpp"
 #include "Line3D.hpp"
 DISABLE_SDK_WARNINGS_END
 
+#include <stdexcept>
+
 BEGIN_NAMESPACE_UE_AC
+
+#define TRACE_ATTACH_OBSERVERS 0
+
+// Control access on this object (for queue operations)
+GS::Lock ChildAccessControl;
+
+// Condition variable
+GS::Condition ChildAccessControlCV(ChildAccessControl);
+
+// Control access on this object (for queue operations)
+GS::Lock ElementAccessControl;
+
+// Condition variable
+GS::Condition ElementAccessControlCV(ElementAccessControl);
 
 // Constructor
 FSyncData::FSyncData(const GS::Guid& InGuid)
@@ -33,44 +53,55 @@ FSyncData::~FSyncData()
 		Parent->RemoveChild(this);
 		Parent = nullptr;
 	}
-	for (size_t i = Childs.size(); i != 0; --i)
+	for (FChildsArray::SizeType i = Childs.Num(); i != 0; --i)
 	{
 		Childs[0]->SetParent(nullptr);
-		UE_AC_Assert(i == Childs.size());
+		UE_AC_Assert(i == Childs.Num());
 	}
 }
 
 // Update data from a 3d element
-void FSyncData::Update(const FElementID& InElementId)
+void FSyncData::Update(const FElementID& InElementID)
 {
-	UE_AC_Assert(ElementId == APIGuid2GSGuid(InElementId.ElementHeader.guid));
-	UE_AC_Assert(Index3D == 0 && InElementId.Index3D != 0);
+	const API_Elem_Head& Header = InElementID.GetHeader();
+	UE_AC_Assert(ElementId == APIGuid2GSGuid(Header.guid));
+	UE_AC_Assert(Index3D == 0 && InElementID.GetIndex3D() != 0);
 
-	Index3D = InElementId.Index3D;
-	if (GenId != InElementId.Element3D.GetGenId())
+	Index3D = InElementID.GetIndex3D();
+	if (GenId != InElementID.GetElement3D().GetGenId())
 	{
-		GenId = InElementId.Element3D.GetGenId();
+		GenId = InElementID.GetElement3D().GetGenId();
 		bIsModified = true;
 	}
 
 	// If AC element has been modified, recheck connections
-	if (ModificationStamp != InElementId.ElementHeader.modiStamp)
+	if (ModificationStamp != Header.modiStamp)
 	{
-		ModificationStamp = InElementId.ElementHeader.modiStamp;
-		InElementId.HandleDepedencies();
+		if (ModificationStamp > Header.modiStamp)
+		{
+			UE_AC_DebugF("FSyncData::Update {%s} New stamp younger: %lld, %lld\n",
+						 APIGuidToString(Header.guid).ToUtf8(), ModificationStamp, Header.modiStamp);
+		}
+		ModificationStamp = Header.modiStamp;
+		InElementID.HandleDepedencies();
 		bIsModified = true;
 	}
-	SetDefaultParent(InElementId);
+	if (ModificationStamp == 0)
+	{
+		UE_AC_DebugF("FSyncData::Update {%s} ModificationStamp == 0\n", APIGuidToString(Header.guid).ToUtf8());
+	}
+
+	SetDefaultParent(InElementID);
 }
 
 // Recursively clean. Delete element that hasn't 3d geometry related to it
 void FSyncData::CleanAfterScan(FSyncDatabase* IOSyncDatabase)
 {
-	for (size_t IdxChild = Childs.size(); IdxChild != 0;)
+	for (FChildsArray::SizeType IdxChild = Childs.Num(); IdxChild != 0;)
 	{
 		Childs[--IdxChild]->CleanAfterScan(IOSyncDatabase);
 	}
-	if (Childs.size() == 0 && Index3D == 0)
+	if (Childs.Num() == 0 && Index3D == 0)
 	{
 		DeleteMe(IOSyncDatabase);
 	}
@@ -105,32 +136,25 @@ void FSyncData::SetDefaultParent(const FElementID& InElementID)
 {
 	if (!HasParent())
 	{
-		if (InElementID.ElementHeader.hotlinkGuid == APINULLGuid)
+		const API_Elem_Head& Header = InElementID.GetHeader();
+
+		if (Header.hotlinkGuid == APINULLGuid)
 		{
 			// Parent is a layer
-			SetParent(&InElementID.SyncContext.GetSyncDatabase().GetLayerSyncData(InElementID.ElementHeader.layer));
+			SetParent(&InElementID.SyncContext.GetSyncDatabase().GetLayerSyncData(Header.layer));
 		}
 		else
 		{
 			// Parent is a hot link instance
-			FSyncData*& ParentFound = InElementID.SyncContext.GetSyncDatabase().GetSyncData(
-				APIGuid2GSGuid(InElementID.ElementHeader.hotlinkGuid));
+			FSyncData*& ParentFound =
+				InElementID.SyncContext.GetSyncDatabase().GetSyncData(APIGuid2GSGuid(Header.hotlinkGuid));
 			if (ParentFound == nullptr)
 			{
-				ParentFound = new FSyncData::FHotLinkInstance(APIGuid2GSGuid(InElementID.ElementHeader.hotlinkGuid),
+				ParentFound = new FSyncData::FHotLinkInstance(APIGuid2GSGuid(Header.hotlinkGuid),
 															  &InElementID.SyncContext.GetSyncDatabase());
 			}
 			SetParent(ParentFound);
 		}
-	}
-}
-
-void FSyncData::ProcessTree(FProcessInfo* IOProcessInfo)
-{
-	Process(IOProcessInfo);
-	for (std::vector< FSyncData* >::iterator IterChild = Childs.begin(); IterChild != Childs.end(); ++IterChild)
-	{
-		(**IterChild).ProcessTree(IOProcessInfo);
 	}
 }
 
@@ -147,21 +171,22 @@ void FSyncData::AddChild(FSyncData* InChild)
 			return;
 		}
 	}
-	Childs.push_back(InChild);
+	Childs.Add(InChild);
 }
 
 // Remove a child from this sync data
 void FSyncData::RemoveChild(FSyncData* InChild)
 {
-	for (std::vector< FSyncData* >::iterator IterChild = Childs.begin(); IterChild != Childs.end(); ++IterChild)
+	if (Childs.RemoveSingle(InChild) == 0)
 	{
-		if (*IterChild == InChild)
-		{
-			Childs.erase(IterChild);
-			return;
-		}
+		UE_AC_VerboseF("FSyncData::RemoveChild - Child not present\n");
 	}
-	UE_AC_VerboseF("FSyncData::RemoveChild - Child not present\n");
+}
+
+// Return true if this element and all it's childs have been cut out
+bool FSyncData::CheckAllCutOut()
+{
+	return true;
 }
 
 #pragma mark -
@@ -192,7 +217,11 @@ void FSyncData::FScene::DeleteMe(FSyncDatabase* IOSyncDatabase)
 
 void FSyncData::FScene::AddChildActor(const TSharedPtr< IDatasmithActorElement >& InActor)
 {
-	UE_AC_Assert(SceneElement.IsValid());
+	GS::Guard< GS::Lock > lck(ChildAccessControl);
+	if (!SceneElement.IsValid())
+	{
+		ThrowAssertionFail(__FILE__, __LINE__);
+	}
 	SceneElement->AddActor(InActor);
 }
 
@@ -221,7 +250,7 @@ void FSyncData::FScene::UpdateInfo(FProcessInfo* IOProcessInfo)
 		IOProcessInfo->SyncContext.GetScene().AddActor(SceneInfoActorElement);
 	}
 
-	FMetaData InfoMetaData(ElementId, SceneInfoActorElement);
+	FMetaData InfoMetaData(SceneInfoActorElement);
 
 	GSErrCode	  err = NoError;
 	GS::UniString projectName = GS::UniString("Untitled");
@@ -337,12 +366,17 @@ void FSyncData::FActor::DeleteMe(FSyncDatabase* IOSyncDatabase)
 
 void FSyncData::FActor::AddChildActor(const TSharedPtr< IDatasmithActorElement >& InActor)
 {
-	UE_AC_Assert(ActorElement.IsValid());
+	GS::Guard< GS::Lock > lck(ChildAccessControl);
+	if (!ActorElement.IsValid())
+	{
+		ThrowAssertionFail(__FILE__, __LINE__);
+	}
 	ActorElement->AddChild(InActor);
 }
 
 void FSyncData::FActor::RemoveChildActor(const TSharedPtr< IDatasmithActorElement >& InActor)
 {
+	GS::Guard< GS::Lock > lck(ChildAccessControl);
 	UE_AC_Assert(ActorElement.IsValid());
 	ActorElement->RemoveChild(InActor);
 }
@@ -350,6 +384,7 @@ void FSyncData::FActor::RemoveChildActor(const TSharedPtr< IDatasmithActorElemen
 // Set (or replace) datasmith actor element related to this sync data
 void FSyncData::FActor::SetActorElement(const TSharedPtr< IDatasmithActorElement >& InElement)
 {
+	GS::Guard< GS::Lock > lck(ElementAccessControl);
 	if (ActorElement != InElement)
 	{
 		UE_AC_TestPtr(Parent);
@@ -366,32 +401,141 @@ void FSyncData::FActor::SetActorElement(const TSharedPtr< IDatasmithActorElement
 	}
 }
 
-// Add meta data
-void FSyncData::FActor::AddTags(const FElementID& InElementID)
+// Add tags data
+void FSyncData::FActor::UpdateTags(const FTagsArray& InTags)
+{
+	int32 Count = (int32)InTags.GetSize();
+	int32 Index = 0;
+	if (ActorElement->GetTagsCount() == Count)
+	{
+		while (Index < Count && FCString::Strcmp(GSStringToUE(InTags[Index]), ActorElement->GetTag(Index)) == 0)
+		{
+			++Index;
+		}
+		if (Index == Count)
+		{
+			return; // All Tags unchanged
+		}
+	}
+
+	ActorElement->ResetTags();
+	for (Index = 0; Index < Count; ++Index)
+	{
+		ActorElement->AddTag(GSStringToUE(InTags[Index]));
+	}
+}
+
+// Add tags data
+void FSyncData::FActor::AddTags(FElementID& InElementID)
 {
 	UE_AC_Assert(ActorElement.IsValid());
+	const API_Elem_Head& Header = InElementID.GetHeader();
 
-	GS::UniString TagUniqueID = GS::UniString("Element.UniqueID.") + ElementId.ToUniString();
-	ActorElement->AddTag(GSStringToUE(TagUniqueID));
-	GS::UniString TagElementType =
-		GS::UniString("Element.Type.") + FElementTools::TypeName(InElementID.ElementHeader.typeID);
-	ActorElement->AddTag(GSStringToUE(TagElementType));
+	FTagsArray Tags(10);
 
-	GS::Array< GS::Pair< API_ClassificationSystem, API_ClassificationItem > > ApiClassifications;
-	GSErrCode GSErr = FElementTools::GetElementClassifications(ApiClassifications, InElementID.ElementHeader.guid);
+	static const GS::UniString PrefixTagUniqueID("Archicad.Element.UniqueID.");
+	Tags.Push(PrefixTagUniqueID + ElementId.ToUniString());
 
+	static const GS::UniString PrefixTagType("Archicad.Element.Type.");
+	GS::UniString			   ElementTypeName(FElementTools::TypeName(Header.typeID), CC_UTF8);
+	Tags.Push(PrefixTagType + ElementTypeName);
+
+	const FLibPartInfo* LibPartInfo = InElementID.GetLibPartInfo();
+	if (LibPartInfo != nullptr)
+	{
+		static const GS::UniString PrefixLibPartMain("Archicad.Element.LibPart.Main.");
+		Tags.Push(PrefixLibPartMain + LibPartInfo->Guid.Main.ToUniString());
+
+		static const GS::UniString PrefixLibPartRev("Archicad.Element.LibPart.Rev.");
+		Tags.Push(PrefixLibPartRev + LibPartInfo->Guid.Rev.ToUniString());
+
+		static const GS::UniString PrefixLibPartName("Archicad.Element.LibPart.Name.");
+		Tags.Push(PrefixLibPartName + LibPartInfo->Name);
+
+		if (Header.typeID == API_ObjectID || Header.typeID == API_LampID || Header.typeID == API_WindowID ||
+			Header.typeID == API_DoorID)
+		{
+			const API_Element& APIElement = InElementID.GetAPIElement();
+
+			if (APIElement.header.typeID == API_ObjectID || APIElement.header.typeID == API_LampID)
+			{
+				if (APIElement.object.useObjMaterials)
+				{
+					static const GS::UniString TagUseObjectMaterial("Archicad.Element.UseObjectMaterial");
+					Tags.Push(TagUseObjectMaterial);
+				}
+				if (APIElement.object.reflected)
+				{
+					static const GS::UniString TagObjectReflected("Archicad.Element.Reflected");
+					Tags.Push(TagObjectReflected);
+				}
+			}
+			else if (APIElement.header.typeID == API_WindowID || APIElement.header.typeID == API_DoorID)
+			{
+				if (APIElement.window.openingBase.reflected)
+				{
+					static const GS::UniString TagObjectReflected("Archicad.Element.Mirror.Y");
+					Tags.Push(TagObjectReflected);
+				}
+				if (APIElement.window.openingBase.oSide)
+				{
+					static const GS::UniString TagObjectReflected("Archicad.Element.Mirror.X");
+					Tags.Push(TagObjectReflected);
+				}
+				if (APIElement.window.openingBase.refSide)
+				{
+					static const GS::UniString TagObjectReflected("Archicad.Element.Mirror.X.Same");
+					Tags.Push(TagObjectReflected);
+				}
+			}
+		}
+	}
+
+#if 0 // IfcType and Classification only as metadata
+	GS::UniString IfcType;
+	GS::UniString TypeObjectIfcType;
+	GSErrCode GSErr = ACAPI_Element_GetIFCType(Header.guid, &IfcType, &TypeObjectIfcType);
 	if (GSErr == NoError)
 	{
-		for (const GS::Pair< API_ClassificationSystem, API_ClassificationItem >& Classification : ApiClassifications)
+		if (!IfcType.IsEmpty())
 		{
-			GS::UniString TagClassificationID = GS::UniString("Classification.ID.") + Classification.second.id;
-			ActorElement->AddTag(GSStringToUE(TagClassificationID));
+			static const GS::UniString PrefixIfcType("Archicad.IfcType.");
+			Tags.Push(PrefixIfcType + IfcType);
+		}
+		if (!TypeObjectIfcType.IsEmpty())
+		{
+			static const GS::UniString PrefixTypeObjectIfcType("Archicad.TypeObjectIfcType.");
+			Tags.Push(PrefixTypeObjectIfcType + TypeObjectIfcType);
 		}
 	}
 	else
 	{
-		UE_AC_DebugF("FSyncData::AddTags - FElementTools::GetElementClassifications returned error %d", GSErr);
+		UE_AC_DebugF("FSyncData::AddTags - ACAPI_Element_GetIFCType returned error %s", GetErrorName(GSErr));
 	}
+
+	GS::Array< GS::Pair< API_ClassificationSystem, API_ClassificationItem > > ApiClassifications;
+	GSErr = FElementTools::GetElementClassifications(ApiClassifications, Header.guid);
+
+	if (GSErr == NoError)
+	{
+		static const GS::UniString PrefixTagClassificationID("Archicad.Classification.");
+		static const GS::UniString StringID(".ID.");
+		for (const GS::Pair< API_ClassificationSystem, API_ClassificationItem >& Classification : ApiClassifications)
+		{
+			GS::UniString TagClassificationID(PrefixTagClassificationID + Classification.first.name + StringID + Classification.second.id);
+			if (!Tags.Contains(TagClassificationID))
+			{
+				Tags.Push(TagClassificationID);
+			}
+		}
+	}
+	else
+	{
+		UE_AC_DebugF("FSyncData::AddTags - FElementTools::GetElementClassifications returned error %s", GetErrorName(GSErr));
+	}
+#endif
+
+	UpdateTags(Tags);
 }
 
 // Replace the current meta data by this new one
@@ -464,14 +608,17 @@ void FSyncData::FLayer::Process(FProcessInfo* /* IOProcessInfo */)
 		if (error != NoError)
 		{
 			// This case happened for the special ArchiCAD layer
-			UE_AC_DebugF("CElementsHierarchy::CreateLayerNode - Error %d for layer index=%d\n", error, LayerIndex);
+			UE_AC_DebugF("CElementsHierarchy::CreateLayerNode - Error %s for layer index=%d\n", GetErrorName(error),
+						 LayerIndex);
 			if (error == APIERR_DELETED)
 			{
-				LayerName = GetGSName(kName_LayerDeleted);
+				static const GS::UniString LayerDeleted("Layer deleted");
+				LayerName = LayerDeleted;
 			}
 			else
 			{
-				LayerName = GS::UniString::Printf(GetGSName(kName_LayerError), error);
+				utf8_string LayerError(Utf8StringFormat("Layer error=%s", GetErrorName(error)));
+				LayerName = GS::UniString(LayerError.c_str(), CC_UTF8);
 			}
 		}
 		else if (LayerName == "\x14") // Special ARCHICAD layer
@@ -486,156 +633,6 @@ void FSyncData::FLayer::Process(FProcessInfo* /* IOProcessInfo */)
 }
 
 #pragma mark -
-
-FSyncData::FElement::FElement(const GS::Guid& InGuid)
-	: FSyncData::FActor(InGuid)
-{
-}
-
-void FSyncData::FElement::Process(FProcessInfo* IOProcessInfo)
-{
-	if (Index3D == 0)
-	{
-		if (!ActorElement.IsValid())
-		{
-			IOProcessInfo->ElementID.InitElement(this);
-			IOProcessInfo->ElementID.InitHeader(GSGuid2APIGuid(ElementId));
-
-			UE_AC_STAT(IOProcessInfo->SyncContext.Stats.TotalOwnerCreated++);
-			TSharedRef< IDatasmithActorElement > NewActor =
-				FDatasmithSceneFactory::CreateActor(GSStringToUE(ElementId.ToUniString()));
-
-			GS::UniString ElemenInfo;
-			if (FElementTools::GetInfoString(IOProcessInfo->ElementID.ElementHeader.guid, &ElemenInfo))
-			{
-				NewActor->SetLabel(GSStringToUE(ElemenInfo));
-			}
-			else
-			{
-				NewActor->SetLabel(TEXT("Unnamed"));
-			}
-			NewActor->SetIsAComponent(bIsAComponent);
-
-			SetActorElement(NewActor);
-			AddTags(IOProcessInfo->ElementID);
-			UpdateMetaData(IOProcessInfo->SyncContext.GetScene());
-		}
-	}
-	else
-	{
-		if (IsModified())
-		{
-			// Advance progression bar to the current value
-			IOProcessInfo->SyncContext.NewCurrentValue(++IOProcessInfo->ProgessValue);
-
-			IOProcessInfo->ElementID.InitElement(this);
-			IOProcessInfo->ElementID.InitHeader();
-
-			ModelerAPI::Transformation LocalToWorld =
-				IOProcessInfo->ElementID.Element3D.GetElemLocalToWorldTransformation();
-			if ((LocalToWorld.status & TR_IDENT) != 0)
-			{
-				Box3D Bounds = IOProcessInfo->ElementID.Element3D.GetBounds();
-				LocalToWorld.matrix[0][3] = (Bounds.xMin + Bounds.xMax) * 0.5;
-				LocalToWorld.matrix[1][3] = (Bounds.yMin + Bounds.yMax) * 0.5;
-				LocalToWorld.matrix[2][3] = Bounds.zMin;
-				LocalToWorld.status = (LocalToWorld.matrix[0][3] == 0.0 && LocalToWorld.matrix[1][3] == 0.0 &&
-									   LocalToWorld.matrix[2][3] == 0.0)
-										  ? TR_IDENT
-										  : TR_TRANSL_ONLY;
-			}
-
-			TSharedPtr< IDatasmithActorElement > OldActor = ActorElement;
-			bool								 bMeshChanged = CreateMesh(&IOProcessInfo->ElementID, LocalToWorld);
-			if (ActorElement.IsValid())
-			{
-				if (ActorElement->IsA(EDatasmithElementType::StaticMeshActor))
-				{
-					if (!MeshElement.IsValid())
-					{
-						// Change actor from mesh actor to a non mesh actor
-						SetActorElement(TSharedPtr< IDatasmithActorElement >());
-					}
-				}
-				else
-				{
-					if (MeshElement.IsValid())
-					{
-						// Change actor from non mesh actor to mesh actor
-						SetActorElement(TSharedPtr< IDatasmithActorElement >());
-					}
-				}
-			}
-			if (!ActorElement.IsValid())
-			{
-				if (MeshElement.IsValid())
-				{
-					UE_AC_STAT(IOProcessInfo->SyncContext.Stats.TotalActorsCreated++);
-					SetActorElement(FDatasmithSceneFactory::CreateMeshActor(GSStringToUE(ElementId.ToUniString())));
-				}
-				else
-				{
-					UE_AC_STAT(IOProcessInfo->SyncContext.Stats.TotalEmptyActorsCreated++);
-					SetActorElement(FDatasmithSceneFactory::CreateActor(GSStringToUE(ElementId.ToUniString())));
-				}
-			}
-			ActorElement->SetIsAComponent(bIsAComponent);
-
-			// Need to copy from old actor to new one ?
-			if (OldActor.IsValid() && OldActor != ActorElement)
-			{
-				// Copy childs from old actor to new one
-				int32 ChildrenCount = OldActor->GetChildrenCount();
-				for (int32 ChildIndex = 0; ChildIndex < ChildrenCount; ++ChildIndex)
-				{
-					ActorElement->AddChild(OldActor->GetChild(ChildIndex));
-				}
-			}
-
-			// Set actor label
-			GS::UniString ElemenInfo;
-			if (FElementTools::GetInfoString(IOProcessInfo->ElementID.ElementHeader.guid, &ElemenInfo))
-			{
-				ActorElement->SetLabel(GSStringToUE(ElemenInfo));
-			}
-			else
-			{
-				ActorElement->SetLabel(TEXT("Unnamed"));
-			}
-
-			ActorElement->SetTranslation(FGeometryUtil::GetTranslationVector(LocalToWorld.matrix));
-			ActorElement->SetRotation(FGeometryUtil::GetRotationQuat(LocalToWorld.matrix));
-
-			// Set mesh
-			if (bMeshChanged)
-			{
-				if (MeshElement.IsValid())
-				{
-					UE_AC_Assert(ActorElement.IsValid() && ActorElement->IsA(EDatasmithElementType::StaticMeshActor));
-					IDatasmithMeshActorElement& MeshActor =
-						*StaticCastSharedPtr< IDatasmithMeshActorElement >(ActorElement).Get();
-					MeshActor.SetStaticMeshPathName(MeshElement->GetName());
-					MeshElement->SetLabel(ActorElement->GetLabel());
-				}
-			}
-
-			// Set actor layer
-			ActorElement->SetLayer(*IOProcessInfo->SyncContext.GetSyncDatabase().GetLayerName(
-				IOProcessInfo->ElementID.ElementHeader.layer));
-
-			AddTags(IOProcessInfo->ElementID);
-
-			UpdateMetaData(IOProcessInfo->SyncContext.GetScene());
-		}
-	}
-}
-
-// Delete this sync data
-void FSyncData::FElement::DeleteMe(FSyncDatabase* IOSyncDatabase)
-{
-	IOSyncDatabase->SetMesh(&MeshElement, TSharedPtr< IDatasmithMeshElement >());
-	FSyncData::FActor::DeleteMe(IOSyncDatabase);
-}
 
 inline Geometry::Transformation3D Convert(const ModelerAPI::Transformation& InMatrix)
 {
@@ -659,39 +656,405 @@ inline Geometry::Transformation3D Convert(const ModelerAPI::Transformation& InMa
 	return Converted;
 }
 
-// Create/Update mesh of this element
-bool FSyncData::FElement::CreateMesh(FElementID* IOElementID, const ModelerAPI::Transformation& InLocalToWorld)
+class FConvertGeometry2MeshElement : public FTaskMgr::FTask
 {
-	UE_AC_TestPtr(IOElementID);
+  public:
+	FConvertGeometry2MeshElement(const FSyncContext& InSyncContext, FSyncData::FElement* InElementSyncData,
+								 FMeshClass* InMeshClass);
 
-	Geometry::Transformation3D Local2World = Convert(InLocalToWorld);
-#if AC_VERSION < 24
-	Geometry::Transformation3D World2Local = Local2World.GetInverse();
-#else
-	Geometry::Transformation3D World2Local = Local2World.GetInverse().Get(Geometry::Transformation3D());
-#endif
-	TSharedPtr< IDatasmithMeshElement > PreviousMesh;
+	void AddElementGeometry(FElementID* IOElementID, const Geometry::Transformation3D& InLocalToWorld);
 
-	// Create the mesh
-	TSharedPtr< IDatasmithMeshElement > Mesh;
+	bool HasGeometry() const { return Element2StaticMesh.HasGeometry(); }
+
+	void Run()
 	{
-		FElement2StaticMesh Element2StaticMesh(IOElementID->SyncContext, World2Local);
-		Element2StaticMesh.AddElementGeometry(IOElementID->Element3D);
-		if (Element2StaticMesh.HasGeometry())
+		/*
+		 #ifdef WIN32
+		 SetThreadName(GS::Thread::GetCurrent().GetName().ToUtf8());
+		 #else
+		 pthread_setname_np(GS::Thread::GetCurrent().GetName().ToUtf8());
+		 #endif
+		 */
+		try
 		{
-			Mesh = Element2StaticMesh.CreateMesh();
+			TSharedPtr< IDatasmithMeshElement > Mesh;
+			if (HasGeometry())
+			{
+				Mesh = Element2StaticMesh.CreateMesh();
+			}
+			MeshClass->SetMeshElement(Mesh);
+			MeshClass->SetWaitingInstanceMesh(&SyncContext.GetSyncDatabase());
+		}
+		catch (std::exception& e)
+		{
+			UE_AC_DebugF("FConvertGeometry2MeshElement::Run - Catch std exception %s\n", e.what());
+		}
+		catch (GS::GSException& gs)
+		{
+			UE_AC_DebugF("FConvertGeometry2MeshElement::Run - Catch gs exception %s\n", gs.GetMessage().ToUtf8());
+		}
+		catch (...)
+		{
+			UE_AC_DebugF("FConvertGeometry2MeshElement::Run - Catch unknown exception\n");
 		}
 	}
 
-	return IOElementID->SyncContext.GetSyncDatabase().SetMesh(&MeshElement, Mesh);
+  private:
+	const FSyncContext&	 SyncContext;
+	FElement2StaticMesh	 Element2StaticMesh;
+	FSyncData::FElement& ElementSyncData;
+	FMeshClass*			 MeshClass = nullptr;
+};
+
+FConvertGeometry2MeshElement::FConvertGeometry2MeshElement(const FSyncContext&	InSyncContext,
+														   FSyncData::FElement* InElementSyncData,
+														   FMeshClass*			InMeshClass)
+	: SyncContext(InSyncContext)
+	, Element2StaticMesh(InSyncContext)
+	, ElementSyncData(*InElementSyncData)
+	, MeshClass(InMeshClass)
+{
+	UE_AC_TestPtr(InElementSyncData);
+}
+
+void FConvertGeometry2MeshElement::AddElementGeometry(FElementID*						IOElementID,
+													  const Geometry::Transformation3D& InWorldToLocal)
+{
+	UE_AC_TestPtr(IOElementID);
+
+	Element2StaticMesh.AddElementGeometry(IOElementID->GetElement3D(), InWorldToLocal);
+}
+
+FSyncData::FElement::FElement(const GS::Guid& InGuid, const FSyncContext& /* InSyncContext */)
+	: FSyncData::FActor(InGuid)
+{
+}
+
+static void CopyActor(IDatasmithActorElement* OutDestActor, const IDatasmithActorElement& InSourceActor)
+{
+	UE_AC_TestPtr(OutDestActor);
+	if (&InSourceActor == OutDestActor)
+	{
+		return;
+	}
+
+	OutDestActor->SetLabel(InSourceActor.GetLabel());
+	OutDestActor->SetLayer(InSourceActor.GetLayer());
+	OutDestActor->SetIsAComponent(InSourceActor.IsAComponent());
+	OutDestActor->SetTranslation(InSourceActor.GetTranslation(), false);
+	OutDestActor->SetRotation(InSourceActor.GetRotation(), false);
+
+	// Copy childs from old actor to new one
+	int32 ChildrenCount = InSourceActor.GetChildrenCount();
+	for (int32 ChildIndex = 0; ChildIndex < ChildrenCount; ++ChildIndex)
+	{
+		OutDestActor->AddChild(InSourceActor.GetChild(ChildIndex));
+	}
+
+	int32 Count = InSourceActor.GetTagsCount();
+	OutDestActor->ResetTags();
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		OutDestActor->AddTag(InSourceActor.GetTag(Index));
+	}
+}
+
+void FSyncData::FElement::MeshElementChanged()
+{
+	UE_AC_Assert(ActorElement.IsValid());
+	if (MeshElement.IsValid())
+	{
+		// UE_AC_STAT(IOProcessInfo->SyncContext.Stats.TotalInstancesCreated++);
+		if (!ActorElement->IsA(EDatasmithElementType::StaticMeshActor))
+		{
+			TSharedPtr< IDatasmithActorElement >	 OldActor = ActorElement;
+			TSharedPtr< IDatasmithMeshActorElement > NewMeshActor =
+				FDatasmithSceneFactory::CreateMeshActor(OldActor->GetName());
+			SetActorElement(NewMeshActor);
+			CopyActor(NewMeshActor.Get(), *OldActor.Get());
+		}
+		IDatasmithMeshActorElement& MeshActor = *StaticCastSharedPtr< IDatasmithMeshActorElement >(ActorElement).Get();
+		MeshActor.SetStaticMeshPathName(MeshElement->GetName());
+		// MeshElement->SetLabel(ActorElement->GetLabel());
+	}
+	else
+	{
+		// UE_AC_STAT(IOProcessInfo->SyncContext.Stats.TotalEmptyInstancesCreated++);
+		if (ActorElement->IsA(EDatasmithElementType::StaticMeshActor))
+		{
+			TSharedPtr< IDatasmithActorElement > OldMeshActor = ActorElement;
+			TSharedPtr< IDatasmithActorElement > NewActor =
+				FDatasmithSceneFactory::CreateActor(OldMeshActor->GetName());
+			SetActorElement(NewActor);
+			CopyActor(NewActor.Get(), *OldMeshActor.Get());
+		}
+	}
+}
+
+// Return true if this element and all it's childs have been cut out
+bool FSyncData::FElement::CheckAllCutOut()
+{
+	if (Index3D != 0)
+	{
+		return false;
+	}
+	for (FChildsArray::SizeType IterChild = 0; IterChild < Childs.Num(); ++IterChild)
+	{
+		if (!Childs[IterChild]->CheckAllCutOut())
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+void FSyncData::FElement::Process(FProcessInfo* IOProcessInfo)
+{
+	if (Index3D == 0) // No 3D imply an hierarchical parent or recently cut out element
+	{
+		if (ActorElement.IsValid())
+		{
+			if (ActorElement->IsA(EDatasmithElementType::StaticMeshActor)) // Previously was a mesh, now presume cut out
+			{
+				// Element is a child cut out and it's parent hasn't been completely cut-out.
+				SetActorElement(TSharedPtr< IDatasmithActorElement >());
+				if (!CheckAllCutOut())
+				{
+					UE_AC_DebugF("FSyncData::FElement::Process - Element cut out with uncut child %s\n",
+								 ElementId.ToUniString().ToUtf8());
+				}
+			}
+		}
+		else // Hierarchical parent
+		{
+			IOProcessInfo->ElementID.InitElement(this);
+			IOProcessInfo->ElementID.InitHeader(GSGuid2APIGuid(ElementId));
+			CheckModificationStamp(IOProcessInfo->ElementID.GetHeader().modiStamp);
+
+			TypeID = IOProcessInfo->ElementID.GetHeader().typeID;
+
+			UE_AC_STAT(IOProcessInfo->SyncContext.Stats.TotalOwnerCreated++);
+			TSharedRef< IDatasmithActorElement > NewActor =
+				FDatasmithSceneFactory::CreateActor(GSStringToUE(ElementId.ToUniString()));
+
+			GS::UniString ElemenInfo;
+			if (FElementTools::GetInfoString(IOProcessInfo->ElementID.GetHeader().guid, &ElemenInfo))
+			{
+				NewActor->SetLabel(GSStringToUE(ElemenInfo));
+			}
+			else
+			{
+				NewActor->SetLabel(TEXT("Unnamed"));
+			}
+			NewActor->SetIsAComponent(bIsAComponent);
+
+			SetActorElement(NewActor);
+			if (IOProcessInfo->bProcessMetaData || MetaData.IsValid())
+			{
+				AddTags(IOProcessInfo->ElementID);
+				UpdateMetaData(IOProcessInfo);
+			}
+		}
+	}
+	else
+	{
+		if (IsModified())
+		{
+			// Advance progression bar to the current value
+			IOProcessInfo->SyncContext.NewCurrentValue(++IOProcessInfo->ProgessValue);
+
+			IOProcessInfo->ElementID.InitElement(this);
+			IOProcessInfo->ElementID.InitHeader();
+
+			TypeID = IOProcessInfo->ElementID.GetHeader().typeID;
+
+			ModelerAPI::Transformation LocalToWorld =
+				IOProcessInfo->ElementID.GetElement3D().GetElemLocalToWorldTransformation();
+			Geometry::Transformation3D WorldToLocal; // Set 2 identity for Instances (i.e. Object with transform)
+			if ((LocalToWorld.status & TR_IDENT) != 0)
+			{
+				Box3D Bounds = IOProcessInfo->ElementID.GetElement3D().GetBounds();
+				LocalToWorld.matrix[0][3] = (Bounds.xMin + Bounds.xMax) * 0.5;
+				LocalToWorld.matrix[1][3] = (Bounds.yMin + Bounds.yMax) * 0.5;
+				LocalToWorld.matrix[2][3] = Bounds.zMin;
+				LocalToWorld.status = (LocalToWorld.matrix[0][3] == 0.0 && LocalToWorld.matrix[1][3] == 0.0 &&
+									   LocalToWorld.matrix[2][3] == 0.0)
+										  ? TR_IDENT
+										  : TR_TRANSL_ONLY;
+				WorldToLocal.SetOffset(Geometry::Vector3D(-LocalToWorld.matrix[0][3], -LocalToWorld.matrix[1][3],
+														  -LocalToWorld.matrix[2][3]));
+			}
+
+			if (!ActorElement.IsValid())
+			{
+				SetActorElement(FDatasmithSceneFactory::CreateMeshActor(GSStringToUE(ElementId.ToUniString())));
+			}
+			ActorElement->SetIsAComponent(bIsAComponent);
+
+			// Set actor label
+			GS::UniString ElemenInfo;
+			if (FElementTools::GetInfoString(IOProcessInfo->ElementID.GetHeader().guid, &ElemenInfo))
+			{
+				ActorElement->SetLabel(GSStringToUE(ElemenInfo));
+			}
+			else
+			{
+				ActorElement->SetLabel(TEXT("Unnamed"));
+			}
+
+			ActorElement->SetTranslation(FGeometryUtil::GetTranslationVector(LocalToWorld.matrix));
+			ActorElement->SetRotation(FGeometryUtil::GetRotationQuat(LocalToWorld.matrix));
+
+			// Set actor layer
+			ActorElement->SetLayer(
+				*IOProcessInfo->SyncContext.GetSyncDatabase().GetLayerName(IOProcessInfo->ElementID.GetHeader().layer));
+
+			if (IOProcessInfo->bProcessMetaData || MetaData.IsValid())
+			{
+				AddTags(IOProcessInfo->ElementID);
+				UpdateMetaData(IOProcessInfo);
+			}
+
+			FMeshClass* MeshClass = IOProcessInfo->ElementID.GetMeshClass();
+			UE_AC_Assert(MeshClass != nullptr);
+			if (MeshClass->AddInstance(this, &IOProcessInfo->SyncContext.GetSyncDatabase()) == FMeshClass::kBuild)
+			{
+				FConvertGeometry2MeshElement* ConvertGeometry2MeshElement =
+					new FConvertGeometry2MeshElement(IOProcessInfo->SyncContext, this, MeshClass);
+				ConvertGeometry2MeshElement->AddElementGeometry(&IOProcessInfo->ElementID, WorldToLocal);
+				if (ConvertGeometry2MeshElement->HasGeometry())
+				{
+					UE_AC_STAT(IOProcessInfo->SyncContext.Stats.TotalMeshClassesCreated++);
+				}
+				else
+				{
+					UE_AC_STAT(IOProcessInfo->SyncContext.Stats.TotalEmptyMeshClassesCreated++);
+				}
+
+				// ConvertGeometry2MeshElement->Run();
+				// delete ConvertGeometry2MeshElement;
+				FTaskMgr::GetMgr()->AddTask(ConvertGeometry2MeshElement, FTaskMgr::kSchedule);
+			}
+		}
+	}
+}
+
+// Called from process meta data idle task
+bool FSyncData::FElement::ProcessMetaData(IDatasmithScene* InScene)
+{
+	// We already have meta data, so we do nothing
+	if (MetaData.IsValid())
+	{
+		return false; // Metadata hasn't changed
+	}
+
+	// Add some object and lamp meta data
+	FMetaData MetaDataExporter(ActorElement);
+	MetaDataExporter.ExportMetaData(ElementId);
+	if (TypeID == API_ObjectID || TypeID == API_LampID)
+	{
+		FAutoMemo AutoMemo(GSGuid2APIGuid(ElementId), APIMemoMask_AddPars);
+		if (AutoMemo.GSErr == NoError)
+		{
+			if (AutoMemo.Memo.params) // Can be null
+			{
+				GS::UniString EscapeAssetId;
+				if (GetParameter(AutoMemo.Memo.params, "enscapeAssetId", &EscapeAssetId))
+				{
+					MetaDataExporter.AddProperty(TEXT("EnscapeAssetId"), EDatasmithKeyValuePropertyType::String,
+												 EscapeAssetId);
+				}
+			}
+		}
+	}
+
+	return MetaDataExporter.SetOrUpdate(&MetaData, InScene);
+}
+
+void FSyncData::FElement::SetMesh(FSyncDatabase* IOSyncDatabase, const TSharedPtr< IDatasmithMeshElement >& InMesh)
+{
+	IOSyncDatabase->SetMesh(&MeshElement, InMesh);
+	MeshElementChanged();
+}
+
+// Attach observer for Auto Sync
+bool FSyncData::FElement::AttachObserver(FAttachObservers* IOAttachObservers)
+{
+	bool bChanged = false;
+
+	// We attach observer only when we will need it
+	if (bIsObserved == false)
+	{
+#if ATTACH_ONSERVER_STAT
+		FTimeStat SlotStart;
+#endif
+		bIsObserved = true;
+		GSErrCode GSErr = ACAPI_Element_AttachObserver(GSGuid2APIGuid(ElementId), APINotifyElement_EndEvents);
+		if (GSErr != NoError && GSErr != APIERR_LINKEXIST)
+		{
+			UE_AC_DebugF("FSyncData::FElement::AttachObserver - ACAPI_Element_AttachObserver error=%s\n",
+						 GetErrorName(GSErr));
+		}
+#if ATTACH_ONSERVER_STAT
+		double AfterAttachObserver = FTimeStat::CpuTimeClock();
+#endif
+
+		API_Elem_Head ElementHead;
+		Zap(&ElementHead);
+		ElementHead.guid = GSGuid2APIGuid(ElementId);
+		GSErr = ACAPI_Element_GetHeader(&ElementHead);
+		if (GSErr == NoError)
+		{
+			bChanged = ElementHead.modiStamp != ModificationStamp;
+			if (bChanged)
+			{
+				UE_AC_TraceF("FSyncData::FElement::AttachObserver - Object {%s} - ModificationStamp %lld -> %lld\n",
+							 ElementId.ToUniString().ToUtf8(), ModificationStamp, ElementHead.modiStamp);
+			}
+		}
+		else
+		{
+			UE_AC_DebugF("FSyncData::FElement::AttachObserver - ACAPI_Element_GetHeader error=%s\n",
+						 GetErrorName(GSErr));
+		}
+#if ATTACH_ONSERVER_STAT
+		IOAttachObservers->CumulateStats(SlotStart, AfterAttachObserver);
+#endif
+	}
+
+	return bChanged;
+}
+
+// Delete this sync data
+void FSyncData::FElement::DeleteMe(FSyncDatabase* IOSyncDatabase)
+{
+	IOSyncDatabase->SetMesh(&MeshElement, TSharedPtr< IDatasmithMeshElement >());
+	FSyncData::FActor::DeleteMe(IOSyncDatabase);
 }
 
 // Rebuild the meta data of this element
-void FSyncData::FElement::UpdateMetaData(IDatasmithScene& IOScene)
+void FSyncData::FElement::UpdateMetaData(FProcessInfo* IOProcessInfo)
 {
-	FMetaData MetaDataExporter(ElementId);
-	MetaDataExporter.ExportMetaData();
-	ReplaceMetaData(IOScene, MetaDataExporter.GetMetaData());
+	FMetaData MetaDataExporter(ActorElement);
+	MetaDataExporter.ExportMetaData(ElementId);
+	API_ElemTypeID TypeID = IOProcessInfo->ElementID.GetHeader().typeID;
+	if (TypeID == API_ObjectID || TypeID == API_LampID)
+	{
+		FAutoMemo AutoMemo(GSGuid2APIGuid(ElementId), APIMemoMask_AddPars);
+		if (AutoMemo.GSErr == NoError)
+		{
+			if (AutoMemo.Memo.params) // Can be null
+			{
+				GS::UniString EscapeAssetId;
+				if (GetParameter(AutoMemo.Memo.params, "enscapeAssetId", &EscapeAssetId))
+				{
+					MetaDataExporter.AddProperty(TEXT("EnscapeAssetId"), EDatasmithKeyValuePropertyType::String,
+												 EscapeAssetId);
+				}
+			}
+		}
+	}
+	MetaDataExporter.SetOrUpdate(&MetaData, &IOProcessInfo->SyncContext.GetScene());
 }
 
 #pragma mark -
@@ -725,18 +1088,19 @@ const GS::Guid FSyncData::FCamera::CurrentViewGUID("B2BD9C50-60EB-4E64-902B-D157
 
 void FSyncData::FCamera::Process(FProcessInfo* /* IOProcessInfo */)
 {
-	if (!ActorElement.IsValid() || IsModified())
+	if (!ActorElement.IsValid())
 	{
-		if (!ActorElement.IsValid())
-		{
-			SetActorElement(FDatasmithSceneFactory::CreateCameraActor(GSStringToUE(ElementId.ToUniString())));
-		}
+		SetActorElement(FDatasmithSceneFactory::CreateCameraActor(GSStringToUE(ElementId.ToUniString())));
+		MarkAsModified();
+	}
 
-		if (ElementId == CurrentViewGUID)
-		{
-			InitWithCurrentView();
-		}
-		else
+	if (ElementId == CurrentViewGUID)
+	{
+		InitWithCurrentView();
+	}
+	else
+	{
+		if (IsModified())
 		{
 			InitWithCameraElement();
 		}
@@ -801,7 +1165,7 @@ void FSyncData::FCamera::InitWithCameraElement()
 	{
 		cameraSetLabel = Parent->GetElement()->GetLabel();
 	}
-	CameraElement.SetLabel(*FString::Printf(TEXT("%s %d"), cameraSetLabel, Index));
+	CameraElement.SetLabel(*FString::Printf(TEXT("%s Camera %d"), cameraSetLabel, Index));
 
 	const API_PerspPars& camPars = camera.camera.perspCam.persp;
 
@@ -809,39 +1173,47 @@ void FSyncData::FCamera::InitWithCameraElement()
 
 	CameraElement.SetRotation(
 		FGeometryUtil::GetRotationQuat(FGeometryUtil::GetPitchAngle(camPars.cameraZ, camPars.targetZ, camPars.distance),
-									   camPars.azimuth, camPars.rollAngle));
+									   camPars.azimuth * RADDEG, camPars.rollAngle * RADDEG));
 
 	CameraElement.SetFocusDistance(
 		FGeometryUtil::GetDistance3D(abs(camPars.cameraZ - camPars.targetZ), camPars.distance));
-	CameraElement.SetFocalLength(FGeometryUtil::GetCameraFocalLength(CameraElement.GetSensorWidth(), camPars.viewCone));
+	CameraElement.SetFocalLength(
+		FGeometryUtil::GetCameraFocalLength(CameraElement.GetSensorWidth(), camPars.viewCone * RADDEG));
 }
 
 #pragma mark -
 
-void FSyncData::FLight::Process(FProcessInfo* /* IOProcessInfo */)
+void FSyncData::FLight::Process(FProcessInfo* IOProcessInfo)
 {
 	if (!ActorElement.IsValid())
 	{
-		switch (Type)
+		if (Parameters.bIsAreaLight)
 		{
-			case ModelerAPI::Light::Type::DirectionLight:
-				SetActorElement(FDatasmithSceneFactory::CreateDirectionalLight(GSStringToUE(ElementId.ToUniString())));
-				break;
-			case ModelerAPI::Light::Type::SpotLight:
-				{
-					TSharedRef< IDatasmithSpotLightElement > SpotLight =
-						FDatasmithSceneFactory::CreateSpotLight(GSStringToUE(ElementId.ToUniString()));
-					SpotLight->SetInnerConeAngle(InnerConeAngle);
-					SpotLight->SetOuterConeAngle(OuterConeAngle);
-					SetActorElement(SpotLight);
+			SetActorElement(FDatasmithSceneFactory::CreateAreaLight(GSStringToUE(ElementId.ToUniString())));
+		}
+		else if (Parameters.bIsParallelLight)
+		{
+			SetActorElement(FDatasmithSceneFactory::CreateDirectionalLight(GSStringToUE(ElementId.ToUniString())));
+		}
+		else
+		{
+			switch (LightData.LightType)
+			{
+				case ModelerAPI::Light::Type::DirectionLight:
+					SetActorElement(
+						FDatasmithSceneFactory::CreateDirectionalLight(GSStringToUE(ElementId.ToUniString())));
 					break;
-				}
-			case ModelerAPI::Light::Type::PointLight:
-				SetActorElement(FDatasmithSceneFactory::CreatePointLight(GSStringToUE(ElementId.ToUniString())));
-				break;
-			default:
-				throw std::runtime_error(
-					Utf8StringFormat("FSyncData::FLight::Process - Invalid light type %d\n", Type).c_str());
+				case ModelerAPI::Light::Type::SpotLight:
+					SetActorElement(FDatasmithSceneFactory::CreateSpotLight(GSStringToUE(ElementId.ToUniString())));
+					break;
+				case ModelerAPI::Light::Type::PointLight:
+					SetActorElement(FDatasmithSceneFactory::CreatePointLight(GSStringToUE(ElementId.ToUniString())));
+					break;
+				default:
+					throw std::runtime_error(
+						Utf8StringFormat("FSyncData::FLight::Process - Invalid light type %d\n", LightData.LightType)
+							.c_str());
+			}
 		}
 	}
 	if (IsModified())
@@ -860,15 +1232,225 @@ void FSyncData::FLight::Process(FProcessInfo* /* IOProcessInfo */)
 			LightElement.SetLayer(Parent->GetActorElement()->GetLayer());
 		}
 
-		LightElement.SetTranslation(Position);
-		LightElement.SetRotation(Rotation);
-		LightElement.SetIntensity(5000.0);
-		LightElement.SetColor(Color);
-		if (Color == FLinearColor(0, 0, 0))
+		LightElement.SetTranslation(LightData.Position);
+		LightElement.SetRotation(LightData.Rotation);
+		LightElement.SetIntensity(Parameters.Intensity);
+		if (LightData.Color != FLinearColor::Black || Parameters.ColorComponentCount != 3)
 		{
-			LightElement.SetEnabled(false);
+			LightElement.SetColor(LightData.Color);
+		}
+		else
+		{
+			LightElement.SetColor(ACRGBColorToUELinearColor(Parameters.GS_Color));
+		}
+		if (LightElement.IsA(EDatasmithElementType::PointLight))
+		{
+			IDatasmithPointLightElement& PointLightElement = static_cast< IDatasmithPointLightElement& >(LightElement);
+			if (Parameters.bUsePhotometric)
+			{
+				PointLightElement.SetIntensityUnits(Parameters.Units);
+			}
+			else
+			{
+				PointLightElement.SetAttenuationRadius(
+					float(Parameters.DetRadius * IOProcessInfo->SyncContext.ScaleLength));
+			}
+		}
+		if (LightElement.IsA(EDatasmithElementType::SpotLight))
+		{
+			IDatasmithSpotLightElement& PointLightElement = static_cast< IDatasmithSpotLightElement& >(LightElement);
+			float InnerConeAngleClamped = FGeometryUtil::Clamp(LightData.InnerConeAngle, 1.0f, 89.0f - 0.001f);
+			PointLightElement.SetInnerConeAngle(InnerConeAngleClamped);
+			float OuterConeAngleClamped =
+				FGeometryUtil::Clamp(LightData.OuterConeAngle, InnerConeAngleClamped + 0.001f, 89.0f);
+			PointLightElement.SetOuterConeAngle(OuterConeAngleClamped);
+		}
+		if (LightElement.IsA(EDatasmithElementType::AreaLight))
+		{
+			IDatasmithAreaLightElement& AreaLightElement = static_cast< IDatasmithAreaLightElement& >(LightElement);
+
+			EDatasmithLightShape LightShape = EDatasmithLightShape::None;
+			switch (Parameters.AreaShape)
+			{
+				case FLightGDLParameters::EC4dDetAreaShape::kRectangle:
+				case FLightGDLParameters::EC4dDetAreaShape::kCube:
+				case FLightGDLParameters::EC4dDetAreaShape::kLine:
+					LightShape = EDatasmithLightShape::Rectangle;
+					break;
+				case FLightGDLParameters::EC4dDetAreaShape::kDisc:
+					LightShape = EDatasmithLightShape::Disc;
+					break;
+				case FLightGDLParameters::EC4dDetAreaShape::kSphere:
+				case FLightGDLParameters::EC4dDetAreaShape::kHemisphere:
+					LightShape = EDatasmithLightShape::Sphere;
+					break;
+				case FLightGDLParameters::EC4dDetAreaShape::kCylinder:
+				case FLightGDLParameters::EC4dDetAreaShape::kPerpendicularCylinder:
+					LightShape = EDatasmithLightShape::Cylinder;
+					break;
+				default:
+					LightShape = EDatasmithLightShape::Rectangle;
+					break;
+			}
+			AreaLightElement.SetLightShape(LightShape);
+
+			EDatasmithAreaLightType AreaLightType = EDatasmithAreaLightType::Point;
+			switch (LightData.LightType)
+			{
+				case ModelerAPI::Light::Type::DirectionLight:
+					AreaLightType = EDatasmithAreaLightType::Rect;
+					break;
+				case ModelerAPI::Light::Type::SpotLight:
+					AreaLightType = EDatasmithAreaLightType::Spot;
+					break;
+				case ModelerAPI::Light::Type::PointLight:
+					AreaLightType = EDatasmithAreaLightType::Point;
+					break;
+				default:
+					AreaLightType = EDatasmithAreaLightType::Point;
+					break;
+			}
+			AreaLightElement.SetLightType(AreaLightType);
+			AreaLightElement.SetWidth(float(Parameters.AreaSize.x * IOProcessInfo->SyncContext.ScaleLength));
+			AreaLightElement.SetLength(float(Parameters.AreaSize.y * IOProcessInfo->SyncContext.ScaleLength));
+		}
+		if (!Parameters.IESFileName.IsEmpty())
+		{
+			LightElement.SetUseIes(true);
+			const FTexturesCache::FIESTexturesCacheElem& Texture =
+				IOProcessInfo->SyncContext.GetTexturesCache().GetIESTexture(IOProcessInfo->SyncContext,
+																			GSStringToUE(Parameters.IESFileName));
+			LightElement.SetIesTexturePathName(*Texture.TexturePath);
+			LightElement.SetUseIesBrightness(Parameters.bUsePhotometric);
+			// LightElement.SetIesBrightnessScale(1.0);
+			// LightElement.SetIesRotation(const FQuat& IesRotation);
+		}
+		else
+		{
+			LightElement.SetUseIes(false);
+			LightElement.SetUseIesBrightness(false);
+			LightElement.SetIesTexturePathName(TEXT(""));
 		}
 	}
+}
+
+FSyncData::FLight::FLightGDLParameters::FLightGDLParameters() {}
+
+FSyncData::FLight::FLightGDLParameters::FLightGDLParameters(const API_Guid&		InLightGuid,
+															const FLibPartInfo* InLibPartInfo)
+{
+	FAutoMemo AutoMemo(InLightGuid, APIMemoMask_AddPars);
+	if (AutoMemo.GSErr == NoError)
+	{
+		if (AutoMemo.Memo.params) // Can be null
+		{
+			double value;
+			if (GetParameter(AutoMemo.Memo.params, "gs_light_intensity", &value))
+			{
+				Intensity = value / 100.0 * 5000;
+			}
+			if (GetParameter(AutoMemo.Memo.params, "gs_color_red", &GS_Color.red))
+			{
+				++ColorComponentCount;
+			}
+			if (GetParameter(AutoMemo.Memo.params, "gs_color_green", &GS_Color.green))
+			{
+				++ColorComponentCount;
+			}
+			if (GetParameter(AutoMemo.Memo.params, "gs_color_blue", &GS_Color.blue))
+			{
+				++ColorComponentCount;
+			}
+			GetParameter(AutoMemo.Memo.params, "c4dPhoPhotometric", &bUsePhotometric);
+			if (bUsePhotometric)
+			{
+				GS::UniString PhoUnit; //
+				GetParameter(AutoMemo.Memo.params, "c4dPhoUnit", &PhoUnit);
+				if (PhoUnit == "candela")
+				{
+					Units = EDatasmithLightUnits::Candelas;
+					GetParameter(AutoMemo.Memo.params, "photoIntensityCandela", &Intensity);
+				}
+				if (PhoUnit == "lumen")
+				{
+					Units = EDatasmithLightUnits::Lumens;
+					GetParameter(AutoMemo.Memo.params, "photoIntensityLumen", &Intensity);
+				}
+			}
+			else
+			{
+				GetParameter(AutoMemo.Memo.params, "c4dDetRadius", &DetRadius);
+			}
+			GetParameter(AutoMemo.Memo.params, "c4dPhoIESFile", &IESFileName);
+
+			bIsAreaLight = GetParameter(AutoMemo.Memo.params, "c4dDetAreaX", &AreaSize.x);
+			bIsAreaLight |= GetParameter(AutoMemo.Memo.params, "c4dDetAreaY", &AreaSize.y);
+			bIsAreaLight |= GetParameter(AutoMemo.Memo.params, "c4dDetAreaZ", &AreaSize.z);
+			double TmpAreaShape;
+			if (GetParameter(AutoMemo.Memo.params, "iC4dDetAreaShape", &TmpAreaShape))
+			{
+				if (TmpAreaShape >= kDisc && TmpAreaShape <= kPerpendicularCylinder)
+				{
+					AreaShape = (EC4dDetAreaShape) int(TmpAreaShape + 0.5);
+				}
+			}
+			GetParameter(AutoMemo.Memo.params, "rotAngleX", &WindowLightAngle);
+			GetParameter(AutoMemo.Memo.params, "angleSunAzimuth", &SunAzimuthAngle);
+			GetParameter(AutoMemo.Memo.params, "angleSunAltitude", &SunAltitudeAngle);
+
+			if (InLibPartInfo != nullptr)
+			{
+				static GS::Guid ParallelLightMainGuid("FF603AFE-10AE-466E-A360-87924FA7E24A");
+				static GS::Guid SunLightMainGuid("0A68517B-9FCA-483A-93A7-2E85FE6BDBF9");
+				bIsParallelLight =
+					InLibPartInfo->Guid.Main == ParallelLightMainGuid || InLibPartInfo->Guid.Main == SunLightMainGuid;
+			}
+
+			GetParameter(AutoMemo.Memo.params, "bGenShadow", &bGenShadow); // Currently not available in Datasmith.
+		}
+	}
+	else
+	{
+		UE_AC_DebugF(
+			"FSyncData::FLight::FLightGDLParameters::FLightGDLParameters - Error=%d when getting element memo\n",
+			AutoMemo.GSErr);
+	}
+	if (ColorComponentCount != 0 && ColorComponentCount != 3)
+	{
+		UE_AC_DebugF("FSyncData::FLight::FLightGDLParameters::FLightGDLParameters - ColorComponentCount is %u\n",
+					 ColorComponentCount);
+	}
+};
+
+bool FSyncData::FLight::FLightGDLParameters::operator!=(const FLightGDLParameters& InOther) const
+{
+	return GS_Color != InOther.GS_Color || ColorComponentCount != InOther.ColorComponentCount ||
+		   Intensity != InOther.Intensity || bUsePhotometric != InOther.bUsePhotometric || Units != InOther.Units ||
+		   DetRadius != InOther.DetRadius || IESFileName != InOther.IESFileName || AreaShape != InOther.AreaShape ||
+		   AreaSize != InOther.AreaSize || WindowLightAngle != InOther.WindowLightAngle ||
+		   SunAzimuthAngle != InOther.SunAzimuthAngle || SunAltitudeAngle != InOther.SunAltitudeAngle ||
+		   bIsParallelLight != InOther.bIsParallelLight || bGenShadow != InOther.bGenShadow;
+}
+
+FSyncData::FLight::FLightData::FLightData() {}
+
+FSyncData::FLight::FLightData::FLightData(const ModelerAPI::Light& InLight)
+{
+	LightType = InLight.GetType();
+
+	InnerConeAngle = float(InLight.GetFalloffAngle1() * 180.0f / PI);
+	OuterConeAngle = float(InLight.GetFalloffAngle2() * 180.0f / PI);
+	Color = ACRGBColorToUELinearColor(InLight.GetColor());
+
+	Position = FGeometryUtil::GetTranslationVector(InLight.GetPosition());
+	Rotation = FGeometryUtil::GetRotationQuat(InLight.GetDirection());
+}
+
+bool FSyncData::FLight::FLightData::operator!=(const FLightData& InOther) const
+{
+	return LightType != InOther.LightType || InnerConeAngle != InOther.InnerConeAngle ||
+		   OuterConeAngle != InOther.OuterConeAngle || Color != InOther.Color || Position != InOther.Position ||
+		   Rotation != InOther.Rotation;
 }
 
 #pragma mark -
@@ -904,7 +1486,7 @@ void FSyncData::FHotLinkNode::Process(FProcessInfo* IOProcessInfo)
 			}
 			ActorElement->SetLabel(GSStringToUE(Label));
 
-			FMetaData MyMetaData(ElementId);
+			FMetaData MyMetaData(ActorElement);
 
 			const TCHAR* HotLinkType = TEXT("Unknown");
 			if (hotlinkNode.type == APIHotlink_Module)
@@ -974,10 +1556,12 @@ FSyncData::FHotLinkInstance::FHotLinkInstance(const GS::Guid& InGuid, FSyncDatab
 	if (err == NoError)
 	{
 		// Parent is a hot link node
-		FSyncData*& HotLinkNode = IOSyncDatabase->GetSyncData(APIGuid2GSGuid(hotlinkElem.hotlink.hotlinkNodeGuid));
+		FSyncData*& RefHotLinkNode = IOSyncDatabase->GetSyncData(APIGuid2GSGuid(hotlinkElem.hotlink.hotlinkNodeGuid));
+		FSyncData*	HotLinkNode = RefHotLinkNode;
 		if (HotLinkNode == nullptr)
 		{
 			HotLinkNode = new FSyncData::FHotLinkNode(APIGuid2GSGuid(hotlinkElem.hotlink.hotlinkNodeGuid));
+			RefHotLinkNode = HotLinkNode;
 			if (!HotLinkNode->HasParent())
 			{
 				FSyncData*& HotLinksRoot = IOSyncDatabase->GetSyncData(FSyncData::FHotLinksRoot::HotLinksRootGUID);
@@ -1025,11 +1609,12 @@ void FSyncData::FHotLinkInstance::Process(FProcessInfo* IOProcessInfo)
 			{
 				ParentLabel = Parent->GetElement()->GetLabel();
 			}
-			ActorElement->SetLabel(*FString::Printf(TEXT("%s - %s Instance %d"), ParentLabel, HotLinkType, 0));
+			ActorElement->SetLabel(*FString::Printf(TEXT("%s - %s Instance %llu"), ParentLabel, HotLinkType,
+													IOProcessInfo->GetCurrentIndex()));
 
 			Transformation = hotlinkElem.hotlink.transformation;
 
-			FMetaData MyMetaData(ElementId);
+			FMetaData MyMetaData(ActorElement);
 
 			MyMetaData.AddStringProperty(TEXT("HotLinkType"), HotLinkType);
 
@@ -1043,5 +1628,188 @@ void FSyncData::FHotLinkInstance::Process(FProcessInfo* IOProcessInfo)
 		}
 	}
 }
+
+#pragma mark -
+
+// Start the process with this root observer
+void FSyncData::FInterator::Start(FSyncData* Root)
+{
+	Stop();
+	Stack.Add({Root, 0});
+	ProcessedCount = 0;
+}
+
+// Stop processing
+void FSyncData::FInterator::Stop()
+{
+	// Stop process
+	Stack.Empty();
+}
+
+FSyncData::FInterator::EProcessControl FSyncData::FInterator::ProcessUntil(double TimeSliceEnd)
+{
+	EProcessControl ProcessControl = kContinue;
+	while (FTimeStat::RealTimeClock() < TimeSliceEnd && ProcessControl == kContinue)
+	{
+		FSyncData* Current = Next();
+		ProcessControl = Process(Current);
+	}
+	if (ProcessControl == kInterrupted)
+	{
+		Stop();
+	}
+	return ProcessControl;
+}
+
+// Return the next FSyncData
+FSyncData* FSyncData::FInterator::Next()
+{
+	FSyncData* Current = nullptr;
+	while (Stack.Num() != 0 && Current == nullptr)
+	{
+		FSyncData* Parent = Stack.Top().Parent;
+
+		// Start with root
+		if (ProcessedCount == 0)
+		{
+			ProcessedCount = 1;
+			return Parent;
+		}
+
+		// Traverse all tree
+		FChildsArray::SizeType ChildIndex = Stack.Top().ChildIndex;
+		if (ChildIndex < Parent->Childs.Num())
+		{
+			Current = Parent->Childs[ChildIndex++];
+			++ProcessedCount;
+			Stack.Top().ChildIndex = ChildIndex;
+			Stack.Add({Current, 0});
+		}
+		else
+		{
+			Stack.Pop(false);
+		}
+	}
+	return Current;
+}
+
+// Return the index of the current.
+FSyncData::FChildsArray::SizeType FSyncData::FInterator::GetCurrentIndex()
+{
+	return Stack.Num() > 1 ? Stack[Stack.Num() - 2].ChildIndex : 0;
+}
+
+#pragma mark -
+
+// Start the process with this root observer
+void FSyncData::FProcessMetadata::Start(FSyncData* Root)
+{
+	FSyncData::FInterator::Start(Root);
+	bMetadataUpdated = false;
+}
+
+// Call ProcessMetaData for the sync data
+FSyncData::FInterator::EProcessControl FSyncData::FProcessMetadata::Process(FSyncData* InCurrent)
+{
+	if (InCurrent == nullptr)
+	{
+		return FInterator::kDone;
+	}
+
+	bMetadataUpdated |= InCurrent->ProcessMetaData(&Synchronizer->GetSyncDatabase()->GetScene().Get());
+
+	return FInterator::kContinue;
+}
+
+#pragma mark -
+
+// Constructor
+FSyncData::FAttachObservers::FAttachObservers() {}
+
+// Start the process with this root observer
+void FSyncData::FAttachObservers::Start(FSyncData* Root)
+{
+	FSyncData::FInterator::Start(Root);
+
+#if ATTACH_ONSERVER_STAT
+	AttachObserverProcessTimeStart.ReStart();
+	AttachObserverProcessTimeEnd = AttachObserverProcessTimeStart;
+	AttachObserverStartTime = FTimeStat::RealTimeClock();
+	AttachObserverTime = 0.0;
+	GetHeaderTime = 0.0;
+	AttachCount = 0;
+#endif
+}
+
+FSyncData::FInterator::EProcessControl FSyncData::FAttachObservers::Process(FSyncData* InCurrent)
+{
+	if (InCurrent == nullptr)
+	{
+		return FInterator::kDone;
+	}
+
+	if (InCurrent->AttachObserver(this))
+	{
+		return FInterator::kInterrupted;
+	}
+
+	return FInterator::kContinue;
+}
+
+// Process attachment until done or until time slice finish
+bool FSyncData::FAttachObservers::ProcessAttachUntil(double TimeSliceEnd)
+{
+#if TRACE_ATTACH_OBSERVERS
+	int	   NbProcessedStart = GetProcessedCount();
+	double startTime = FTimeStat::RealTimeClock();
+#endif
+
+	FInterator::EProcessControl ProcessControl = ProcessUntil(TimeSliceEnd);
+
+#if TRACE_ATTACH_OBSERVERS
+	if (GetProcessedCount() - NbProcessedStart != 0)
+	{
+		UE_AC_TraceF("FSyncData::FAttachObservers::ProcessAttachUntil - Nb Processed = %d (Start=%lf, End=%lf)\n",
+					 GetProcessedCount() - NbProcessedStart, startTime, FTimeStat::RealTimeClock());
+	}
+#endif
+
+#if ATTACH_ONSERVER_STAT
+	if (ProcessControl == FInterator::kInterrupted || ProcessControl == FInterator::kDone)
+	{
+		PrintStat();
+	}
+#endif
+
+	return ProcessControl == FInterator::kInterrupted; // If interrupted then we request an update
+}
+
+#if ATTACH_ONSERVER_STAT
+void FSyncData::FAttachObservers::CumulateStats(const FTimeStat& SlotStart, double AfterAttachObserver)
+{
+	++AttachCount;
+	AttachObserverTime += AfterAttachObserver - SlotStart.GetCpuTime();
+	GetHeaderTime += FTimeStat::CpuTimeClock() - AfterAttachObserver;
+	AttachObserverProcessTimeEnd.AddDiff(SlotStart);
+}
+
+// Log attach observer statistics
+void FSyncData::FAttachObservers::PrintStat()
+{
+	if (AttachCount != 0)
+	{
+		double AttachObserversTime = FTimeStat::RealTimeClock() - AttachObserverStartTime;
+		if (AttachObserversTime < 0.0)
+		{
+			AttachObserversTime += AttachObserversTime + 24 * 60 * 60;
+		}
+		UE_AC_ReportF("TraceObserverStat - Count = %d TotalTime=%.1lfs (AttachObserver=%.1lfns, GetHeader=%.1lfns)\n",
+					  AttachCount, AttachObserversTime, AttachObserverTime / AttachCount * 1000000.0,
+					  GetHeaderTime / AttachCount * 1000000.0);
+		AttachObserverProcessTimeEnd.PrintDiff("Attach Observers", AttachObserverProcessTimeStart);
+		AttachCount = 0;
+	}
+}
+#endif
 
 END_NAMESPACE_UE_AC

@@ -411,6 +411,19 @@ void SDisplayClusterConfiguratorViewTree::OnSelectionChanged(TSharedPtr<IDisplay
 		}
 
 		ToolkitPtr.Pin()->SelectObjects(SelectedObjects);
+
+		for (TSharedPtr<IDisplayClusterConfiguratorTreeItem>& Item : SelectedItems)
+		{
+			Item->OnSelection();
+		}
+	}
+}
+
+void SDisplayClusterConfiguratorViewTree::OnTreeDoubleClick(TSharedPtr<IDisplayClusterConfiguratorTreeItem> InItem)
+{
+	if (InItem.IsValid())
+	{
+		InItem->OnItemDoubleClicked();
 	}
 }
 

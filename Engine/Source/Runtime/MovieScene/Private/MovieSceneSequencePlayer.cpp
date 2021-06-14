@@ -205,6 +205,9 @@ void UMovieSceneSequencePlayer::PlayInternal()
 
 	if (!IsPlaying() && Sequence && CanPlay())
 	{
+		// Set playback status to playing before any calls to update the position
+		Status = EMovieScenePlayerStatus::Playing;
+
 		float PlayRate = bReversePlayback ? -PlaybackSettings.PlayRate : PlaybackSettings.PlayRate;
 
 		// If at the end and playing forwards, rewind to beginning
@@ -235,7 +238,7 @@ void UMovieSceneSequencePlayer::PlayInternal()
 		// Update now
 		if (PlaybackSettings.bRestoreState)
 		{
-			PreAnimatedState.EnableGlobalCapture();
+			RootTemplateInstance.EnableGlobalPreAnimatedStateCapture();
 		}
 
 		bPendingOnStartedPlaying = true;
@@ -420,6 +423,14 @@ void UMovieSceneSequencePlayer::StopInternal(FFrameTime TimeToResetTo)
 
 		RunLatentActions();
 	}
+	else if (RootTemplateInstance.IsValid() && RootTemplateInstance.HasEverUpdated())
+	{
+		if (PlaybackSettings.bRestoreState)
+		{
+			RestorePreAnimatedState();
+		}
+		RootTemplateInstance.Finish(*this);
+	}
 }
 
 void UMovieSceneSequencePlayer::GoToEndAndStop()
@@ -544,6 +555,16 @@ void UMovieSceneSequencePlayer::SetPlaybackPosition(FMovieSceneSequencePlaybackP
 	{
 		RPC_ExplicitServerUpdateEvent(InPlaybackParams.UpdateMethod, NewPosition);
 	}
+}
+
+void UMovieSceneSequencePlayer::RestoreState()
+{
+	if (!PlaybackSettings.bRestoreState)
+	{
+		UE_LOG(LogMovieScene, Warning, TEXT("Attempting to restore pre-animated state for a player that was not set to capture pre-animated state. Please enable PlaybackSettings.bRestoreState"));
+	}
+
+	RestorePreAnimatedState();
 }
 
 bool UMovieSceneSequencePlayer::IsPlaying() const

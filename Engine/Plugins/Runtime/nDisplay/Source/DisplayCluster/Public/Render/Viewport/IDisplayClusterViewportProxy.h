@@ -18,9 +18,12 @@
 class DISPLAYCLUSTER_API IDisplayClusterViewportProxy
 {
 public:
+	virtual ~IDisplayClusterViewportProxy() = default;
+
+public:
 	virtual FString GetId() const = 0;
 
-	virtual const TSharedPtr<class IDisplayClusterProjectionPolicy>& GetProjectionPolicy_RenderThread() const = 0;
+	virtual const TSharedPtr<class IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& GetProjectionPolicy_RenderThread() const = 0;
 
 	virtual const FDisplayClusterViewport_RenderSettings& GetRenderSettings_RenderThread() const = 0;
 	virtual const FDisplayClusterViewport_RenderSettingsICVFX& GetRenderSettingsICVFX_RenderThread() const = 0;
@@ -35,6 +38,6 @@ public:
 	// Resolve resource contexts
 	virtual bool ResolveResources(FRHICommandListImmediate& RHICmdList, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType) const = 0;
 
-	virtual class IDisplayClusterViewportManager& GetOwner() const = 0;
+	virtual const class IDisplayClusterViewportManagerProxy& GetOwner() const = 0;
 	virtual EDisplayClusterViewportResourceType   GetOutputResourceType() const = 0;
 };

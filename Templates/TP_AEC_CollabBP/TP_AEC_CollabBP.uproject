@@ -47,10 +47,6 @@
 			]
 		},
 		{
-			"Name": "StaticMeshEditorExtension",
-			"Enabled": true
-		},
-		{
 			"Name": "DatasmithGLTFImporter",
 			"Enabled": true
 		},
@@ -78,16 +74,34 @@
 			]
 		},
 		{
-			"Name": "DatasmithRuntime",
-			"Enabled": true
-		},
-		{
 			"Name": "SteamVR",
 			"Enabled": false,
 			"SupportedTargetPlatforms": [
 				"Win32",
 				"Win64",
 				"Linux"
+			]
+		},
+		{
+			"Name": "DatasmithRuntime",
+			"Enabled": true
+		},
+		{
+			"Name": "OculusVR",
+			"Enabled": false,
+			"SupportedTargetPlatforms": [
+				"Win32",
+				"Win64",
+				"Android"
+			]
+		},
+		{
+			"Name": "OculusOpenXR",
+			"Enabled": true,
+			"SupportedTargetPlatforms": [
+				"Win32",
+				"Win64",
+				"Android"
 			]
 		},
 		{
@@ -99,15 +113,6 @@
 				"Linux",
 				"Android",
 				"HoloLens"
-			]
-		},
-		{
-			"Name": "OculusVR",
-			"Enabled": false,
-			"SupportedTargetPlatforms": [
-				"Win32",
-				"Win64",
-				"Android"
 			]
 		}
 	]

@@ -60,6 +60,8 @@ public:
 	virtual bool UnregisterPostprocessOperation(const FString& InName) override;
 	virtual TMap<FString, IPDisplayClusterRenderManager::FDisplayClusterPPInfo> GetRegisteredPostprocessOperations() const override;
 
+	virtual IDisplayClusterViewportManager* GetViewportManager() const override;
+
 public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// IPDisplayClusterRenderManager
@@ -104,6 +106,6 @@ private:
 	// Internal data access synchronization
 	mutable FCriticalSection CritSecInternals;
 
-	// This flag is used to auto-focus the UE4 window once on start
+	// This flag is used to auto-focus the UE window once on start
 	bool bWasWindowFocused = false;
 };

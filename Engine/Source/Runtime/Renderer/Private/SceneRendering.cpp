@@ -900,6 +900,7 @@ void FViewInfo::Init()
 	bAllowStencilDither = false;
 	bCustomDepthStencilValid = false;
 	bUsesCustomDepthStencilInTranslucentMaterials = false;
+	bShouldRenderDepthToTranslucency = false;
 
 	ForwardLightingResources = nullptr;
 
@@ -1200,7 +1201,9 @@ void FViewInfo::SetupUniformBufferParameters(
 		ViewUniformShaderParameters.AtmosphereLightColor[Index].A = 0.0f;
 		ViewUniformShaderParameters.AtmosphereLightColorGlobalPostTransmittance[Index] = FLinearColor::Black;
 		ViewUniformShaderParameters.AtmosphereLightColorGlobalPostTransmittance[Index].A = 0.0f;
-		ViewUniformShaderParameters.AtmosphereLightDirection[Index] = DefaultSunDirection;
+
+		// We must set a default atmospheric light0 direction because this is use for instance by the height fog directional lobe. And we do not want to add an in shader test for that.
+		ViewUniformShaderParameters.AtmosphereLightDirection[Index] = Index == 0 && Scene && Scene->SimpleDirectionalLight && Scene->SimpleDirectionalLight->Proxy ? -Scene->SimpleDirectionalLight->Proxy->GetDirection() : DefaultSunDirection;
 	};
 
 	bool bShouldRenderAtmosphericFog = false;
@@ -2416,7 +2419,7 @@ FIntPoint FSceneRenderer::GetDesiredInternalBufferSize(const FSceneViewFamily& V
 }
 
 
-void FSceneRenderer::PrepareViewRectsForRendering()
+void FSceneRenderer::PrepareViewRectsForRendering(FRHICommandListImmediate& RHICmdList)
 {
 	check(IsInRenderingThread());
 
@@ -2437,7 +2440,7 @@ void FSceneRenderer::PrepareViewRectsForRendering()
 			for (int32 i = 0; i < Views.Num(); i++)
 			{
 				FViewInfo& View = Views[i];
-				GEngine->StereoRenderingDevice->SetFinalViewRect(View.StereoPass, View.ViewRect);
+				GEngine->StereoRenderingDevice->SetFinalViewRect(RHICmdList, View.StereoPass, View.ViewRect);
 			}
 		}
 		return;
@@ -2600,7 +2603,7 @@ void FSceneRenderer::PrepareViewRectsForRendering()
 		for (int32 i = 0; i < Views.Num(); i++)
 		{
 			FViewInfo& View = Views[i];
-			GEngine->StereoRenderingDevice->SetFinalViewRect(View.StereoPass, View.ViewRect);
+			GEngine->StereoRenderingDevice->SetFinalViewRect(RHICmdList, View.StereoPass, View.ViewRect);
 		}
 	}
 }
@@ -2889,13 +2892,19 @@ void FSceneRenderer::RenderFinish(FRDGBuilder& GraphBuilder, FRDGTextureRef View
 		const bool bShowMobileDynamicCSMWarning = bMobile && Scene->NumMobileStaticAndCSMLights_RenderThread > 0 && !(ReadOnlyCVARCache.bMobileEnableStaticAndCSMShadowReceivers && ReadOnlyCVARCache.bMobileAllowDistanceFieldShadows);
 		const bool bShowMobileMovableDirectionalLightWarning = bMobile && Scene->NumMobileMovableDirectionalLights_RenderThread > 0 && !ReadOnlyCVARCache.bMobileAllowMovableDirectionalLights;
 		
+		bool bMobileMissingSkyMaterial = false;
 		bool bMobileShowVertexFogWarning = false;
-		if (bMobile && Scene->ExponentialFogs.Num() > 0)
+		if (bMobile && (Scene->ExponentialFogs.Num() > 0 || Scene->HasSkyAtmosphere()))
 		{
 			static const auto* CVarDisableVertexFog = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.DisableVertexFog"));
 			if (CVarDisableVertexFog && CVarDisableVertexFog->GetValueOnRenderThread() != 0)
 			{
 				bMobileShowVertexFogWarning = true;
+			}
+			
+			if (Scene->HasSkyAtmosphere() && (Views.Num() > 0 && !Views[0].bSceneHasSkyMaterial))
+			{
+				bMobileMissingSkyMaterial = true;
 			}
 		}
 
@@ -2906,7 +2915,7 @@ void FSceneRenderer::RenderFinish(FRDGBuilder& GraphBuilder, FRDGTextureRef View
 
 		const bool bAnyWarning = bShowPrecomputedVisibilityWarning || bShowGlobalClipPlaneWarning || bShowAtmosphericFogWarning || bShowSkylightWarning || bShowPointLightWarning 
 			|| bShowDFAODisabledWarning || bShowShadowedLightOverflowWarning || bShowMobileDynamicCSMWarning || bShowMobileLowQualityLightmapWarning || bShowMobileMovableDirectionalLightWarning
-			|| bMobileShowVertexFogWarning || bShowSkinCacheOOM || bSingleLayerWaterWarning || bShowDFDisabledWarning || bShowNoSkyAtmosphereComponentWarning || bFxDebugDraw 
+			|| bMobileShowVertexFogWarning || bMobileMissingSkyMaterial || bShowSkinCacheOOM || bSingleLayerWaterWarning || bShowDFDisabledWarning || bShowNoSkyAtmosphereComponentWarning || bFxDebugDraw 
 			|| bShowSkyAtmosphereFogComponentsConflicts || bRealTimeSkyCaptureButNothingToCapture;
 
 		for(int32 ViewIndex = 0;ViewIndex < Views.Num();ViewIndex++)
@@ -2928,7 +2937,7 @@ void FSceneRenderer::RenderFinish(FRDGBuilder& GraphBuilder, FRDGTextureRef View
 						[this, &ReadOnlyCVARCache, ViewState, GPUSkinCacheExtraRequiredMemory,
 						bLocked, bShowPrecomputedVisibilityWarning, bShowGlobalClipPlaneWarning, bShowDFAODisabledWarning, bShowDFDisabledWarning,
 						bShowAtmosphericFogWarning, bViewParentOrFrozen, bShowSkylightWarning, bShowPointLightWarning, bShowShadowedLightOverflowWarning,
-						bShowMobileLowQualityLightmapWarning, bShowMobileMovableDirectionalLightWarning, bShowMobileDynamicCSMWarning, bMobileShowVertexFogWarning,
+						bShowMobileLowQualityLightmapWarning, bShowMobileMovableDirectionalLightWarning, bShowMobileDynamicCSMWarning, bMobileShowVertexFogWarning, bMobileMissingSkyMaterial, 
 						bShowSkinCacheOOM, bSingleLayerWaterWarning, bShowNoSkyAtmosphereComponentWarning, bFxDebugDraw, bShowSkyAtmosphereFogComponentsConflicts,
 						FXInterface, bRealTimeSkyCaptureButNothingToCapture]
 						(FCanvas& Canvas)
@@ -3049,6 +3058,13 @@ void FSceneRenderer::RenderFinish(FRDGBuilder& GraphBuilder, FRDGTextureRef View
 						if (bMobileShowVertexFogWarning)
 						{
 							static const FText Message = NSLOCTEXT("Renderer", "MobileVertexFog", "PROJECT HAS VERTEX FOG ON MOBILE DISABLED");
+							Canvas.DrawShadowedText(10, Y, Message, GetStatsFont(), FLinearColor(1.0, 0.05, 0.05, 1.0));
+							Y += 14;
+						}
+						
+						if (bMobileMissingSkyMaterial)
+						{
+							static const FText Message = NSLOCTEXT("Renderer", "MobileMissingSkyMaterial", "On mobile the SkyAtmosphere component needs a mesh with a material tagged as IsSky and using the SkyAtmosphere nodes to visualize the Atmosphere.");
 							Canvas.DrawShadowedText(10, Y, Message, GetStatsFont(), FLinearColor(1.0, 0.05, 0.05, 1.0));
 							Y += 14;
 						}
@@ -4066,9 +4082,16 @@ void FRendererModule::RenderPostOpaqueExtensions(FRDGBuilder& GraphBuilder, TArr
 				RenderParameters.DepthTexture = SceneContext.GetSceneDepthSurface()->GetTexture2D();
 				RenderParameters.NormalTexture = SceneContext.GBufferA.IsValid() ? SceneContext.GetGBufferATexture() : nullptr;
 				RenderParameters.VelocityTexture = SceneContext.SceneVelocity.IsValid() ? SceneContext.SceneVelocity->GetRenderTargetItem().ShaderResourceTexture->GetTexture2D() : nullptr;
-				RenderParameters.SmallDepthTexture = SceneContext.GetSmallDepthSurface()->GetTexture2D();
+				RenderParameters.SmallDepthTexture = SceneContext.SmallDepthZ.IsValid() ? SceneContext.GetSmallDepthSurface()->GetTexture2D() : nullptr;
 				RenderParameters.ViewUniformBuffer = View.ViewUniformBuffer;
-				RenderParameters.SceneTexturesUniformParams = CreateSceneTextureUniformBuffer(RHICmdList, View.FeatureLevel, ESceneTextureSetupMode::SceneColor | ESceneTextureSetupMode::SceneDepth | ESceneTextureSetupMode::SceneVelocity | ESceneTextureSetupMode::GBuffers);
+				if (FSceneInterface::GetShadingPath(View.FeatureLevel) == EShadingPath::Deferred)
+				{
+					RenderParameters.SceneTexturesUniformParams = CreateSceneTextureUniformBuffer(RHICmdList, View.FeatureLevel, ESceneTextureSetupMode::SceneColor | ESceneTextureSetupMode::SceneDepth | ESceneTextureSetupMode::SceneVelocity | ESceneTextureSetupMode::GBuffers);
+				}
+				else if (FSceneInterface::GetShadingPath(View.FeatureLevel) == EShadingPath::Mobile)
+				{
+					RenderParameters.MobileSceneTexturesUniformParams = CreateMobileSceneTextureUniformBuffer(RHICmdList, EMobileSceneTextureSetupMode::SceneColor | EMobileSceneTextureSetupMode::CustomDepth);
+				}
 				RenderParameters.GlobalDistanceFieldParams = &View.GlobalDistanceFieldInfo.ParameterData;
 
 				RenderParameters.ViewportRect = View.ViewRect;
@@ -4376,8 +4399,7 @@ void FSceneRenderer::SetStereoViewport(FRHICommandList& RHICmdList, const FViewI
 		}
 		else
 		{
-			RHICmdList.SetViewport(View.ViewRect.Min.X * ViewportScale, View.ViewRect.Min.Y * ViewportScale, 0.0f,
-				(View.ViewRect.Min.X + InstancedStereoWidth) * ViewportScale, View.ViewRect.Max.Y * ViewportScale, 1.0f);
+			RHICmdList.SetViewport(0, 0, 0, InstancedStereoWidth * ViewportScale, View.ViewRect.Max.Y * ViewportScale, 1.0f);
 		}
 	}
 	else
@@ -4763,6 +4785,27 @@ void FSceneRenderer::UpdateSkyIrradianceGpuBuffer(FRHICommandListImmediate& RHIC
 
 	// This buffer is now going to be read for rendering.
 	RHICmdList.Transition(FRHITransitionInfo(Scene->SkyIrradianceEnvironmentMap.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask));
+}
+
+void FHairStrandsViewData::Init()
+{
+	VoxelWorldSize = 0;
+	AllocatedPageCount = 0;
+	if (VoxelPageAllocationCountReadback == nullptr)
+	{
+		VoxelPageAllocationCountReadback = new FRHIGPUBufferReadback(TEXT("Voxel page allocation readback"));
+	}
+}
+
+void FHairStrandsViewData::Release()
+{
+	VoxelWorldSize = 0;
+	AllocatedPageCount = 0;
+	if (VoxelPageAllocationCountReadback)
+	{
+		delete VoxelPageAllocationCountReadback;
+		VoxelPageAllocationCountReadback = nullptr;
+	}
 }
 
 void RunGPUSkinCacheTransition(FRHICommandList& RHICmdList, FScene* Scene, EGPUSkinCacheTransition Type)

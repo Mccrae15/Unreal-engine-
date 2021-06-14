@@ -2,8 +2,6 @@
 
 #pragma once
 
-
-#include "DMXSubsystem.h"
 #include "CoreMinimal.h"
 #include "DMXFixtureComponent.h"
 #include "DMXFixtureComponentDouble.h"
@@ -19,7 +17,6 @@
 #include "DMXFixtureActor.generated.h"
 
 
-
 UENUM()
 enum EDMXFixtureQualityLevel
 {
@@ -29,8 +26,7 @@ enum EDMXFixtureQualityLevel
 	UltraQuality		UMETA(DisplayName = "Ultra")
 };
 
-
-UCLASS(HideCategories = ("Rendering", "Variable", "Input", "Tags", "Activation", "Cooking", "Replication", "AssetUserData", "Collision", "LOD", "Actor"))
+UCLASS()
 class DMXFIXTURES_API ADMXFixtureActor : public AActor
 {
 	GENERATED_BODY()
@@ -49,7 +45,7 @@ public:
 	void FeedFixtureData();
 
 	// VISUAL QUALITY LEVEL----------------------
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Light Fixture", meta = (DisplayPriority = 0))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture", meta = (DisplayPriority = 0))
 	TEnumAsByte<EDMXFixtureQualityLevel> QualityLevel;
 
 	// HIERARCHY---------------------------------
@@ -74,45 +70,30 @@ protected:
 	/** Sets the fixture in a defaulted state using default values of its Fixture Components */
 	void SetDefaultFixtureState();
 	
-	/*
-	 * Pushes DMX Values to the Fixture. Does not interpolate, causing fixtures to jump to the value directly. 
-	 * Useful for initalization when data is first received.
-	 */
-	virtual void InitalizeAttributeValueNoInterp(const FDMXAttributeName& AttributeName, float Value);
-
-	/** Contains all attributes that were received at least once and got initalized  */
-	TSet<FDMXAttributeName> InitializedAttributes;
-
-	/** Holds invalid attributes. Helps ignoring attributes that don't exist */
-	TSet<FDMXAttributeName> InvalidAttributes;
-
 public:
-	UFUNCTION(BlueprintCallable, Category = "DMX Fixture", meta = (DeprecatedFunction, DeprecationMessage = "Deprecated 4.26. Use PushDMXValuesPerAttribute instead."))
-	void PushDMXData(TMap<FDMXAttributeName, int32> AttributesMap);
-
 	UFUNCTION(BlueprintCallable, Category = "DMX Fixture")
 	void InterpolateDMXComponents(float DeltaSeconds);
 	
 	// PARAMETERS---------------------------------
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Light Fixture")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture")
 	float LightIntensityMax;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Light Fixture")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture")
 	float LightDistanceMax;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Light Fixture")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture")
 	float LightColorTemp;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Light Fixture")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture")
 	float SpotlightIntensityScale;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Light Fixture")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture")
 	float PointlightIntensityScale;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Light Fixture")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture")
 	bool LightCastShadow;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "DMX Light Fixture")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DMX Light Fixture")
 	bool UseDynamicOcclusion;
 
 	// DMX COMPONENT -----------------------------

@@ -45,6 +45,9 @@ class IDisplayClusterConfiguratorTreeItem
 	: public IDisplayClusterConfiguratorItem
 {
 public:
+	virtual ~IDisplayClusterConfiguratorTreeItem() = default;
+
+public:
 	NDISPLAY_TREE_BASE_ITEM_TYPE(IDisplayClusterConfiguratorTreeItem)
 
 	/** Initializes the tree item */
@@ -97,6 +100,12 @@ public:
 
 	/** @return true if this item can be duplicated */
 	virtual bool CanDuplicateItem() const = 0;
+
+	/** @return true if this item can be hidden */
+	virtual bool CanHideItem() const = 0;
+	
+	/** Sets the item's visibility */
+	virtual void SetItemHidden(bool bIsHidden) = 0;
 
 	/** Get the objects of all parents of this item */
 	virtual void GetParentObjectsRecursive(TArray<UObject*>& OutObjects) const = 0;

@@ -18,6 +18,9 @@
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceGrid3DCollection"
 
 const FString UNiagaraDataInterfaceGrid3DCollection::NumTilesName(TEXT("NumTiles_"));
+const FString UNiagaraDataInterfaceGrid3DCollection::OneOverNumTilesName(TEXT("OneOverNumTiles_"));
+const FString UNiagaraDataInterfaceGrid3DCollection::UnitClampMinName(TEXT("UnitClampMin_"));
+const FString UNiagaraDataInterfaceGrid3DCollection::UnitClampMaxName(TEXT("UnitClampMax_"));
 
 const FString UNiagaraDataInterfaceGrid3DCollection::GridName(TEXT("Grid_"));
 const FString UNiagaraDataInterfaceGrid3DCollection::OutputGridName(TEXT("OutputGrid_"));
@@ -59,6 +62,8 @@ const FName UNiagaraDataInterfaceGrid3DCollection::GetFloatAttributeIndexFunctio
 const FName UNiagaraDataInterfaceGrid3DCollection::SampleGridFunctionName("SampleGrid");
 
 const FString UNiagaraDataInterfaceGrid3DCollection::AttributeIndicesBaseName(TEXT("AttributeIndices_"));
+const FString UNiagaraDataInterfaceGrid3DCollection::PerAttributeDataName(TEXT("PerAttributeDataName_"));
+
 const TCHAR* UNiagaraDataInterfaceGrid3DCollection::VectorComponentNames[] = { TEXT(".x"), TEXT(".y"), TEXT(".z"), TEXT(".w") };
 
 FNiagaraVariableBase UNiagaraDataInterfaceGrid3DCollection::ExposedRTVar;
@@ -142,6 +147,10 @@ public:
 		NumAttributesParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::NumAttributesName + ParameterInfo.DataInterfaceHLSLSymbol));
 		NumCellsParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::NumCellsName + ParameterInfo.DataInterfaceHLSLSymbol));
 		NumTilesParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid3DCollection::NumTilesName + ParameterInfo.DataInterfaceHLSLSymbol));
+		OneOverNumTilesParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid3DCollection::OneOverNumTilesName + ParameterInfo.DataInterfaceHLSLSymbol));
+		UnitClampMinParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid3DCollection::UnitClampMinName + ParameterInfo.DataInterfaceHLSLSymbol));
+		UnitClampMaxParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid3DCollection::UnitClampMaxName + ParameterInfo.DataInterfaceHLSLSymbol));
+
 		UnitToUVParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::UnitToUVName + ParameterInfo.DataInterfaceHLSLSymbol));
 		CellSizeParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRWBase::CellSizeName + ParameterInfo.DataInterfaceHLSLSymbol));
 
@@ -152,6 +161,7 @@ public:
 
 		SamplerParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid3DCollection::SamplerName + ParameterInfo.DataInterfaceHLSLSymbol));
 		AttributeIndicesParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid3DCollection::AttributeIndicesBaseName + ParameterInfo.DataInterfaceHLSLSymbol));
+		PerAttributeDataParam.Bind(ParameterMap, *(UNiagaraDataInterfaceGrid3DCollection::PerAttributeDataName + ParameterInfo.DataInterfaceHLSLSymbol));
 
 
 		// Gather up all the attribute names referenced. Note that there may be multiple in the list of the same name, 
@@ -190,18 +200,14 @@ public:
 		FGrid3DCollectionRWInstanceData_RenderThread* ProxyData = VFDI->SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
 		check(ProxyData);
 
-		int NumCellsTmp[3];
-		NumCellsTmp[0] = ProxyData->NumCells.X;
-		NumCellsTmp[1] = ProxyData->NumCells.Y;
-		NumCellsTmp[2] = ProxyData->NumCells.Z;
-		SetShaderValue(RHICmdList, ComputeShaderRHI, NumCellsParam, NumCellsTmp);	
+		SetShaderValue(RHICmdList, ComputeShaderRHI, NumCellsParam, ProxyData->NumCells);	
+		SetShaderValue(RHICmdList, ComputeShaderRHI, NumTilesParam, ProxyData->NumTiles);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, OneOverNumTilesParam, FVector(1.0f) / FVector(ProxyData->NumTiles));
 
-		int NumTilesTmp[3];
-		NumTilesTmp[0] = ProxyData->NumTiles.X;
-		NumTilesTmp[1] = ProxyData->NumTiles.Y;
-		NumTilesTmp[2] = ProxyData->NumTiles.Z;
-		SetShaderValue(RHICmdList, ComputeShaderRHI, NumTilesParam, NumTilesTmp);		
-		
+		const FVector HalfPixelOffset = FVector(0.5f / ProxyData->NumCells.X, 0.5f / ProxyData->NumCells.Y, 0.5f / ProxyData->NumCells.Z);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, UnitClampMinParam, HalfPixelOffset);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, UnitClampMaxParam, FVector::OneVector - HalfPixelOffset);
+
 		if (ProxyData->AttributeIndices.Num() == 0 && AttributeNames.Num() > 0)
 		{
 			int NumAttrIndices = Align(AttributeNames.Num(), 4);
@@ -222,7 +228,6 @@ public:
 				{
 					ProxyData->AttributeIndices[i] = -1; // We may need to protect against this in the hlsl as this might underflow an array lookup if used incorrectly.
 				}
-
 			}
 		}
 
@@ -235,6 +240,9 @@ public:
 		SetShaderValue(RHICmdList, ComputeShaderRHI, WorldBBoxSizeParam, ProxyData->WorldBBoxSize);
 
 		SetShaderValueArray(RHICmdList, ComputeShaderRHI, AttributeIndicesParam, ProxyData->AttributeIndices.GetData(), ProxyData->AttributeIndices.Num());
+		
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, PerAttributeDataParam, ProxyData->PerAttributeData.SRV);
+
 		FRHISamplerState *SamplerState = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 		SetSamplerParameter(RHICmdList, ComputeShaderRHI, SamplerParam, SamplerState);
 
@@ -247,7 +255,7 @@ public:
 			}
 			else
 			{
-				InputGridBuffer = FNiagaraRenderer::GetDummyTextureReadBuffer2D();
+				InputGridBuffer = FNiagaraRenderer::GetDummyTextureReadBuffer3D();
 			}
 			SetSRVParameter(RHICmdList, ComputeShaderRHI, GridParam, InputGridBuffer);
 		}
@@ -261,7 +269,7 @@ public:
 			}
 			else
 			{
-				OutputGridUAV = Context.Batcher->GetEmptyRWTextureFromPool(RHICmdList, PF_R32_FLOAT);
+				OutputGridUAV = Context.Batcher->GetEmptyUAVFromPool(RHICmdList, PF_R32_FLOAT, ENiagaraEmptyUAVType::Texture3D);
 			}
 			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputGridParam.GetUAVIndex(), OutputGridUAV);
 		}
@@ -281,13 +289,17 @@ private:
 	LAYOUT_FIELD(FShaderParameter, UnitToUVParam);
 	LAYOUT_FIELD(FShaderParameter, NumCellsParam);
 	LAYOUT_FIELD(FShaderParameter, NumTilesParam);
+	LAYOUT_FIELD(FShaderParameter, OneOverNumTilesParam);
+	LAYOUT_FIELD(FShaderParameter, UnitClampMinParam);
+	LAYOUT_FIELD(FShaderParameter, UnitClampMaxParam);
 	LAYOUT_FIELD(FShaderParameter, CellSizeParam);
 	LAYOUT_FIELD(FShaderParameter, WorldBBoxSizeParam);
 
 	LAYOUT_FIELD(FShaderResourceParameter, GridParam);
 	LAYOUT_FIELD(FRWShaderParameter, OutputGridParam);
 	LAYOUT_FIELD(FShaderParameter, AttributeIndicesParam);
-	
+	LAYOUT_FIELD(FShaderResourceParameter, PerAttributeDataParam);
+
 	LAYOUT_FIELD(FShaderResourceParameter, SamplerParam);
 	LAYOUT_FIELD(TMemoryImageArray<FName>, AttributeNames);
 	LAYOUT_FIELD(TMemoryImageArray<uint32>, AttributeChannelCount);
@@ -1009,8 +1021,12 @@ void UNiagaraDataInterfaceGrid3DCollection::GetParameterDefinitionHLSL(const FNi
 		Texture3D<float> {GridName};
 		RWTexture3D<float> RW{OutputGridName};
 		int3 {NumTiles};
+		float3 {OneOverNumTiles};
+		float3 {UnitClampMin};
+		float3 {UnitClampMax};
 		SamplerState {SamplerName};
 		int4 {AttributeIndicesName}[{AttributeInt4Count}];
+		Buffer<float4> {PerAttributeDataName};
 		int {NumAttributesName};
 	)");
 
@@ -1018,21 +1034,26 @@ void UNiagaraDataInterfaceGrid3DCollection::GetParameterDefinitionHLSL(const FNi
 	// and leave 3 elements unused. Besides being wasteful, this means that the array we send to the CS would need to be padded,
 	// which is a hassle. Instead, use int4 explicitly, and access individual components in the generated code.
 	// Note that we have to have at least one here because hlsl doesn't support arrays of size 0.
-	const int AttributeInt4Count = FMath::Max(1, FMath::DivideAndRoundUp(ParamInfo.GeneratedFunctions.Num(), 4));
+	const int AttributeCount = ParamInfo.GeneratedFunctions.Num();
+	const int AttributeInt4Count = FMath::Max(1, FMath::DivideAndRoundUp(AttributeCount, 4));
 
-	TMap<FString, FStringFormatArg> ArgsDeclarations = {				
+	TMap<FString, FStringFormatArg> ArgsDeclarations = {
 		{ TEXT("GridName"),    GridName + ParamInfo.DataInterfaceHLSLSymbol },
 		{ TEXT("SamplerName"),    SamplerName + ParamInfo.DataInterfaceHLSLSymbol },
 		{ TEXT("OutputGridName"),    OutputGridName + ParamInfo.DataInterfaceHLSLSymbol },
 		{ TEXT("NumTiles"),    NumTilesName + ParamInfo.DataInterfaceHLSLSymbol },
+		{ TEXT("OneOverNumTiles"), OneOverNumTilesName + ParamInfo.DataInterfaceHLSLSymbol },
+		{ TEXT("UnitClampMin"), UnitClampMinName + ParamInfo.DataInterfaceHLSLSymbol },
+		{ TEXT("UnitClampMax"), UnitClampMaxName + ParamInfo.DataInterfaceHLSLSymbol },
+
 		{ TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
 		{ TEXT("AttributeIndicesName"), AttributeIndicesBaseName + ParamInfo.DataInterfaceHLSLSymbol},
+		{ TEXT("PerAttributeDataName"), PerAttributeDataName + ParamInfo.DataInterfaceHLSLSymbol},
 		{ TEXT("AttributeInt4Count"), AttributeInt4Count},
 		{ TEXT("NumAttributesName"), UNiagaraDataInterfaceRWBase::NumAttributesName + ParamInfo.DataInterfaceHLSLSymbol},
 	};
 	OutHLSL += FString::Format(FormatDeclarations, ArgsDeclarations);
 }
-
 void UNiagaraDataInterfaceGrid3DCollection::WriteSetHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, int32 InNumChannels, FString& OutHLSL)
 {
 	
@@ -1057,13 +1078,10 @@ void UNiagaraDataInterfaceGrid3DCollection::WriteSetHLSL(const FNiagaraDataInter
 		)");         
 	}
 
-	FormatBounds += TEXT(R"(	
+	FormatBounds += TEXT(R"(
 					int CurAttributeIndex = In_AttributeIndex + i;
-					int TileIndexX = CurAttributeIndex % {NumTiles}.x;
-					int TileIndexY = (CurAttributeIndex / {NumTiles}.x) % {NumTiles}.y;
-					int TileIndexZ = CurAttributeIndex / ({NumTiles}.x * {NumTiles}.y);
-
-					RW{OutputGrid}[int3(In_IndexX + TileIndexX * {NumCellsName}.x, In_IndexY + TileIndexY * {NumCellsName}.y, In_IndexZ + TileIndexZ * {NumCellsName}.z)] = Val;
+					int3 TileOffset = {PerAttributeDataName}[CurAttributeIndex].xyz;
+					RW{OutputGrid}[int3(In_IndexX + TileOffset.x, In_IndexY + TileOffset.y, In_IndexZ + TileOffset.z)] = Val;
 				}
 			}
 		)");
@@ -1072,6 +1090,7 @@ void UNiagaraDataInterfaceGrid3DCollection::WriteSetHLSL(const FNiagaraDataInter
 		{TEXT("OutputGrid"), OutputGridName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
+		{TEXT("PerAttributeDataName"), PerAttributeDataName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("AttributeIndicesName"), AttributeIndicesBaseName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("AttributeIndexGroup"), FunctionInstanceIndex / 4},
 		{TEXT("AttributeIndexComponent"), VectorComponentNames[FunctionInstanceIndex % 4]},
@@ -1080,7 +1099,7 @@ void UNiagaraDataInterfaceGrid3DCollection::WriteSetHLSL(const FNiagaraDataInter
 		{TEXT("NumTiles"), NumTilesName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
-
+		{TEXT("NumAttributesName"), UNiagaraDataInterfaceRWBase::NumAttributesName + ParamInfo.DataInterfaceHLSLSymbol},
 	};
 	OutHLSL += FString::Format(*FormatBounds, ArgsBounds);
 }
@@ -1095,13 +1114,9 @@ void UNiagaraDataInterfaceGrid3DCollection::WriteGetHLSL(const FNiagaraDataInter
 
 			    for (int i = 0; i < {NumChannels}; i++)
 				{
-
 					int CurAttributeIndex = In_AttributeIndex + i;
-					int TileIndexX = CurAttributeIndex % {NumTiles}.x;
-					int TileIndexY = (CurAttributeIndex / {NumTiles}.x) % {NumTiles}.y;
-					int TileIndexZ = CurAttributeIndex / ({NumTiles}.x * {NumTiles}.y);
-
-					float Val = {Grid}.Load(int4(In_IndexX + TileIndexX * {NumCellsName}.x, In_IndexY + TileIndexY * {NumCellsName}.y, In_IndexZ + TileIndexZ * {NumCellsName}.z, 0));
+					int3 TileOffset = {PerAttributeDataName}[CurAttributeIndex].xyz;
+					float Val = {Grid}.Load(int4(In_IndexX + TileOffset.x, In_IndexY + TileOffset.y, In_IndexZ + TileOffset.z, 0));
 					)");
 	if (InNumChannels == 1)
 	{
@@ -1121,13 +1136,14 @@ void UNiagaraDataInterfaceGrid3DCollection::WriteGetHLSL(const FNiagaraDataInter
 		{TEXT("Grid"), GridName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
+		{TEXT("PerAttributeDataName"), PerAttributeDataName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("AttributeIndicesName"), AttributeIndicesBaseName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("AttributeIndexGroup"), FunctionInstanceIndex / 4},
 		{TEXT("AttributeIndexComponent"), VectorComponentNames[FunctionInstanceIndex % 4]},
 		{TEXT("NumChannels"), FString::FromInt(InNumChannels)},
 		{TEXT("NumChannelsVariableSuffix"), InNumChannels > 1 ? FString::FromInt(InNumChannels) : TEXT("")},
 		{TEXT("NumTiles"), NumTilesName + ParamInfo.DataInterfaceHLSLSymbol},
-
+		{TEXT("NumAttributesName"), UNiagaraDataInterfaceRWBase::NumAttributesName + ParamInfo.DataInterfaceHLSLSymbol},
 	};
 	OutHLSL += FString::Format(*FormatBounds, ArgsBounds);
 }
@@ -1139,32 +1155,11 @@ void UNiagaraDataInterfaceGrid3DCollection::WriteSampleHLSL(const FNiagaraDataIn
 			{
 				int In_AttributeIndex = {AttributeIndicesName}[{AttributeIndexGroup}]{AttributeIndexComponent};
 
+				float3 TileUV = clamp(In_Unit, {UnitClampMin}, {UnitClampMax}) * {OneOverNumTiles};
 			    for (int i = 0; i < {NumChannels}; i++)
 				{
 					int CurAttributeIndex = In_AttributeIndex + i;
-					int TileIndexX = CurAttributeIndex % {NumTiles}.x;
-					int TileIndexY = (CurAttributeIndex / {NumTiles}.x) % {NumTiles}.y;
-					int TileIndexZ = CurAttributeIndex / ({NumTiles}.x * {NumTiles}.y);		
-
-					float3 UVW =
-					{
-						In_UnitX / {NumTiles}.x + 1.0*TileIndexX/{NumTiles}.x,
-						In_UnitY / {NumTiles}.y + 1.0*TileIndexY/{NumTiles}.y,
-						In_UnitZ / {NumTiles}.z + 1.0*TileIndexZ/{NumTiles}.y
-					};
-					float3 TileMin =
-					{
-						(TileIndexX * {NumCellsName}.x + 0.5) / ({NumTiles}.x * {NumCellsName}.x),
-						(TileIndexY * {NumCellsName}.y + 0.5) / ({NumTiles}.y * {NumCellsName}.y),
-						(TileIndexZ * {NumCellsName}.z + 0.5) / ({NumTiles}.z * {NumCellsName}.z)
-					};
-					float3 TileMax =
-					{
-						((TileIndexX + 1) * {NumCellsName}.x - 0.5) / ({NumTiles}.x * {NumCellsName}.x),
-						((TileIndexY + 1) * {NumCellsName}.y - 0.5) / ({NumTiles}.y * {NumCellsName}.y),
-						((TileIndexZ + 1) * {NumCellsName}.z - 0.5) / ({NumTiles}.z * {NumCellsName}.z)
-					};
-					UVW = clamp(UVW, TileMin, TileMax);
+					float3 UVW = {PerAttributeDataName}[CurAttributeIndex + {NumAttributesName}].xyz + TileUV;
 
 					float Val = {Grid}.SampleLevel({SamplerName}, UVW, 0);
 					)");
@@ -1191,9 +1186,14 @@ void UNiagaraDataInterfaceGrid3DCollection::WriteSampleHLSL(const FNiagaraDataIn
 		{TEXT("NumChannels"), FString::FromInt(InNumChannels)},
 		{TEXT("NumChannelsVariableSuffix"), InNumChannels > 1 ? FString::FromInt(InNumChannels) : TEXT("")},
 		{TEXT("AttributeIndicesName"), AttributeIndicesBaseName + ParamInfo.DataInterfaceHLSLSymbol},
+		{TEXT("PerAttributeDataName"), PerAttributeDataName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("AttributeIndexGroup"), FunctionInstanceIndex / 4},
 		{TEXT("AttributeIndexComponent"), VectorComponentNames[FunctionInstanceIndex % 4]},
 		{TEXT("NumTiles"), NumTilesName + ParamInfo.DataInterfaceHLSLSymbol},
+		{TEXT("OneOverNumTiles"), OneOverNumTilesName + ParamInfo.DataInterfaceHLSLSymbol },
+		{TEXT("UnitClampMin"), UnitClampMinName + ParamInfo.DataInterfaceHLSLSymbol },
+		{TEXT("UnitClampMax"), UnitClampMaxName + ParamInfo.DataInterfaceHLSLSymbol },
+		{TEXT("NumAttributesName"), UNiagaraDataInterfaceRWBase::NumAttributesName + ParamInfo.DataInterfaceHLSLSymbol},
 	};
 	OutHLSL += FString::Format(*FormatBounds, ArgsBounds);
 }
@@ -1273,8 +1273,12 @@ bool UNiagaraDataInterfaceGrid3DCollection::GetFunctionHLSL(const FNiagaraDataIn
 		{TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("SamplerName"), SamplerName + ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("NumTiles"), NumTilesName + ParamInfo.DataInterfaceHLSLSymbol},
-		{TEXT("UnitToUVName"), UNiagaraDataInterfaceRWBase::UnitToUVName + ParamInfo.DataInterfaceHLSLSymbol},
+		{TEXT("OneOverNumTiles"), OneOverNumTilesName + ParamInfo.DataInterfaceHLSLSymbol },
+		{TEXT("UnitClampMin"), UnitClampMinName + ParamInfo.DataInterfaceHLSLSymbol },
+		{TEXT("UnitClampMax"), UnitClampMaxName + ParamInfo.DataInterfaceHLSLSymbol },
 		{TEXT("NumCellsName"), UNiagaraDataInterfaceRWBase::NumCellsName + ParamInfo.DataInterfaceHLSLSymbol},
+		{TEXT("PerAttributeDataName"), PerAttributeDataName + ParamInfo.DataInterfaceHLSLSymbol},
+		{TEXT("NumAttributesName"), UNiagaraDataInterfaceRWBase::NumAttributesName + ParamInfo.DataInterfaceHLSLSymbol},
 	};
 
 	if (FunctionInfo.DefinitionName == GetValueFunctionName || FunctionInfo.DefinitionName == GetPreviousValueAtIndexFunctionName)
@@ -1282,11 +1286,12 @@ bool UNiagaraDataInterfaceGrid3DCollection::GetFunctionHLSL(const FNiagaraDataIn
 		static const TCHAR *FormatBounds = TEXT(R"(
 			void {FunctionName}(int In_IndexX, int In_IndexY, int In_IndexZ, int In_AttributeIndex, out float Out_Val)
 			{
-				int TileIndexX = In_AttributeIndex % {NumTiles}.x;
-				int TileIndexY = (In_AttributeIndex / {NumTiles}.x) % {NumTiles}.y;
-				int TileIndexZ = In_AttributeIndex / ({NumTiles}.x * {NumTiles}.y);
-
-				Out_Val = {Grid}.Load(int4(In_IndexX + TileIndexX * {NumCellsName}.x, In_IndexY + TileIndexY * {NumCellsName}.y, In_IndexZ + TileIndexZ * {NumCellsName}.z, 0));
+				Out_Val = 0;
+				if ( In_AttributeIndex < {NumAttributesName} )
+				{
+					int3 TileOffset = {PerAttributeDataName}[In_AttributeIndex].xyz;
+					Out_Val = {Grid}.Load(int4(In_IndexX + TileOffset.x, In_IndexY + TileOffset.y, In_IndexZ + TileOffset.z, 0));
+				}
 			}
 		)");
 		OutHLSL += FString::Format(FormatBounds, ArgsBounds);
@@ -1297,12 +1302,12 @@ bool UNiagaraDataInterfaceGrid3DCollection::GetFunctionHLSL(const FNiagaraDataIn
 		static const TCHAR *FormatBounds = TEXT(R"(
 			void {FunctionName}(int In_IndexX, int In_IndexY, int In_IndexZ, int In_AttributeIndex, float In_Value, out int val)
 			{			
-				int TileIndexX = In_AttributeIndex % {NumTiles}.x;
-				int TileIndexY = (In_AttributeIndex / {NumTiles}.x) % {NumTiles}.y;
-				int TileIndexZ = In_AttributeIndex / ({NumTiles}.x * {NumTiles}.y);
-
 				val = 0;
-				RW{OutputGrid}[int3(In_IndexX + TileIndexX * {NumCellsName}.x, In_IndexY + TileIndexY * {NumCellsName}.y, In_IndexZ + TileIndexZ * {NumCellsName}.z)] = In_Value;
+				if ( In_AttributeIndex < {NumAttributesName} )
+				{
+					int3 TileOffset = {PerAttributeDataName}[In_AttributeIndex].xyz;
+					RW{OutputGrid}[int3(In_IndexX + TileOffset.x, In_IndexY + TileOffset.y, In_IndexZ + TileOffset.z)] = In_Value;
+				}
 			}
 		)");
 		OutHLSL += FString::Format(FormatBounds, ArgsBounds);
@@ -1315,14 +1320,10 @@ bool UNiagaraDataInterfaceGrid3DCollection::GetFunctionHLSL(const FNiagaraDataIn
 			{
 				for (int AttributeIndex = 0; AttributeIndex < {NumAttributes}.x; AttributeIndex++)
 				{		
-					int TileIndexX = AttributeIndex % {NumTiles}.x;
-					int TileIndexY = (AttributeIndex / {NumTiles}.x) % {NumTiles}.y;
-					int TileIndexZ = AttributeIndex / ({NumTiles}.x * {NumTiles}.y);
+					int3 TileOffset = {PerAttributeDataName}[AttributeIndex].xyz;
 
-					float Val = {Grid}.Load(int4(In_IndexX + TileIndexX * {NumCellsName}.x, In_IndexY + TileIndexY * {NumCellsName}.y, In_IndexZ + TileIndexZ * {NumCellsName}.z, 0));	
-					//float Val = {Grid}.Load(int4(In_IndexX, In_IndexY, AttributeIndex, 0));
-					//RW{OutputGrid}[int3(In_IndexX, In_IndexY, In_IndexZ, AttributeIndex)] = Val;
-					RW{OutputGrid}[int3(In_IndexX + TileIndexX * {NumCellsName}.x, In_IndexY + TileIndexY * {NumCellsName}.y, In_IndexZ + TileIndexZ * {NumCellsName}.z)] = Val;
+					float Val = {Grid}.Load(int4(In_IndexX + TileOffset.x, In_IndexY + TileOffset.y, In_IndexZ + TileOffset.z, 0));	
+					RW{OutputGrid}[int3(In_IndexX + TileOffset.x, In_IndexY + TileOffset.y, In_IndexZ + TileOffset.z)] = Val;
 				}
 			}
 		)");
@@ -1338,11 +1339,9 @@ bool UNiagaraDataInterfaceGrid3DCollection::GetFunctionHLSL(const FNiagaraDataIn
 				{			
 					float Val = 0.0f;
 
-					int TileIndexX = AttributeIndex % {NumTiles}.x;
-					int TileIndexY = (AttributeIndex / {NumTiles}.x) % {NumTiles}.y;
-					int TileIndexZ = AttributeIndex / ({NumTiles}.x * {NumTiles}.y);
+					int3 TileOffset = {PerAttributeDataName}[AttributeIndex].xyz;
 
-					RW{OutputGrid}[int3(In_IndexX + TileIndexX * {NumCellsName}.x, In_IndexY + TileIndexY * {NumCellsName}.y, In_IndexZ + TileIndexZ * {NumCellsName}.z)] = In_Value;
+					RW{OutputGrid}[int3(In_IndexX + TileOffset.x, In_IndexY + TileOffset.y, In_IndexZ + TileOffset.z)] = In_Value;
 				}
 			}
 		)");
@@ -1434,31 +1433,15 @@ bool UNiagaraDataInterfaceGrid3DCollection::GetFunctionHLSL(const FNiagaraDataIn
 		static const TCHAR* FormatBounds = TEXT(R"(
 				void {FunctionName}(float In_UnitX, float In_UnitY, float In_UnitZ, int In_AttributeIndex, out float Out_Val)
 				{
-					int TileIndexX = In_AttributeIndex % {NumTiles}.x;
-					int TileIndexY = (In_AttributeIndex / {NumTiles}.x) % {NumTiles}.y;
-					int TileIndexZ = In_AttributeIndex / ({NumTiles}.x * {NumTiles}.y);		
+					Out_Val = 0;
+					if ( In_AttributeIndex < {NumAttributesName} )
+					{
+						float3 Unit = float3(In_UnitX, In_UnitY, In_UnitZ);
+						Unit = clamp(Unit, {UnitClampMin}, {UnitClampMax}) * {OneOverNumTiles};
 
-					float3 UVW =
-					{
-						In_UnitX / {NumTiles}.x + 1.0*TileIndexX/{NumTiles}.x,
-						In_UnitY / {NumTiles}.y + 1.0*TileIndexY/{NumTiles}.y,
-						In_UnitZ / {NumTiles}.z + 1.0*TileIndexZ/{NumTiles}.y
-					};
-					float3 TileMin =
-					{
-						(TileIndexX * {NumCellsName}.x + 0.5) / ({NumTiles}.x * {NumCellsName}.x),
-						(TileIndexY * {NumCellsName}.y + 0.5) / ({NumTiles}.y * {NumCellsName}.y),
-						(TileIndexZ * {NumCellsName}.z + 0.5) / ({NumTiles}.z * {NumCellsName}.z)
-					};
-					float3 TileMax =
-					{
-						((TileIndexX + 1) * {NumCellsName}.x - 0.5) / ({NumTiles}.x * {NumCellsName}.x),
-						((TileIndexY + 1) * {NumCellsName}.y - 0.5) / ({NumTiles}.y * {NumCellsName}.y),
-						((TileIndexZ + 1) * {NumCellsName}.z - 0.5) / ({NumTiles}.z * {NumCellsName}.z)
-					};
-					UVW = clamp(UVW, TileMin, TileMax);
-
-					Out_Val = {Grid}.SampleLevel({SamplerName}, UVW, 0);
+						float3 UVW = {PerAttributeDataName}[In_AttributeIndex + {NumAttributesName}].xyz + Unit;
+						Out_Val = {Grid}.SampleLevel({SamplerName}, UVW, 0);
+					}
 				}
 			)");
 		OutHLSL += FString::Format(FormatBounds, ArgsBounds);
@@ -2337,6 +2320,7 @@ bool UNiagaraDataInterfaceGrid3DCollection::PerInstanceTickPostSimulate(void* Pe
 			TargetData->Buffers.Empty();
 			TargetData->CurrentData = nullptr;
 			TargetData->DestinationData = nullptr;
+			TargetData->PerAttributeData.Release();
 		});
 
 	}
@@ -2456,11 +2440,36 @@ void FGrid3DCollectionRWInstanceData_RenderThread::EndSimulate(FRHICommandList& 
 
 void FNiagaraDataInterfaceProxyGrid3DCollectionProxy::PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context)
 {
+	FGrid3DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
+
+	// Generate per-attribute data
+	if (ProxyData->PerAttributeData.NumBytes == 0)
+	{
+		TResourceArray<FVector4> PerAttributeData;
+		PerAttributeData.AddUninitialized((ProxyData->TotalNumAttributes * 2) + 1);
+		for (int32 iAttribute = 0; iAttribute < ProxyData->TotalNumAttributes; ++iAttribute)
+		{
+			const FIntVector AttributeTileIndex(iAttribute % ProxyData->NumTiles.X, (iAttribute / ProxyData->NumTiles.X) % ProxyData->NumTiles.Y, iAttribute / (ProxyData->NumTiles.X * ProxyData->NumTiles.Y));
+			PerAttributeData[iAttribute] = FVector4(
+				AttributeTileIndex.X * ProxyData->NumCells.X,
+				AttributeTileIndex.Y * ProxyData->NumCells.Y,
+				AttributeTileIndex.Z * ProxyData->NumCells.Z,
+				0
+			);
+			PerAttributeData[iAttribute + ProxyData->TotalNumAttributes] = FVector4(
+				(1.0f / ProxyData->NumTiles.X) * float(AttributeTileIndex.X),
+				(1.0f / ProxyData->NumTiles.Y) * float(AttributeTileIndex.Y),
+				(1.0f / ProxyData->NumTiles.Z) * float(AttributeTileIndex.Z),
+				0.0f
+			);
+		}
+		PerAttributeData[ProxyData->TotalNumAttributes * 2] = FVector4(65535, 65535, 65535, 65535);
+		ProxyData->PerAttributeData.Initialize(sizeof(FVector4), PerAttributeData.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static, TEXT("Grid3D::PerAttributeData"), &PerAttributeData);
+	}
+
 	// #todo(dmp): Context doesnt need to specify if a stage is output or not since we moved pre/post stage to the DI itself.  Not sure which design is better for the future
 	if (Context.IsOutputStage)
 	{
-		FGrid3DCollectionRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
-
 		ProxyData->BeginSimulate(RHICmdList);
 
 		// If we don't have an iteration stage, then we should manually clear the buffer to make sure there is no residual data.  If we are doing something like rasterizing particles into a grid, we want it to be clear before
@@ -2471,7 +2480,7 @@ void FNiagaraDataInterfaceProxyGrid3DCollectionProxy::PreStage(FRHICommandList& 
 
 		// #todo(dmp): for now, if there is an output DI that is NOT an iteration DI AND if both the iteration DI and this DI have the same total number of instances, do not do the UAV clear prior to the stage.
 		// this isn't optimal, but should work to some degree to reduce overhead in cases where we have multiple grids of the same resolution being processed/written to in 1 stage
-		FNiagaraDataInterfaceProxyRW* IterationInterface = Context.ComputeInstanceData->SimStageData[Context.SimulationStageIndex].AlternateIterationSource;
+		FNiagaraDataInterfaceProxyRW* IterationInterface = Context.SimStageData->AlternateIterationSource;
 		RHICmdList.Transition(FRHITransitionInfo(ProxyData->DestinationData->GridBuffer.UAV, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
 		if (!Context.IsIterationStage)
 		{

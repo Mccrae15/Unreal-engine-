@@ -3,14 +3,16 @@
 #include "Components/DMXPixelMappingFixtureGroupComponent.h"
 
 #include "IDMXPixelMappingRenderer.h"
-#include "Components/DMXPixelMappingRendererComponent.h"
 #include "Components/DMXPixelMappingFixtureGroupItemComponent.h"
+#include "Components/DMXPixelMappingRendererComponent.h"
 #include "Library/DMXLibrary.h"
 
-#include "Engine/TextureRenderTarget2D.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScaleBox.h"
+#include "Widgets/Text/STextBlock.h"
+
 
 #define LOCTEXT_NAMESPACE "DMXPixelMappingFixtureGroupComponent"
 
@@ -34,8 +36,6 @@ void UDMXPixelMappingFixtureGroupComponent::PostLoad()
 
 	PositionXCached = PositionX;
 	PositionYCached = PositionY;
-
-	ResizeOutputTarget(SizeX, SizeY);
 }
 
 #if WITH_EDITOR
@@ -120,12 +120,12 @@ void UDMXPixelMappingFixtureGroupComponent::SendDMX()
 	}, false);
 }
 
-void UDMXPixelMappingFixtureGroupComponent::Render()
+void UDMXPixelMappingFixtureGroupComponent::QueueDownsample()
 {
 	ForEachChild([&](UDMXPixelMappingBaseComponent* InComponent) {
 		if (UDMXPixelMappingOutputComponent* Component = Cast<UDMXPixelMappingOutputComponent>(InComponent))
 		{
-			Component->Render();
+			Component->QueueDownsample();
 		}
 	}, false);
 }
@@ -133,8 +133,6 @@ void UDMXPixelMappingFixtureGroupComponent::Render()
 void UDMXPixelMappingFixtureGroupComponent::PostParentAssigned()
 {
 	Super::PostParentAssigned();
-
-	ResizeOutputTarget(SizeX, SizeY);
 }
 
 #if WITH_EDITOR
@@ -148,12 +146,6 @@ FString UDMXPixelMappingFixtureGroupComponent::GetUserFriendlyName() const
 	return FString("Fixture Group: No Library");
 }
 #endif // WITH_EDITOR
-
-void UDMXPixelMappingFixtureGroupComponent::RenderAndSendDMX()
-{
-	Render();
-	SendDMX();
-}
 
 #if WITH_EDITOR
 const FText UDMXPixelMappingFixtureGroupComponent::GetPaletteCategory()
@@ -215,42 +207,10 @@ TSharedRef<SWidget> UDMXPixelMappingFixtureGroupComponent::BuildSlot(TSharedRef<
 	Slot->Offset(FMargin(PositionX, PositionY, 0.f, 0.f));
 	CachedWidget->SetWidthOverride(SizeX);
 	CachedWidget->SetHeightOverride(SizeY);
-	CachedLabelBox->SetWidthOverride(SizeX);
 
 	UpdateWidget();
 
 	return CachedWidget.ToSharedRef();
-}
-#endif // WITH_EDITOR
-
-#if WITH_EDITOR
-void UDMXPixelMappingFixtureGroupComponent::RenderEditorPreviewTexture()
-{
-	UTextureRenderTarget2D* OutTarget = GetOutputTexture();
-
-	if (UDMXPixelMappingRendererComponent* RendererComponent = GetFirstParentByClass<UDMXPixelMappingRendererComponent>(this))
-	{
-		const TSharedPtr<IDMXPixelMappingRenderer>& Renderer = RendererComponent->GetRenderer();
-		{
-			TArray<FDMXPixelMappingRendererPreviewInfo> GroupRender;
-			ForEachChild([this, &GroupRender](UDMXPixelMappingBaseComponent* InComponent) {
-				if (UDMXPixelMappingOutputDMXComponent* Component = Cast<UDMXPixelMappingOutputDMXComponent>(InComponent))
-				{
-					FDMXPixelMappingRendererPreviewInfo Config;
-					if (UTextureRenderTarget2D* OutputTeture = Component->GetOutputTexture())
-					{
-						Config.TextureResource = OutputTeture->Resource;
-					}
-					Config.TextureSize = Component->GetSize();
-					Config.TexturePosition = Component->GetPosition() - GetPosition();
-
-					GroupRender.Add(Config);
-				}
-			}, true);
-
-			Renderer->RenderPreview_GameThread(OutTarget->Resource, GroupRender);
-		}
-	}
 }
 #endif // WITH_EDITOR
 
@@ -287,19 +247,6 @@ void UDMXPixelMappingFixtureGroupComponent::UpdateWidget()
 	}
 }
 #endif // WITH_EDITOR
-
-UTextureRenderTarget2D* UDMXPixelMappingFixtureGroupComponent::GetOutputTexture()
-{
-	if (OutputTarget == nullptr)
-	{
-		const FName TargetName = MakeUniqueObjectName(this, UTextureRenderTarget2D::StaticClass(), TEXT("OutputTexture"));
-		OutputTarget = NewObject<UTextureRenderTarget2D>(this, TargetName);
-		OutputTarget->ClearColor = FLinearColor(0.f, 0.f, 0.f, 0.f);
-		OutputTarget->InitCustomFormat(10, 10, EPixelFormat::PF_B8G8R8A8, false);
-	}
-
-	return OutputTarget;
-}
 
 FVector2D UDMXPixelMappingFixtureGroupComponent::GetSize() const
 {
@@ -343,20 +290,6 @@ void UDMXPixelMappingFixtureGroupComponent::SetZOrder(int32 NewZOrder)
 	ZOrder = NewZOrder;
 }
 #endif //WITH_EDITOR
-
-void UDMXPixelMappingFixtureGroupComponent::ResizeOutputTarget(uint32 InSizeX, uint32 InSizeY)
-{
-	UTextureRenderTarget2D* Target = GetOutputTexture();
-
-	check(Target);
-
-	if ((InSizeX > 0 && InSizeY > 0) && (Target->SizeX != InSizeX || Target->SizeY != InSizeY))
-	{
-
-		Target->ResizeTarget(InSizeX, InSizeY);
-		Target->UpdateResourceImmediate();
-	}
-}
 
 void UDMXPixelMappingFixtureGroupComponent::SetPositionWithChildren()
 {
@@ -429,10 +362,7 @@ void UDMXPixelMappingFixtureGroupComponent::SetSizeWithinMinBoundaryBox()
 #if WITH_EDITOR
 	CachedWidget->SetWidthOverride(SizeX);
 	CachedWidget->SetHeightOverride(SizeY);
-	CachedLabelBox->SetWidthOverride(SizeX);
 #endif // WITH_EDITOR
-
-	ResizeOutputTarget(SizeX, SizeY);
 }
 
 #undef LOCTEXT_NAMESPACE

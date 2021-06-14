@@ -72,7 +72,7 @@ public:
 	//~ Begin SGraphNode interface
 	virtual void UpdateGraphNode() override;
 	virtual FVector2D ComputeDesiredSize(float) const override;
-	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter) override;
+	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty = true) override;
 	virtual void EndUserInteraction() const override;
 	virtual const FSlateBrush* GetShadowBrush(bool bSelected) const override;
 	virtual bool CanBeSelected(const FVector2D& MousePositionInNode) const override;
@@ -105,39 +105,37 @@ public:
 	virtual bool IsNodeEnabled() const;
 
 	/**
-	 * @return The depth index of the layer the node belongs to. 
-	 */
-	virtual int32 GetNodeLayerIndex() const { return 0; }
-
-	/**
 	 * @return The intended size of the node, taken from the backing EdGraphNode 
 	 */
 	virtual FVector2D GetSize() const;
-
-	/**
-	 * @return Whether this node can overlap its sibling nodes in the graph editor 
-	 */
-	virtual bool CanNodeOverlapSiblings() const { return true; }
-
-	/**
-	 * @return Whether this node can be placed outside of its parent node's bounds in the graph editor
-	 */
-	virtual bool CanNodeExceedParentBounds() const { return true; }
-
-	/**
-	 * @return Whether this node can be be smaller than the total bounds of its children
-	 */
-	virtual bool CanNodeEncroachChildBounds() const { return true; }
 
 	/**
 	 * @return Wether this node can be snap aligned when the user activates snap aligning
 	 */
 	virtual bool CanNodeBeSnapAligned() const { return false; }
 
+	/** @return Whether this node can be resized using the resize widget. */
+	virtual bool CanNodeBeResized() const { return true; }
+
+	/** @return The minimum size this node can be resized to. */
+	virtual float GetNodeMinimumSize() const { return 0; }
+
+	/** @return The maximum size this node can be resized to. */
+	virtual float GetNodeMaximumSize() const { return FLT_MAX; }
+
+	/** @return Whether this node's size is fixed to a specific aspect ratio. */
+	virtual bool IsAspectRatioFixed() const { return false; }
+
 protected:
 	EVisibility GetNodeVisibility() const;
 	EVisibility GetSelectionVisibility() const;
 	TOptional<EMouseCursor::Type> GetCursor() const;
+
+	virtual int32 GetNodeLogicalLayer() const;
+	virtual int32 GetNodeVisualLayer() const;
+
+	FVector2D GetReizeHandleOffset() const;
+	EVisibility GetResizeHandleVisibility() const;
 
 	bool CanSnapAlign() const;
 	void UpdateAlignmentTarget(FAlignmentRulerTarget& OutTarget, const FNodeAlignment& Alignment, bool bIsTargetingParent);
@@ -151,9 +149,6 @@ protected:
 		return CastedNode;
 	}
 
-public:
-	int32 ZIndex;
-
 protected:
 	TWeakPtr<FDisplayClusterConfiguratorBlueprintEditor> ToolkitPtr;
 
@@ -163,4 +158,7 @@ protected:
 	// These need to be mutable so they can be cleared in the node's EndUserInteraction call, which is a const function
 	mutable FAlignmentRulerTarget XAlignmentTarget;
 	mutable FAlignmentRulerTarget YAlignmentTarget;
+
+private:
+	static const float ResizeHandleSize;
 };

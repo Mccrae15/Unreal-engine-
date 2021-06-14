@@ -188,6 +188,8 @@ void FLevelSequenceEditorToolkit::Initialize(const EToolkitMode::Type Mode, cons
 
 		SequencerInitParams.HostCapabilities.bSupportsCurveEditor = true;
 		SequencerInitParams.HostCapabilities.bSupportsSaveMovieSceneAsset = true;
+		SequencerInitParams.HostCapabilities.bSupportsRecording = true;
+		SequencerInitParams.HostCapabilities.bSupportsRenderMovie = true;
 
 		TSharedRef<FExtender> ToolbarExtender = MakeShared<FExtender>();
 		ToolbarExtender->AddToolBarExtension("Base Commands", EExtensionHook::Before, nullptr, FToolBarExtensionDelegate::CreateSP(this, &FLevelSequenceEditorToolkit::ExtendSequencerToolbar));
@@ -201,7 +203,6 @@ void FLevelSequenceEditorToolkit::Initialize(const EToolkitMode::Type Mode, cons
 	FLevelEditorSequencerIntegrationOptions Options;
 	Options.bRequiresLevelEvents = true;
 	Options.bRequiresActorEvents = true;
-	Options.bCanRecord = true;
 
 	FLevelEditorSequencerIntegration::Get().AddSequencer(Sequencer.ToSharedRef(), Options);
 	ULevelSequenceEditorBlueprintLibrary::SetSequencer(Sequencer.ToSharedRef());
@@ -895,7 +896,7 @@ void FLevelSequenceEditorToolkit::BindAnimationInstance(USkeletalMeshComponent* 
 	Sequencer->GetHandleToObject(AnimInstance ? AnimInstance : NewObject<UAnimInstance>(SkeletalComponent));
 }
 
-bool FLevelSequenceEditorToolkit::OnRequestClose()
+void FLevelSequenceEditorToolkit::OnClose()
 {
 	UWorld* World = PlaybackContext->GetPlaybackContext();
 	UVREditorMode* VRMode = Cast<UVREditorMode>(GEditor->GetEditorWorldExtensionsManager()->GetEditorWorldExtensions(World)->FindExtension(UVREditorMode::StaticClass()));
@@ -907,7 +908,6 @@ bool FLevelSequenceEditorToolkit::OnRequestClose()
 	OpenToolkits.Remove(this);
 
 	OnClosedEvent.Broadcast();
-	return true;
 }
 
 bool FLevelSequenceEditorToolkit::CanFindInContentBrowser() const

@@ -23,9 +23,6 @@
 UDisplayClusterScreenComponent::UDisplayClusterScreenComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	// Children of UDisplayClusterSceneComponent must always Tick to be able to process VRPN tracking
-	PrimaryComponentTick.bCanEverTick = true;
-	
 	Size = SIZE_FROM_CM(FVector2D(100.f, 56.25f));
 
 #if WITH_EDITORONLY_DATA
@@ -51,6 +48,7 @@ UDisplayClusterScreenComponent::UDisplayClusterScreenComponent(const FObjectInit
 		VisScreenComponent->SetMobility(EComponentMobility::Movable);
 		VisScreenComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		VisScreenComponent->SetVisibility(true);
+		VisScreenComponent->SetIsVisualizationComponent(true);
 	}
 #endif
 }
@@ -81,11 +79,13 @@ void UDisplayClusterScreenComponent::ApplyConfigurationData()
 {
 	Super::ApplyConfigurationData();
 
-	if (DoesComponentBelongToBlueprint())
+	if (DoesComponentBelongToBlueprint() && !IsTemplate())
 	{
 		/*
 			Blueprint already contains component information, position, and heirarchy.
 			When this isn't a blueprint (such as config data only or on initial import) we can apply config data.
+			Screen size only needs to be set on instances as the CDO doesn't need it and will only propagate
+			changes that cause problems for the instances.
 		*/
 		SetScreenSize(Size);
 	}
@@ -118,7 +118,7 @@ void UDisplayClusterScreenComponent::SetScreenSize(const FVector2D& InSize)
 #if WITH_EDITOR
 	if (VisScreenComponent)
 	{
-		VisScreenComponent->SetRelativeScale3D(FVector(1.f, Size.X * 100.f, Size.Y * 100.f));
+		VisScreenComponent->SetRelativeScale3D(FVector(1.f, SizeCm.X, SizeCm.Y));
 	}
 #endif
 }

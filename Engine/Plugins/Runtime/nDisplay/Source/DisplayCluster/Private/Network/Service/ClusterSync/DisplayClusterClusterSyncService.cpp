@@ -8,7 +8,6 @@
 #include "Cluster/IPDisplayClusterClusterManager.h"
 #include "Game/IPDisplayClusterGameManager.h"
 #include "Config/IPDisplayClusterConfigManager.h"
-#include "Input/IPDisplayClusterInputManager.h"
 
 #include "Cluster/Controller/IDisplayClusterNodeController.h"
 #include "Cluster/DisplayClusterClusterEvent.h"
@@ -107,38 +106,17 @@ TSharedPtr<FDisplayClusterPacketInternal> FDisplayClusterClusterSyncService::Pro
 	const FString ReqName = Request->GetName();
 	if (ReqName == DisplayClusterClusterSyncStrings::WaitForGameStart::Name)
 	{
-		double ThreadTime  = 0.f;
-		double BarrierTime = 0.f;
-
-		WaitForGameStart(&ThreadTime, &BarrierTime);
-
-		Response->SetTextArg(DisplayClusterClusterSyncStrings::ArgumentsDefaultCategory, DisplayClusterClusterSyncStrings::WaitForGameStart::ArgThreadTime,  ThreadTime);
-		Response->SetTextArg(DisplayClusterClusterSyncStrings::ArgumentsDefaultCategory, DisplayClusterClusterSyncStrings::WaitForGameStart::ArgBarrierTime, BarrierTime);
-
+		WaitForGameStart();
 		return Response;
 	}
 	else if (ReqName == DisplayClusterClusterSyncStrings::WaitForFrameStart::Name)
 	{
-		double ThreadTime  = 0.f;
-		double BarrierTime = 0.f;
-
-		WaitForFrameStart(&ThreadTime, &BarrierTime);
-
-		Response->SetTextArg(DisplayClusterClusterSyncStrings::ArgumentsDefaultCategory, DisplayClusterClusterSyncStrings::WaitForGameStart::ArgThreadTime,  ThreadTime);
-		Response->SetTextArg(DisplayClusterClusterSyncStrings::ArgumentsDefaultCategory, DisplayClusterClusterSyncStrings::WaitForGameStart::ArgBarrierTime, BarrierTime);
-
+		WaitForFrameStart();
 		return Response;
 	}
 	else if (ReqName == DisplayClusterClusterSyncStrings::WaitForFrameEnd::Name)
 	{
-		double ThreadTime  = 0.f;
-		double BarrierTime = 0.f;
-
-		WaitForFrameEnd(&ThreadTime, &BarrierTime);
-
-		Response->SetTextArg(DisplayClusterClusterSyncStrings::ArgumentsDefaultCategory, DisplayClusterClusterSyncStrings::WaitForGameStart::ArgThreadTime,  ThreadTime);
-		Response->SetTextArg(DisplayClusterClusterSyncStrings::ArgumentsDefaultCategory, DisplayClusterClusterSyncStrings::WaitForGameStart::ArgBarrierTime, BarrierTime);
-
+		WaitForFrameEnd();
 		return Response;
 	}
 	else if (ReqName == DisplayClusterClusterSyncStrings::GetTimeData::Name)
@@ -176,14 +154,6 @@ TSharedPtr<FDisplayClusterPacketInternal> FDisplayClusterClusterSyncService::Pro
 		Response->SetTextArgs(DisplayClusterClusterSyncStrings::ArgumentsDefaultCategory, SyncData);
 		return Response;
 	}
-	else if (ReqName == DisplayClusterClusterSyncStrings::GetInputData::Name)
-	{
-		TMap<FString, FString> InputData;
-		GetInputData(InputData);
-
-		Response->SetTextArgs(DisplayClusterClusterSyncStrings::ArgumentsDefaultCategory, InputData);
-		return Response;
-	}
 	else if (ReqName == DisplayClusterClusterSyncStrings::GetEventsData::Name)
 	{
 		TArray<TSharedPtr<FDisplayClusterClusterEventJson, ESPMode::ThreadSafe>>   JsonEvents;
@@ -215,25 +185,25 @@ TSharedPtr<FDisplayClusterPacketInternal> FDisplayClusterClusterSyncService::Pro
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterProtocolClusterSync
 //////////////////////////////////////////////////////////////////////////////////////////////
-void FDisplayClusterClusterSyncService::WaitForGameStart(double* ThreadWaitTime, double* BarrierWaitTime)
+void FDisplayClusterClusterSyncService::WaitForGameStart()
 {
-	if (BarrierGameStart.Wait(ThreadWaitTime, BarrierWaitTime) != FDisplayClusterBarrier::WaitResult::Ok)
+	if (BarrierGameStart.Wait() != FDisplayClusterBarrier::WaitResult::Ok)
 	{
 		FDisplayClusterAppExit::ExitApplication(FDisplayClusterAppExit::EExitType::NormalSoft, FString("Error/timeout on game start barrier. Exit required."));
 	}
 }
 
-void FDisplayClusterClusterSyncService::WaitForFrameStart(double* ThreadWaitTime, double* BarrierWaitTime)
+void FDisplayClusterClusterSyncService::WaitForFrameStart()
 {
-	if (BarrierFrameStart.Wait(ThreadWaitTime, BarrierWaitTime) != FDisplayClusterBarrier::WaitResult::Ok)
+	if (BarrierFrameStart.Wait() != FDisplayClusterBarrier::WaitResult::Ok)
 	{
 		FDisplayClusterAppExit::ExitApplication(FDisplayClusterAppExit::EExitType::NormalSoft, FString("Error/timeout on frame start barrier. Exit required."));
 	}
 }
 
-void FDisplayClusterClusterSyncService::WaitForFrameEnd(double* ThreadWaitTime, double* BarrierWaitTime)
+void FDisplayClusterClusterSyncService::WaitForFrameEnd()
 {
-	if (BarrierFrameEnd.Wait(ThreadWaitTime, BarrierWaitTime) != FDisplayClusterBarrier::WaitResult::Ok)
+	if (BarrierFrameEnd.Wait() != FDisplayClusterBarrier::WaitResult::Ok)
 	{
 		FDisplayClusterAppExit::ExitApplication(FDisplayClusterAppExit::EExitType::NormalSoft, FString("Error/timeout on frame end barrier. Exit required."));
 	}
@@ -249,12 +219,6 @@ void FDisplayClusterClusterSyncService::GetSyncData(TMap<FString, FString>& Sync
 {
 	static IDisplayClusterNodeController* const NodeController = GDisplayCluster->GetPrivateClusterMgr()->GetController();
 	NodeController->GetSyncData(SyncData, SyncGroup);
-}
-
-void FDisplayClusterClusterSyncService::GetInputData(TMap<FString, FString>& InputData)
-{
-	static IDisplayClusterNodeController* const NodeController = GDisplayCluster->GetPrivateClusterMgr()->GetController();
-	return NodeController->GetInputData(InputData);
 }
 
 void FDisplayClusterClusterSyncService::GetEventsData(TArray<TSharedPtr<FDisplayClusterClusterEventJson, ESPMode::ThreadSafe>>& JsonEvents, TArray<TSharedPtr<FDisplayClusterClusterEventBinary, ESPMode::ThreadSafe>>& BinaryEvents)

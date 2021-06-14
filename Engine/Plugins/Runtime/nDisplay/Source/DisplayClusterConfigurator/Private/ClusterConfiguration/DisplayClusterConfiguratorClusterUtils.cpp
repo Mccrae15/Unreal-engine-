@@ -4,13 +4,16 @@
 
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
 #include "DisplayClusterConfigurationTypes.h"
+#include "DisplayClusterConfiguratorPropertyUtils.h"
 #include "DisplayClusterConfiguratorStyle.h"
 #include "DisplayClusterConfiguratorUtils.h"
 #include "ClusterConfiguration/SDisplayClusterConfiguratorNewClusterItemDialog.h"
+#include "ClusterConfiguration/ViewModels/DisplayClusterConfiguratorClusterNodeViewModel.h"
 #include "Views/DragDrop/DisplayClusterConfiguratorClusterNodeDragDropOp.h"
 #include "Views/DragDrop/DisplayClusterConfiguratorViewportDragDropOp.h"
 
 #include "Factories.h"
+#include "ISinglePropertyView.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "UnrealExporter.h"
@@ -22,10 +25,12 @@
 
 #define LOCTEXT_NAMESPACE "FDisplayClusterConfiguratorClusterUtils"
 
-const FVector2D FDisplayClusterConfiguratorClusterUtils::NewClusterItemDialogSize = FVector2D(768, 512);
+const FVector2D FDisplayClusterConfiguratorClusterUtils::NewClusterItemDialogSize = FVector2D(410, 512);
 const FString FDisplayClusterConfiguratorClusterUtils::DefaultNewHostName = TEXT("Host");
 const FString FDisplayClusterConfiguratorClusterUtils::DefaultNewClusterNodeName = TEXT("Node");
 const FString FDisplayClusterConfiguratorClusterUtils::DefaultNewViewportName = TEXT("VP");
+
+using namespace DisplayClusterConfiguratorPropertyUtils;
 
 UDisplayClusterConfigurationClusterNode* FDisplayClusterConfiguratorClusterUtils::CreateNewClusterNodeFromDialog(const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& Toolkit, UDisplayClusterConfigurationCluster* Cluster, const FDisplayClusterConfigurationRectangle& PresetRect, FString PresetHost)
 {
@@ -38,8 +43,23 @@ UDisplayClusterConfigurationClusterNode* FDisplayClusterConfiguratorClusterUtils
 
 	const FString InitialName = GetUniqueNameForClusterNode(DefaultNewClusterNodeName, Cluster, true);
 	
+	bool bAutoposition = true;
 	bool bAddViewport = true;
 	TSharedRef<SWidget> ClusterNodeFooter = SNew(SVerticalBox)
+		+SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(2.0f)
+		[
+			SNew(SCheckBox)
+			.IsChecked_Lambda([&bAutoposition]() { return bAutoposition ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+			.OnCheckStateChanged_Lambda([&bAutoposition](ECheckBoxState NewState) { bAutoposition = NewState == ECheckBoxState::Checked; })
+			.ToolTipText(LOCTEXT("AddNewClusterNode_AutoPositionToolTip", "When checked, auto-positions the new cluster node to prevent overlap with other cluster nodes in the same host"))
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("AddNewClusterNode_AutoPositionLabel", "Adjust Cluster Node Position to Prevent Overlap"))
+			]
+		]
+
 		+SVerticalBox::Slot()
 		.AutoHeight()
 		.Padding(2.0f)
@@ -72,9 +92,19 @@ UDisplayClusterConfigurationClusterNode* FDisplayClusterConfiguratorClusterUtils
 	if (DialogContent->WasAccepted())
 	{
 		const FString ItemName = DialogContent->GetItemName();
-		NewNode = DuplicateObject(NodeTemplate, Cluster);
-		NewNode->SetFlags(RF_Transactional);
-		AddClusterNodeToCluster(NewNode, Cluster, ItemName);
+		NodeTemplate->SetFlags(RF_Transactional);
+
+		if (bAutoposition)
+		{
+			FVector2D DesiredPosition = FVector2D(NodeTemplate->WindowRect.X, NodeTemplate->WindowRect.Y);
+			FVector2D DesiredSize = FVector2D(NodeTemplate->WindowRect.W, NodeTemplate->WindowRect.H);
+			FVector2D NewPosition = FindNextAvailablePositionForClusterNode(Cluster, NodeTemplate->Host, DesiredPosition, DesiredSize);
+
+			NodeTemplate->WindowRect.X = NewPosition.X;
+			NodeTemplate->WindowRect.Y = NewPosition.Y;
+		}
+
+		NewNode = AddClusterNodeToCluster(NodeTemplate, Cluster, ItemName);
 
 		// If the newly added cluster node is the only node in the cluster, it should be the master node, so set it as the master
 		if (Cluster->Nodes.Num() == 1)
@@ -85,11 +115,11 @@ UDisplayClusterConfigurationClusterNode* FDisplayClusterConfiguratorClusterUtils
 		if (bAddViewport)
 		{
 			const FString ViewportName = GetUniqueNameForViewport(DefaultNewViewportName, NewNode, true);
-			UDisplayClusterConfigurationViewport* NewViewport = NewObject<UDisplayClusterConfigurationViewport>(NewNode, NAME_None, RF_Transactional);
+			UDisplayClusterConfigurationViewport* NewViewport = NewObject<UDisplayClusterConfigurationViewport>(NewNode, NAME_None, RF_Transactional | RF_ArchetypeObject | RF_Public);
 			NewViewport->Region.W = NewNode->WindowRect.W;
 			NewViewport->Region.H = NewNode->WindowRect.H;
 
-			AddViewportToClusterNode(NewViewport, NewNode, ViewportName);
+			NewViewport = AddViewportToClusterNode(NewViewport, NewNode, ViewportName);
 		}
 	}
 
@@ -101,7 +131,7 @@ UDisplayClusterConfigurationClusterNode* FDisplayClusterConfiguratorClusterUtils
 
 UDisplayClusterConfigurationViewport* FDisplayClusterConfiguratorClusterUtils::CreateNewViewportFromDialog(const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& Toolkit, UDisplayClusterConfigurationClusterNode* ClusterNode, const FDisplayClusterConfigurationRectangle& PresetRect)
 {
-	UDisplayClusterConfigurationViewport* ViewportTemplate = NewObject<UDisplayClusterConfigurationViewport>(Toolkit->GetBlueprintObj());
+	UDisplayClusterConfigurationViewport* ViewportTemplate = NewObject<UDisplayClusterConfigurationViewport>(Toolkit->GetBlueprintObj(), NAME_None, RF_Transactional | RF_ArchetypeObject | RF_Public);
 	ViewportTemplate->Region = FDisplayClusterConfigurationRectangle(PresetRect);
 
 	UDisplayClusterConfigurationCluster* Cluster = Toolkit->GetEditorData()->Cluster;
@@ -122,6 +152,37 @@ UDisplayClusterConfigurationViewport* FDisplayClusterConfiguratorClusterUtils::C
 		FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForViewport(DefaultNewViewportName, ClusterNode, true) : 
 		FString::Printf(TEXT("%s_%d"), *DefaultNewViewportName, 0);
 
+	bool bAutoposition = true;
+	bool bExpandClusterNode = true;
+	TSharedRef<SWidget> ViewportFooter = SNew(SVerticalBox)
+		+SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(2.0f)
+		[
+			SNew(SCheckBox)
+			.IsChecked_Lambda([&bAutoposition]() { return bAutoposition ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+			.OnCheckStateChanged_Lambda([&bAutoposition](ECheckBoxState NewState) { bAutoposition = NewState == ECheckBoxState::Checked; })
+			.ToolTipText(LOCTEXT("AddNewViewport_AutoPositionToolTip", "When checked, auto-positions the new viewport to prevent overlap with other viewports in the same cluster node"))
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("AddNewViewport_AutoPositionLabel", "Adjust Viewport Position to Prevent Overlap"))
+			]
+		]
+	
+		+SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(2.0f)
+		[
+			SNew(SCheckBox)
+			.IsChecked_Lambda([&bExpandClusterNode]() { return bExpandClusterNode ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+			.OnCheckStateChanged_Lambda([&bExpandClusterNode](ECheckBoxState NewState) { bExpandClusterNode = NewState == ECheckBoxState::Checked; })
+			.ToolTipText(LOCTEXT("AddNewViewport_ExpandClusterNodeToolTip", "When checked, expands the parent cluster node to contain the new viewport"))
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("AddNewViewport_ExpandClusterNodeLabel", "Expand Cluster Node to Fit New Viewport"))
+			]
+		];
+
 	TSharedRef<SDisplayClusterConfiguratorNewClusterItemDialog> DialogContent = SNew(SDisplayClusterConfiguratorNewClusterItemDialog, ViewportTemplate)
 		.ParentItemOptions(ParentItems)
 		.InitiallySelectedParentItem(ClusterNodeName)
@@ -130,6 +191,7 @@ UDisplayClusterConfigurationViewport* FDisplayClusterConfiguratorClusterUtils::C
 		.InitialName(InitialName)
 		.MaxWindowWidth(NewClusterItemDialogSize.X)
 		.MaxWindowHeight(NewClusterItemDialogSize.Y)
+		.FooterContent(ViewportFooter)
 		.OnPresetChanged_Lambda([=](FVector2D Size) { ViewportTemplate->Region.W = Size.X; ViewportTemplate->Region.H = Size.Y; });
 
 	FDisplayClusterConfiguratorClusterUtils::ShowNewClusterItemDialogWindow(DialogContent, nullptr, LOCTEXT("AddNewViewport_DialogTitle", "Add New Viewport"), NewClusterItemDialogSize);
@@ -145,9 +207,32 @@ UDisplayClusterConfigurationViewport* FDisplayClusterConfiguratorClusterUtils::C
 
 		UDisplayClusterConfigurationClusterNode* ParentNode = Cluster->Nodes[ParentItem];
 
+		if (bAutoposition)
+		{
+			FVector2D DesiredPosition = FVector2D(ViewportTemplate->Region.X, ViewportTemplate->Region.Y);
+			FVector2D DesiredSize = FVector2D(ViewportTemplate->Region.W, ViewportTemplate->Region.H);
+			FVector2D NewPosition = FindNextAvailablePositionForViewport(ParentNode, DesiredPosition, DesiredSize);
+
+			ViewportTemplate->Region.X = NewPosition.X;
+			ViewportTemplate->Region.Y = NewPosition.Y;
+		}
+
 		NewViewport = DuplicateObject(ViewportTemplate, ParentNode);
 		NewViewport->SetFlags(RF_Transactional);
-		AddViewportToClusterNode(NewViewport, ParentNode, ItemName);
+		NewViewport = AddViewportToClusterNode(NewViewport, ParentNode, ItemName);
+
+		if (bExpandClusterNode)
+		{
+			FIntRect ViewportRegion = NewViewport->Region.ToRect();
+			FIntRect ClusterWindowRect = FIntRect(0, 0, ParentNode->WindowRect.W, ParentNode->WindowRect.H);
+
+			ClusterWindowRect.Union(ViewportRegion);
+			FIntPoint WindowSize = ClusterWindowRect.Max;
+			FDisplayClusterConfigurationRectangle NewWindowRect(ParentNode->WindowRect.X, ParentNode->WindowRect.Y, WindowSize.X, WindowSize.Y);
+
+			FDisplayClusterConfiguratorClusterNodeViewModel ClusterNodeVM(ParentNode);
+			ClusterNodeVM.SetWindowRect(NewWindowRect);
+		}
 	}
 
 	// Clean up the template object so that it gets GCed once this schema action has been destroyed
@@ -243,10 +328,112 @@ TSharedPtr<FDragDropOperation> FDisplayClusterConfiguratorClusterUtils::MakeDrag
 	}
 }
 
+namespace
+{
+	FVector2D FindAvailableSpace(const TArray<FBox2D>& OtherBounds, const FBox2D& DesiredBounds)
+	{
+		FBox2D CurrentBounds(DesiredBounds);
+
+		// Similar to FBox2D::Intersects, but ignores the case where the box edges are touching.
+		auto IntrudesFunc = [](const FBox2D& BoxA, const FBox2D& BoxB)
+		{
+
+			// Special case if both boxes are directly on top of each other, which is considered an intrusion.
+			if (BoxA == BoxB)
+			{
+				return true;
+			}
+
+			if ((BoxA.Min.X >= BoxB.Max.X) || (BoxB.Min.X >= BoxA.Max.X))
+			{
+				return false;
+			}
+
+			if ((BoxA.Min.Y >= BoxB.Max.Y) || (BoxB.Min.Y >= BoxA.Max.Y))
+			{
+				return false;
+			}
+
+			return true;
+		};
+
+		bool bIntersectsBounds;
+		do
+		{
+			bIntersectsBounds = false;
+
+			for (const FBox2D& Bounds : OtherBounds)
+			{
+				if (IntrudesFunc(CurrentBounds, Bounds))
+				{
+					bIntersectsBounds = true;
+
+					float Shift = Bounds.GetSize().X;
+					CurrentBounds.Min.X += Shift;
+					CurrentBounds.Max.X += Shift;
+
+					break;
+				}
+			}
+
+		} while (bIntersectsBounds);
+
+		return CurrentBounds.Min;
+	}
+}
+
+FVector2D FDisplayClusterConfiguratorClusterUtils::FindNextAvailablePositionForClusterNode(UDisplayClusterConfigurationCluster* Cluster, const FString& DesiredHost, const FVector2D& DesiredPosition, const FVector2D& DesiredSize)
+{
+	TMap<FString, TMap<FString, UDisplayClusterConfigurationClusterNode*>> ClusterNodesByHost;
+	SortClusterNodesByHost(Cluster->Nodes, ClusterNodesByHost);
+
+	// If the desired host doesn't exist yet, simply return the node's desired position
+	if (!ClusterNodesByHost.Contains(DesiredHost))
+	{
+		return DesiredPosition;
+	}
+
+	const TMap<FString, UDisplayClusterConfigurationClusterNode*>& ExistingClusterNodes = ClusterNodesByHost[DesiredHost];
+	if (!ExistingClusterNodes.Num())
+	{
+		return DesiredPosition;
+	}
+
+	FBox2D DesiredBounds = FBox2D(DesiredPosition, DesiredPosition + DesiredSize);
+	TArray<FBox2D> ClusterNodeBounds;
+	for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& ClusterNodeKeyPair : ExistingClusterNodes)
+	{
+		const FDisplayClusterConfigurationRectangle& WindowRect = ClusterNodeKeyPair.Value->WindowRect;
+		ClusterNodeBounds.Add(FBox2D(FVector2D(WindowRect.X, WindowRect.Y), FVector2D(WindowRect.X + WindowRect.W, WindowRect.Y + WindowRect.H)));
+	}
+
+	return FindAvailableSpace(ClusterNodeBounds, DesiredBounds);
+}
+
+FVector2D FDisplayClusterConfiguratorClusterUtils::FindNextAvailablePositionForViewport(UDisplayClusterConfigurationClusterNode* ClusterNode, const FVector2D& DesiredPosition, const FVector2D& DesiredSize)
+{
+	if (!ClusterNode)
+	{
+		return DesiredPosition;
+	}
+
+	FBox2D DesiredBounds = FBox2D(DesiredPosition, DesiredPosition + DesiredSize);
+	TArray<FBox2D> ViewportBounds;
+	for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportKeyPair : ClusterNode->Viewports)
+	{
+		const FDisplayClusterConfigurationRectangle& Region = ViewportKeyPair.Value->Region;
+		ViewportBounds.Add(FBox2D(FVector2D(Region.X, Region.Y), FVector2D(Region.X + Region.W, Region.Y + Region.H)));
+	}
+
+	return FindAvailableSpace(ViewportBounds, DesiredBounds);
+}
+
 void FDisplayClusterConfiguratorClusterUtils::SortClusterNodesByHost(const TMap<FString, UDisplayClusterConfigurationClusterNode*>& InClusterNodes, TMap<FString, TMap<FString, UDisplayClusterConfigurationClusterNode*>>& OutSortedNodes)
 {
 	for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& ClusterNodePair : InClusterNodes)
 	{
+		check(ClusterNodePair.Value)
+
 		FString Host = ClusterNodePair.Value->Host;
 		if (!OutSortedNodes.Contains(Host))
 		{
@@ -314,7 +501,7 @@ FString FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForHost(FString In
 	}
 
 	TArray<FString> UsedNames;
-	for (TPair<FString, UDisplayClusterConfigurationHostDisplayData*> HostPair : ParentCluster->HostDisplayData)
+	for (TPair<FString, UDisplayClusterConfigurationHostDisplayData*>& HostPair : ParentCluster->HostDisplayData)
 	{
 		UsedNames.Add(HostPair.Value->HostName.ToString());
 	}
@@ -372,10 +559,7 @@ bool FDisplayClusterConfiguratorClusterUtils::RemoveHost(UDisplayClusterConfigur
 
 	for (FString ClusterNodeToRemove : ClusterNodesToRemove)
 	{
-		Cluster->Nodes[ClusterNodeToRemove]->Modify();
-
-		Cluster->Modify();
-		Cluster->Nodes.Remove(ClusterNodeToRemove);
+		RemoveClusterNodeFromCluster(Cluster->Nodes[ClusterNodeToRemove]);
 	}
 
 	FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(Cluster, true);
@@ -448,7 +632,7 @@ FString FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForClusterNode(FSt
 	return UniqueName;
 }
 
-void FDisplayClusterConfiguratorClusterUtils::AddClusterNodeToCluster(UDisplayClusterConfigurationClusterNode* ClusterNode, UDisplayClusterConfigurationCluster* Cluster, FString NewClusterNodeName)
+UDisplayClusterConfigurationClusterNode* FDisplayClusterConfiguratorClusterUtils::AddClusterNodeToCluster(UDisplayClusterConfigurationClusterNode* ClusterNode, UDisplayClusterConfigurationCluster* Cluster, FString NewClusterNodeName)
 {
 	FString ClusterNodeName = "";
 
@@ -460,7 +644,9 @@ void FDisplayClusterConfiguratorClusterUtils::AddClusterNodeToCluster(UDisplayCl
 			ClusterNodeName = *OldKeyPtr;
 
 			ClusterNodeParent->Modify();
-			ClusterNodeParent->Nodes.Remove(*OldKeyPtr);
+
+			const FName FieldName = GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, Nodes);
+			RemoveKeyFromMap(ClusterNodeParent, FieldName, *OldKeyPtr);
 		}
 	}
 
@@ -477,10 +663,13 @@ void FDisplayClusterConfiguratorClusterUtils::AddClusterNodeToCluster(UDisplayCl
 	ClusterNodeName = GetUniqueNameForClusterNode(ClusterNodeName, Cluster);
 
 	Cluster->Modify();
-	Cluster->Nodes.Add(ClusterNodeName, ClusterNode);
-
 	ClusterNode->Modify();
 	ClusterNode->Rename(*ClusterNodeName, Cluster, REN_DontCreateRedirectors);
+
+	const FName FieldName = GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, Nodes);
+	ClusterNode = CastChecked<UDisplayClusterConfigurationClusterNode>(AddKeyWithInstancedValueToMap(Cluster, FieldName, ClusterNodeName, ClusterNode));
+
+	return ClusterNode;
 }
 
 bool FDisplayClusterConfiguratorClusterUtils::RemoveClusterNodeFromCluster(UDisplayClusterConfigurationClusterNode* ClusterNode)
@@ -492,9 +681,10 @@ bool FDisplayClusterConfiguratorClusterUtils::RemoveClusterNodeFromCluster(UDisp
 			ClusterNode->Modify();
 
 			ClusterNodeParent->Modify();
-			ClusterNodeParent->Nodes.Remove(*KeyPtr);
+			RemoveKeyFromMap(ClusterNodeParent, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, Nodes), *KeyPtr);
 
-			FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(ClusterNode, true);
+			ClusterNode->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_DoNotDirty);
+			FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(ClusterNodeParent, true);
 			
 			return true;
 		}
@@ -521,10 +711,13 @@ bool FDisplayClusterConfiguratorClusterUtils::RenameClusterNode(UDisplayClusterC
 
 			const FString UniqueName = GetUniqueNameForClusterNode(NewClusterNodeName, ClusterNodeParent);
 
-			ClusterNodeParent->Nodes.Remove(*KeyPtr);
-			ClusterNodeParent->Nodes.Add(UniqueName, ClusterNode);
+			const FName FieldName = GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, Nodes);
+			RemoveKeyFromMap(ClusterNodeParent, FieldName, *KeyPtr);
 
+			// Rename after remove, before add.
 			ClusterNode->Rename(*UniqueName, nullptr, REN_DontCreateRedirectors);
+			
+			ClusterNode = CastChecked<UDisplayClusterConfigurationClusterNode>(AddKeyWithInstancedValueToMap(ClusterNodeParent, FieldName, UniqueName, ClusterNode));
 
 			// If the cluster node was a master node before the rename, we need to update the master reference in the cluster with the new name
 			if (bIsMaster)
@@ -579,7 +772,31 @@ FString FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForViewport(FStrin
 		UniqueName = FString::Printf(TEXT("%s_%d"), *InitialName, NameIndex);
 	}
 
-	while (ParentClusterNode->Viewports.Contains(UniqueName))
+	// Viewport names must be unique across the entire cluster, not just within its parent cluster nodes. Gather all of the viewport names
+	// in the cluster to check for uniqueness. Add the parent cluster node's viewports first, in case we can't get to the root cluster through
+	// the cluster node's Outer (i.e. the cluster node has not been added to the cluster yet)
+	TSet<FString> UsedViewportNames;
+	for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportKeyPair : ParentClusterNode->Viewports)
+	{
+		UsedViewportNames.Add(ViewportKeyPair.Key);
+	}
+
+	if (UDisplayClusterConfigurationCluster* Cluster = Cast<UDisplayClusterConfigurationCluster>(ParentClusterNode->GetOuter()))
+	{
+		for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& ClusterNodeKeyPair : Cluster->Nodes)
+		{
+			UDisplayClusterConfigurationClusterNode* ClusterNode = ClusterNodeKeyPair.Value;
+			if (ClusterNode != ParentClusterNode)
+			{
+				for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportKeyPair : ClusterNode->Viewports)
+				{
+					UsedViewportNames.Add(ViewportKeyPair.Key);
+				}
+			}
+		}
+	}
+
+	while (UsedViewportNames.Contains(UniqueName))
 	{
 		UniqueName = FString::Printf(TEXT("%s_%d"), *InitialName, ++NameIndex);
 	}
@@ -593,7 +810,7 @@ FString FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForViewport(FStrin
 	return UniqueName;
 }
 
-void FDisplayClusterConfiguratorClusterUtils::AddViewportToClusterNode(UDisplayClusterConfigurationViewport* Viewport, UDisplayClusterConfigurationClusterNode* ClusterNode, FString NewViewportName)
+UDisplayClusterConfigurationViewport* FDisplayClusterConfiguratorClusterUtils::AddViewportToClusterNode(UDisplayClusterConfigurationViewport* Viewport, UDisplayClusterConfigurationClusterNode* ClusterNode, FString NewViewportName)
 {
 	FString ViewportName = "";
 
@@ -605,7 +822,8 @@ void FDisplayClusterConfiguratorClusterUtils::AddViewportToClusterNode(UDisplayC
 			ViewportName = *OldKeyPtr;
 
 			ViewportParent->Modify();
-			ViewportParent->Viewports.Remove(*OldKeyPtr);
+			
+			RemoveKeyFromMap(ViewportParent, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationClusterNode, Viewports), *OldKeyPtr);
 		}
 	}
 
@@ -622,12 +840,15 @@ void FDisplayClusterConfiguratorClusterUtils::AddViewportToClusterNode(UDisplayC
 	ViewportName = GetUniqueNameForViewport(ViewportName, ClusterNode);
 
 	ClusterNode->Modify();
-	ClusterNode->Viewports.Add(ViewportName, Viewport);
-
 	Viewport->Modify();
-	Viewport->Rename(*ViewportName, ClusterNode, REN_DontCreateRedirectors);
+	Viewport->Rename(*ViewportName, ClusterNode, REN_DontCreateRedirectors | REN_DoNotDirty | REN_ForceNoResetLoaders);
+
+	const FName FieldName = GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationClusterNode, Viewports);
+	Viewport = CastChecked<UDisplayClusterConfigurationViewport>(AddKeyWithInstancedValueToMap(ClusterNode, FieldName, ViewportName, Viewport));
 
 	FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(Viewport, true);
+
+	return Viewport;
 }
 
 bool FDisplayClusterConfiguratorClusterUtils::RemoveViewportFromClusterNode(UDisplayClusterConfigurationViewport* Viewport)
@@ -639,9 +860,11 @@ bool FDisplayClusterConfiguratorClusterUtils::RemoveViewportFromClusterNode(UDis
 			Viewport->Modify();
 
 			ViewportParent->Modify();
-			ViewportParent->Viewports.Remove(*KeyPtr);
 
-			FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(Viewport, true);
+			RemoveKeyFromMap(ViewportParent, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationClusterNode, Viewports), *KeyPtr);
+
+			Viewport->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_DoNotDirty);
+			FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(ViewportParent, true);
 			
 			return true;
 		}
@@ -661,16 +884,23 @@ bool FDisplayClusterConfiguratorClusterUtils::RenameViewport(UDisplayClusterConf
 				return false;
 			}
 
+			const FString UniqueName = GetUniqueNameForViewport(NewViewportName, ViewportParent);
+			
 			Viewport->Modify();
 			ViewportParent->Modify();
+			
+			const FName FieldName = GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationClusterNode, Viewports);
 
-			const FString UniqueName = GetUniqueNameForViewport(NewViewportName, ViewportParent);
+			// Remove and re-add. We can't just call RenameKeyInMap because when we rename the viewport after
+			// it will lose sync with instances.
+			
+			RemoveKeyFromMap(ViewportParent, FieldName, *KeyPtr);
 
-			ViewportParent->Viewports.Remove(*KeyPtr);
-			ViewportParent->Viewports.Add(UniqueName, Viewport);
-
+			// Rename after removing. If this is done after adding instances will lose sync with the CDO.
 			Viewport->Rename(*UniqueName, nullptr, REN_DontCreateRedirectors);
-
+			
+			AddKeyWithInstancedValueToMap(ViewportParent, FieldName, UniqueName, Viewport);
+			
 			FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(Viewport, true);
 			
 			return true;
@@ -872,7 +1102,7 @@ TArray<UObject*> FDisplayClusterConfiguratorClusterUtils::PasteClusterItemsFromC
 		{
 			UDisplayClusterConfigurationClusterNode* ClusterNodeCopy = DuplicateObject(ClusterNode, ClusterRoot);
 			ClusterNodeCopy->SetFlags(RF_Transactional);
-			AddClusterNodeToCluster(ClusterNodeCopy, ClusterRoot, ClusterNode->GetName());
+			ClusterNodeCopy = AddClusterNodeToCluster(ClusterNodeCopy, ClusterRoot, ClusterNode->GetName());
 
 			// If the host string isn't empty, it means the user is pasting the cluster node into a particular host, so set the cluster node's host string.
 			if (!HostStr.IsEmpty())
@@ -925,7 +1155,7 @@ TArray<UObject*> FDisplayClusterConfiguratorClusterUtils::PasteClusterItemsFromC
 		{
 			UDisplayClusterConfigurationViewport* ViewportCopy = DuplicateObject(Viewport, ClusterNode);
 			ViewportCopy->SetFlags(RF_Transactional);
-			AddViewportToClusterNode(ViewportCopy, ClusterNode, Viewport->GetName());
+			ViewportCopy = AddViewportToClusterNode(ViewportCopy, ClusterNode, Viewport->GetName());
 
 			if (PasteLocation.IsSet())
 			{
@@ -955,8 +1185,9 @@ TArray<UObject*> FDisplayClusterConfiguratorClusterUtils::PasteClusterItemsFromC
 				// Offset the location to keep this viewport's relative position with the group of pasted nodes consistent.
 				NewLocation -= FVector2D(Viewport->Region.X, Viewport->Region.Y) - *ReferencePosition;
 
-				ViewportCopy->Region.X = NewLocation.X;
-				ViewportCopy->Region.Y = NewLocation.Y;
+				// Viewports cannot have negative position
+				ViewportCopy->Region.X = FMath::Max(NewLocation.X, 0.0f);
+				ViewportCopy->Region.Y = FMath::Max(NewLocation.Y, 0.0f);
 			}
 
 			CopiedObjects.Add(ViewportCopy);

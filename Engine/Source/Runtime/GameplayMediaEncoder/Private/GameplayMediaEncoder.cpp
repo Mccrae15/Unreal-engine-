@@ -20,25 +20,6 @@
 
 #include "AudioEncoderFactory.h"
 
-// TODO (M84FIX) these includes are probably overkill
-#if PLATFORM_WINDOWS
-#include "Windows/AllowWindowsPlatformTypes.h"
-#include "Windows/PreWindowsApi.h"
-	#include <d3d11.h>
-	#include <mftransform.h>
-	#include <mfapi.h>
-	#include <mferror.h>
-	#include <mfidl.h>
-	#include <codecapi.h>
-	#include <shlwapi.h>
-	#include <mfreadwrite.h>
-	#include <d3d11_1.h>
-	#include <d3d12.h>
-	#include <dxgi1_4.h>
-#include "Windows/PostWindowsApi.h"
-#include "Windows/HideWindowsPlatformTypes.h"
-#endif /* PLATFORM_WINDOWS */
-
 DEFINE_LOG_CATEGORY(GameplayMediaEncoder);
 CSV_DEFINE_CATEGORY(GameplayMediaEncoder, true);
 
@@ -59,7 +40,7 @@ const uint32 HardcodedVideoFPS = 60;
 #else
 const uint32 HardcodedVideoFPS = 30;
 #endif
-const uint32 HardcodedVideoBitrate = 5000000;
+const uint32 HardcodedVideoBitrate = 20000000;
 const uint32 MinVideoBitrate = 1000000;
 const uint32 MaxVideoBitrate = 20000000;
 const uint32 MinVideoFPS = 10;
@@ -248,8 +229,7 @@ bool FGameplayMediaEncoder::Initialize()
 	FParse::Value(FCommandLine::Get(), TEXT("GameplayMediaEncoder.Bitrate="), VideoConfig.Bitrate);
 	VideoConfig.Bitrate = FMath::Clamp(VideoConfig.Bitrate, (uint32)MinVideoBitrate, (uint32)MaxVideoBitrate);
 
-
-	AVEncoder::FVideoEncoder::FInit videoInit;
+	AVEncoder::FVideoEncoder::FLayerConfig videoInit;
 	videoInit.Width = VideoConfig.Width;
 	videoInit.Height = VideoConfig.Height;
 	videoInit.MaxBitrate = MaxVideoBitrate;
@@ -260,28 +240,23 @@ bool FGameplayMediaEncoder::Initialize()
 	{
 		FString RHIName = GDynamicRHI->GetName();
 
+#if PLATFORM_WINDOWS
 		if (RHIName == TEXT("D3D11"))
-		{
-			auto UE4D3DDevice = static_cast<ID3D11Device*>(GDynamicRHI->RHIGetNativeDevice());
-			checkf(UE4D3DDevice != nullptr, TEXT("Cannot initialize NvEnc with invalid device"));
-			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForD3D11(UE4D3DDevice, VideoConfig.Width, VideoConfig.Height);
-		}
+			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForD3D11(GDynamicRHI->RHIGetNativeDevice(), VideoConfig.Width, VideoConfig.Height, true);
 		else if (RHIName == TEXT("D3D12"))
-		{
-			auto UE4D3DDevice = static_cast<ID3D12Device*>(GDynamicRHI->RHIGetNativeDevice());
-			checkf(UE4D3DDevice != nullptr, TEXT("Cannot initialize NvEnc with invalid device"));
-			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForD3D12(UE4D3DDevice, VideoConfig.Width, VideoConfig.Height);
-		}
-		/*
-		{
-			// (M84FIX) Vulkan/CUDA goes here
-		}
-		*/
+			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForD3D12(GDynamicRHI->RHIGetNativeDevice(), VideoConfig.Width, VideoConfig.Height, true);
+		else
+#endif
+#if WITH_CUDA
+			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForCUDA(FModuleManager::GetModuleChecked<FCUDAModule>("CUDA").GetCudaContext(), VideoConfig.Width, VideoConfig.Height, true);
+#else
+			unimplemented();
+#endif
 	}
 
 	auto& Available = AVEncoder::FVideoEncoderFactory::Get().GetAvailable();
 	VideoEncoder = AVEncoder::FVideoEncoderFactory::Get().Create(Available[0].ID, VideoEncoderInput, videoInit);
-	VideoEncoder->SetOnEncodedPacket([&](uint32 LayerIndex, const AVEncoder::FVideoEncoderInputFrame* Frame, const AVEncoder::FCodecPacket& Packet) {
+	VideoEncoder->SetOnEncodedPacket([this](uint32 LayerIndex, const AVEncoder::FVideoEncoderInputFrame* Frame, const AVEncoder::FCodecPacket& Packet) {
 		OnEncodedVideoFrame(LayerIndex, Frame, Packet);
 	});
 	
@@ -400,7 +375,7 @@ void FGameplayMediaEncoder::Shutdown()
 			VideoEncoder->Shutdown();
 			VideoEncoder.Reset();
 
-			BackBufferMap.Empty();
+			BackBuffers.Empty();
 		}
 	}
 
@@ -435,7 +410,7 @@ void FGameplayMediaEncoder::OnFrameBufferReady(SWindow& SlateWindow, const FText
 	ProcessVideoFrame(FrameBuffer);
 }
 
-void FloatToPCM16(float const* floatSamples, int32 numSamples, TArray<int16>& out)
+void FGameplayMediaEncoder::FloatToPCM16(float const* floatSamples, int32 numSamples, TArray<int16>& out) const
 {
 	out.Reset(numSamples);
 	out.AddZeroed(numSamples);
@@ -569,48 +544,155 @@ void FGameplayMediaEncoder::ProcessVideoFrame(const FTexture2DRHIRef& FrameBuffe
 		}
 	}
 
-	if (!ChangeVideoConfig())
-	{
-		return;
-	}
+	UpdateVideoConfig();
 
+	AVEncoder::FVideoEncoderInputFrame* InputFrame = ObtainInputFrame();
+	const int32 FrameId = InputFrame->GetFrameID();
+	InputFrame->SetTimestampUs(Now.GetTicks());
+
+	CopyTexture(FrameBuffer, BackBuffers[InputFrame]);
+
+	AVEncoder::FVideoEncoder::FEncodeOptions EncodeOptions;
+	VideoEncoder->Encode(InputFrame, EncodeOptions);
+
+	LastVideoInputTimestamp = Now;
+	NumCapturedFrames++;
+}
+
+AVEncoder::FVideoEncoderInputFrame* FGameplayMediaEncoder::ObtainInputFrame()
+{
 	AVEncoder::FVideoEncoderInputFrame* InputFrame = VideoEncoderInput->ObtainInputFrame();
-	InputFrame->PTS = Now.GetTicks();
 
-	if (!BackBufferMap.Contains(InputFrame))
+	if (!BackBuffers.Contains(InputFrame))
 	{
-		FRHIResourceCreateInfo CreateInfo(TEXT("GameplayMediaEncoderBackBuffer"));
-		auto Texture = GDynamicRHI->RHICreateTexture2D(VideoConfig.Width, VideoConfig.Height, EPixelFormat::PF_A8R8G8B8, 1, 1, TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
-		BackBufferMap.Add(InputFrame, Texture);
-
 #if PLATFORM_WINDOWS
 		FString RHIName = GDynamicRHI->GetName();
 		if (RHIName == TEXT("D3D11"))
 		{
-			InputFrame->SetTexture((ID3D11Texture2D*)Texture->GetNativeResource(), [&, InputFrame](ID3D11Texture2D* NativeTexture) { BackBufferMap.Remove(InputFrame); });
+			FRHIResourceCreateInfo CreateInfo(TEXT("VideoCapturerBackBuffer"));
+			FTexture2DRHIRef Texture = GDynamicRHI->RHICreateTexture2D(VideoConfig.Width, VideoConfig.Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
+			InputFrame->SetTexture((ID3D11Texture2D*)Texture->GetNativeResource(), [&, InputFrame](ID3D11Texture2D* NativeTexture) { BackBuffers.Remove(InputFrame); });
+			BackBuffers.Add(InputFrame, Texture);
 		}
 		else if (RHIName == TEXT("D3D12"))
 		{
-			InputFrame->SetTexture((ID3D12Resource*)Texture->GetNativeResource(), [&, InputFrame](ID3D12Resource* NativeTexture) { BackBufferMap.Remove(InputFrame); });
+			FRHIResourceCreateInfo CreateInfo(TEXT("VideoCapturerBackBuffer"));
+			FTexture2DRHIRef Texture = GDynamicRHI->RHICreateTexture2D(VideoConfig.Width, VideoConfig.Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
+			InputFrame->SetTexture((ID3D12Resource*)Texture->GetNativeResource(), [&, InputFrame](ID3D12Resource* NativeTexture) { BackBuffers.Remove(InputFrame); });
+			BackBuffers.Add(InputFrame, Texture);
 		}
-		else
-#endif
-		{
+#endif // PLATFORM_WINDOWS
 #if WITH_CUDA
-			// TODO (M84FIX) Vulkan goes here
-			InputFrame->SetTexture((void*)Texture->GetNativeResource(), [&, InputFrame](void* NativeTexture) { BackBuffers.Remove(InputFrame); });
-#endif
-		}
+#if PLATFORM_WINDOWS
+		else if (RHIName == TEXT("Vulkan"))
+#endif // PLATFORM_WINDOWS
+		{
+			FRHIResourceCreateInfo CreateInfo(TEXT("VideoCapturerBackBuffer"));
 
-		UE_LOG(LogTemp, Log, TEXT("%d backbuffers currently allocated"), BackBufferMap.Num());
+			// TODO (M84FIX) Replace with CUDA texture
+			// Create a texture that can be exposed to external memory
+			FTexture2DRHIRef Texture = GDynamicRHI->RHICreateTexture2D(VideoConfig.Width, VideoConfig.Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
+
+			FVulkanTexture2D* VulkanTexture = static_cast<FVulkanTexture2D*>(Texture.GetReference());
+
+			FVulkanDynamicRHI* device = static_cast<FVulkanDynamicRHI*>(GDynamicRHI)->GetDevice()->GetInstanceHandle();
+
+			// Get the CUarray to that textures memory making sure the clear it when done
+			int fd;
+
+			{    // Generate VkMemoryGetFdInfoKHR
+				VkMemoryGetFdInfoKHR vkMemoryGetFdInfoKHR = {};
+				vkMemoryGetFdInfoKHR.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+				vkMemoryGetFdInfoKHR.pNext = NULL;
+				vkMemoryGetFdInfoKHR.memory = VulkanTexture->Surface.GetAllocationHandle();
+				vkMemoryGetFdInfoKHR.handleType =
+					VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR;
+
+				auto fpGetMemoryFdKHR = (PFN_vkGetMemoryFdKHR)VulkanRHI::vkGetDeviceProcAddr(device, "vkGetMemoryFdKHR");
+				VERIFYVULKANRESULT(fpGetMemoryFdKHR(device, &vkMemoryGetFdInfoKHR, &fd));
+			}
+
+			cuCtxPushCurrent(FModuleManager::GetModuleChecked<FCUDAModule>("CUDA").GetCudaContext());
+
+			CUexternalMemory mappedExternalMemory = nullptr;
+
+			{
+				// generate a cudaExternalMemoryHandleDesc
+				CUDA_EXTERNAL_MEMORY_HANDLE_DESC cudaExtMemHandleDesc = {};
+				cudaExtMemHandleDesc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
+				cudaExtMemHandleDesc.handle.fd = fd;
+				cudaExtMemHandleDesc.size = VulkanTexture->Surface.GetAllocationOffset() + VulkanTexture->Surface.GetMemorySize();
+
+				// import external memory
+				auto result = cuImportExternalMemory(&mappedExternalMemory, &cudaExtMemHandleDesc);
+				if (result != CUDA_SUCCESS)
+				{
+					UE_LOG(PixelStreamer, Error, TEXT("Failed to import external memory from vulkan error: %d"), result);
+				}
+			}
+
+			CUmipmappedArray mappedMipArray = nullptr;
+			CUarray mappedArray = nullptr;
+
+			{
+				CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mipmapDesc = {};
+				mipmapDesc.numLevels = 1;
+				mipmapDesc.offset = VulkanTexture->Surface.GetAllocationOffset();
+				mipmapDesc.arrayDesc.Width = Texture->GetSizeX();
+				mipmapDesc.arrayDesc.Height = Texture->GetSizeY();
+				mipmapDesc.arrayDesc.Depth = 0;
+				mipmapDesc.arrayDesc.NumChannels = 4;
+				mipmapDesc.arrayDesc.Format = CU_AD_FORMAT_UNSIGNED_INT8;
+				mipmapDesc.arrayDesc.Flags = CUDA_ARRAY3D_SURFACE_LDST | CUDA_ARRAY3D_COLOR_ATTACHMENT;
+
+				// get the CUarray from the external memory
+				auto result = cuExternalMemoryGetMappedMipmappedArray(&mappedMipArray, mappedExternalMemory, &mipmapDesc);
+				if (result != CUDA_SUCCESS)
+				{
+					UE_LOG(PixelStreamer, Error, TEXT("Failed to bind mipmappedArray error: %d"), result);
+				}
+			}
+
+			// get the CUarray from the external memory
+			CUresult mipMapArrGetLevelErr = cuMipmappedArrayGetLevel(&mappedArray, mappedMipArray, 0);
+			if (mipMapArrGetLevelErr != CUDA_SUCCESS)
+			{
+				UE_LOG(PixelStreamer, Error, TEXT("Failed to bind to mip 0."));
+			}
+
+			cuCtxPopCurrent(NULL);
+
+			InputFrame->SetTexture(mappedArray, [&, InputFrame](CUarray NativeTexture)
+				{
+					// free the cuda types
+					cuCtxPushCurrent(FModuleManager::GetModuleChecked<FCUDAModule>("CUDA").GetCudaContext());
+
+					if (mappedArray)
+					{
+						cuArrayDestroy(mappedArray);
+					}
+					if (mappedMipArray)
+					{
+						cuMipmappedArrayDestroy(mappedMipArray);
+					}
+					if (mappedExternalMemory)
+					{
+						cuDestroyExternalMemory(mappedExternalMemory);
+					}
+
+					cuCtxPopCurrent(NULL);
+
+					// finally remove the input frame
+					BackBuffers.Remove(InputFrame);
+				});
+			BackBuffers.Add(InputFrame, Texture);
+		}
+#endif // WITH_CUDA
+
+		UE_LOG(LogTemp, Log, TEXT("%d backbuffers currently allocated"), BackBuffers.Num());
 	}
 
-	CopyTexture(FrameBuffer, BackBufferMap[InputFrame]);
-
-	VideoEncoder->Encode(InputFrame, { false, [](const AVEncoder::FVideoEncoderInputFrame* InCompletedFrame) {} });
-
-	LastVideoInputTimestamp = Now;
-	NumCapturedFrames++;
+	return InputFrame;
 }
 
 void FGameplayMediaEncoder::SetVideoBitrate(uint32 Bitrate)
@@ -625,24 +707,28 @@ void FGameplayMediaEncoder::SetVideoFramerate(uint32 Framerate)
 	bChangeFramerate = true;
 }
 
-bool FGameplayMediaEncoder::ChangeVideoConfig()
+void FGameplayMediaEncoder::UpdateVideoConfig()
 {
-	if (bChangeBitrate)
+	if (bChangeBitrate || bChangeFramerate)
 	{
-		VideoEncoder->UpdateLayerBitrate(0, MaxVideoBitrate, NewVideoBitrate);
+		auto config = VideoEncoder->GetLayerConfig(0);
+
+		if (bChangeBitrate)
+		{
+			config.MaxBitrate = MaxVideoBitrate;
+			config.TargetBitrate = NewVideoBitrate;
+		}
+
+		if (bChangeFramerate)
+		{
+			config.MaxFramerate = NewVideoFramerate;
+			NumCapturedFrames = 0;
+		}
+
+		VideoEncoder->UpdateLayerConfig(0, config);
+		bChangeFramerate = false;
 		bChangeBitrate = false;
 	}
-
-	if (bChangeFramerate)
-	{
-		UE_LOG(GameplayMediaEncoder, Verbose, TEXT("framerate -> %d"), NewVideoFramerate.Load());
-
-		VideoEncoder->UpdateFrameRate(NewVideoFramerate);
-		bChangeFramerate = false;
-		NumCapturedFrames = 0;
-	}
-
-	return true;
 }
 
 void FGameplayMediaEncoder::OnEncodedAudioFrame(const AVEncoder::FMediaPacket& Packet)
@@ -659,7 +745,7 @@ void FGameplayMediaEncoder::OnEncodedVideoFrame(uint32 LayerIndex, const AVEncod
 {
 	AVEncoder::FMediaPacket packet(AVEncoder::EPacketType::Video);
 
-	packet.Timestamp = Packet.PTS;
+	packet.Timestamp = InputFrame->GetTimestampUs();
 	packet.Duration = 0; // This should probably be 1.0f / fps in ms
 	packet.Data = TArray<uint8>(Packet.Data, Packet.DataSize);
 	packet.Video.bKeyFrame = Packet.IsKeyFrame;
@@ -677,7 +763,7 @@ void FGameplayMediaEncoder::OnEncodedVideoFrame(uint32 LayerIndex, const AVEncod
 	InputFrame->Release();
 }
 
-void FGameplayMediaEncoder::CopyTexture(const FTexture2DRHIRef& SourceTexture, FTexture2DRHIRef& DestinationTexture)
+void FGameplayMediaEncoder::CopyTexture(const FTexture2DRHIRef& SourceTexture, FTexture2DRHIRef& DestinationTexture) const
 {
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 

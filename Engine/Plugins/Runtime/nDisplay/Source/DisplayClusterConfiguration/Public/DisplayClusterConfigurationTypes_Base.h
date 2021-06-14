@@ -9,7 +9,7 @@
 
 #include "DisplayClusterConfigurationTypes_Base.generated.h"
 
-USTRUCT()
+USTRUCT(Blueprintable)
 struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationRectangle
 {
 	GENERATED_BODY()
@@ -28,16 +28,16 @@ public:
 	FIntRect ToRect() const;
 
 public:
-	UPROPERTY(EditAnywhere, Category = nDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay)
 	int32 X;
 
-	UPROPERTY(EditAnywhere, Category = nDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay)
 	int32 Y;
 
-	UPROPERTY(EditAnywhere, Category = nDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay)
 	int32 W;
 
-	UPROPERTY(EditAnywhere, Category = nDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay)
 	int32 H;
 };
 
@@ -64,18 +64,18 @@ private:
 	TArray<UObject*> ExportedObjects;
 };
 
-USTRUCT()
+USTRUCT(Blueprintable)
 struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationPolymorphicEntity
 {
 	GENERATED_BODY()
 
 public:
 	// Polymorphic entity type
-	UPROPERTY(EditAnywhere, Category = nDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = NDisplay)
 	FString Type;
 
 	// Generic parameters map
-	UPROPERTY(EditAnywhere, Category = nDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = NDisplay)
 	TMap<FString, FString> Parameters;
 
 #if WITH_EDITORONLY_DATA
@@ -84,8 +84,11 @@ public:
 	 * This is needed in the event a custom policy is selected
 	 * but the custom type is a default policy. This allows users
 	 * to further customize default policies if necessary.
+	 *
+	 * EditAnywhere is required so we can manipulate the property
+	 * through a handle. Details will hide it from showing.
 	 */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = NDisplay)
 	bool bIsCustom = false;
 #endif
 };

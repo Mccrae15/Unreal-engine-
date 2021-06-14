@@ -16,9 +16,6 @@ class FDisplayClusterConfiguratorUtils
 {
 
 public:
-	/** Creates new ConfigurationData from scratch. */
-	static UDisplayClusterConfigurationData* GenerateNewConfigData();
-
 	/** Loads a config file into memory and generates a root actor from it. */
 	static ADisplayClusterRootActor* GenerateRootActorFromConfigFile(const FString& InFilename);
 	
@@ -59,4 +56,7 @@ public:
 
 	/** Return the "_impl" suffix used for visualization components. */
 	static FString GetImplSuffix() { return TEXT("_impl"); }
+
+	/** Format an nDisplay component name correctly. */
+	static FString FormatNDisplayComponentName(UClass* ComponentClass);
 };

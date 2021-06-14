@@ -29,6 +29,9 @@
 #include "GroomManager.h"
 #include "GroomInstance.h"
 #include "GroomCache.h"
+#include "GroomCacheStreamingManager.h"
+#include "GroomPluginSettings.h"
+#include "Async/ParallelFor.h"
 
 static float GHairClipLength = -1;
 static FAutoConsoleVariableRef CVarHairClipLength(TEXT("r.HairStrands.DebugClipLength"), GHairClipLength, TEXT("Clip hair strands which have a lenth larger than this value. (default is -1, no effect)"));
@@ -44,6 +47,9 @@ bool IsHairAdaptiveSubstepsEnabled() { return (GHairEnableAdaptiveSubsteps == 1)
 
 static int32 GHairBindingValidationEnable = 0;
 static FAutoConsoleVariableRef CVarHairBindingValidationEnable(TEXT("r.HairStrands.BindingValidation"), GHairBindingValidationEnable, TEXT("Enable groom binding validation, which report error/warnings with details about the cause."));
+
+static bool GUseGroomCacheStreaming = true;
+static FAutoConsoleVariableRef CVarGroomCacheStreamingEnable(TEXT("GroomCache.EnableStreaming"), GUseGroomCacheStreaming, TEXT("Enable groom cache streaming and prebuffering. Do not switch while groom caches are in use."));
 
 #define LOCTEXT_NAMESPACE "GroomComponent"
 
@@ -404,6 +410,7 @@ public:
 	{
 		// Forcing primitive uniform as we don't support robustly GPU scene data
 		bVFRequiresPrimitiveUniformBuffer = true;
+		bCastDeepShadow = true;
 
 		HairGroupInstances = Component->HairGroupInstances;
 		check(Component);
@@ -818,6 +825,12 @@ public:
 			return nullptr;
 		}
 
+		// Invalid primitive setup. This can happens when the (procedural) resources are not ready.
+		if (NumPrimitive == 0 && !bUseCulling)
+		{
+			return nullptr;
+		}
+
 		if (bWireframe)
 		{
 			MaterialRenderProxy = new FColoredMaterialRenderProxy( GEngine->WireframeMaterial ? GEngine->WireframeMaterial->GetRenderProxy() : NULL, FLinearColor(1.f, 0.5f, 0.f));
@@ -936,17 +949,31 @@ private:
 class FGroomCacheBuffers : public IGroomCacheBuffers
 {
 public:
-	virtual FGroomCacheAnimationData& GetCurrentFrameBuffer() override
+	FGroomCacheBuffers(UGroomCache* InGroomCache)
+	: GroomCache(InGroomCache)
+	{
+	}
+
+	virtual ~FGroomCacheBuffers()
+	{
+		Reset();
+	}
+
+	virtual void Reset()
+	{
+	}
+
+	virtual const FGroomCacheAnimationData& GetCurrentFrameBuffer() override
 	{
 		return CurrentFrame;
 	}
 
-	virtual FGroomCacheAnimationData& GetNextFrameBuffer() override
+	virtual const FGroomCacheAnimationData& GetNextFrameBuffer() override
 	{
 		return NextFrame;
 	}
 
-	virtual FGroomCacheAnimationData& GetInterpolatedFrameBuffer() override
+	virtual const FGroomCacheAnimationData& GetInterpolatedFrameBuffer() override
 	{
 		return InterpolatedFrame;
 	}
@@ -966,29 +993,255 @@ public:
 		return InterpolationFactor;
 	}
 
-	virtual void SetCurrentFrameIndex(int32 FrameIndex)
+	virtual void UpdateBuffersAtTime(float Time, bool bIsLooping)
 	{
-		CurrentFrameIndex = FrameIndex;
+		TRACE_CPUPROFILER_EVENT_SCOPE(FGroomCacheBuffers::UpdateBuffersAtTime);
+
+		// Find the frame indices and interpolation factor to interpolate between
+		int32 FrameIndexA = 0;
+		int32 FrameIndexB = 0;
+		float OutInterpolationFactor = 0.0f;
+		GroomCache->GetFrameIndicesAtTime(Time, bIsLooping, false, FrameIndexA, FrameIndexB, OutInterpolationFactor);
+
+		// Update and cache the frame data as needed
+		bool bComputeInterpolation = false;
+		if (FrameIndexA != CurrentFrameIndex)
+		{
+			bComputeInterpolation = true;
+			if (FrameIndexA == NextFrameIndex)
+			{
+				Swap(CurrentFrame, NextFrame);
+				CurrentFrameIndex = NextFrameIndex;
+			}
+			else
+			{
+				GroomCache->GetGroomDataAtFrameIndex(FrameIndexA, CurrentFrame);
+				CurrentFrameIndex = FrameIndexA;
+			}
+		}
+
+		if (FrameIndexB != NextFrameIndex)
+		{
+			bComputeInterpolation = true;
+			GroomCache->GetGroomDataAtFrameIndex(FrameIndexB, NextFrame);
+			NextFrameIndex = FrameIndexB;
+		}
+
+		// Make sure the initial interpolated frame is populated with valid data
+		if (InterpolatedFrame.GroupsData.Num() != CurrentFrame.GroupsData.Num())
+		{
+			InterpolatedFrame = CurrentFrame;
+		}
+
+		// Do interpolation of vertex positions if needed
+		if (bComputeInterpolation)
+		{
+			Interpolate(CurrentFrame, NextFrame, OutInterpolationFactor);
+		}
 	}
 
-	virtual void SetNextFrameIndex(int32 FrameIndex)
+	void Interpolate(const FGroomCacheAnimationData& FrameA, const FGroomCacheAnimationData& FrameB, float InInterpolationFactor)
 	{
-		NextFrameIndex = FrameIndex;
+		TRACE_CPUPROFILER_EVENT_SCOPE(FGroomCacheBuffers::InterpolateCPU);
+
+		if (FMath::IsNearlyEqual(InInterpolationFactor, InterpolationFactor, KINDA_SMALL_NUMBER))
+		{
+			return;
+		}
+
+		InterpolationFactor = InInterpolationFactor;
+
+		FScopeLock Lock(GetCriticalSection());
+
+		const int32 NumGroups = FrameA.GroupsData.Num();
+		for (int32 GroupIndex = 0; GroupIndex < NumGroups; ++GroupIndex)
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(FGroomCacheBuffers::InterpolateCPU_Group);
+
+			const FGroomCacheGroupData& CurrentGroupData = FrameA.GroupsData[GroupIndex];
+			const FGroomCacheGroupData& NextGroupData = FrameB.GroupsData[GroupIndex];
+			FGroomCacheGroupData& InterpolatedGroupData = InterpolatedFrame.GroupsData[GroupIndex];
+			const int32 NumVertices = CurrentGroupData.VertexData.PointsPosition.Num();
+
+			// Update the bounding box used for hair strands rendering computation
+			FVector InterpolatedCenter = FMath::Lerp(CurrentGroupData.BoundingBox.GetCenter(), NextGroupData.BoundingBox.GetCenter(), InterpolationFactor);
+			InterpolatedGroupData.BoundingBox = CurrentGroupData.BoundingBox.MoveTo(InterpolatedCenter) + NextGroupData.BoundingBox.MoveTo(InterpolatedCenter);
+
+			// Parallel batched interpolation
+			const int32 BatchSize = 1024;
+			const int32 BatchCount = (NumVertices + BatchSize - 1) / BatchSize;
+
+			ParallelFor(BatchCount, [&](int32 BatchIndex)
+			{
+				const int32 Start = BatchIndex * BatchSize;
+				const int32 End = FMath::Min(Start + BatchSize, NumVertices); // one-past end index
+
+				for (int32 VertexIndex = Start; VertexIndex < End; ++VertexIndex)
+				{
+					const FVector& CurrentPosition = CurrentGroupData.VertexData.PointsPosition[VertexIndex];
+					const FVector& NextPosition = NextGroupData.VertexData.PointsPosition[VertexIndex];
+
+					InterpolatedGroupData.VertexData.PointsPosition[VertexIndex] = FMath::Lerp(CurrentPosition, NextPosition, InterpolationFactor);
+				}
+			});
+		}
 	}
 
-	virtual void SetInterpolationFactor(float Factor)
+	FBox GetBoundingBox()
 	{
-		InterpolationFactor = Factor;
+		// Approximate bounding box used for visibility culling
+		FBox BBox(EForceInit::ForceInitToZero);
+		for (const FGroomCacheGroupData& GroupData : GetCurrentFrameBuffer().GroupsData)
+		{
+			BBox += GroupData.BoundingBox;
+		}
+
+		for (const FGroomCacheGroupData& GroupData : GetNextFrameBuffer().GroupsData)
+		{
+			BBox += GroupData.BoundingBox;
+		}
+
+		return BBox;
+	}
+
+
+protected:
+	static FGroomCacheAnimationData EmptyFrame;
+
+	UGroomCache* GroomCache;
+
+	/** Used with synchronous loading */
+	FGroomCacheAnimationData CurrentFrame;
+	FGroomCacheAnimationData NextFrame;
+
+	/** Used for CPU interpolation */
+	FGroomCacheAnimationData InterpolatedFrame;
+
+	int32 CurrentFrameIndex = -1;
+	int32 NextFrameIndex = -1;
+	float InterpolationFactor = 0.0f;
+};
+
+FGroomCacheAnimationData FGroomCacheBuffers::EmptyFrame;
+
+class FGroomCacheStreamedBuffers : public FGroomCacheBuffers
+{
+public:
+	FGroomCacheStreamedBuffers(UGroomCache* InGroomCache)
+		: FGroomCacheBuffers(InGroomCache)
+		, CurrentFramePtr(nullptr)
+		, NextFramePtr(nullptr)
+	{
+	}
+
+	virtual void Reset() override
+	{
+		// Unmap the frames that are currently mapped
+		if (CurrentFrameIndex != -1)
+		{
+			IGroomCacheStreamingManager::Get().UnmapAnimationData(GroomCache, CurrentFrameIndex);
+			CurrentFrameIndex = -1;
+			CurrentFramePtr = nullptr;
+		}
+
+		if (NextFrameIndex != -1)
+		{
+			IGroomCacheStreamingManager::Get().UnmapAnimationData(GroomCache, NextFrameIndex);
+			NextFrameIndex = -1;
+			NextFramePtr = nullptr;
+		}
+	}
+
+	virtual const FGroomCacheAnimationData& GetCurrentFrameBuffer() override
+	{
+		if (CurrentFramePtr)
+		{
+			return *CurrentFramePtr;
+		}
+		return EmptyFrame;
+	}
+
+	virtual const FGroomCacheAnimationData& GetNextFrameBuffer() override
+	{
+		if (NextFramePtr)
+		{
+			return *NextFramePtr;
+		}
+		return EmptyFrame;
+	}
+
+	virtual void UpdateBuffersAtTime(float Time, bool bIsLooping) override
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FGroomCacheStreamedBuffers::UpdateBuffersAtTime);
+
+		// Find the frame indices and interpolation factor to interpolate between
+		int32 FrameIndexA = 0;
+		int32 FrameIndexB = 0;
+		float OutInterpolationFactor = 0.0f;
+		GroomCache->GetFrameIndicesAtTime(Time, bIsLooping, false, FrameIndexA, FrameIndexB, OutInterpolationFactor);
+
+		// Update and cache the frame data as needed
+		bool bComputeInterpolation = false;
+		if (FrameIndexA != CurrentFrameIndex)
+		{
+			bComputeInterpolation = true;
+			if (FrameIndexA == NextFrameIndex)
+			{
+				// At this point, the NextFrame is already mapped so we know the pointer is valid
+				// It is mapped to increment its ref count
+				const FGroomCacheAnimationData* DataPtr = IGroomCacheStreamingManager::Get().MapAnimationData(GroomCache, NextFrameIndex);
+				IGroomCacheStreamingManager::Get().UnmapAnimationData(GroomCache, CurrentFrameIndex);
+
+				CurrentFramePtr = NextFramePtr;
+				CurrentFrameIndex = NextFrameIndex;
+			}
+			else
+			{
+				const FGroomCacheAnimationData* DataPtr = IGroomCacheStreamingManager::Get().MapAnimationData(GroomCache, FrameIndexA);
+				if (DataPtr)
+				{
+					IGroomCacheStreamingManager::Get().UnmapAnimationData(GroomCache, CurrentFrameIndex);
+					CurrentFramePtr = DataPtr;
+					CurrentFrameIndex = FrameIndexA;
+				}
+			}
+		}
+
+		if (FrameIndexB != NextFrameIndex)
+		{
+			bComputeInterpolation = true;
+
+			const FGroomCacheAnimationData* DataPtr = IGroomCacheStreamingManager::Get().MapAnimationData(GroomCache, FrameIndexB);
+			if (DataPtr)
+			{
+				IGroomCacheStreamingManager::Get().UnmapAnimationData(GroomCache, NextFrameIndex);
+				NextFramePtr = DataPtr;
+				NextFrameIndex = FrameIndexB;
+			}
+		}
+
+		if (CurrentFramePtr == nullptr || NextFramePtr == nullptr)
+		{
+			return;
+		}
+
+		// Make sure the initial interpolated frame is populated with valid data
+		if (InterpolatedFrame.GroupsData.Num() != CurrentFramePtr->GroupsData.Num())
+		{
+			InterpolatedFrame = *CurrentFramePtr;
+		}
+
+		// Do interpolation of vertex positions if needed
+		if (bComputeInterpolation)
+		{
+			Interpolate(*CurrentFramePtr, *NextFramePtr, OutInterpolationFactor);
+		}
 	}
 
 private:
-	FGroomCacheAnimationData CurrentFrame;
-	FGroomCacheAnimationData NextFrame;
-	FGroomCacheAnimationData InterpolatedFrame;
-
-	int32 CurrentFrameIndex = 0;
-	int32 NextFrameIndex = 0;
-	float InterpolationFactor = 0.0f;
+	/** Used with GroomCache streaming. Point to cached data in the manager */
+	const FGroomCacheAnimationData* CurrentFramePtr;
+	const FGroomCacheAnimationData* NextFramePtr;
 };
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -1446,24 +1699,32 @@ FBoxSphereBounds UGroomComponent::CalcBounds(const FTransform& InLocalToWorld) c
 		else
 		{
 			FBox LocalBounds(EForceInit::ForceInitToZero);
-			for (const FHairGroupData& GroupData : GroomAsset->HairGroupsData)
+			if (!GroomCacheBuffers.IsValid())
 			{
-				if (IsHairStrandsEnabled(EHairStrandsShaderType::Strands) && GroupData.Strands.HasValidData())
+				for (const FHairGroupData& GroupData : GroomAsset->HairGroupsData)
 				{
-					LocalBounds += GroupData.Strands.Data.BoundingBox;
+					if (IsHairStrandsEnabled(EHairStrandsShaderType::Strands) && GroupData.Strands.HasValidData())
+					{
+						LocalBounds += GroupData.Strands.Data.BoundingBox;
+					}
+					else if (IsHairStrandsEnabled(EHairStrandsShaderType::Cards) && GroupData.Cards.HasValidData())
+					{ 
+						LocalBounds += GroupData.Cards.GetBounds();
+					}
+					else if (IsHairStrandsEnabled(EHairStrandsShaderType::Meshes) && GroupData.Meshes.HasValidData())
+					{
+						LocalBounds += GroupData.Meshes.GetBounds();
+					}
+					else if (GroupData.Guides.HasValidData())
+					{
+						LocalBounds += GroupData.Guides.Data.BoundingBox;
+					}
 				}
-				else if (IsHairStrandsEnabled(EHairStrandsShaderType::Cards) && GroupData.Cards.HasValidData())
-				{ 
-					LocalBounds += GroupData.Cards.GetBounds();
-				}
-				else if (IsHairStrandsEnabled(EHairStrandsShaderType::Meshes) && GroupData.Meshes.HasValidData())
-				{
-					LocalBounds += GroupData.Meshes.GetBounds();
-				}
-				else if (GroupData.Guides.HasValidData())
-				{
-					LocalBounds += GroupData.Guides.Data.BoundingBox;
-				}
+			}
+			else
+			{
+				FGroomCacheBuffers* Buffers = static_cast<FGroomCacheBuffers*>(GroomCacheBuffers.Get());
+				LocalBounds = Buffers->GetBoundingBox();
 			}
 			return FBoxSphereBounds(LocalBounds.TransformBy(InLocalToWorld));
 		}
@@ -1912,7 +2173,7 @@ static UMeshComponent* ValidateBindingAsset(
 		return nullptr;
 	}
 
-	if (BindingAsset->GroomBindingType == EGroomBindingType::SkeletalMesh)
+	if (BindingAsset->GroomBindingType == EGroomBindingMeshType::SkeletalMesh)
 	{
 		return ValidateBindingAsset(GroomAsset, BindingAsset, Cast<USkeletalMeshComponent>(MeshComponent), bIsBindingReloading, bValidationEnable, Component);
 	}
@@ -1952,8 +2213,8 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 	if (ValidatedMeshComponent)
 	{
 		if (BindingAsset && 
-			((BindingAsset->GroomBindingType == EGroomBindingType::SkeletalMesh && Cast<USkeletalMeshComponent>(ValidatedMeshComponent)->SkeletalMesh == nullptr) ||
-			(BindingAsset->GroomBindingType == EGroomBindingType::GeometryCache && Cast<UGeometryCacheComponent>(ValidatedMeshComponent)->GeometryCache == nullptr)))
+			((BindingAsset->GroomBindingType == EGroomBindingMeshType::SkeletalMesh && Cast<USkeletalMeshComponent>(ValidatedMeshComponent)->SkeletalMesh == nullptr) ||
+			(BindingAsset->GroomBindingType == EGroomBindingMeshType::GeometryCache && Cast<UGeometryCacheComponent>(ValidatedMeshComponent)->GeometryCache == nullptr)))
 		{
 			ValidatedMeshComponent = nullptr;
 		}
@@ -1968,8 +2229,12 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 
 	if (GroomCache)
 	{
-		GroomCacheBuffers = MakeShared<FGroomCacheBuffers, ESPMode::ThreadSafe>();
+		GroomCacheBuffers = GUseGroomCacheStreaming ? MakeShared<FGroomCacheStreamedBuffers, ESPMode::ThreadSafe>(GroomCache) : MakeShared<FGroomCacheBuffers, ESPMode::ThreadSafe>(GroomCache);
 		UpdateGroomCache(ElapsedTime);
+	}
+	else
+	{
+		GroomCacheBuffers.Reset();
 	}
 
 	FTransform HairLocalToWorld = GetComponentTransform();
@@ -1985,7 +2250,7 @@ void UGroomComponent::InitResources(bool bIsBindingReloading)
 		HairGroupInstance->Debug.GroupCount = GroupCount;
 		HairGroupInstance->Debug.GroomAssetName = GroomAsset->GetName();
 		HairGroupInstance->Debug.MeshComponent = IsHairStrandsBindingEnable() ? RegisteredMeshComponent : nullptr;
-		HairGroupInstance->Debug.GroomBindingType = BindingAsset ? BindingAsset->GroomBindingType : EGroomBindingType::SkeletalMesh;
+		HairGroupInstance->Debug.GroomBindingType = BindingAsset ? BindingAsset->GroomBindingType : EGroomBindingMeshType::SkeletalMesh;
 		HairGroupInstance->Debug.GroomCacheType = GroomCache ? GroomCache->GetType() : EGroomCacheType::None;
 		HairGroupInstance->Debug.GroomCacheBuffers = GroomCacheBuffers;
 		if (RegisteredMeshComponent)
@@ -2426,6 +2691,11 @@ void UGroomComponent::OnRegister()
 	Super::OnRegister();
 	UpdateHairSimulation();
 
+	if (GUseGroomCacheStreaming)
+	{
+		IGroomCacheStreamingManager::Get().RegisterComponent(this);
+	}
+
 	// Insure the parent skeletal mesh is the same than the registered skeletal mesh, and if not reinitialized resources
 	// This can happens when the OnAttachment callback is not called, but the skeletal mesh change (e.g., the skeletal mesh get recompiled within a blueprint)
 	UMeshComponent* MeshComponent = GetAttachParent() ? Cast<UMeshComponent>(GetAttachParent()) : nullptr;
@@ -2434,6 +2704,11 @@ void UGroomComponent::OnRegister()
 	if (bNeedInitialization)
 	{
 		InitResources();
+	}
+	else if (GroomCache)
+	{
+		// Buffers already initialized, just need to update them
+		UpdateGroomCache(ElapsedTime);
 	}
 
 	const EWorldType::Type WorldType = GetWorldType();
@@ -2452,6 +2727,17 @@ void UGroomComponent::OnUnregister()
 {
 	Super::OnUnregister();
 	ReleaseHairSimulation();
+
+	if (GUseGroomCacheStreaming)
+	{
+		if (GroomCacheBuffers.IsValid())
+		{
+			// Reset the buffers so they can be updated at OnRegister
+			FGroomCacheBuffers* Buffers = static_cast<FGroomCacheBuffers*>(GroomCacheBuffers.Get());
+			Buffers->Reset();
+		}
+		IGroomCacheStreamingManager::Get().UnregisterComponent(this);
+	}
 }
 
 void UGroomComponent::BeginDestroy()
@@ -2507,14 +2793,11 @@ void UGroomComponent::UpdateGroomCache(float Time)
 {
 	if (GroomCache && GroomCacheBuffers.IsValid() && bRunning)
 	{
-		float AnimationTime = Time;
-		const float Duration = GroomCache->GetDuration();
-		if (bLooping && Duration > 0.0f)
-		{
-			AnimationTime = AnimationTime - Duration * FMath::FloorToFloat(AnimationTime / Duration);
-		}
-		FScopeLock Lock(GroomCacheBuffers->GetCriticalSection());
-		GroomCache->GetGroomDataAtTime(AnimationTime, GroomCacheBuffers->GetInterpolatedFrameBuffer());
+		FGroomCacheBuffers* Buffers = static_cast<FGroomCacheBuffers*>(GroomCacheBuffers.Get());
+		Buffers->UpdateBuffersAtTime(Time, bLooping);
+
+		// Trigger an update of the bounds so that it follows the GroomCache
+		MarkRenderTransformDirty();
 	}
 }
 
@@ -2524,7 +2807,18 @@ void UGroomComponent::SetGroomCache(UGroomCache* InGroomCache)
 	{
 		ReleaseResources();
 		ResetAnimationTime();
-		GroomCache = InGroomCache;
+
+		if (GUseGroomCacheStreaming)
+		{
+			IGroomCacheStreamingManager::Get().UnregisterComponent(this);
+			GroomCache = InGroomCache;
+			IGroomCacheStreamingManager::Get().RegisterComponent(this);
+		}
+		else
+		{
+			GroomCache = InGroomCache;
+		}
+
 		InitResources();
 	}
 }
@@ -2549,10 +2843,26 @@ void UGroomComponent::ResetAnimationTime()
 	ElapsedTime = 0.0f;
 }
 
+float UGroomComponent::GetAnimationTime() const
+{
+	return ElapsedTime;
+}
+
 void UGroomComponent::TickAtThisTime(const float Time, bool bInIsRunning, bool bInBackwards, bool bInIsLooping)
 {
 	if (GroomCache && bRunning && bManualTick)
 	{
+		float DeltaTime = Time - ElapsedTime;
+		ElapsedTime = Time;
+		if (GUseGroomCacheStreaming)
+		{
+			// Scrubbing forward (or backward) can induce large (or negative) delta time, so force a prefetch
+			if ((DeltaTime > GetDefault<UGroomPluginSettings>()->GroomCacheLookAheadBuffer) ||
+				(DeltaTime < 0))
+			{
+				IGroomCacheStreamingManager::Get().PrefetchData(this);
+			}
+		}
 		UpdateGroomCache(Time);
 	}
 }

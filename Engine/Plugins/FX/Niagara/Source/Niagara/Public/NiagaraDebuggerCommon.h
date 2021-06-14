@@ -55,10 +55,12 @@ struct FNiagaraOutlinerEmitterInstanceData
 
 /** Outliner information on a specific system instance. */
 USTRUCT()
-struct FNiagaraOutlinerSystemInstanceData
+struct NIAGARA_API FNiagaraOutlinerSystemInstanceData
 {
 	GENERATED_BODY()
-	
+
+	FNiagaraOutlinerSystemInstanceData();
+
 	/** Name of the component object for this instance, if there is one. */
 	UPROPERTY(VisibleAnywhere, Category = "System")
 	FString ComponentName;
@@ -272,16 +274,19 @@ enum class ENiagaraDebugPlaybackMode : uint8
 };
 
 UENUM()
-enum class ENiagaraDebugHudSystemVerbosity
+enum class ENiagaraDebugHudHAlign : uint8
 {
-	/** Display no text with the system. */
-	None = 0,
-	/** Display minimal information with the system, i.e. component / system name. */
-	Minimal = 1,
-	/** Display basic information with the system, i.e. Minimal + counts. */
-	Basic = 2,
-	/** Display basic information with the system, i.e. Basic + per emitter information. */
-	Verbose = 3,
+	Left,
+	Center,
+	Right
+};
+
+UENUM()
+enum class ENiagaraDebugHudVAlign : uint8
+{
+	Top,
+	Center,
+	Bottom
 };
 
 UENUM()
@@ -289,6 +294,32 @@ enum class ENiagaraDebugHudFont
 {
 	Small = 0,
 	Normal,
+};
+
+UENUM()
+enum class ENiagaraDebugHudVerbosity
+{
+	None,
+	Basic,
+	Verbose,
+};
+
+USTRUCT()
+struct FNiagaraDebugHudTextOptions
+{
+	GENERATED_BODY()
+		
+	UPROPERTY(Config, EditAnywhere, Category = "Text Options")
+	ENiagaraDebugHudFont Font = ENiagaraDebugHudFont::Small;
+
+	UPROPERTY(EditAnywhere, Category = "Text Options")
+	ENiagaraDebugHudHAlign	HorizontalAlignment = ENiagaraDebugHudHAlign::Left;
+
+	UPROPERTY(EditAnywhere, Category = "Text Options")
+	ENiagaraDebugHudVAlign	VerticalAlignment = ENiagaraDebugHudVAlign::Top;
+
+	UPROPERTY(EditAnywhere, Category = "Text Options")
+	FVector2D ScreenOffset = FVector2D::ZeroVector;
 };
 
 USTRUCT()
@@ -315,20 +346,9 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 
 	FNiagaraDebugHUDSettingsData();
 
-	/**
-	Changes the verbosity of the HUD display.
-	The default will only disable information if you enable a feature that impacts playback.
-	*/
-	UPROPERTY(EditAnywhere, Category = "Debug General")
-	ENiagaraDebugHudSystemVerbosity HudVerbosity = ENiagaraDebugHudSystemVerbosity::Minimal;
-
-	/** Modifies the display location of the HUD overview. */
-	UPROPERTY(Config, EditAnywhere, Category = "Debug General")
-	FIntPoint HUDLocation = FIntPoint(30.0f, 150.0f);
-
-	/** Selects which font to use for the HUD display. */
-	UPROPERTY(Config, EditAnywhere, Category = "Debug General")
-	ENiagaraDebugHudFont HUDFont = ENiagaraDebugHudFont::Normal;
+	/** Master control for all HUD features. */
+	UPROPERTY(EditAnywhere, Category = "Debug General", meta = (DisplayName = "Debug HUD Enabled"))
+	bool bEnabled = true;
 
 	/**
 	When enabled all Niagara systems that pass the filter will have the simulation data buffers validation.
@@ -345,6 +365,18 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	*/
 	UPROPERTY(EditAnywhere, Category = "Debug General")
 	bool bValidateParticleDataBuffers = false;
+
+	/** When enabled the overview display will be enabled. */
+	UPROPERTY(EditAnywhere, Category = "Debug Overview", meta = (DisplayName = "Debug Overview Enabled"))
+	bool bOverviewEnabled = false;
+
+	/** Overview display font to use. */
+	UPROPERTY(EditAnywhere, Category = "Debug Overview", meta = (DisplayName = "Debug Overview Font", EditCondition = "bOverviewEnabled"))
+	ENiagaraDebugHudFont OverviewFont = ENiagaraDebugHudFont::Normal;
+
+	/** Overview display location. */
+	UPROPERTY(EditAnywhere, Category = "Debug Overview", meta = (DisplayName = "Debug Overview Text Location", EditCondition = "bOverviewEnabled"))
+	FVector2D OverviewLocation = FIntPoint(30.0f, 150.0f);
 
 	/**
 	Wildcard filter which is compared against the Components Actor name to narrow down the detailed information.
@@ -386,32 +418,36 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	UPROPERTY(Config, EditAnywhere, Category = "Debug Filter", meta = (InlineEditConditionToggle))
 	bool bActorFilterEnabled = false;
 
-	/** Modifies the in world system display information level. */
+	/** When enabled system debug information will be displayed in world. */
 	UPROPERTY(Config, EditAnywhere, Category = "Debug System")
-	ENiagaraDebugHudSystemVerbosity SystemVerbosity = ENiagaraDebugHudSystemVerbosity::Basic;
+	ENiagaraDebugHudVerbosity SystemDebugVerbosity = ENiagaraDebugHudVerbosity::Basic;
+
+	/** When enabled we show information about emitter / particle counts. */
+	UPROPERTY(Config, EditAnywhere, Category = "Debug System", meta = (EditCondition = "SystemDebugVerbosity != ENiagaraDebugHudVerbosity::None"))
+	ENiagaraDebugHudVerbosity SystemEmitterVerbosity = ENiagaraDebugHudVerbosity::Basic;
 
 	/** When enabled will show the system bounds for all filtered systems. */
 	UPROPERTY(Config, EditAnywhere, Category = "Debug System")
 	bool bSystemShowBounds = false;
 
 	/** When disabled in world rendering will show systems deactivated by scalability. */
-	UPROPERTY(Config, EditAnywhere, Category = "Debug System")
+	UPROPERTY(Config, EditAnywhere, Category = "Debug System", meta = (EditCondition = "SystemDebugVerbosity != ENiagaraDebugHudVerbosity::None"))
 	bool bSystemShowActiveOnlyInWorld = true;
 
 	/** Should we display the system attributes. */
-	UPROPERTY(Config, EditAnywhere, Category = "Debug System", meta = (DisplayName="Show System Attributes"))
+	UPROPERTY(Config, EditAnywhere, Category = "Debug System", meta = (EditCondition = "SystemDebugVerbosity != ENiagaraDebugHudVerbosity::None", DisplayName="Show System Attributes"))
 	bool bShowSystemVariables = true;
 
 	/**
 	List of attributes to show about the system, each entry uses wildcard matching.
 	For example, "System.*" would match all system attributes.
 	*/
-	UPROPERTY(Config, EditAnywhere, Category = "Debug System", meta = (EditCondition = "bShowSystemVariables", DisplayName="System Attributes"))
+	UPROPERTY(Config, EditAnywhere, Category = "Debug System", meta = (EditCondition = "SystemDebugVerbosity != ENiagaraDebugHudVerbosity::None && bShowSystemVariables", DisplayName="System Attributes"))
 	TArray<FNiagaraDebugHUDVariable> SystemVariables;
 
-	/** Selects which font to use for system information display. */
-	UPROPERTY(Config, EditAnywhere, Category = "Debug System")
-	ENiagaraDebugHudFont SystemFont = ENiagaraDebugHudFont::Small;
+	/** Sets display text options for system information. */
+	UPROPERTY(Config, EditAnywhere, Category = "Debug System", meta=(EditCondition="SystemDebugVerbosity != ENiagaraDebugHudVerbosity::None"))
+	FNiagaraDebugHudTextOptions SystemTextOptions;
 
 	/** When enabled will show particle attributes from the list. */
 	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (DisplayName="Show Particle Attributes"))
@@ -432,9 +468,9 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables", DisplayName="Particle Attributes"))
 	TArray<FNiagaraDebugHUDVariable> ParticlesVariables;
 
-	/** Selects which font to use for particle information display. */
+	/** Sets display text options for particle information. */
 	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables"))
-	ENiagaraDebugHudFont ParticleFont = ENiagaraDebugHudFont::Small;
+	FNiagaraDebugHudTextOptions ParticleTextOptions;
 
 	/**
 	When enabled particle attributes will display with the system information
@@ -443,14 +479,14 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables", DisplayName="Show Particles Attributes With System"))
 	bool bShowParticlesVariablesWithSystem = false;
 
-	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (InlineEditConditionToggle))
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables"))
 	bool bUseMaxParticlesToDisplay = true;
 
 	/**
 	When enabled, the maximum number of particles to show information about.
 	When disabled all particles will show attributes, this can result in poor performance & potential OOM on some platforms.
 	*/
-	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables && bUseMaxParticlesToDisplay", UIMin="1", ClampMin="1"))
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bUseMaxParticlesToDisplay && bShowParticleVariables", UIMin="1", ClampMin="1"))
 	int32 MaxParticlesToDisplay = 32;
 
 	UPROPERTY()

@@ -36,20 +36,15 @@ static const FString MIMETypeDASH(TEXT("application/dash+xml"));
 FString GetMIMETypeForURL(const FString &URL)
 {
 	FString MimeType;
-	TUniquePtr<IURLParser> UrlParser(IURLParser::Create());
-	if (!UrlParser)
-	{
-		return MimeType;
-	}
-	UEMediaError Error = UrlParser->ParseURL(URL);
-	if (Error != UEMEDIA_ERROR_OK)
+	FURL_RFC3986 UrlParser;
+	if (!UrlParser.Parse(URL))
 	{
 		return MimeType;
 	}
 
 	//	FString PathOnly = UrlParser->GetPath();
 	TArray<FString> PathComponents;
-	UrlParser->GetPathComponents(PathComponents);
+	UrlParser.GetPathComponents(PathComponents);
 	if (PathComponents.Num())
 	{
 		FString LowerCaseExtension = FPaths::GetExtension(PathComponents.Last().ToLower());
@@ -130,6 +125,7 @@ void FAdaptiveStreamingPlayer::InternalLoadManifest(const FString& URL, const FS
 	// Remember the original request URL since we may lose the fragment part in requests.
 	ManifestURL = URL;
 	ManifestMimeTypeRequest.Reset();
+	ManifestType = EMediaFormatType::Unknown;
 	if (CurrentState == EPlayerState::eState_Idle)
 	{
 		FString mimeType = MimeType;
@@ -159,14 +155,17 @@ void FAdaptiveStreamingPlayer::InternalLoadManifest(const FString& URL, const FS
 			if (mimeType == Playlist::MIMETypeHLS)
 			{
 				ManifestReader = IPlaylistReaderHLS::Create(this);
+				ManifestType = EMediaFormatType::HLS;
 			}
 			else if (mimeType == Playlist::MIMETypeMP4)
 			{
 				ManifestReader = IPlaylistReaderMP4::Create(this);
+				ManifestType = EMediaFormatType::ISOBMFF;
 			}
 			else if (mimeType == Playlist::MIMETypeDASH)
 			{
 				ManifestReader = IPlaylistReaderDASH::Create(this);
+				ManifestType = EMediaFormatType::DASH;
 			}
 			else
 			{
@@ -210,9 +209,7 @@ bool FAdaptiveStreamingPlayer::SelectManifest()
 	if (ManifestReader)
 	{
 		check(Manifest == nullptr);
-		if (ManifestReader->GetPlaylistType() == TEXT("hls") ||
-			ManifestReader->GetPlaylistType() == TEXT("mp4") ||
-			ManifestReader->GetPlaylistType() == TEXT("dash"))
+		if (ManifestType != EMediaFormatType::Unknown)
 		{
 			TArray<FTimespan> SeekablePositions;
 			TSharedPtrTS<IManifest> NewPresentation = ManifestReader->GetManifest();
@@ -236,9 +233,9 @@ bool FAdaptiveStreamingPlayer::SelectManifest()
 			CurrentState = EPlayerState::eState_Ready;
 
 			double minBufTimeMPD = Manifest->GetMinBufferTime().GetAsSeconds();
-			PlayerConfig.InitialBufferMinTimeAvailBeforePlayback = Utils::Min(minBufTimeMPD * PlayerConfig.ScaleMPDInitialBufferMinTimeBeforePlayback,   PlayerConfig.InitialBufferMinTimeAvailBeforePlayback);
-			PlayerConfig.SeekBufferMinTimeAvailBeforePlayback    = Utils::Min(minBufTimeMPD * PlayerConfig.ScaleMPDSeekBufferMinTimeAvailBeforePlayback, PlayerConfig.SeekBufferMinTimeAvailBeforePlayback);
-			PlayerConfig.RebufferMinTimeAvailBeforePlayback 	 = Utils::Min(minBufTimeMPD * PlayerConfig.ScaleMPDRebufferMinTimeAvailBeforePlayback,   PlayerConfig.RebufferMinTimeAvailBeforePlayback);
+			PlayerConfig.InitialBufferMinTimeAvailBeforePlayback = Utils::Min(minBufTimeMPD, PlayerConfig.InitialBufferMinTimeAvailBeforePlayback);
+			PlayerConfig.SeekBufferMinTimeAvailBeforePlayback    = Utils::Min(minBufTimeMPD, PlayerConfig.SeekBufferMinTimeAvailBeforePlayback);
+			PlayerConfig.RebufferMinTimeAvailBeforePlayback 	 = Utils::Min(minBufTimeMPD, PlayerConfig.RebufferMinTimeAvailBeforePlayback);
 
 			return true;
 		}

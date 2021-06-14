@@ -30,43 +30,31 @@
 #include "Render/Projection/IDisplayClusterProjectionPolicyFactory.h"
 #include "Render/Synchronization/IDisplayClusterRenderSyncPolicy.h"
 
+#if PLATFORM_WINDOWS
 #include "ITextureShare.h"
 #include "ITextureShareItem.h"
+#endif
 
 #include "Render/Viewport/DisplayClusterViewportManager.h"
+#include "Render/Viewport/DisplayClusterViewportManagerProxy.h"
 #include "Render/Viewport/IDisplayClusterViewport.h"
 #include "Render/Viewport/IDisplayClusterViewportProxy.h"
+
+#include "Render/Viewport/Configuration/DisplayClusterViewportConfigurationHelpers_Postprocess.h"
 
 #include <utility>
 
 
-// Enable/disable warp&blend
-static TAutoConsoleVariable<int32> CVarWarpBlendEnabled(
-	TEXT("nDisplay.render.WarpBlendEnabled"),
-	1,
-	TEXT("Warp & Blend status\n")
-	TEXT("0 : disabled\n")
-	TEXT("1 : enabled\n")
-	,
-	ECVF_RenderThreadSafe
-);
 
 FDisplayClusterDeviceBase::FDisplayClusterDeviceBase(EDisplayClusterRenderFrameMode InRenderFrameMode)
 	: RenderFrameMode(InRenderFrameMode)
 {
-	DCViewportManager = MakeUnique<FDisplayClusterViewportManager>();
-
 	UE_LOG(LogDisplayClusterRender, Log, TEXT("Created DCRenderDevice"));
 }
 
 FDisplayClusterDeviceBase::~FDisplayClusterDeviceBase()
 {
 	//@todo: delete singleton object IDisplayClusterViewportManager
-}
-
-IDisplayClusterViewportManager& FDisplayClusterDeviceBase::GetViewportManager() const
-{
-	return *(DCViewportManager.Get());
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -80,47 +68,15 @@ bool FDisplayClusterDeviceBase::Initialize()
 		return false;
 	}
 
-	/*
-	// Get local node configuration
-	const UDisplayClusterConfigurationClusterNode* LocalNode = GDisplayCluster->GetPrivateConfigMgr()->GetLocalNode();
-	if (!LocalNode)
-	{
-		UE_LOG(LogDisplayClusterRender, Error, TEXT("Couldn't get configuration data for current cluster node"));
-		return false;
-	}
-
-	ADisplayClusterRootActor* const RootActor = IDisplayCluster::Get().GetGameMgr()->GetRootActor();
-	if(RootActor == nullptr)
-	{ 
-		UE_LOG(LogDisplayClusterRender, Error, TEXT("Couldn't get RootActor for current cluster node"));
-		return false;
-	}
-
-	FString LocalNodeId = IDisplayCluster::Get().GetConfigMgr()->GetLocalNodeId();
-	if (!GetViewportManager().UpdateConfiguration(GetRenderFrameMode(), LocalNodeId, RootActor))
-	{
-		UE_LOG(LogDisplayClusterRender, Error, TEXT("Invalid cluster node configuration"));
-		return false;
-	}
-
-	if (GetViewportManager().GetViewports().Num() < 1)
-	{
-		UE_LOG(LogDisplayClusterRender, Error, TEXT("No viewports created. At least one must present."));
-		return false;
-	}
-	*/
-
 	return true;
 }
 
 void FDisplayClusterDeviceBase::StartScene(UWorld* InWorld)
 {
-	GetViewportManager().StartScene(InWorld);
 }
 
 void FDisplayClusterDeviceBase::EndScene()
 {
-	GetViewportManager().EndScene();
 }
 
 void FDisplayClusterDeviceBase::PreTick(float DeltaSeconds)
@@ -205,18 +161,18 @@ void FDisplayClusterDeviceBase::AdjustViewRect(EStereoscopicPass StereoPassType,
 {
 	check(IsInGameThread());
 
-	if (GetViewportManager().IsSceneOpened() == false)
+	if (ViewportManagerPtr ==nullptr || ViewportManagerPtr->IsSceneOpened() == false)
 		{ return; }
 
 	uint32 ViewportContextNum = 0;
-	IDisplayClusterViewport* pViewport = GetViewportManager().FindViewport(StereoPassType, &ViewportContextNum);
-	if (pViewport == nullptr)
+	IDisplayClusterViewport* ViewportPtr = ViewportManagerPtr->FindViewport(StereoPassType, &ViewportContextNum);
+	if (ViewportPtr == nullptr)
 	{
 		UE_LOG(LogDisplayClusterRender, Warning, TEXT("Viewport StereoPassType='%i' not found"), int(StereoPassType));
 		return;
 	}
 
-	const FIntRect& ViewRect = pViewport->GetContexts()[ViewportContextNum].RenderTargetRect;
+	const FIntRect& ViewRect = ViewportPtr->GetContexts()[ViewportContextNum].RenderTargetRect;
 
 	X = ViewRect.Min.X;
 	Y = ViewRect.Min.Y;
@@ -224,7 +180,7 @@ void FDisplayClusterDeviceBase::AdjustViewRect(EStereoscopicPass StereoPassType,
 	SizeX = ViewRect.Width();
 	SizeY = ViewRect.Height();
 
-	UE_LOG(LogDisplayClusterRender, Verbose, TEXT("Adjusted view rect: Viewport='%s', ViewIndex=%d, [%d,%d - %d,%d]"), *pViewport->GetId(), ViewportContextNum, ViewRect.Min.X, ViewRect.Min.Y, ViewRect.Max.X, ViewRect.Max.Y);
+	UE_LOG(LogDisplayClusterRender, Verbose, TEXT("Adjusted view rect: Viewport='%s', ViewIndex=%d, [%d,%d - %d,%d]"), *ViewportPtr->GetId(), ViewportContextNum, ViewRect.Min.X, ViewRect.Min.Y, ViewRect.Max.X, ViewRect.Max.Y);
 }
 
 uint32 FDisplayClusterDeviceBase::GetViewIndexForPass(EStereoscopicPass StereoPassType) const
@@ -241,21 +197,27 @@ uint32 FDisplayClusterDeviceBase::GetViewIndexForPass(EStereoscopicPass StereoPa
 		if (IsInRenderingThread())
 		{
 			uint32 ViewportContextNum = 0;
-			IDisplayClusterViewportProxy* ViewportProxy = GetViewportManager().FindViewport_RenderThread(StereoPassType, &ViewportContextNum);
-			if (ViewportProxy)
+			if (ViewportManagerProxyPtr)
 			{
-				const FDisplayClusterViewport_Context& Context = ViewportProxy->GetContexts_RenderThread()[ViewportContextNum];
-				DecodedViewIndex =  Context.RenderFrameViewIndex;
+				IDisplayClusterViewportProxy* ViewportProxy = ViewportManagerProxyPtr->FindViewport_RenderThread(StereoPassType, &ViewportContextNum);
+				if (ViewportProxy)
+				{
+					const FDisplayClusterViewport_Context& Context = ViewportProxy->GetContexts_RenderThread()[ViewportContextNum];
+					DecodedViewIndex = Context.RenderFrameViewIndex;
+				}
 			}
 		}
 		else
 		{
 			uint32 ViewportContextNum = 0;
-			IDisplayClusterViewport* pViewport = GetViewportManager().FindViewport(StereoPassType, &ViewportContextNum);
-			if (pViewport)
+			if (ViewportManagerPtr)
 			{
-				const FDisplayClusterViewport_Context& Context = pViewport->GetContexts()[ViewportContextNum];
-				DecodedViewIndex = Context.RenderFrameViewIndex;
+				IDisplayClusterViewport* ViewportPtr = ViewportManagerPtr->FindViewport(StereoPassType, &ViewportContextNum);
+				if (ViewportPtr)
+				{
+					const FDisplayClusterViewport_Context& Context = ViewportPtr->GetContexts()[ViewportContextNum];
+					DecodedViewIndex = Context.RenderFrameViewIndex;
+				}
 			}
 		}
 		break;
@@ -269,51 +231,51 @@ void FDisplayClusterDeviceBase::CalculateStereoViewOffset(const enum EStereoscop
 	check(IsInGameThread());
 	check(WorldToMeters > 0.f);
 
-	if (GetViewportManager().IsSceneOpened() == false)
+	if (ViewportManagerPtr ==nullptr || ViewportManagerPtr->IsSceneOpened() == false)
 		{ return; }
 
 	uint32 ViewportContextNum = 0;
-	IDisplayClusterViewport* pViewport = GetViewportManager().FindViewport(StereoPassType, &ViewportContextNum);
-	if (pViewport == nullptr)
+	IDisplayClusterViewport* ViewportPtr = ViewportManagerPtr->FindViewport(StereoPassType, &ViewportContextNum);
+	if (ViewportPtr == nullptr)
 	{
 		UE_LOG(LogDisplayClusterRender, Warning, TEXT("Viewport StereoPassType='%i' not found"), int(StereoPassType));
 		return;
 	}
 
-	if (!pViewport->GetProjectionPolicy().IsValid())
+	if (!ViewportPtr->GetProjectionPolicy().IsValid())
 	{
 		// ignore viewports with uninitialized prj policy
 		return;
 	}
 
 	// Get root actor from viewport
-	ADisplayClusterRootActor* const RootActor = pViewport->GetOwner().GetRootActor();
+	ADisplayClusterRootActor* const RootActor = ViewportPtr->GetOwner().GetRootActor();
 	if (!RootActor)
 	{
 		UE_LOG(LogDisplayClusterRender, Warning, TEXT("No root actor found in game manager"));
 		return;
 	}
 
-	FDisplayClusterViewport_Context& InOutViewportContext = pViewport->GetContexts()[ViewportContextNum];
+	const FDisplayClusterViewport_Context& ViewportContext = ViewportPtr->GetContexts()[ViewportContextNum];
 
 	UE_LOG(LogDisplayClusterRender, VeryVerbose, TEXT("OLD ViewLoc: %s, ViewRot: %s"), *ViewLocation.ToString(), *ViewRotation.ToString());
 	UE_LOG(LogDisplayClusterRender, VeryVerbose, TEXT("WorldToMeters: %f"), WorldToMeters);
 
 
 	// Get camera ID assigned to the viewport
-	const FString& CameraId = pViewport->GetRenderSettings().CameraId;
+	const FString& CameraId = ViewportPtr->GetRenderSettings().CameraId;
 
 	// Get camera component assigned to the viewport (or default camera if nothing assigned)
 	UDisplayClusterCameraComponent* const ViewCamera = (CameraId.IsEmpty() ? RootActor->GetDefaultCamera() : RootActor->GetCameraById(CameraId));
 	if (!ViewCamera)
 	{
-		UE_LOG(LogDisplayClusterRender, Warning, TEXT("No camera found for viewport '%s'"), *pViewport->GetId());
+		UE_LOG(LogDisplayClusterRender, Warning, TEXT("No camera found for viewport '%s'"), *ViewportPtr->GetId());
 		return;
 	}
 
 	if (CameraId.Len() > 0)
 	{
-		UE_LOG(LogDisplayClusterRender, Verbose, TEXT("Viewport '%s' has assigned camera '%s'"), *pViewport->GetId(), *CameraId);
+		UE_LOG(LogDisplayClusterRender, Verbose, TEXT("Viewport '%s' has assigned camera '%s'"), *ViewportPtr->GetId(), *CameraId);
 	}
 
 	// Get the actual camera settings
@@ -343,7 +305,7 @@ void FDisplayClusterDeviceBase::CalculateStereoViewOffset(const enum EStereoscop
 	};
 
 	// Decode current eye type	
-	const EDisplayClusterEyeType EyeType = DecodeEyeType(InOutViewportContext.StereoscopicEye);
+	const EDisplayClusterEyeType EyeType = DecodeEyeType(ViewportContext.StereoscopicEye);
 	const int   EyeIndex = (int)EyeType;
 
 	float PassOffset = 0.f;
@@ -383,15 +345,10 @@ void FDisplayClusterDeviceBase::CalculateStereoViewOffset(const enum EStereoscop
 	}
 
 	// Perform view calculations on a policy side
-	if (!pViewport->GetProjectionPolicy()->CalculateView(pViewport, ViewportContextNum, ViewLocation, ViewRotation, ViewOffset, WorldToMeters, CfgNCP, CfgNCP))
+	if (ViewportPtr->CalculateView(ViewportContextNum, ViewLocation, ViewRotation, ViewOffset, WorldToMeters, CfgNCP, CfgNCP) == false)
 	{
-		UE_LOG(LogDisplayClusterRender, Warning, TEXT("Couldn't compute view parameters for Viewport %s, ViewIdx: %d"), *pViewport->GetId(), ViewportContextNum);
+		UE_LOG(LogDisplayClusterRender, Warning, TEXT("Couldn't compute view parameters for Viewport %s, ViewIdx: %d"), *ViewportPtr->GetId(), ViewportContextNum);
 	}
-
-	// Store the view location/rotation
-	InOutViewportContext.ViewLocation = ViewLocation;
-	InOutViewportContext.ViewRotation = ViewRotation;
-	InOutViewportContext.WorldToMeters = WorldToMeters;
 
 	UE_LOG(LogDisplayClusterRender, VeryVerbose, TEXT("ViewLoc: %s, ViewRot: %s"), *ViewLocation.ToString(), *ViewRotation.ToString());
 }
@@ -402,67 +359,90 @@ FMatrix FDisplayClusterDeviceBase::GetStereoProjectionMatrix(const enum EStereos
 
 	FMatrix PrjMatrix = FMatrix::Identity;
 
-	if (GetViewportManager().IsSceneOpened())
+	if (ViewportManagerPtr && ViewportManagerPtr->IsSceneOpened())
 	{
 		uint32 ViewportContextNum = 0;
-		IDisplayClusterViewport* pViewport = GetViewportManager().FindViewport(StereoPassType, &ViewportContextNum);
-		if (pViewport == nullptr)
+		IDisplayClusterViewport* ViewportPtr = ViewportManagerPtr->FindViewport(StereoPassType, &ViewportContextNum);
+		if (ViewportPtr == nullptr)
 		{
 			UE_LOG(LogDisplayClusterRender, Warning, TEXT("Viewport StereoPassType='%i' not found"), int(StereoPassType));
 		}
 		else
+		if (ViewportPtr->GetProjectionMatrix(ViewportContextNum, PrjMatrix) == false)
 		{
-			if (!pViewport->GetProjectionPolicy().IsValid())
-			{
-				// ignore viewports with uninitialized prj policy
-				return PrjMatrix;
-			}
-
-			FDisplayClusterViewport_Context& InOutViewportContext = pViewport->GetContexts()[ViewportContextNum];
-
-			if (pViewport->GetProjectionPolicy()->GetProjectionMatrix(pViewport, ViewportContextNum, PrjMatrix))
-			{
-				InOutViewportContext.ProjectionMatrix = PrjMatrix;
-			}
-			else
-			{
-				UE_LOG(LogDisplayClusterRender, Warning, TEXT("Got invalid projection matrix: Viewport %s, ViewIdx: %d"), *pViewport->GetId(), ViewportContextNum);
-			}
+			UE_LOG(LogDisplayClusterRender, Warning, TEXT("Got invalid projection matrix: Viewport %s, ViewIdx: %d"), *ViewportPtr->GetId(), ViewportContextNum);
 		}
 	}
 	
 	return PrjMatrix;
 }
 
-DECLARE_GPU_STAT_NAMED(nDisplay_Device_RenderFrame, TEXT("nDisplay RenderDevice::RenderFrame"));
-
-void FDisplayClusterDeviceBase::RenderFrame_RenderThread(FRHICommandListImmediate& RHICmdList)
+bool FDisplayClusterDeviceBase::BeginNewFrame(FViewport* InViewport, UWorld* InWorld, FDisplayClusterRenderFrame& OutRenderFrame)
 {
-	SCOPED_GPU_STAT(RHICmdList, nDisplay_Device_RenderFrame);
-	SCOPED_DRAW_EVENT(RHICmdList, nDisplay_Device_RenderFrame);
+	check(IsInGameThread());
+	check(InViewport);
 
-	// This one is to match interface function signatures only. The functions will provide the handlers with a proper data.
-	const FIntRect StubRect(0, 0, 0, 0);
+	IDisplayCluster& DisplayCluster = IDisplayCluster::Get();
+	ADisplayClusterRootActor* RootActor = DisplayCluster.GetGameMgr()->GetRootActor();
+	if (RootActor)
+	{
+		IDisplayClusterViewportManager* ViewportManager = RootActor->GetViewportManager();
+		if (ViewportManager)
+		{
+			const FString LocalNodeId = DisplayCluster.GetConfigMgr()->GetLocalNodeId();
+			// Update local node viewports (update\create\delete) and build new render frame
+			if (ViewportManager->UpdateConfiguration(RenderFrameMode, LocalNodeId, RootActor))
+			{
+				if (ViewportManager->BeginNewFrame(InViewport, InWorld, OutRenderFrame))
+				{
+					if (OutRenderFrame.DesiredNumberOfViews > 0)
+					{
+						// Begin use viewport manager for current frame
+						ViewportManagerPtr = ViewportManager;
 
-	// Get custom PP and warp&blend flags status
-	const bool bWarpBlendEnabled = (CVarWarpBlendEnabled.GetValueOnRenderThread() != 0);
+						// Send viewport manager proxy on render thread
+						ENQUEUE_RENDER_COMMAND(DisplayClusterDevice_SetViewportManagerPtr)(
+							[DCRenderDevice = this, ViewportManagerProxy = ViewportManager->GetProxy()](FRHICommandListImmediate& RHICmdList)
+						{
+							DCRenderDevice->ViewportManagerProxyPtr = ViewportManagerProxy;
+						});
 
-	// Move all render target cross gpu
-	GetViewportManager().DoCrossGPUTransfers_RenderThread(MainViewport, RHICmdList);
-	// Now all resources on GPU#0
-	
-	// Update viewports resources: overlay, vp-overla, blur, nummips, etc
-	GetViewportManager().UpdateDeferredResources_RenderThread(RHICmdList);
+						// update total number of views for this frame (in multiple families)
+						DesiredNumberOfViews = OutRenderFrame.DesiredNumberOfViews;
 
-	// Update the frame resources: post-processing, warping, and finally resolving everything to the frame resource
-	GetViewportManager().UpdateFrameResources_RenderThread(RHICmdList, bWarpBlendEnabled);
+						return true;
+					}
+				}
+			}
+		}
+	}
 
-	// For quadbuf stereo copy only left eye, right copy from OutputFrameTarget
-	//@todo Copy QuadBuf_LeftEye/(mono,sbs,tp) to separate rtt, before UI and debug rendering
-	//@todo QuadBuf_LeftEye copied latter, before present
-	
-	FRHITexture2D* SeparateRTT = MainViewport->GetRenderTargetTexture();
-	GetViewportManager().ResolveFrameTargetToBackBuffer_RenderThread(RHICmdList, 0, 0, SeparateRTT, SeparateRTT->GetSizeXY());
+	return false;
+}
+
+void FDisplayClusterDeviceBase::FinalizeNewFrame()
+{
+
+	IDisplayCluster& DisplayCluster = IDisplayCluster::Get();
+	ADisplayClusterRootActor* RootActor = DisplayCluster.GetGameMgr()->GetRootActor();
+	if (RootActor)
+	{
+		IDisplayClusterViewportManager* ViewportManager = RootActor->GetViewportManager();
+		if (ViewportManager)
+		{
+			ViewportManager->FinalizeNewFrame();
+		}
+	}
+
+	// Stop using viewport manager on game thread
+	ViewportManagerPtr = nullptr;
+
+	// reset viewport manager proxy on render thread
+	ENQUEUE_RENDER_COMMAND(DisplayClusterDevice_ResetViewportManagerPtr)(
+		[DCRenderDevice = this](FRHICommandListImmediate& RHICmdList)
+	{
+		DCRenderDevice->ViewportManagerProxyPtr = nullptr;
+	});
 }
 
 DECLARE_GPU_STAT_NAMED(nDisplay_Device_RenderTexture, TEXT("nDisplay RenderDevice::RenderTexture"));
@@ -479,14 +459,15 @@ void FDisplayClusterDeviceBase::RenderTexture_RenderThread(FRHICommandListImmedi
 	// copy the render target texture to the MONO/LEFT_EYE back buffer  (MONO = mono, side_by_side, top_bottom)
 	RHICmdList.CopyToResolveTarget(SrcTexture, BackBuffer, FResolveParams());
 	
-	if (GetRenderFrameMode() == EDisplayClusterRenderFrameMode::Stereo)
+	if (RenderFrameMode == EDisplayClusterRenderFrameMode::Stereo && ViewportManagerProxyPtr)
 	{
 		// QuadBufStereo: Copy RIGHT_EYE to backbuffer
-		GetViewportManager().ResolveFrameTargetToBackBuffer_RenderThread(RHICmdList, 1, 1, BackBuffer, WindowSize);
+		ViewportManagerProxyPtr->ResolveFrameTargetToBackBuffer_RenderThread(RHICmdList, 1, 1, BackBuffer, WindowSize);
 	}
 	
 	// Clear render target before out frame resolving
 	FRHIRenderPassInfo RPInfo(SrcTexture, ERenderTargetActions::Clear_Store);
+	TransitionRenderPassTargets(RHICmdList, RPInfo);
 	RHICmdList.BeginRenderPass(RPInfo, TEXT("ClearTexture"));
 	RHICmdList.EndRenderPass();
 }
@@ -504,6 +485,7 @@ void FDisplayClusterDeviceBase::UpdateViewport(bool bUseSeparateRenderTarget, co
 		// UE viewport
 		MainViewport = (FViewport*)&Viewport;
 
+#if PLATFORM_WINDOWS
 		/*
 		// Create texture share for render viewports by config line flag
 		//@todo move to right place. add on\off
@@ -552,6 +534,7 @@ void FDisplayClusterDeviceBase::UpdateViewport(bool bUseSeparateRenderTarget, co
 				}
 			}
 		}*/
+#endif
 	}
 }
 
@@ -594,13 +577,13 @@ void FDisplayClusterDeviceBase::StartFinalPostprocessSettings(struct FPostProces
 {
 	check(IsInGameThread());
 
-	// eSSP_FULL pass reserved for UE4 internal render
-	if (StereoPassType != EStereoscopicPass::eSSP_FULL)
+	// eSSP_FULL pass reserved for UE internal render
+	if (StereoPassType != EStereoscopicPass::eSSP_FULL && ViewportManagerPtr)
 	{
-		IDisplayClusterViewport* pViewport = GetViewportManager().FindViewport(StereoPassType);
-		if (pViewport)
+		IDisplayClusterViewport* ViewportPtr = ViewportManagerPtr->FindViewport(StereoPassType);
+		if (ViewportPtr)
 		{
-			pViewport->GetViewport_CustomPostProcessSettings().DoPostProcess(IDisplayClusterViewport_CustomPostProcessSettings::ERenderPass::Start, StartPostProcessingSettings);
+			ViewportPtr->GetViewport_CustomPostProcessSettings().DoPostProcess(IDisplayClusterViewport_CustomPostProcessSettings::ERenderPass::Start, StartPostProcessingSettings);
 		}
 	}
 }
@@ -609,13 +592,13 @@ bool FDisplayClusterDeviceBase::OverrideFinalPostprocessSettings(struct FPostPro
 {
 	check(IsInGameThread());
 
-	// eSSP_FULL pass reserved for UE4 internal render
-	if (StereoPassType != EStereoscopicPass::eSSP_FULL)
+	// eSSP_FULL pass reserved for UE internal render
+	if (StereoPassType != EStereoscopicPass::eSSP_FULL && ViewportManagerPtr)
 	{
-		IDisplayClusterViewport* pViewport = GetViewportManager().FindViewport(StereoPassType);
-		if (pViewport)
+		IDisplayClusterViewport* ViewportPtr = ViewportManagerPtr->FindViewport(StereoPassType);
+		if (ViewportPtr)
 		{
-			return pViewport->GetViewport_CustomPostProcessSettings().DoPostProcess(IDisplayClusterViewport_CustomPostProcessSettings::ERenderPass::Override, OverridePostProcessingSettings, &BlendWeight);
+			return ViewportPtr->GetViewport_CustomPostProcessSettings().DoPostProcess(IDisplayClusterViewport_CustomPostProcessSettings::ERenderPass::Override, OverridePostProcessingSettings, &BlendWeight);
 		}
 	}
 
@@ -626,14 +609,28 @@ void FDisplayClusterDeviceBase::EndFinalPostprocessSettings(struct FPostProcessS
 {
 	check(IsInGameThread());
 
-	// eSSP_FULL pass reserved for UE4 internal render
-	if (StereoPassType != EStereoscopicPass::eSSP_FULL)
+	// eSSP_FULL pass reserved for UE internal render
+	if (StereoPassType != EStereoscopicPass::eSSP_FULL && ViewportManagerPtr && FinalPostProcessingSettings != nullptr)
 	{
-		IDisplayClusterViewport* pViewport = GetViewportManager().FindViewport(StereoPassType);
-		if (pViewport)
+		IDisplayClusterViewport* ViewportPtr = ViewportManagerPtr->FindViewport(StereoPassType);
+		if (ViewportPtr)
 		{
-			pViewport->GetViewport_CustomPostProcessSettings().DoPostProcess(IDisplayClusterViewport_CustomPostProcessSettings::ERenderPass::Final, FinalPostProcessingSettings);
+			ViewportPtr->GetViewport_CustomPostProcessSettings().DoPostProcess(IDisplayClusterViewport_CustomPostProcessSettings::ERenderPass::Final, FinalPostProcessingSettings);
+
+			FPostProcessSettings RequestedFinalPerViewportPPS;
+			// Get the final overall cluster + per-viewport PPS from nDisplay
+			if (ViewportPtr->GetViewport_CustomPostProcessSettings().DoPostProcess(IDisplayClusterViewport_CustomPostProcessSettings::ERenderPass::FinalPerViewport, &RequestedFinalPerViewportPPS))
+			{
+				FDisplayClusterConfigurationViewport_PerViewportSettings InPPSnDisplay;
+				FDisplayClusterViewportConfigurationHelpers_Postprocess::CopyPPSStructConditional(&InPPSnDisplay, &RequestedFinalPerViewportPPS);
+
+				// Get the passed-in cumulative PPS from the game/viewport (includes all PPVs affecting this viewport)
+				FDisplayClusterConfigurationViewport_PerViewportSettings InPPSCumulative;
+				FDisplayClusterViewportConfigurationHelpers_Postprocess::CopyPPSStruct(&InPPSCumulative, FinalPostProcessingSettings);
+
+				// Blend both together with our custom math instead of the default PPS blending
+				FDisplayClusterViewportConfigurationHelpers_Postprocess::BlendPostProcessSettings(*FinalPostProcessingSettings, InPPSCumulative, InPPSnDisplay);
+			}
 		}
 	}
 }
-

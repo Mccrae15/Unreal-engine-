@@ -2,6 +2,7 @@
 
 #include "Chaos/PBDCollisionConstraintsContact.h"
 #include "Chaos/Collision/CollisionSolver.h"
+#include "Chaos/Collision/PBDCollisionSolver.h"
 #include "Chaos/CollisionResolution.h"
 #include "Chaos/CollisionResolutionUtil.h"
 #include "Chaos/Defines.h"
@@ -31,9 +32,6 @@ namespace Chaos
 		int32 Chaos_Collision_PrevVelocityRestitutionEnabled = 0;
 		FAutoConsoleVariableRef CVarChaosCollisionPrevVelocityRestitutionEnabled(TEXT("p.Chaos.Collision.PrevVelocityRestitutionEnabled"), Chaos_Collision_PrevVelocityRestitutionEnabled, TEXT("If enabled restitution will be calculated on previous frame velocities instead of current frame velocities"));
 
-		int32 Chaos_Collision_ForceApplyType = 0;
-		FAutoConsoleVariableRef CVarChaosCollisionAlternativeApply(TEXT("p.Chaos.Collision.ForceApplyType"), Chaos_Collision_ForceApplyType, TEXT("Force Apply step to use Velocity(1) or Position(2) modes"));
-
 		FRealSingle Chaos_Collision_ContactMovementAllowance = 0.05f;
 		FAutoConsoleVariableRef CVarChaosCollisionContactMovementAllowance(TEXT("p.Chaos.Collision.AntiJitterContactMovementAllowance"), Chaos_Collision_ContactMovementAllowance, 
 			TEXT("If a contact is close to where it was during a previous iteration, we will assume it is the same contact that moved (to reduce jitter). Expressed as the fraction of movement distance and Centre of Mass distance to the contact point"));
@@ -44,32 +42,32 @@ namespace Chaos
 		int32 Chaos_Collision_UseShockPropagation = 1;
 		FAutoConsoleVariableRef CVarChaosCollisionUseShockPropagation(TEXT("p.Chaos.Collision.UseShockPropagation"), Chaos_Collision_UseShockPropagation, TEXT(""));
 
-		FReal Chaos_Collision_CollisionClipTolerance = 0.1f;
+		FReal Chaos_Collision_CollisionClipTolerance = 0.01f;
 		FAutoConsoleVariableRef CVarChaosCollisionClipTolerance(TEXT("p.Chaos.Collision.ClipTolerance"), Chaos_Collision_CollisionClipTolerance, TEXT(""));
 
 		bool Chaos_Collision_CheckManifoldComplete = false;
 		FAutoConsoleVariableRef CVarChaosCollisionCheckManifoldComplete(TEXT("p.Chaos.Collision.CheckManifoldComplete"), Chaos_Collision_CheckManifoldComplete, TEXT(""));
 
-		void Update(FRigidBodyPointContactConstraint& Constraint, const FReal CullDistance, const FReal Dt)
+		void Update(FRigidBodyPointContactConstraint& Constraint, const FReal Dt)
 		{
 			const FRigidTransform3 Transform0 = GetTransform(Constraint.Particle[0]);
 			const FRigidTransform3 Transform1 = GetTransform(Constraint.Particle[1]);
 
-			Constraint.ResetPhi(CullDistance);
-			UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest, FRigidBodyPointContactConstraint>(Constraint, Transform0, Transform1, CullDistance, Dt);
+			Constraint.ResetPhi(Constraint.GetCullDistance());
+			UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest, FRigidBodyPointContactConstraint>(Constraint, Transform0, Transform1, Dt);
 		}
 
-		void UpdateSwept(FRigidBodySweptPointContactConstraint& Constraint, const FReal CullDistance, const FReal Dt)
+		void UpdateSwept(FRigidBodySweptPointContactConstraint& Constraint, const FReal Dt)
 		{
 			FGenericParticleHandle Particle0 = FGenericParticleHandle(Constraint.Particle[0]);
 			// Note: This is unusual but we are using a mix of the previous and current transform
 			// This is due to how CCD only rewinds the position
 			const FRigidTransform3 TransformXQ0(Particle0->X(), Particle0->Q());
 			const FRigidTransform3 Transform1 = GetTransform(Constraint.Particle[1]);
-			Constraint.ResetPhi(CullDistance);
+			Constraint.ResetPhi(Constraint.GetCullDistance());
 			
 			// Update as a point constraint (base class).
-			UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest, FRigidBodySweptPointContactConstraint>(Constraint, TransformXQ0, Transform1, CullDistance, Dt);
+			UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest, FRigidBodySweptPointContactConstraint>(Constraint, TransformXQ0, Transform1, Dt);
 		}
 
 
@@ -215,11 +213,11 @@ namespace Chaos
 				bool bRequiresCollisionUpdate = true;
 				if (bRequiresCollisionUpdate)
 				{
-					Collisions::Update(Constraint, ParticleParameters.CullDistance, IterationParameters.Dt);
+					Collisions::Update(Constraint, IterationParameters.Dt);
 				}
 
 				// Permanently disable a constraint that is beyond the cull distance
-				if (Constraint.GetPhi() >= ParticleParameters.CullDistance)
+				if (Constraint.GetPhi() >= Constraint.GetCullDistance())
 				{
 					if (ParticleParameters.bCanDisableContacts)
 					{
@@ -243,20 +241,27 @@ namespace Chaos
 					Particle1->AuxilaryValue(*ParticleParameters.Collided) = true;
 				}
 
-				// What Apply algorithm should we use? Controlled by the solver, with forcable cvar override for now...
-				bool bUseVelocityMode = (IterationParameters.ApplyType == ECollisionApplyType::Velocity);
-				if (Chaos_Collision_ForceApplyType != 0)
+				// What solver algorithm should we use?
+				switch (IterationParameters.SolverType)
 				{
-					bUseVelocityMode = (Chaos_Collision_ForceApplyType == (int32)ECollisionApplyType::Velocity);
-				}
-
-				if (bUseVelocityMode)
-				{
-					ApplyContactManifold(Constraint, Particle0, Particle1, IterationParameters, ParticleParameters);
-				}
-				else
-				{
-					Constraint.AccumulatedImpulse += ApplyContact2(Constraint.Manifold, Particle0, Particle1, IterationParameters, ParticleParameters);
+				case EConstraintSolverType::GbfPbd:
+					{
+						ApplyContactManifold(Constraint, Particle0, Particle1, IterationParameters, ParticleParameters);
+					}
+					break;
+				case EConstraintSolverType::StandardPbd:
+					{
+						Constraint.AccumulatedImpulse += ApplyContact2(Constraint.Manifold, Particle0, Particle1, IterationParameters, ParticleParameters);
+					}
+					break;
+				case EConstraintSolverType::QuasiPbd:
+					{
+						FPBDCollisionSolver CollisionSolver;
+						CollisionSolver.SolvePosition(Constraint, IterationParameters, ParticleParameters);
+					}
+					break;
+				default:
+					break;
 				}
 			}
 		}
@@ -266,10 +271,9 @@ namespace Chaos
 			FGenericParticleHandle Particle0 = FGenericParticleHandle(Constraint.Particle[0]);
 			FGenericParticleHandle Particle1 = FGenericParticleHandle(Constraint.Particle[1]);
 
-			const FReal ExpandedCullDistance = ParticleParameters.CullDistance + IterationParameters.Dt * Particle0->V().Size() * 2.0f; // Particle will move at most by this much during PBD solve
-			Collisions::UpdateSwept(Constraint, ExpandedCullDistance, IterationParameters.Dt);
+			Collisions::UpdateSwept(Constraint, IterationParameters.Dt);
 			
-			const FContactParticleParameters CCDParticleParamaters{ ExpandedCullDistance, ParticleParameters.RestitutionVelocityThreshold, true, ParticleParameters.Collided };
+			const FContactParticleParameters CCDParticleParamaters{ ParticleParameters.RestitutionVelocityThreshold, true, ParticleParameters.Collided };
 			if (Constraint.TimeOfImpact == 1)
 			{
 				// If TOI = 1 (normal constraint) we don't want to split timestep at TOI.
@@ -283,8 +287,8 @@ namespace Chaos
 			const FReal RemainingDT = (1 - Constraint.TimeOfImpact) * IterationParameters.Dt;
 			const int32 FakeIteration = IterationParameters.NumIterations / 2; // For iteration count dependent effects (like relaxation) // @todo: Do we still need this?
 			const int32 PartialPairIterations = FMath::Max(IterationParameters.NumPairIterations, 2); // Do at least 2 pair iterations // @todo: Do we still need this?
-			const FContactIterationParameters IterationParametersPartialDT{ PartialDT, FakeIteration, IterationParameters.NumIterations, PartialPairIterations, IterationParameters.ApplyType, IterationParameters.NeedsAnotherIteration };
-			const FContactIterationParameters IterationParametersRemainingDT{ RemainingDT, FakeIteration, IterationParameters.NumIterations, IterationParameters.NumPairIterations, IterationParameters.ApplyType, IterationParameters.NeedsAnotherIteration };
+			const FContactIterationParameters IterationParametersPartialDT{ PartialDT, FakeIteration, IterationParameters.NumIterations, PartialPairIterations, IterationParameters.SolverType, IterationParameters.NeedsAnotherIteration };
+			const FContactIterationParameters IterationParametersRemainingDT{ RemainingDT, FakeIteration, IterationParameters.NumIterations, IterationParameters.NumPairIterations, IterationParameters.SolverType, IterationParameters.NeedsAnotherIteration };
 
 			// Rewind P to TOI and Apply
 			Particle0->P() = FMath::Lerp(Particle0->X(), Particle0->P(), Constraint.TimeOfImpact);
@@ -336,10 +340,10 @@ namespace Chaos
 
 			for (int32 PairIt = 0; PairIt < IterationParameters.NumPairIterations; ++PairIt)
 			{
-				Update(Constraint, ParticleParameters.CullDistance, IterationParameters.Dt);
+				Update(Constraint, IterationParameters.Dt);
 
 				// Ignore contacts where the closest point is greater than cull distance
-				if (Constraint.GetPhi() >= ParticleParameters.CullDistance)
+				if (Constraint.GetPhi() >= Constraint.GetCullDistance())
 				{
 					// Optionally permanently disable the contact for the remaining iterations
 					if (ParticleParameters.bCanDisableContacts)
@@ -351,7 +355,28 @@ namespace Chaos
 
 				if (FRigidBodyPointContactConstraint* PointConstraint = Constraint.template As<FRigidBodyPointContactConstraint>())
 				{
-					ApplyPushOutManifold(*PointConstraint, IsTemporarilyStatic, IterationParameters, ParticleParameters, GravityDir);
+					switch (IterationParameters.SolverType)
+					{
+					case EConstraintSolverType::GbfPbd:
+						{
+							ApplyPushOutManifold(*PointConstraint, IsTemporarilyStatic, IterationParameters, ParticleParameters, GravityDir);
+						}
+						break;
+					case EConstraintSolverType::StandardPbd:
+						{
+							// Shouldn't have PushOut for Standard Pbd, but this is for experimentation (Collision PushOut Iterations should normally be set to 0 instead)
+							ApplyPushOutManifold(*PointConstraint, IsTemporarilyStatic, IterationParameters, ParticleParameters, GravityDir);
+						}
+						break;
+					case EConstraintSolverType::QuasiPbd:
+						{
+							FPBDCollisionSolver CollisionSolver;
+							CollisionSolver.SolveVelocity(Constraint, IterationParameters, ParticleParameters);
+						}
+						break;
+					default:
+						break;
+					}
 				}
 			}
 		}

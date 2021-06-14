@@ -50,6 +50,12 @@ public:
 	virtual void SetAttachedComponent(UActorComponent* ActorComponent);
 
 	/**
+	 * Sets the live link subject from which this controller is receiving data
+	 */
+	virtual void SetSelectedSubject(FLiveLinkSubjectRepresentation LiveLinkSubject);
+
+
+	/**
 	 * Cleanup controller state before getting removed
 	 */
 	virtual void Cleanup() { };
@@ -57,6 +63,9 @@ public:
 #if WITH_EDITOR
 	virtual void InitializeInEditor() {}
 #endif
+
+	/** Get the selected LiveLink subject for this controller */
+	virtual FLiveLinkSubjectRepresentation GetSelectedSubject() { return SelectedSubject; }
 
 protected:
 	AActor* GetOuterActor() const;
@@ -73,5 +82,7 @@ public:
 
 protected:
 	TWeakObjectPtr<UActorComponent> AttachedComponent;
+
+	FLiveLinkSubjectRepresentation SelectedSubject;
 };
 

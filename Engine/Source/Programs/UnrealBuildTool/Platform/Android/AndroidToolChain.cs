@@ -91,11 +91,12 @@ namespace UnrealBuildTool
 		// whether to enable NEON support for armv7 builds
 		private bool bUseNEONForArmV7 = false;
 
+		// the "-android" suffix paths here are vcpkg triplets for the android platform
 		static private Dictionary<string, string[]> AllArchNames = new Dictionary<string, string[]> {
-			{ "-armv7", new string[] { "armv7", "armeabi-v7a", } },
-			{ "-arm64", new string[] { "arm64", "arm64-v8a", } },
-			{ "-x86",   new string[] { "x86", } },
-			{ "-x64",   new string[] { "x64", "x86_64", } },
+			{ "-armv7", new string[] { "armv7", "armeabi-v7a", "arm-android" } },
+			{ "-arm64", new string[] { "arm64", "arm64-v8a", "arm64-android" } },
+			{ "-x86",   new string[] { "x86", "x86-android" } },
+			{ "-x64",   new string[] { "x64", "x86_64", "x64-android" } },
 		};
 
 		static private Dictionary<string, string[]> LibrariesToSkip = new Dictionary<string, string[]> {
@@ -697,6 +698,11 @@ namespace UnrealBuildTool
 			{
 				// Result += " -fvisibility-ms-compat -fvisibility-inlines-hidden"; // This hides all symbols by default but exports all type info (vtable/rtti) for a non-monolithic setup
 				Result += " -fvisibility=hidden -fvisibility-inlines-hidden"; // Symbols default to hidden.
+			}
+
+			if (CompileEnvironment.DeprecationWarningLevel == WarningLevel.Error)
+			{
+				Result += " -Werror=deprecated-declarations";
 			}
 
 			if (CompileEnvironment.ShadowVariableWarningLevel != WarningLevel.Off)
@@ -1489,7 +1495,6 @@ namespace UnrealBuildTool
 			if (CompileEnvironment.PrecompiledHeaderAction != PrecompiledHeaderAction.Create)
 			{
 				BaseArguments += " -Werror";
-
 			}
 
 			string NativeGluePath = Path.GetFullPath(GetNativeGluePath());

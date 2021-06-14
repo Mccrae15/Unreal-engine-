@@ -26,15 +26,30 @@ class UMeshComponent;
 class IDisplayClusterProjectionPolicy
 {
 public:
-	virtual ~IDisplayClusterProjectionPolicy() = 0
-	{ }
+	virtual ~IDisplayClusterProjectionPolicy() = default;
 
 public:
 	/**
-	* Return projection name
+	* Return projection policy name
 	*/
 	virtual const FString& GetId() const = 0;
+
+	/**
+	* Return projection policy type
+	*/
 	virtual const FString GetTypeId() const = 0;
+
+	/**
+	* Return projection policy configuration
+	*/
+	virtual const TMap<FString, FString>& GetParameters() const = 0;
+
+	/**
+	* Send projection policy game thread data to render thread proxy
+	* called once per frame from FDisplayClusterViewportManager::FinalizeNewFrame
+	*/
+	virtual void UpdateProxyData(class IDisplayClusterViewport* InViewport)
+	{ }
 
 	/**
 	* Called each time a new game level starts
@@ -52,7 +67,20 @@ public:
 
 	// Handle request for additional render targetable resource inside viewport api for projection policy
 	virtual bool ShouldUseAdditionalTargetableResource() const
-	{ return false; }
+	{ 
+		return false; 
+	}
+
+	/**
+	* Returns true if the policy supports input mip-textures.
+	* Use a mip texture for smoother deformation on curved surfaces.
+	*
+	* @return - true, if mip-texture is supported by the policy implementation
+	*/
+	virtual bool ShouldUseSourceTextureWithMips() const
+	{
+		return false;
+	}
 
 	// This policy can support ICVFX rendering
 	virtual bool ShouldSupportICVFX() const
@@ -68,7 +96,7 @@ public:
 	}
 
 	/**
-	* Detec projection policy settings changes
+	* Check projection policy settings changes
 	*
 	* @param InConfigurationProjectionPolicy - new settings
 	*

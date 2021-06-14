@@ -5,6 +5,7 @@
 #include "BlueprintEditorModes.h"
 #include "Interfaces/IDisplayClusterConfiguratorBlueprintEditor.h"
 
+class ADisplayClusterRootActor;
 class UDisplayClusterBlueprint;
 class FEditorViewportTabContent;
 class UDisplayClusterConfigurationData;
@@ -16,7 +17,6 @@ class IDisplayClusterConfiguratorViewOutputMapping;
 class FDisplayClusterConfiguratorViewOutputMapping;
 class FDisplayClusterConfiguratorViewCluster;
 class FDisplayClusterConfiguratorViewScene;
-class FDisplayClusterConfiguratorViewInput;
 class FDisplayClusterConfiguratorToolbar;
 class SDisplayClusterConfiguratorSCSEditorViewport;
 
@@ -28,10 +28,6 @@ class FDisplayClusterConfiguratorBlueprintEditor
 {
 
 public:
-	FDisplayClusterConfiguratorBlueprintEditor(): TicksForPreviewRenderCapture(0), bSCSEditorSelecting(false)
-	{
-	}
-
 	~FDisplayClusterConfiguratorBlueprintEditor();
 
 public:
@@ -43,8 +39,15 @@ public:
 	virtual bool IsObjectSelected(UObject* Obj) const override;
 	//~ End IDisplayClusterConfiguratorBlueprintEditor Interface
 
-	virtual void SelectObjects(TArray<UObject*>& InSelectedObjects, bool bFullRefresh = true);
-	
+	//~ Begin FEditorUndoClient interface
+	virtual void PostUndo(bool bSuccess) override;
+	virtual void PostRedo(bool bSuccess) override;
+	//~ End FEditorUndoClient interface
+
+	virtual void SelectObjects(TArray<UObject*>& InSelectedObjects, bool bFullRefresh = false);
+	virtual void SelectAncillaryComponents(const TArray<FString>& ComponentNames);
+	virtual void SelectAncillaryViewports(const TArray<FString>& ComponentNames);
+
 	virtual UDisplayClusterConfigurationData* GetEditorData() const;
 	virtual FDelegateHandle RegisterOnConfigReloaded(const FOnConfigReloadedDelegate& Delegate);
 	virtual void UnregisterOnConfigReloaded(FDelegateHandle DelegateHandle);
@@ -58,13 +61,15 @@ public:
 	virtual void InvalidateViews();
 	virtual void ClusterChanged(bool bStructureChange = false);
 	virtual void ClearViewportSelection();
-	
+
+	/** Retrieve the config data from the CDO. */
 	virtual UDisplayClusterConfigurationData* GetConfig() const;
+
+	/** Retrieve the CDO being edited. */
+	ADisplayClusterRootActor* GetDefaultRootActor() const;
 	
 	virtual TSharedRef<IDisplayClusterConfiguratorViewOutputMapping> GetViewOutputMapping() const;
 	virtual TSharedRef<IDisplayClusterConfiguratorViewTree> GetViewCluster() const;
-	virtual TSharedRef<IDisplayClusterConfiguratorViewTree> GetViewInput() const;
-	virtual TSharedRef<IDisplayClusterConfiguratorView> GetViewGeneral() const;
 
 	TSharedPtr<SDockTab> GetViewportTab() const { return ViewportTab; }
 	TSharedPtr<FEditorViewportTabContent> GetViewportTabContent() const { return ViewportTabContent; }
@@ -75,28 +80,18 @@ public:
 
 	/** Syncs shared properties between viewports. */
 	void SyncViewports();
-	
+
 	/** Make sure the blueprint preview actor is up to date. */
-	void RefreshDisplayClusterPreviewActor(bool bFullRefresh = false);
+	void RefreshDisplayClusterPreviewActor();
 
-	/** Output mapping preview will update the next tick. */
-	void RequestOutputMappingPreviewUpdate();
+	/** Restores previously open documents. */
+	void RestoreLastEditedState();
 
-	/** Reselects selected objects. Useful if recompiling as sometimes the details panel loses focus. */
-	void ReselectObjects();
-
-protected:
-	/** Applies preview texture to all output mapping viewport nodes. */
-	void UpdateOutputMappingPreview();
-	
-	/** Clears preview texture from all output mapping viewport nodes. */
-	void CleanupOutputMappingPreview();
+	/** Updates the root actor's xform components to match the editor settings. */
+	void UpdateXformGizmos();
 
 private:
 	TWeakObjectPtr<AActor> CurrentPreviewActor;
-
-	// logic require signed number
-	int16 TicksForPreviewRenderCapture = -1;
 	
 	FDelegateHandle UpdateOutputMappingHandle;
 
@@ -132,7 +127,8 @@ protected:
 	virtual bool IsTickable() const override { return true; }
 	virtual TStatId GetStatId() const override;
 	virtual bool OnRequestClose() override;
-	virtual void OnBlueprintChangedImpl(UBlueprint* InBlueprint, bool bIsJustBeingCompiled) override;
+	virtual void OnClose() override;
+	virtual void Compile() override;
 	//~ End FBlueprintEditor Interface
 
 	// SSCS Implementation
@@ -150,9 +146,37 @@ protected:
 
 	void CreateSCSEditorWrapper();
 
+public:
+	enum class ESelectionSource
+	{
+		External,
+		Internal,
+		Ancillary,
+		Refresh
+	};
+
+	struct FSelectionScope
+	{
+		FSelectionScope(FDisplayClusterConfiguratorBlueprintEditor* Editor, ESelectionSource ScopedSelectionSource) :
+			SourceProperty(Editor->CurrentSelectionSource),
+			PreviousValue(Editor->CurrentSelectionSource)
+		{
+			SourceProperty = ScopedSelectionSource;
+		}
+
+		~FSelectionScope()
+		{
+			SourceProperty = PreviousValue;
+		}
+
+		ESelectionSource& SourceProperty;
+		ESelectionSource PreviousValue;
+	};
+	friend FSelectionScope;
+
 private:
-	/** True only during SCS selection change. */
-	bool bSCSEditorSelecting;
+	/** Keeps track of the current source of the selection changes that caused OnSelectionUpdated to be invoked. */
+	ESelectionSource CurrentSelectionSource = ESelectionSource::External;
 	// ~End of SSCS Implementation
 
 protected:
@@ -177,14 +201,14 @@ private:
 	//~ End UI command handlers
 
 	void OnReadOnlyChanged(bool bReadOnly);
+	void OnRenameVariable(UBlueprint* Blueprint, UClass* VariableClass, const FName& OldVariableName, const FName& NewVariableName);
+	void OnFocusChanged(const FFocusEvent& FocusEvent, const FWeakWidgetPath& OldFocusedWidgetPath, const TSharedPtr<SWidget>& OldFocusedWidget, const FWidgetPath& NewFocusedWidgetPath, const TSharedPtr<SWidget>& NewFocusedWidget);
 
 	void BindCommands();
 
 private:
-	TSharedPtr<FDisplayClusterConfiguratorViewGeneral> ViewGeneral;
 	TSharedPtr<FDisplayClusterConfiguratorViewOutputMapping> ViewOutputMapping;
 	TSharedPtr<FDisplayClusterConfiguratorViewCluster> ViewCluster;
-	TSharedPtr<FDisplayClusterConfiguratorViewInput> ViewInput; // TODO: Delete this after input plugin finished.
 
 	/** Owner of the viewport. */
 	TSharedPtr<SDockTab> ViewportTab;
@@ -217,4 +241,7 @@ private:
 	TWeakObjectPtr<UDisplayClusterBlueprint> LoadedBlueprint;
 
 	FName SCSEditorExtensionIdentifier;
+
+	FDelegateHandle RenameVariableHandle;
+	FDelegateHandle FocusChangedHandle;
 };

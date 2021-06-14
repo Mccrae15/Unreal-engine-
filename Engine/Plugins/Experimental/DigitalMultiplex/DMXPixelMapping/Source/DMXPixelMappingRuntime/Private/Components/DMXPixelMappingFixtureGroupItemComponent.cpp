@@ -2,32 +2,73 @@
 
 #include "Components/DMXPixelMappingFixtureGroupItemComponent.h"
 
+#include "DMXConversions.h"
 #include "DMXPixelMappingTypes.h"
-#include "DMXSubsystem.h"
-#include "IDMXPixelMappingRenderer.h"
 #include "Components/DMXPixelMappingFixtureGroupComponent.h"
 #include "Components/DMXPixelMappingRendererComponent.h"
-#include "Library/DMXEntityFixtureType.h"
+#include "Components/DMXPixelMappingRootComponent.h"
 #include "Library/DMXEntityFixturePatch.h"
-#include "Library/DMXEntityController.h"
+#include "Library/DMXEntityFixtureType.h"
 #include "Library/DMXLibrary.h"
+#include "IO/DMXOutputPort.h"
 
+#include "Engine/Texture.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Images/SImage.h"
-#include "Engine/TextureRenderTarget2D.h"
-#include "Misc/ITransaction.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/Text/STextBlock.h"
 
 
+DECLARE_CYCLE_STAT(TEXT("Send Fixture Group Item"), STAT_DMXPixelMaping_FixtureGroupItem, STATGROUP_DMXPIXELMAPPING);
+
 #define LOCTEXT_NAMESPACE "DMXPixelMappingFixtureGroupItemComponent"
+
+namespace
+{
+	// Converts a normalized attribute value, adds it to the InOutAttributeValueMap, without resetting it.
+	void ConvertNormalizedAttributeValueToChannelValues(UDMXEntityFixturePatch* InFixturePatch, const FDMXAttributeName& InAttributeName, float InNormalizedValue, TMap<int32, uint8>& InOutChannelToValueMap)
+	{
+		if (InFixturePatch)
+		{
+			const FDMXFixtureMode* ModePtr = InFixturePatch->GetActiveMode();
+
+			if (ModePtr)
+			{
+				const int32 StartingChannel = InFixturePatch->GetStartingChannel();
+
+				// Build the value map from the attributes
+				TMap<int32, uint8> ChannelToValueMap;
+
+				const FDMXFixtureFunction* FunctionPtr = ModePtr->Functions.FindByPredicate([InAttributeName](const FDMXFixtureFunction& Function) {
+					return Function.Attribute.GetName() == InAttributeName;
+					});
+
+				if (FunctionPtr)
+				{
+					const int32 AttributeStartingChannel = StartingChannel + FunctionPtr->Channel - 1 + FunctionPtr->ChannelOffset;
+
+					uint8 NumBytes = static_cast<uint8>(FunctionPtr->DataType) + 1;
+					
+					TArray<uint8> Bytes = FDMXConversions::NormalizedDMXValueToByteArray(InNormalizedValue, FunctionPtr->DataType, FunctionPtr->bUseLSBMode);
+
+					for (int32 IndexByte = 0; IndexByte < Bytes.Num(); IndexByte++)
+					{
+						InOutChannelToValueMap.Add(AttributeStartingChannel + IndexByte, Bytes[IndexByte]);
+					}
+				}
+			}
+		}
+	}
+}
 
 const FVector2D UDMXPixelMappingFixtureGroupItemComponent::MixPixelSize = FVector2D(1.f);
 
 UDMXPixelMappingFixtureGroupItemComponent::UDMXPixelMappingFixtureGroupItemComponent()
+	: DownsamplePixelIndex(0)
 {
-	SizeX = 100.f;
-	SizeY = 100.f;
+	SizeX = 10.f;
+	SizeY = 10.f;
 	PositionX = 0.f;
 	PositionY = 0.f;
 
@@ -91,46 +132,8 @@ void UDMXPixelMappingFixtureGroupItemComponent::PostParentAssigned()
 		}
 	}
 
-	// first compute a non-overlapping position
-	if (UDMXPixelMappingFixtureGroupComponent* FixtureGroupComponent = Cast<UDMXPixelMappingFixtureGroupComponent>(Parent))
-	{
-		bool bFirstStep = true;
-		for (UDMXPixelMappingBaseComponent* Component : FixtureGroupComponent->Children)
-		{
-			// skip myself
-			if (Component == this)
-			{
-				continue;
-			}
-			if (UDMXPixelMappingFixtureGroupItemComponent* FixtureGroupItem = Cast<UDMXPixelMappingFixtureGroupItemComponent>(Component))
-			{
-				if (bFirstStep)
-				{
-					PositionX = FixtureGroupItem->PositionX + FixtureGroupItem->SizeX;
-					PositionY = FixtureGroupItem->PositionY + FixtureGroupItem->SizeY;
-
-					bFirstStep = false;
-				}
-				else
-				{
-					PositionX = FMath::Max(FixtureGroupItem->PositionX + FixtureGroupItem->SizeX, PositionX);
-					PositionY = FMath::Max(FixtureGroupItem->PositionY + FixtureGroupItem->SizeY, PositionY);
-				}
-			}
-		}
-
 #if WITH_EDITOR
-		// Update relative position
-		RelativePositionX = PositionX - FixtureGroupComponent->GetPosition().X;
-		RelativePositionY = PositionY - FixtureGroupComponent->GetPosition().Y;
-
-		UpdateWidget();
-#endif // WITH_EDITOR
-	}
-
-	SetPositionInBoundaryBox(FVector2D(PositionX, PositionY));
-
-#if WITH_EDITOR
+	UpdateWidget();
 	AutoMapAttributes();
 #endif // WITH_EDITOR
 }
@@ -146,11 +149,6 @@ FString UDMXPixelMappingFixtureGroupItemComponent::GetUserFriendlyName() const
 	return FString(TEXT("Fixture Group Item: No Fixture Patch"));
 }
 #endif // WITH_EDITOR
-
-void UDMXPixelMappingFixtureGroupItemComponent::PostLoad()
-{
-	Super::PostLoad();
-}
 
 const FName& UDMXPixelMappingFixtureGroupItemComponent::GetNamePrefix()
 {
@@ -178,7 +176,7 @@ void UDMXPixelMappingFixtureGroupItemComponent::PostEditChangeChainProperty(FPro
 	else if (PropertyChangedChainEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDMXPixelMappingOutputComponent, EditorColor))
 	{
 		Brush.TintColor = EditorColor;
-	}	
+	}
 	
 	if (PropertyChangedChainEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
@@ -214,6 +212,7 @@ TSharedRef<SWidget> UDMXPixelMappingFixtureGroupItemComponent::BuildSlot(TShared
 
 	CachedLabelBox =
 		SNew(SBox)
+		.Padding(FMargin(2.f, 1.f, 2.f, 1.f))
 		.WidthOverride(SizeY)
 		.HAlign(HAlign_Left)
 		.VAlign(VAlign_Top)
@@ -234,8 +233,8 @@ TSharedRef<SWidget> UDMXPixelMappingFixtureGroupItemComponent::BuildSlot(TShared
 		.ZOrder(ZOrder)
 		[
 			SNew(SOverlay)
+			
 			+ SOverlay::Slot()
-			.Padding(TAttribute<FMargin>::Create(TAttribute<FMargin>::FGetter::CreateUObject(this, &UDMXPixelMappingFixtureGroupItemComponent::GetLabelPadding)))
 			.HAlign(HAlign_Fill)
 			.VAlign(VAlign_Fill)
 			[
@@ -334,163 +333,124 @@ void UDMXPixelMappingFixtureGroupItemComponent::UpdateWidget()
 
 void UDMXPixelMappingFixtureGroupItemComponent::ResetDMX()
 {
-	UpdateSurfaceBuffer([this](TArray<FColor>& InSurfaceBuffer, FIntRect& InSurfaceRect)
+	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
+	if (!ensure(RendererComponent))
 	{
-		for (FColor& Color : InSurfaceBuffer)
-		{
-			Color = FColor::Black;
-		}
-	});
+		return;
+	}
+
+	RendererComponent->ResetColorDownsampleBufferPixel(DownsamplePixelIndex);
 
 	SendDMX();
 }
 
 void UDMXPixelMappingFixtureGroupItemComponent::SendDMX()
 {
-	UDMXEntityFixturePatch* FixturePatch = FixturePatchRef.GetFixturePatch();
-	UDMXLibrary* DMXLibrary = FixturePatchRef.DMXLibrary;
+	SCOPE_CYCLE_COUNTER(STAT_DMXPixelMaping_FixtureGroupItem);
 
-	TArray<FColor> LocalSurfaceBuffer;
-	GetSurfaceBuffer([&LocalSurfaceBuffer](const TArray<FColor>& InSurfaceBuffer, const FIntRect& InSurfaceRect)
+	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
+	if (RendererComponent)
 	{
-		LocalSurfaceBuffer = InSurfaceBuffer;
-	});
-
-	if (FixturePatch != nullptr && DMXLibrary != nullptr)
-	{
-		TMap<FDMXAttributeName, int32> AttributeMap;
-
-		if (LocalSurfaceBuffer.Num() == 1)
+		// Get the color data from the rendered component
+		FLinearColor PixelColor;
+		if (RendererComponent->GetDownsampleBufferPixel(DownsamplePixelIndex, PixelColor))
 		{
-			const FColor& Color = LocalSurfaceBuffer[0];
+			UDMXEntityFixturePatch* FixturePatch = FixturePatchRef.GetFixturePatch();
 
+			TMap<int32, uint8> ChannelToValueMap;
 			if (ColorMode == EDMXColorMode::CM_RGB)
 			{
 				if (AttributeRExpose)
 				{
-					const uint8 ByteOffset = GetNumChannelsOfAttribute(FixturePatch, AttributeR.Name) - 1;
-					AttributeMap.Add(AttributeR, int32(Color.R) << (ByteOffset * 8));
+					ConvertNormalizedAttributeValueToChannelValues(FixturePatch, AttributeR, FMath::Clamp(PixelColor.R, 0.f, 1.f), ChannelToValueMap);
 				}
-
 				if (AttributeGExpose)
 				{
-					const uint8 ByteOffset = GetNumChannelsOfAttribute(FixturePatch, AttributeG.Name) - 1;
-					AttributeMap.Add(AttributeG, int32(Color.G) << (ByteOffset * 8));
+					ConvertNormalizedAttributeValueToChannelValues(FixturePatch, AttributeG, FMath::Clamp(PixelColor.G, 0.f, 1.f), ChannelToValueMap);
 				}
-
 				if (AttributeBExpose)
 				{
-					const uint8 ByteOffset = GetNumChannelsOfAttribute(FixturePatch, AttributeB.Name) - 1;
-					AttributeMap.Add(AttributeB, int32(Color.B) << (ByteOffset * 8));
+					ConvertNormalizedAttributeValueToChannelValues(FixturePatch, AttributeB, FMath::Clamp(PixelColor.B, 0.f, 1.f), ChannelToValueMap);
 				}
 			}
 			else if (ColorMode == EDMXColorMode::CM_Monochrome)
 			{
 				if (bMonochromeExpose)
-				{					
-					const uint8 ByteOffset = GetNumChannelsOfAttribute(FixturePatch, MonochromeIntensity.Name) - 1;
-						
+				{
 					// https://www.w3.org/TR/AERT/#color-contrast
-					int32 Intensity = int32(0.299 * Color.R + 0.587 * Color.G + 0.114 * Color.B) << (ByteOffset * 8);
-					AttributeMap.Add(MonochromeIntensity, Intensity);
+					const float Intensity = 0.299f * PixelColor.R + 0.587f * PixelColor.G + 0.114f * PixelColor.B;
+
+					ConvertNormalizedAttributeValueToChannelValues(FixturePatch, MonochromeIntensity, FMath::Clamp(Intensity, 0.f, 1.f), ChannelToValueMap);
+				}
+			}
+
+			if (UDMXLibrary* Library = FixturePatch->GetParentLibrary())
+			{
+				for (const FDMXOutputPortSharedRef& OutputPort : Library->GetOutputPorts())
+				{
+					OutputPort->SendDMX(FixturePatch->GetUniverseID(), ChannelToValueMap);
 				}
 			}
 		}
-
-		// Add offset functions
-		for (const FDMXPixelMappingExtraAttribute& ExtraAttribute : ExtraAttributes)
-		{
-			AttributeMap.Add(ExtraAttribute.Attribute, ExtraAttribute.Value);
-		}
-
-		FixturePatch->SendDMX(AttributeMap);
 	}
 }
 
-void UDMXPixelMappingFixtureGroupItemComponent::Render()
-{	
-	RendererOutputTexture();
-}
-
-void UDMXPixelMappingFixtureGroupItemComponent::RenderAndSendDMX()
+void UDMXPixelMappingFixtureGroupItemComponent::QueueDownsample()
 {
-	Render();
-	SendDMX();
-}
+	// Queue pixels into the downsample rendering
+	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
 
-void UDMXPixelMappingFixtureGroupItemComponent::RendererOutputTexture()
-{
-	if (UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent())
+	if (!ensure(RendererComponent))
 	{
-		UTexture* Texture = RendererComponent->GetRendererInputTexture();
-		const TSharedPtr<IDMXPixelMappingRenderer>& Renderer = RendererComponent->GetRenderer();
-
-		if (Texture != nullptr && Renderer.IsValid())
-		{
-			GetOutputTexture();
-
-			const uint32 TexureSizeX = Texture->Resource->GetSizeX();
-			const uint32 TexureSizeY = Texture->Resource->GetSizeY();
-
-			const FVector2D Position = FVector2D(0.f, 0.f);
-			const FVector2D Size = FVector2D(OutputTarget->Resource->GetSizeX(), OutputTarget->Resource->GetSizeY());
-			const FVector2D UV = FVector2D(PositionX / TexureSizeX, PositionY / TexureSizeY);
-			
-			const FVector2D UVSize(SizeX / TexureSizeX, SizeY / TexureSizeY);
-			const FVector2D UVCellSize = UVSize / 2.f;
-
-			const FIntPoint TargetSize(OutputTarget->Resource->GetSizeX(), OutputTarget->Resource->GetSizeY());
-			const FIntPoint TextureSize(1, 1);
-
-			const bool bStaticCalculateUV = true;
-			
-			FVector4 ExposeFactor;
-			FIntVector4 InvertFactor;
-			if (ColorMode == EDMXColorMode::CM_RGB)
-			{
-				ExposeFactor = FVector4(AttributeRExpose ? 1.f : 0.f, AttributeGExpose ? 1.f : 0.f, AttributeBExpose ? 1.f : 0.f, 1.f);
-				InvertFactor = FIntVector4(AttributeRInvert, AttributeGInvert, AttributeBInvert, 0);
-			}
-			else if (ColorMode == EDMXColorMode::CM_Monochrome)
-			{
-				static const FVector4 Expose(1.f, 1.f, 1.f, 1.f);
-				static const FVector4 NoExpose(0.f, 0.f, 0.f, 0.f);
-				ExposeFactor = FVector4(bMonochromeExpose ? Expose : NoExpose);
-				InvertFactor = FIntVector4(bMonochromeInvert, bMonochromeInvert, bMonochromeInvert, 0);
-			}
-
-			Renderer->DownsampleRender_GameThread(
-				Texture->Resource,
-				OutputTarget->Resource,
-				OutputTarget->GameThread_GetRenderTargetResource(),
-				ExposeFactor,
-				InvertFactor,
-				Position,
-				Size,
-				UV,
-				UVSize,
-				UVCellSize,
-				TargetSize,
-				TextureSize,
-				CellBlendingQuality,
-				bStaticCalculateUV,
-				[=](TArray<FColor>& InSurfaceBuffer, FIntRect& InRect) { SetSurfaceBuffer(InSurfaceBuffer, InRect); }
-			);
-		}
+		return;
 	}
-}
 
-UTextureRenderTarget2D* UDMXPixelMappingFixtureGroupItemComponent::GetOutputTexture()
-{
-	if (OutputTarget == nullptr)
+	UTexture* InputTexture = RendererComponent->GetRendererInputTexture();
+	if (!ensure(InputTexture))
 	{
-		const FName TargetName = MakeUniqueObjectName(this, UTextureRenderTarget2D::StaticClass(), TEXT("DstTarget"));
-		OutputTarget = NewObject<UTextureRenderTarget2D>(this, TargetName);
-		OutputTarget->ClearColor = FLinearColor(0.f, 0.f, 0.f, 0.f);
-		OutputTarget->InitCustomFormat(1, 1, EPixelFormat::PF_B8G8R8A8, false);
+		return;
 	}
 
-	return OutputTarget;
+	// Store pixel position
+	DownsamplePixelIndex = RendererComponent->GetDownsamplePixelNum();
+	
+	const uint32 TextureSizeX = InputTexture->Resource->GetSizeX();
+	const uint32 TextureSizeY = InputTexture->Resource->GetSizeY();
+	check(TextureSizeX > 0 && TextureSizeY > 0);
+	const FIntPoint PixelPosition = RendererComponent->GetPixelPosition(DownsamplePixelIndex);
+	const FVector2D UV = FVector2D(PositionX / TextureSizeX, PositionY / TextureSizeY);
+	const FVector2D UVSize(SizeX / TextureSizeX, SizeY / TextureSizeY);
+	const FVector2D UVCellSize = UVSize / 2.f;
+	constexpr bool bStaticCalculateUV = true;
+
+	FVector4 ExposeFactor;
+	FIntVector4 InvertFactor;
+	if (ColorMode == EDMXColorMode::CM_RGB)
+	{
+		ExposeFactor = FVector4(AttributeRExpose ? 1.f : 0.f, AttributeGExpose ? 1.f : 0.f, AttributeBExpose ? 1.f : 0.f, 1.f);
+		InvertFactor = FIntVector4(AttributeRInvert, AttributeGInvert, AttributeBInvert, 0);
+	}
+	else if (ColorMode == EDMXColorMode::CM_Monochrome)
+	{
+		static const FVector4 Expose(1.f, 1.f, 1.f, 1.f);
+		static const FVector4 NoExpose(0.f, 0.f, 0.f, 0.f);
+		ExposeFactor = FVector4(bMonochromeExpose ? Expose : NoExpose);
+		InvertFactor = FIntVector4(bMonochromeInvert, bMonochromeInvert, bMonochromeInvert, 0);
+	}
+
+	FDMXPixelMappingDownsamplePixelParam DownsamplePixelParam
+	{
+		ExposeFactor,
+		InvertFactor,
+		PixelPosition,
+		UV,
+		UVSize,
+		UVCellSize,
+		CellBlendingQuality,
+		bStaticCalculateUV
+	};
+
+	RendererComponent->AddPixelToDownsampleSet(MoveTemp(DownsamplePixelParam));
 }
 
 FVector2D UDMXPixelMappingFixtureGroupItemComponent::GetSize() const
@@ -639,12 +599,7 @@ void UDMXPixelMappingFixtureGroupItemComponent::SetPositionFromParent(const FVec
 
 UDMXPixelMappingRendererComponent* UDMXPixelMappingFixtureGroupItemComponent::UDMXPixelMappingFixtureGroupItemComponent::GetRendererComponent() const
 {
-	if (Parent)
-	{
-		return Cast<UDMXPixelMappingRendererComponent>(Parent->Parent);
-	}
-
-	return nullptr;
+	return Parent ? Cast<UDMXPixelMappingRendererComponent>(Parent->Parent) : nullptr;;
 }
 
 void UDMXPixelMappingFixtureGroupItemComponent::SetSizeWithinBoundaryBox(const FVector2D& InSize)
@@ -687,13 +642,6 @@ void UDMXPixelMappingFixtureGroupItemComponent::SetSizeWithinBoundaryBox(const F
 #endif // WITH_EDITOR
 	}
 }
-
-#if WITH_EDITOR
-FMargin UDMXPixelMappingFixtureGroupItemComponent::GetLabelPadding() const
-{
-	return FMargin(2.f, 1.f, 2.f, 0.f);
-}
-#endif // WITH_EDITOR
 
 #if WITH_EDITOR
 void UDMXPixelMappingFixtureGroupItemComponent::AutoMapAttributes()

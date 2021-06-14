@@ -492,7 +492,9 @@ RENDERCORE_API bool IsMobileDistanceFieldShadowingEnabled(const FStaticShaderPla
 
 RENDERCORE_API bool UseMobileAmbientOcclusion(const FStaticShaderPlatform Platform);
 
-RENDERCORE_API bool SupportsDesktopTemporalAA(const FStaticShaderPlatform Platform);
+RENDERCORE_API bool SupportsGen4TAA(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool PlatformSupportsVelocityRendering(const FStaticShaderPlatform Platform);
 
 RENDERCORE_API bool IsUsingDBuffers(const FStaticShaderPlatform Platform);
 
@@ -567,19 +569,6 @@ inline bool IsUsingDistanceFields(const FStaticShaderPlatform Platform)
 	return !!(GDistanceFieldsPlatformMask & (1ull << Platform));
 }
 
-inline bool IsUsingPerPixelDBufferMask(const FStaticShaderPlatform Platform)
-{
-	switch (Platform)
-	{
-	case SP_SWITCH:
-	case SP_SWITCH_FORWARD:
-		// Per-pixel DBufferMask optimization is currently only tested and supported on Switch.
-		return true;
-	default:
-		return false;
-	}
-}
-
 inline bool UseGPUScene(const FStaticShaderPlatform Platform, const FStaticFeatureLevel FeatureLevel)
 {
 	if (FeatureLevel == ERHIFeatureLevel::ES3_1)
@@ -591,7 +580,6 @@ inline bool UseGPUScene(const FStaticShaderPlatform Platform, const FStaticFeatu
 	return FeatureLevel >= ERHIFeatureLevel::SM5 
 		//@todo - support GPU Scene management compute shaders on these platforms to get dynamic instancing speedups on the Rendering Thread and RHI Thread
 		&& !IsOpenGLPlatform(Platform)
-		&& !IsSwitchPlatform(Platform)
 		&& !IsVulkanMobileSM5Platform(Platform)
 		// we only check DDSPI for platforms that have been read in - IsValid() can go away once ALL platforms are converted over to this system
 		&& (!FDataDrivenShaderPlatformInfo::IsValid(Platform) || FDataDrivenShaderPlatformInfo::GetSupportsGPUScene(Platform));
@@ -626,3 +614,8 @@ RENDERCORE_API void QuantizeSceneBufferSize(const FIntPoint& InBufferSize, FIntP
 *	Checks if virtual texturing enabled and supported
 */
 RENDERCORE_API bool UseVirtualTexturing(const FStaticFeatureLevel InFeatureLevel, const class ITargetPlatform* TargetPlatform = nullptr);
+
+/**
+*	Checks if virtual texturing lightmap enabled and supported
+*/
+RENDERCORE_API bool UseVirtualTextureLightmap(const FStaticFeatureLevel InFeatureLevel, const class ITargetPlatform* TargetPlatform = nullptr);

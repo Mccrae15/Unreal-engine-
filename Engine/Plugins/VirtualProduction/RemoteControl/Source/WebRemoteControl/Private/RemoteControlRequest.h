@@ -10,6 +10,9 @@ struct FBlockDelimiters
 {
 	int64 BlockStart = -1;
 	int64 BlockEnd = -1;
+
+	/** Get the size of current block */
+	int64 GetBlockSize() const { return BlockEnd - BlockStart; }
 };
 
 /**
@@ -447,6 +450,21 @@ struct FSetEntityMetadataRequest : public FRCRequest
 	 */
 	UPROPERTY()
 	FString Value;
+};
+
+/**
+ * Holds a request to set an entity's label.
+ */
+USTRUCT()
+struct FSetEntityLabelRequest : public FRCRequest
+{
+	GENERATED_BODY()
+
+	/**
+	 * The new label to assign.
+	 */
+	UPROPERTY()
+	FString NewLabel;
 };
 
 /**

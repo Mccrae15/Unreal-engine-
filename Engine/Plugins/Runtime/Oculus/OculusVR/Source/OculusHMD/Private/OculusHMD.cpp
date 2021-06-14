@@ -1023,6 +1023,20 @@ namespace OculusHMD
 		return true;
 	}
 
+	FVector2D FOculusHMD::GetPlayAreaBounds(EHMDTrackingOrigin::Type Origin) const
+	{
+		ovrpVector3f Dimensions;
+
+		if (Origin == EHMDTrackingOrigin::Stage &&
+			OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetBoundaryDimensions2(ovrpBoundary_PlayArea, &Dimensions)))
+		{
+			Dimensions.z *= -1.0;
+			FVector Bounds = ConvertVector_M2U(Dimensions);
+			return FVector2D(Bounds.X, Bounds.Z);
+		}
+		return FVector2D::ZeroVector;
+	}
+
 	bool FOculusHMD::IsHMDConnected()
 	{
 		CheckInGameThread();
@@ -1262,7 +1276,7 @@ namespace OculusHMD
 		}
 	}
 
-	void FOculusHMD::SetFinalViewRect(const enum EStereoscopicPass StereoPass, const FIntRect& FinalViewRect)
+	void FOculusHMD::SetFinalViewRect(FRHICommandListImmediate& RHICmdList, const enum EStereoscopicPass StereoPass, const FIntRect& FinalViewRect)
 	{
 		CheckInRenderThread();
 
@@ -2203,13 +2217,21 @@ namespace OculusHMD
 			UE_LOG(LogHMD, Log, TEXT("OculusHMD plugin supports multiview!"));
 		}
 #endif
-		ovrpDistortionWindowFlag flag = ovrpDistortionWindowFlag_None;
+		int flag = ovrpDistortionWindowFlag_None;
 #if PLATFORM_ANDROID && USE_ANDROID_EGL_NO_ERROR_CONTEXT
 		if (AndroidEGL::GetInstance()->GetSupportsNoErrorContext())
 		{
 			flag = ovrpDistortionWindowFlag_NoErrorContext;
 		}
 #endif // PLATFORM_ANDROID && USE_ANDROID_EGL_NO_ERROR_CONTEXT
+
+#if PLATFORM_ANDROID
+		if (Settings->bPhaseSync)
+		{
+			flag |= ovrpDistortionWindowFlag_PhaseSync;
+		}
+#endif // PLATFORM_ANDROID
+
 		FOculusHMDModule::GetPluginWrapper().SetupDistortionWindow3(flag);
 		FOculusHMDModule::GetPluginWrapper().SetSystemCpuLevel2(Settings->CPULevel);
 		FOculusHMDModule::GetPluginWrapper().SetSystemGpuLevel2(Settings->GPULevel);
@@ -3596,6 +3618,7 @@ namespace OculusHMD
 		Settings->PixelDensityMin = HMDSettings->PixelDensityMin;
 		Settings->PixelDensityMax = HMDSettings->PixelDensityMax;
 		Settings->bLateLatching = HMDSettings->bLateLatching;
+		Settings->bPhaseSync = HMDSettings->bPhaseSync;
 	}
 
 	/// @endcond

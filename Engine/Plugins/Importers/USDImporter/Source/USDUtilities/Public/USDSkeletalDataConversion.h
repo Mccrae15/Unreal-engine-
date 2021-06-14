@@ -176,12 +176,16 @@ namespace UsdToUnreal
 namespace UnrealToUsd
 {
 	/**
-	 * Converts the bone data from Skeleton into UsdSkeleton
-	 * @param Skeleton - USkeleton with the source data
+	 * Converts the bone data from Skeleton into UsdSkeleton.
+	 * WARNING: Sometimes Skeleton->ReferenceSkeleton() has slightly different transforms than USkeletalMesh->GetRefSkeleton(), so make
+	 * sure you're using the correct one for what you wish to do!
+	 *
+	 * @param Skeleton - Source UE data to convert
 	 * @param UsdSkeleton - Previously created prim with the UsdSkelSkeleton schema that will be filled with converted data
 	 * @return Whether the conversion was successful or not.
 	 */
-	USDUTILITIES_API bool ConvertSkeleton( const USkeleton* Skeleton, pxr::UsdSkelSkeleton& UsdSkeleton);
+	USDUTILITIES_API bool ConvertSkeleton( const USkeleton* Skeleton, pxr::UsdSkelSkeleton& UsdSkeleton );
+	USDUTILITIES_API bool ConvertSkeleton( const FReferenceSkeleton& ReferenceSkeleton, pxr::UsdSkelSkeleton& UsdSkeleton );
 
 	/**
 	 * Converts SkeletalMesh, its skeleton and morph target data into the corresponding USD objects and populates SkelRoot with them, at time TimeCode

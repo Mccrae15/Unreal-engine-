@@ -151,6 +151,16 @@ public:
 		return ErrorSummaryText;
 	}
 
+	FORCEINLINE bool operator !=(const FNiagaraDataInterfaceError& Other) const
+	{
+		return !(*this == Other);
+	}
+
+	FORCEINLINE bool operator == (const FNiagaraDataInterfaceError& Other) const
+	{
+		return ErrorText.EqualTo(Other.ErrorText) && ErrorSummaryText.EqualTo(Other.ErrorSummaryText);
+	}
+
 private:
 	FText ErrorText;
 	FText ErrorSummaryText;
@@ -196,6 +206,16 @@ public:
 	FText GetFeedbackSummaryText() const
 	{
 		return FeedbackSummaryText;
+	}
+
+	FORCEINLINE bool operator !=(const FNiagaraDataInterfaceFeedback& Other) const
+	{
+		return !(*this == Other);
+	}
+
+	FORCEINLINE bool operator == (const FNiagaraDataInterfaceFeedback& Other) const
+	{
+		return FeedbackText.EqualTo(Other.FeedbackText) && FeedbackSummaryText.EqualTo(Other.FeedbackSummaryText);
 	}
 
 private:
@@ -266,7 +286,13 @@ public:
 	virtual bool GenerateIterationSourceNamespaceReadAttributesHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, const FNiagaraVariable& InIterationSourceVariable, TConstArrayView<FNiagaraVariable> InArguments, TConstArrayView<FNiagaraVariable> InAttributes, TConstArrayView<FString> InAttributeHLSLNames, bool bInSetToDefaults, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const { return false; };
 	/** Generate the necessary plumbing HLSL at the end of the stage where this is used as a sim stage iteration source. Note that this should inject other internal calls using the CustomHLSL node syntax. See GridCollection2D for an example.*/
 	virtual bool GenerateIterationSourceNamespaceWriteAttributesHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, const FNiagaraVariable& InIterationSourceVariable, TConstArrayView<FNiagaraVariable> InArguments, TConstArrayView<FNiagaraVariable> InAttributes, TConstArrayView<FString> InAttributeHLSLNames, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const { return false; };
+	/** Used by the translator when dealing with signatures that turn into compiler tags to figure out the precise compiler tag. */
+	virtual bool GenerateCompilerTagPrefix(const FNiagaraFunctionSignature& InSignature, FString& OutPrefix) const  { return false; }
+
 #endif
+
+	virtual bool NeedsGPUContextInit() const { return false; }
+	virtual bool GPUContextInit(const FNiagaraScriptDataInterfaceCompileInfo& InInfo, void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) const { return false; }
 
 	/** Initializes the per instance data for this interface. Returns false if there was some error and the simulation should be disabled. */
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) { return true; }
@@ -689,6 +715,14 @@ struct FNDIInputParam<FNiagaraBool>
 };
 
 template<>
+struct FNDIInputParam<bool>
+{
+	VectorVM::FExternalFuncInputHandler<FNiagaraBool> Data;
+	FORCEINLINE FNDIInputParam(FVectorVMContext& Context) : Data(Context) {}
+	FORCEINLINE bool GetAndAdvance() { return Data.GetAndAdvance().GetValue(); }
+};
+
+template<>
 struct FNDIInputParam<FVector2D>
 {
 	VectorVM::FExternalFuncInputHandler<float> X;
@@ -761,6 +795,15 @@ struct FNDIOutputParam
 
 template<>
 struct FNDIOutputParam<FNiagaraBool>
+{
+	VectorVM::FExternalFuncRegisterHandler<FNiagaraBool> Data;
+	FORCEINLINE FNDIOutputParam(FVectorVMContext& Context) : Data(Context) {}
+	FORCEINLINE bool IsValid() const { return Data.IsValid(); }
+	FORCEINLINE void SetAndAdvance(bool Val) { Data.GetDestAndAdvance()->SetValue(Val); }
+};
+
+template<>
+struct FNDIOutputParam<bool>
 {
 	VectorVM::FExternalFuncRegisterHandler<FNiagaraBool> Data;
 	FORCEINLINE FNDIOutputParam(FVectorVMContext& Context) : Data(Context) {}

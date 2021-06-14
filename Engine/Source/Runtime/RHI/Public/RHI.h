@@ -196,10 +196,11 @@ inline bool RHISupports4ComponentUAVReadWrite(const FStaticShaderPlatform Platfo
 	Shader Platform must not use the mobile renderer, and for Metal, the shader language must be at least 2. */
 inline bool RHISupportsManualVertexFetch(const FStaticShaderPlatform InShaderPlatform)
 {
-	bool bIsMetalMobilePlatform = IsMetalPlatform(InShaderPlatform) && !IsPCPlatform(InShaderPlatform);
-	bool bIsUnsupportedGL = IsOpenGLPlatform(InShaderPlatform) && !IsSwitchPlatform(InShaderPlatform);
+	bool bIsMetalMobilePlatform = IsMetalMobilePlatform(InShaderPlatform);
+	bool bIsUnsupportedGL = IsOpenGLPlatform(InShaderPlatform);
 
-	return !bIsUnsupportedGL && !IsMobilePlatform(InShaderPlatform) && !bIsMetalMobilePlatform;
+	return (!bIsUnsupportedGL && !IsMobilePlatform(InShaderPlatform) && !bIsMetalMobilePlatform)
+		|| FDataDrivenShaderPlatformInfo::GetSupportsManualVertexFetch(InShaderPlatform);
 }
 
 /** 
@@ -584,6 +585,12 @@ extern RHI_API bool GRHIIsHDREnabled;
 
 /** Whether the present adapter/display offers HDR output capabilities. */
 extern RHI_API bool GRHISupportsHDROutput;
+
+/** Whether VRS (in all flavors) is currently enabled (separate from whether it's supported/available). */
+extern RHI_API bool GRHIVariableRateShadingEnabled;
+
+/** Whether attachment (image-based) VRS is currently enabled (separate from whether it's supported/available). */
+extern RHI_API bool GRHIAttachmentVariableRateShadingEnabled;
 
 /** Whether or not the RHI can support per-draw Variable Rate Shading. */
 extern RHI_API bool GRHISupportsPipelineVariableRateShading;

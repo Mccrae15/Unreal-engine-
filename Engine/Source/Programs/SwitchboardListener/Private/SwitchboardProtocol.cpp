@@ -155,31 +155,33 @@ bool CreateTaskFromCommand(const FString& InCommand, const FIPv4Endpoint& InEndp
 		TSharedPtr<FJsonValue> NameField = TryGetCommandRequiredField(JsonData, TEXT("name"));
 		TSharedPtr<FJsonValue> CallerField = TryGetCommandRequiredField(JsonData, TEXT("caller"));
 		TSharedPtr<FJsonValue> WorkingDirField = TryGetCommandRequiredField(JsonData, TEXT("working_dir"));
-		TSharedPtr<FJsonValue> UpdateClientsWithStdoutField = TryGetCommandRequiredField(JsonData, TEXT("bUpdateClientsWithStdout"));
 
-		if (!ExeField || !ArgsField || !NameField || !CallerField || !WorkingDirField || !UpdateClientsWithStdoutField)
+		if (!ExeField || !ArgsField || !NameField || !CallerField || !WorkingDirField)
 		{
 			return false;
 		}
 
-		int32 PriorityModifier = 0;
-		if (TSharedPtr<FJsonValue> PriorityModifierField = JsonData->TryGetField(TEXT("priority_modifier")))
-		{
-			PriorityModifierField->TryGetNumber(PriorityModifier);
-		}
-
-		OutTask = MakeUnique<FSwitchboardStartTask>(
+		TUniquePtr<FSwitchboardStartTask> Task = MakeUnique<FSwitchboardStartTask>(
 			MessageID,
 			InEndpoint,
 			ExeField->AsString(),
 			ArgsField->AsString(),
 			NameField->AsString(),
 			CallerField->AsString(),
-			WorkingDirField->AsString(),
-			UpdateClientsWithStdoutField->AsBool(),
-			PriorityModifier
+			WorkingDirField->AsString()
 		);
 
+		if (TSharedPtr<FJsonValue> UpdateClientsWithStdoutField = JsonData->TryGetField(TEXT("bUpdateClientsWithStdout")))
+		{
+			UpdateClientsWithStdoutField->TryGetBool(Task->bUpdateClientsWithStdout);
+		}
+
+		if (TSharedPtr<FJsonValue> PriorityModifierField = JsonData->TryGetField(TEXT("priority_modifier")))
+		{
+			PriorityModifierField->TryGetNumber(Task->PriorityModifier);
+		}
+
+		OutTask = MoveTemp(Task);
 		return true;
 	}
 	else if (CommandName == TEXT("kill"))
@@ -198,11 +200,25 @@ bool CreateTaskFromCommand(const FString& InCommand, const FIPv4Endpoint& InEndp
 		TSharedPtr<FJsonValue> DestinationField = TryGetCommandRequiredField(JsonData, TEXT("destination"));
 		TSharedPtr<FJsonValue> FileContentField = TryGetCommandRequiredField(JsonData, TEXT("content"));
 		
-		if (DestinationField.IsValid() && FileContentField.IsValid())
+		if (!DestinationField || !FileContentField)
 		{
-			OutTask = MakeUnique<FSwitchboardReceiveFileFromClientTask>(MessageID, InEndpoint, DestinationField->AsString(), FileContentField->AsString());
-			return true;
+			return false;
 		}
+
+		TUniquePtr<FSwitchboardReceiveFileFromClientTask> Task = MakeUnique<FSwitchboardReceiveFileFromClientTask>(
+			MessageID,
+			InEndpoint,
+			DestinationField->AsString(),
+			FileContentField->AsString()
+		);
+
+		if (TSharedPtr<FJsonValue> ForceOverwriteField = JsonData->TryGetField(TEXT("force_overwrite")))
+		{
+			ForceOverwriteField->TryGetBool(Task->bForceOverwrite);
+		}
+
+		OutTask = MoveTemp(Task);
+		return true;
 	}
 	else if (CommandName == TEXT("receive file"))
 	{
@@ -256,6 +272,11 @@ bool CreateTaskFromCommand(const FString& InCommand, const FIPv4Endpoint& InEndp
 			OutTask = MakeUnique<FSwitchboardFixExeFlagsTask>(MessageID, InEndpoint, ProgramID);
 			return true;
 		}
+	}
+	else if (CommandName == TEXT("refresh mosaics"))
+	{
+		OutTask = MakeUnique<FSwitchboardRefreshMosaicsTask>(MessageID, InEndpoint);
+		return true;
 	}
 
 	return false;

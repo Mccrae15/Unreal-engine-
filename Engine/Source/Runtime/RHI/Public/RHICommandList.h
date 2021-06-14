@@ -837,15 +837,18 @@ FRHICOMMAND_MACRO(FRHICommandWaitForTemporalEffect)
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
-FRHICOMMAND_MACRO(FRHICommandBroadcastTemporalEffect)
+struct FRHICommandBroadcastTemporalEffectString
+{
+	static const TCHAR* TStr() { return TEXT("FRHICommandBroadcastTemporalEffect"); }
+};
+template <typename TRHIResource>
+struct FRHICommandBroadcastTemporalEffect final	: public FRHICommand<FRHICommandBroadcastTemporalEffect<TRHIResource>, FRHICommandBroadcastTemporalEffectString>
 {
 	FName EffectName;
-	FRHITexture** Textures;
-	int32 NumTextures;
-	FORCEINLINE_DEBUGGABLE FRHICommandBroadcastTemporalEffect(const FName& InEffectName, FRHITexture** InTextures, int32 InNumTextures)
+	const TArrayView<TRHIResource*> Resources;
+	FORCEINLINE_DEBUGGABLE FRHICommandBroadcastTemporalEffect(const FName& InEffectName, const TArrayView<TRHIResource*> InResources)
 		: EffectName(InEffectName)
-		, Textures(InTextures)
-		, NumTextures(InNumTextures)
+		, Resources(InResources)
 	{
 	}
 	RHI_API void Execute(FRHICommandListBase& CmdList);
@@ -1818,16 +1821,8 @@ FRHICOMMAND_MACRO(FRHICommandCalibrateTimers)
 	RHI_API void Execute(FRHICommandListBase & CmdList);
 };
 
-struct FRHICommandSubmitCommandsHintString
+FRHICOMMAND_MACRO(FRHICommandSubmitCommandsHint)
 {
-	static const TCHAR* TStr() { return TEXT("FRHICommandSubmitCommandsHint"); }
-};
-
-struct FRHICommandSubmitCommandsHint final : public FRHICommand<FRHICommandSubmitCommandsHint, FRHICommandSubmitCommandsHintString>
-{
-	FORCEINLINE_DEBUGGABLE FRHICommandSubmitCommandsHint()
-	{
-	}
 	RHI_API void Execute(FRHICommandListBase& CmdList);
 };
 
@@ -2885,7 +2880,7 @@ public:
 	{
 		if (Bypass())
 		{
-			GetComputeContext().RHIPostExternalCommandsReset();
+			GetContext().RHIPostExternalCommandsReset();
 			return;
 		}
 		ALLOC_COMMAND(FRHICommandPostExternalCommandsReset)();
@@ -2977,15 +2972,19 @@ public:
 			return;
 		}
 
-		// Allocate space to hold the list of textures inline in the command list itself.
-		const int32 NumTextures = Textures.Num();
-		FRHITexture** InlineTextureArray = (FRHITexture**)Alloc(sizeof(FRHITexture*) * NumTextures, alignof(FRHITexture*));
-		for (int32 Index = 0; Index < NumTextures; ++Index)
+		ALLOC_COMMAND(FRHICommandBroadcastTemporalEffect<FRHITexture>)(EffectName, AllocArray(Textures));
+	}
+
+	FORCEINLINE_DEBUGGABLE void BroadcastTemporalEffect(const FName& EffectName, const TArrayView<FRHIVertexBuffer*> Buffers)
+	{
+		//check(IsOutsideRenderPass());
+		if (Bypass())
 		{
-			InlineTextureArray[Index] = Textures[Index];
+			GetContext().RHIBroadcastTemporalEffect(EffectName, Buffers);
+			return;
 		}
 
-		ALLOC_COMMAND(FRHICommandBroadcastTemporalEffect)(EffectName, InlineTextureArray, NumTextures);
+		ALLOC_COMMAND(FRHICommandBroadcastTemporalEffect<FRHIVertexBuffer>)(EffectName, AllocArray(Buffers));
 	}
 #endif // WITH_MGPU
 

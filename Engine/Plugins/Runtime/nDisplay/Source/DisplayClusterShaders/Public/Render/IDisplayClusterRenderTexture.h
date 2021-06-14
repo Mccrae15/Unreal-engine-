@@ -12,9 +12,9 @@
 class IDisplayClusterRenderTexture
 {
 public:
-	virtual ~IDisplayClusterRenderTexture() = 0
-	{ }
+	virtual ~IDisplayClusterRenderTexture() = default;
 
+public:
 	/**
 	* Create texture from memory data:
 	*
@@ -26,7 +26,7 @@ public:
 	*
 	* @return - true if the mesh linked and ready to warp
 	*/
-	virtual void CreateTexture(EPixelFormat InPixelFormat, uint32_t InWidth, uint32_t InHeight, void* InTextureData, bool bInHasCPUAccess = false) = 0;
+	virtual void CreateTexture(EPixelFormat InPixelFormat, uint32_t InWidth, uint32_t InHeight, const void* InTextureData, bool bInHasCPUAccess = false) = 0;
 	virtual void* GetData() const = 0;
 	virtual uint32_t GetWidth() const = 0;
 	virtual uint32_t GetHeight() const = 0;

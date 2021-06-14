@@ -21,6 +21,7 @@
 #include "MoviePipelineWidgetRenderSetting.h"
 #include "MoviePipelineUtils.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/Paths.h"
 
 DECLARE_CYCLE_STAT(TEXT("ImgSeqOutput_RecieveImageData"), STAT_ImgSeqRecieveImageData, STATGROUP_MoviePipeline);
 
@@ -47,13 +48,13 @@ void UMoviePipelineImageSequenceOutputBase::OnShotFinishedImpl(const UMoviePipel
 {
 	if (bFlushToDisk)
 	{
-		UE_LOG(LogMovieRenderPipeline, Log, TEXT("ImageSequenceOutputBase flushing %d tasks to disk, inserting a fence in the queue and then waiting..."), ImageWriteQueue->GetNumPendingTasks());
+		UE_LOG(LogMovieRenderPipelineIO, Log, TEXT("ImageSequenceOutputBase flushing %d tasks to disk, inserting a fence in the queue and then waiting..."), ImageWriteQueue->GetNumPendingTasks());
 		const double FlushBeginTime = FPlatformTime::Seconds();
 
 		TFuture<void> Fence = ImageWriteQueue->CreateFence();
 		Fence.Wait();
 		const float ElapsedS = float((FPlatformTime::Seconds() - FlushBeginTime));
-		UE_LOG(LogMovieRenderPipeline, Log, TEXT("Finished flushing tasks to disk after %2.2fs!"), ElapsedS);
+		UE_LOG(LogMovieRenderPipelineIO, Log, TEXT("Finished flushing tasks to disk after %2.2fs!"), ElapsedS);
 	}
 }
 
@@ -140,9 +141,17 @@ void UMoviePipelineImageSequenceOutputBase::OnReceiveImageDataImpl(FMoviePipelin
 		}
 
 		// We need to resolve the filename format string. We combine the folder and file name into one long string first
-		FString FinalFilePath;
-		FString FinalImageSequenceFileName;
-		FString ClipName;
+		MoviePipeline::FMoviePipelineOutputFutureData OutputData;
+		OutputData.Shot = GetPipeline()->GetActiveShotList()[Payload->SampleState.OutputState.ShotIndex];
+		OutputData.PassIdentifier = RenderPassData.Key;
+
+		struct FXMLData
+		{
+			FString ClipName;
+			FString ImageSequenceFileName;
+		};
+		
+		FXMLData XMLData;
 		{
 			FString FileNameFormatString = OutputSettings->FileNameFormat;
 
@@ -157,25 +166,37 @@ void UMoviePipelineImageSequenceOutputBase::OnReceiveImageDataImpl(FMoviePipelin
 			TMap<FString, FString> FormatOverrides;
 			FormatOverrides.Add(TEXT("render_pass"), RenderPassData.Key.Name);
 			FormatOverrides.Add(TEXT("ext"), Extension);
-
-			// We don't support metadata on the generic file writing.
 			FMoviePipelineFormatArgs FinalFormatArgs;
-			GetPipeline()->ResolveFilenameFormatArguments(FileNameFormatString, FormatOverrides, FinalImageSequenceFileName, FinalFormatArgs, &InMergedOutputFrame->FrameOutputState, -InMergedOutputFrame->FrameOutputState.ShotOutputFrameNumber);
-			
-			FString FilePathFormatString = OutputDirectory / FileNameFormatString;
-			GetPipeline()->ResolveFilenameFormatArguments(FilePathFormatString, FormatOverrides, FinalFilePath, FinalFormatArgs, &InMergedOutputFrame->FrameOutputState);
 
-			// Create a deterministic clipname by removing frame numbers, file extension, and any trailing .'s
-			UE::MoviePipeline::RemoveFrameNumberFormatStrings(FileNameFormatString, true);
-			GetPipeline()->ResolveFilenameFormatArguments(FileNameFormatString, FormatOverrides, ClipName, FinalFormatArgs, &InMergedOutputFrame->FrameOutputState);
-			ClipName.RemoveFromEnd(Extension);
-			ClipName.RemoveFromEnd(".");
+			// Resolve for XMLs
+			{
+				GetPipeline()->ResolveFilenameFormatArguments(FileNameFormatString, FormatOverrides, XMLData.ImageSequenceFileName, FinalFormatArgs, &InMergedOutputFrame->FrameOutputState, -InMergedOutputFrame->FrameOutputState.ShotOutputFrameNumber);
+			}
+			
+			// Resolve the final absolute file path to write this to
+			{
+				FString FormatString = OutputDirectory / FileNameFormatString;
+				GetPipeline()->ResolveFilenameFormatArguments(FormatString, FormatOverrides, OutputData.FilePath, FinalFormatArgs, &InMergedOutputFrame->FrameOutputState);
+
+				if (FPaths::IsRelative(OutputData.FilePath))
+				{
+					OutputData.FilePath = FPaths::ConvertRelativePathToFull(OutputData.FilePath);
+				}
+			}
+
+			// More XML resolving. Create a deterministic clipname by removing frame numbers, file extension, and any trailing .'s
+			{
+				UE::MoviePipeline::RemoveFrameNumberFormatStrings(FileNameFormatString, true);
+				GetPipeline()->ResolveFilenameFormatArguments(FileNameFormatString, FormatOverrides, XMLData.ClipName, FinalFormatArgs, &InMergedOutputFrame->FrameOutputState);
+				XMLData.ClipName.RemoveFromEnd(Extension);
+				XMLData.ClipName.RemoveFromEnd(".");
+			}
 		}
 
 		TUniquePtr<FImageWriteTask> TileImageTask = MakeUnique<FImageWriteTask>();
 		TileImageTask->Format = PreferredOutputFormat;
 		TileImageTask->CompressionQuality = 100;
-		TileImageTask->Filename = FinalFilePath;
+		TileImageTask->Filename = OutputData.FilePath;
 
 		// We composite before flipping the alpha so that it is consistent for all formats.
 		if (RenderPassData.Key == FMoviePipelinePassIdentifier(TEXT("FinalImage")))
@@ -203,9 +224,10 @@ void UMoviePipelineImageSequenceOutputBase::OnReceiveImageDataImpl(FMoviePipelin
 		TileImageTask->PixelData = MoveTemp(QuantizedPixelData);
 		
 #if WITH_EDITOR
-		GetPipeline()->AddFrameToOutputMetadata(ClipName, FinalImageSequenceFileName, InMergedOutputFrame->FrameOutputState, Extension, Payload->bRequireTransparentOutput);
+		GetPipeline()->AddFrameToOutputMetadata(XMLData.ClipName, XMLData.ImageSequenceFileName, InMergedOutputFrame->FrameOutputState, Extension, Payload->bRequireTransparentOutput);
 #endif
-		GetPipeline()->AddOutputFuture(ImageWriteQueue->Enqueue(MoveTemp(TileImageTask)), FinalFilePath, RenderPassData.Key);
+
+		GetPipeline()->AddOutputFuture(ImageWriteQueue->Enqueue(MoveTemp(TileImageTask)), OutputData);
 	}
 }
 

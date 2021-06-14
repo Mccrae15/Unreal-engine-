@@ -149,6 +149,7 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Serialization/LoadTimeTrace.h"
 #include "Async/ParallelFor.h"
+#include "IO/IoDispatcher.h"
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
@@ -272,9 +273,6 @@ void FEngineModule::StartupModule()
 	{
 		CVARShowMaterialDrawEvents->SetOnChangedCallback(FConsoleVariableDelegate::CreateStatic(&OnChangeEngineCVarRequiringRecreateRenderState));
 	}
-
-	static IConsoleVariable* MobileTemporalAAMethodCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.TemporalAAMethod"));
-	MobileTemporalAAMethodCVar->SetOnChangedCallback(FConsoleVariableDelegate::CreateStatic(&OnChangeEngineCVarRequiringRecreateRenderState));
 
 	SuspendTextureStreamingRenderTasks = &SuspendRenderAssetStreaming;
 	ResumeTextureStreamingRenderTasks = &ResumeRenderAssetStreaming;
@@ -1545,7 +1543,7 @@ void UEngine::Init(IEngineLoop* InEngineLoop)
 	// Subsystems.
 	FURL::StaticInit();
 	FLinkerLoad::StaticInit(UTexture2D::StaticClass());
-	EngineSubsystemCollection.Initialize(this);
+	EngineSubsystemCollection->Initialize(this);
 
 #if !UE_BUILD_SHIPPING
 	// Check for overrides to the default map on the command line
@@ -1924,6 +1922,8 @@ void UEngine::PreExit()
 	DynamicResolutionState.Reset();
 	NextDynamicResolutionState.Reset();
 #endif
+
+	EngineSubsystemCollection->Deinitialize();
 }
 
 void UEngine::ShutdownHMD()
@@ -2063,43 +2063,84 @@ double UEngine::CorrectNegativeTimeDelta(double DeltaRealTime)
 	return 0.01;
 }
 
-void UEngine::SetGameLatencyMarkerStart(uint64 FrameNumber)
+void UEngine::SetInputSampleLatencyMarker(uint64 FrameNumber)
 {
 	TArray<ILatencyMarkerModule*> LatencyMarkerModules = IModularFeatures::Get().GetModularFeatureImplementations<ILatencyMarkerModule>(ILatencyMarkerModule::GetModularFeatureName());
 
 	for (ILatencyMarkerModule* LatencyMarkerModule : LatencyMarkerModules)
 	{
-		LatencyMarkerModule->SetGameLatencyMarkerStart(FrameNumber);
+		LatencyMarkerModule->SetInputSampleLatencyMarker(FrameNumber);
 	}
 }
 
-void UEngine::SetGameLatencyMarkerEnd(uint64 FrameNumber)
+void UEngine::SetSimulationLatencyMarkerStart(uint64 FrameNumber)
 {
 	TArray<ILatencyMarkerModule*> LatencyMarkerModules = IModularFeatures::Get().GetModularFeatureImplementations<ILatencyMarkerModule>(ILatencyMarkerModule::GetModularFeatureName());
 
 	for (ILatencyMarkerModule* LatencyMarkerModule : LatencyMarkerModules)
 	{
-		LatencyMarkerModule->SetGameLatencyMarkerEnd(FrameNumber);
+		LatencyMarkerModule->SetSimulationLatencyMarkerStart(FrameNumber);
 	}
 }
 
-void UEngine::SetRenderLatencyMarkerStart(uint64 FrameNumber)
+void UEngine::SetSimulationLatencyMarkerEnd(uint64 FrameNumber)
 {
 	TArray<ILatencyMarkerModule*> LatencyMarkerModules = IModularFeatures::Get().GetModularFeatureImplementations<ILatencyMarkerModule>(ILatencyMarkerModule::GetModularFeatureName());
 
 	for (ILatencyMarkerModule* LatencyMarkerModule : LatencyMarkerModules)
 	{
-		LatencyMarkerModule->SetRenderLatencyMarkerStart(FrameNumber);
+		LatencyMarkerModule->SetSimulationLatencyMarkerEnd(FrameNumber);
 	}
 }
 
-void UEngine::SetRenderLatencyMarkerEnd(uint64 FrameNumber)
+void UEngine::SetPresentLatencyMarkerStart(uint64 FrameNumber)
 {
 	TArray<ILatencyMarkerModule*> LatencyMarkerModules = IModularFeatures::Get().GetModularFeatureImplementations<ILatencyMarkerModule>(ILatencyMarkerModule::GetModularFeatureName());
 
 	for (ILatencyMarkerModule* LatencyMarkerModule : LatencyMarkerModules)
 	{
-		LatencyMarkerModule->SetRenderLatencyMarkerEnd(FrameNumber);
+		LatencyMarkerModule->SetPresentLatencyMarkerStart(FrameNumber);
+	}
+}
+
+void UEngine::SetPresentLatencyMarkerEnd(uint64 FrameNumber)
+{
+	TArray<ILatencyMarkerModule*> LatencyMarkerModules = IModularFeatures::Get().GetModularFeatureImplementations<ILatencyMarkerModule>(ILatencyMarkerModule::GetModularFeatureName());
+
+	for (ILatencyMarkerModule* LatencyMarkerModule : LatencyMarkerModules)
+	{
+		LatencyMarkerModule->SetPresentLatencyMarkerEnd(FrameNumber);
+	}
+}
+
+
+void UEngine::SetRenderSubmitLatencyMarkerStart(uint64 FrameNumber)
+{
+	TArray<ILatencyMarkerModule*> LatencyMarkerModules = IModularFeatures::Get().GetModularFeatureImplementations<ILatencyMarkerModule>(ILatencyMarkerModule::GetModularFeatureName());
+
+	for (ILatencyMarkerModule* LatencyMarkerModule : LatencyMarkerModules)
+	{
+		LatencyMarkerModule->SetRenderSubmitLatencyMarkerStart(FrameNumber);
+	}
+}
+
+void UEngine::SetRenderSubmitLatencyMarkerEnd(uint64 FrameNumber)
+{
+	TArray<ILatencyMarkerModule*> LatencyMarkerModules = IModularFeatures::Get().GetModularFeatureImplementations<ILatencyMarkerModule>(ILatencyMarkerModule::GetModularFeatureName());
+
+	for (ILatencyMarkerModule* LatencyMarkerModule : LatencyMarkerModules)
+	{
+		LatencyMarkerModule->SetRenderSubmitLatencyMarkerEnd(FrameNumber);
+	}
+}
+
+void UEngine::SetFlashIndicatorLatencyMarker(uint64 FrameNumber)
+{
+	TArray<ILatencyMarkerModule*> LatencyMarkerModules = IModularFeatures::Get().GetModularFeatureImplementations<ILatencyMarkerModule>(ILatencyMarkerModule::GetModularFeatureName());
+
+	for (ILatencyMarkerModule* LatencyMarkerModule : LatencyMarkerModules)
+	{
+		LatencyMarkerModule->SetFlashIndicatorLatencyMarker(FrameNumber);
 	}
 }
 
@@ -9348,6 +9389,12 @@ void UEngine::AddTextureStreamingSlaveLoc(FVector InLoc, float BoostFactor, bool
 FGuid UEngine::GetPackageGuid(FName PackageName, bool bForPIE)
 {
 	FGuid Result(0,0,0,0);
+
+	// There is no package guid support when using the I/O dispatcher
+	if (FIoDispatcher::IsInitialized())
+	{
+		return Result;
+	}
 
 	uint32 LoadFlags = LOAD_NoWarn | LOAD_NoVerify;
 	if (bForPIE)

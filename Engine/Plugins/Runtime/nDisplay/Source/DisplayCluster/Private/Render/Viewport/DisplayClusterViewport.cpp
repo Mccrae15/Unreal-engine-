@@ -2,13 +2,13 @@
 
 #include "Render/Viewport/DisplayClusterViewport.h"
 #include "Render/Viewport/DisplayClusterViewportManager.h"
+#include "Render/Viewport/DisplayClusterViewportProxy.h"
 
 #include "Render/Viewport/Configuration/DisplayClusterViewportConfiguration.h"
 
 #include "Render/Projection/IDisplayClusterProjectionPolicy.h"
 
 #include "Render/Viewport/DisplayClusterViewportStereoscopicPass.h"
-#include "Render/Viewport/Containers/DisplayClusterViewportProxy_ExchangeContainer.h"
 #include "Render/Viewport/RenderFrame/DisplayClusterRenderFrame.h"
 #include "Render/Viewport/RenderFrame/DisplayClusterRenderFrameSettings.h"
 #include "Render/Viewport/RenderTarget/DisplayClusterRenderTargetResource.h"
@@ -20,9 +20,12 @@
 
 #include "DisplayClusterSceneViewExtensions.h"
 
-#include "Misc\DisplayClusterLog.h"
+#include "Misc/DisplayClusterLog.h"
 
-FDisplayClusterViewport::FDisplayClusterViewport(class FDisplayClusterViewportManager& InOwner, const FString& InViewportId, TSharedPtr<IDisplayClusterProjectionPolicy> InProjectionPolicy)
+///////////////////////////////////////////////////////////////////////////////////////
+//          FDisplayClusterViewport
+///////////////////////////////////////////////////////////////////////////////////////
+FDisplayClusterViewport::FDisplayClusterViewport(FDisplayClusterViewportManager& InOwner, const FString& InViewportId, const TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& InProjectionPolicy)
 	: UninitializedProjectionPolicy(InProjectionPolicy)
 	, ViewportId(InViewportId)
 	, Owner(InOwner)
@@ -30,7 +33,12 @@ FDisplayClusterViewport::FDisplayClusterViewport(class FDisplayClusterViewportMa
 	check(UninitializedProjectionPolicy.IsValid());
 
 	// Create scene proxy pair with on game thread. Outside, in ViewportManager added to proxy array on render thread
-	ViewportProxy = new FDisplayClusterViewportProxy(Owner, *this);
+	ViewportProxy = new FDisplayClusterViewportProxy(Owner.ImplGetProxy(), *this);
+}
+
+FDisplayClusterViewport::~FDisplayClusterViewport()
+{
+	// ViewportProxy deleted on render thread from FDisplayClusterViewportManagerProxy::ImplDeleteViewport()
 }
 
 IDisplayClusterViewportManager& FDisplayClusterViewport::GetOwner() const
@@ -38,26 +46,24 @@ IDisplayClusterViewportManager& FDisplayClusterViewport::GetOwner() const
 	return Owner;
 }
 
-void FDisplayClusterViewport::UpdateViewExtensions(FViewport* InViewport)
+const TArray<FSceneViewExtensionRef> FDisplayClusterViewport::GatherActiveExtensions(FViewport* InViewport) const
 {
 	if (InViewport)
 	{
 		FDisplayClusterSceneViewExtensionContext ViewExtensionContext(InViewport, &Owner, GetId());
-		ViewExtensions = GEngine->ViewExtensions->GatherActiveExtensions(ViewExtensionContext);
+		return GEngine->ViewExtensions->GatherActiveExtensions(ViewExtensionContext);
 	}
 	else
 	{
-		UWorld* CurrentWorld = Owner.GetWorld();
+		UWorld* CurrentWorld = Owner.GetCurrentWorld();
 		if (CurrentWorld)
 		{
 			FDisplayClusterSceneViewExtensionContext ViewExtensionContext(CurrentWorld->Scene, &Owner, GetId());
-			ViewExtensions = GEngine->ViewExtensions->GatherActiveExtensions(ViewExtensionContext);
-		}
-		else
-		{
-			ViewExtensions.Empty();
+			return GEngine->ViewExtensions->GatherActiveExtensions(ViewExtensionContext);
 		}
 	}
+
+	return TArray<FSceneViewExtensionRef>();
 }
 
 FSceneViewExtensionIsActiveFunctor FDisplayClusterViewport::GetSceneViewExtensionIsActiveFunctor() const
@@ -87,28 +93,6 @@ FSceneViewExtensionIsActiveFunctor FDisplayClusterViewport::GetSceneViewExtensio
 	};
 
 	return IsActiveFunction;
-}
-
-void FDisplayClusterViewport::UpdateSceneProxyData()
-{
-	// Update viewport proxy data
-	ENQUEUE_RENDER_COMMAND(UpdateDisplayClusterViewportProxy)(
-		[ DstViewportProxy = ViewportProxy
-		, SrcProxyExchangeContainer = new FDisplayClusterViewportProxy_ExchangeContainer(this)
-		](FRHICommandListImmediate& RHICmdList)
-	{
-		if (SrcProxyExchangeContainer)
-		{
-			if (DstViewportProxy)
-			{
-				// Send data from container to viewport sceneproxy
-				SrcProxyExchangeContainer->CopyTo(DstViewportProxy);
-			}
-
-			// remove container after exchange
-			delete SrcProxyExchangeContainer;
-		}
-	});
 }
 
 bool FDisplayClusterViewport::HandleStartScene()
@@ -181,8 +165,17 @@ void FDisplayClusterViewport::SetupSceneView(uint32 ContextNum, class UWorld* Wo
 		InOutView.bAllowCrossGPUTransfer = (Contexts[ContextNum].bAllowGPUTransferOptimization == false);
 	}
 
-	// Apply visibility settigns to view
-	VisibilitySettings.SetupSceneView(World, InOutView);
+	if (RenderSettings.bSkipRendering)
+	{
+		//@todo: research better way to disable viewport rendering
+		// now just set showOnly=[]
+		InOutView.ShowOnlyPrimitives.Emplace();
+	}
+	else
+	{
+		// Apply visibility settigns to view
+		VisibilitySettings.SetupSceneView(World, InOutView);
+	}
 
 	// Handle Motion blur parameters
 	CameraMotionBlur.SetupSceneView(Contexts[ContextNum], InOutView);
@@ -196,6 +189,37 @@ inline void AdjustRect(FIntRect& InOutRect, const float multX, const float multY
 	InOutRect.Max.Y *= multY;
 }
 
+FIntRect FDisplayClusterViewport::GetValidRect(const FIntRect& InRect, const TCHAR* DbgSourceName)
+{
+	// The target always needs be within GMaxTextureDimensions, larger dimensions are not supported by the engine
+	static const int32 MaxTextureSize = 1 << (GMaxTextureMipCount - 1);
+	static const int32 MinTextureSize = 16;
+
+	int Width  = FMath::Max(MinTextureSize, InRect.Width());
+	int Height = FMath::Max(MinTextureSize, InRect.Height());
+
+	FIntRect OutRect(InRect.Min, InRect.Min + FIntPoint(Width, Height));
+
+	float RectScale = 1;
+
+	// Make sure the rect doesn't exceed the maximum resolution, and preserve its aspect ratio if it needs to be clamped
+	int RectMaxSize = OutRect.Max.GetMax();
+	if (RectMaxSize > MaxTextureSize)
+	{
+		RectScale = float(MaxTextureSize) / RectMaxSize;
+		UE_LOG(LogDisplayClusterViewport, Error, TEXT("The viewport '%s' rect '%s' size %dx%d clamped: max texture dimensions is %d"), *GetId(), (DbgSourceName==nullptr) ? TEXT("none") : DbgSourceName, InRect.Max.X, InRect.Max.Y, MaxTextureSize);
+	}
+
+
+	OutRect.Min.X = FMath::Min(OutRect.Min.X, MaxTextureSize);
+	OutRect.Min.Y = FMath::Min(OutRect.Min.Y, MaxTextureSize);
+
+	OutRect.Max.X = FMath::Clamp(int(OutRect.Max.X * RectScale), OutRect.Min.X, MaxTextureSize);
+	OutRect.Max.Y = FMath::Clamp(int(OutRect.Max.Y * RectScale), OutRect.Min.Y, MaxTextureSize);
+
+	return OutRect;
+}
+
 bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InViewPassNum, const FDisplayClusterRenderFrameSettings& InFrameSettings)
 {
 	check(IsInGameThread());
@@ -207,6 +231,10 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InViewPassNum, co
 	OutputFrameTargetableResources.Empty();
 	AdditionalFrameTargetableResources.Empty();
 
+#if WITH_EDITOR
+	OutputPreviewTargetableResource.SafeRelease();
+#endif
+
 	InputShaderResources.Empty();
 	AdditionalTargetableResources.Empty();
 	MipsShaderResources.Empty();
@@ -217,10 +245,18 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InViewPassNum, co
 		return false;
 	}
 
-	float RTTSizeMult = RenderSettings.RenderTargetRatio * InFrameSettings.ClusterRenderTargetRatioMult;
+	if (PostRenderSettings.GenerateMips.bAutoGenerateMips)
+	{
+		//Check if current projection policy supports this feature
+		if (!ProjectionPolicy.IsValid() || !ProjectionPolicy->ShouldUseSourceTextureWithMips())
+		{
+			// Don't create unused mips texture
+			PostRenderSettings.GenerateMips.bAutoGenerateMips = false;
+		}
+	}
 
 	uint32 FrameTargetsAmmount = 2;
-	FIntRect     FrameTargetRect = RenderSettings.Rect;
+	FIntRect     DesiredFrameTargetRect = RenderSettings.Rect;
 	{
 		switch (InFrameSettings.RenderMode)
 		{
@@ -228,20 +264,19 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InViewPassNum, co
 			FrameTargetsAmmount = 1;
 			break;
 		case EDisplayClusterRenderFrameMode::SideBySide:
-			AdjustRect(FrameTargetRect, 0.5f, 1.f);
+			AdjustRect(DesiredFrameTargetRect, 0.5f, 1.f);
 			break;
 		case EDisplayClusterRenderFrameMode::TopBottom:
-			AdjustRect(FrameTargetRect, 1.f, 0.5f);
+			AdjustRect(DesiredFrameTargetRect, 1.f, 0.5f);
 			break;
 		case EDisplayClusterRenderFrameMode::PreviewMono:
 		{
-			// Apply preview scale
-			RTTSizeMult *= InFrameSettings.PreviewRenderTargetRatioMult;
-			float MultXY = InFrameSettings.PreviewRenderTargetRatioMult;
-			AdjustRect(FrameTargetRect, MultXY, MultXY);
+			// Preview downscale in range 0..1
+			float MultXY = FMath::Clamp(InFrameSettings.PreviewRenderTargetRatioMult, 0.f, 1.f);
+			AdjustRect(DesiredFrameTargetRect, MultXY, MultXY);
 
 			// Align each frame to zero
-			FrameTargetRect = FIntRect(FIntPoint(0, 0), FrameTargetRect.Size());
+			DesiredFrameTargetRect = FIntRect(FIntPoint(0, 0), DesiredFrameTargetRect.Size());
 
 			// Mono
 			FrameTargetsAmmount = 1;
@@ -255,108 +290,103 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InViewPassNum, co
 	// Special case mono->stereo
 	uint32 ViewportContextAmmount = RenderSettings.bForceMono ? 1 : FrameTargetsAmmount;
 
+	// Make sure the frame target rect doesn't exceed the maximum resolution, and preserve its aspect ratio if it needs to be clamped
+	FIntRect FrameTargetRect = GetValidRect(DesiredFrameTargetRect, TEXT("Context Frame"));
 
-	FIntPoint ViewportSize = FrameTargetRect.Size();
-
-	// Get valid viewport size for render:
+	// Exclude zero-size viewports from render
+	if (FrameTargetRect.Size().GetMin() <= 0)
 	{
-		int ViewportResolution = ViewportSize.GetMax() * RTTSizeMult;
-
-		// In UE, the maximum texture resolution is computed as:
-		static int MaximumSupportedResolution = 1 << (GMaxTextureMipCount - 1);
-		if (ViewportResolution > MaximumSupportedResolution)
-		{
-			RTTSizeMult *= float(ViewportResolution) / MaximumSupportedResolution;
-	}
-
-		ViewportSize.X = FMath::Min(int(RTTSizeMult * ViewportSize.X), MaximumSupportedResolution);
-		ViewportSize.Y = FMath::Min(int(RTTSizeMult * ViewportSize.Y), MaximumSupportedResolution);
-	}
-
-	FIntRect RenderTargetRect(FIntPoint(0, 0), ViewportSize);
-
-	// Test vs zero size rects
-	if (FrameTargetRect.Width() <= 0 || FrameTargetRect.Height() <= 0 || RenderTargetRect.Width() <= 0 || RenderTargetRect.Height() <= 0)
-	{
+		UE_LOG(LogDisplayClusterViewport, Error, TEXT("The viewport '%s' FrameTarget rect has zero size %dx%d: Disabled"), *GetId(), FrameTargetRect.Size().X, FrameTargetRect.Size().Y);
 		return false;
 	}
 
+
+	FIntPoint DesiredContextSize = FrameTargetRect.Size();
+
+	float ClusterRenderTargetRatioMult = InFrameSettings.ClusterRenderTargetRatioMult;
+
+	// Support Outer viewport cluster rtt multiplier
+	if ((RenderSettingsICVFX.RuntimeFlags & ViewportRuntime_ICVFXTarget) != 0)
+	{
+		ClusterRenderTargetRatioMult *= InFrameSettings.ClusterICVFXOuterViewportRenderTargetRatioMult;
+	}
+
+	// Cluster mult downscale in range 0..1
+	float ClusterRTTMult = FMath::Clamp(ClusterRenderTargetRatioMult, 0.f, 1.f);
+
+	// Scale context for rendering
+	float ViewportContextSizeMult = FMath::Max(RenderSettings.RenderTargetRatio * ClusterRTTMult, 0.f);
+	DesiredContextSize.X *= ViewportContextSizeMult;
+	DesiredContextSize.Y *= ViewportContextSizeMult;
+
+	FIntRect RenderTargetRect = GetValidRect(FIntRect(FIntPoint(0, 0), DesiredContextSize), TEXT("Context RenderTarget"));
+
+	// Exclude zero-size viewports from render
+	if (RenderTargetRect.Size().GetMin()<=0)
+	{
+		UE_LOG(LogDisplayClusterViewport, Error, TEXT("The viewport '%s' RenderTarget rect has zero size %dx%d: Disabled"), *GetId(), RenderTargetRect.Size().X, RenderTargetRect.Size().Y);
+		return false;
+	}
+
+	FIntPoint ContextSize = RenderTargetRect.Size();
+
+	// Support overscan rendering feature
+	OverscanRendering.Update(*this, RenderTargetRect);
+
 	// Support override feature
 	bool bDisableRender = PostRenderSettings.Override.IsEnabled();
-
-	if (RenderSettings.OverrideViewportId.IsEmpty() == false)
-	{
-		// map to override at UpdateFrameContexts()
-		bDisableRender = true;
-	}
 	
-	switch (InFrameSettings.RenderMode)
+	
+	//Add new contexts
+	for (uint32 ContextIt = 0; ContextIt < ViewportContextAmmount; ++ContextIt)
 	{
-		case EDisplayClusterRenderFrameMode::PreviewMono:
+		const EStereoscopicPass StereoscopicEye  = FDisplayClusterViewportStereoscopicPass::EncodeStereoscopicEye(ContextIt, ViewportContextAmmount);
+		const EStereoscopicPass StereoscopicPass = (InFrameSettings.bIsRenderingInEditor) ? EStereoscopicPass::eSSP_FULL : FDisplayClusterViewportStereoscopicPass::EncodeStereoscopicPass(InViewPassNum + ContextIt);
+
+		FDisplayClusterViewport_Context Context(ContextIt, StereoscopicEye, StereoscopicPass);
+
+		int ContextGPUIndex = (ContextIt > 0 && RenderSettings.StereoGPUIndex >= 0) ? RenderSettings.StereoGPUIndex : RenderSettings.GPUIndex;
+		Context.GPUIndex = ContextGPUIndex;
+
+
+		if (InFrameSettings.bIsRenderingInEditor)
 		{
-			//Add mono new preview contexts
-			const EStereoscopicPass StereoscopicEye = EStereoscopicPass::eSSP_FULL;
-			const EStereoscopicPass StereoscopicPass = EStereoscopicPass::eSSP_FULL;
-
-			FDisplayClusterViewport_Context Context(0, StereoscopicEye, StereoscopicPass);
-			
-			Context.FrameTargetRect = FrameTargetRect;
-			Context.RenderTargetRect = RenderTargetRect;
-
+			// Disable MultiGPU feature
 			Context.GPUIndex = INDEX_NONE;
-
-			Context.bDisableRender = bDisableRender;
-
-			Contexts.Add(Context);
-			break;
 		}
-
-		default:
+		else
 		{
-			//Add new contexts
-			for (uint32 ContextIt = 0; ContextIt < ViewportContextAmmount; ++ContextIt)
+			// Control mGPU:
+			switch (InFrameSettings.MultiGPUMode)
 			{
-				const uint32 ViewIndex = InViewPassNum + ContextIt;
-				const EStereoscopicPass StereoscopicEye = FDisplayClusterViewportStereoscopicPass::EncodeStereoscopicEye(ContextIt, ViewportContextAmmount);
-				const EStereoscopicPass StereoscopicPass = FDisplayClusterViewportStereoscopicPass::EncodeStereoscopicPass(ViewIndex);
+			case EDisplayClusterMultiGPUMode::None:
+				Context.bAllowGPUTransferOptimization = false;
+				Context.GPUIndex = INDEX_NONE;
+				break;
 
-				int ContextGPUIndex = (ContextIt > 0 && RenderSettings.StereoGPUIndex >= 0) ? RenderSettings.StereoGPUIndex : RenderSettings.GPUIndex;
+			case EDisplayClusterMultiGPUMode::Optimized_EnabledLockSteps:
+				Context.bAllowGPUTransferOptimization = true;
+				Context.bEnabledGPUTransferLockSteps = true;
+				break;
 
-				FDisplayClusterViewport_Context Context(ContextIt, StereoscopicEye, StereoscopicPass);
-				Context.FrameTargetRect = FrameTargetRect;
-				Context.RenderTargetRect = RenderTargetRect;
+			case EDisplayClusterMultiGPUMode::Optimized_DisabledLockSteps:
+				Context.bAllowGPUTransferOptimization = true;
+				Context.bEnabledGPUTransferLockSteps = false;
+				break;
 
-				Context.GPUIndex = ContextGPUIndex;
-
-				Context.bDisableRender = bDisableRender;
-
-				// Control mGPU:
-				switch (InFrameSettings.MultiGPUMode)
-				{
-				case EDisplayClusterMultiGPUMode::None:
-					Context.bAllowGPUTransferOptimization = false;
-					Context.GPUIndex = INDEX_NONE;
-					break;
-
-				case EDisplayClusterMultiGPUMode::Optimized_EnabledLockSteps:
-					Context.bAllowGPUTransferOptimization = true;
-					Context.bEnabledGPUTransferLockSteps = true;
-					break;
-
-				case EDisplayClusterMultiGPUMode::Optimized_DisabledLockSteps:
-					Context.bAllowGPUTransferOptimization = true;
-					Context.bEnabledGPUTransferLockSteps = false;
-					break;
-
-				default:
-					Context.bAllowGPUTransferOptimization = false;
-					break;
-				}
-
-				Contexts.Add(Context);
+			default:
+				Context.bAllowGPUTransferOptimization = false;
+				break;
 			}
-			break;
 		}
+
+		Context.FrameTargetRect = FrameTargetRect;
+		Context.RenderTargetRect = RenderTargetRect;
+		Context.ContextSize = ContextSize;
+
+		Context.bDisableRender = bDisableRender;
+
+		Contexts.Add(Context);
 	}
 
 	// Reserve for resources
@@ -371,7 +401,7 @@ bool FDisplayClusterViewport::UpdateFrameContexts(const uint32 InViewPassNum, co
 	// Setup Mips resources:
 	for (FDisplayClusterViewport_Context& ContextIt: Contexts)
 	{
-		ContextIt.NumMips = PostRenderSettings.GenerateMips.GetRequiredNumMips(ContextIt.RenderTargetRect.Size());
+		ContextIt.NumMips = PostRenderSettings.GenerateMips.GetRequiredNumMips(ContextIt.ContextSize);
 		if (ContextIt.NumMips > 1)
 		{
 			MipsShaderResources.AddZeroed(1);

@@ -17,6 +17,7 @@
 #include "Settings/EditorLoadingSavingSettings.h"
 #include "Editor.h"
 #include "GenericPlatform/GenericPlatformProcess.h"
+#include "SequencerUtilities.h"
 
 #define LOCTEXT_NAMESPACE "MoviePipelineEditorBlueprintLibrary"
 
@@ -152,8 +153,27 @@ UMoviePipelineExecutorJob* UMoviePipelineEditorBlueprintLibrary::CreateJobFromSe
 
 	NewJob->Modify();
 
-	// We'll assume they went to render from the current world - they can always override it later.
-	FSoftObjectPath CurrentWorld = GEditor ? FSoftObjectPath(GEditor->GetEditorWorldContext().World()) : FSoftObjectPath();
+	TArray<FString> AssociatedMaps = FSequencerUtilities::GetAssociatedMapPackages(InSequence);
+	FSoftObjectPath CurrentWorld;
+
+	UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+
+	// We'll assume they went to render from the current world if it's been saved.
+	if (EditorWorld && (!EditorWorld->GetOutermost()->GetPathName().StartsWith(TEXT("/Temp/Untitled")) || AssociatedMaps.Num() == 0))
+	{
+		CurrentWorld = FSoftObjectPath(EditorWorld);
+	}
+	else if (AssociatedMaps.Num() > 0)
+	{
+		// So associated maps are only packages and not assets, but FSoftObjectPath needs assets.
+		// We know that they are map packages, and map packages should be /Game/Foo.Foo, so we can
+		// just do some string manipulation here as there isn't a generic way to go from Package->Object.
+		FString MapPackage = AssociatedMaps[0];
+		MapPackage = FString::Printf(TEXT("%s.%s"), *MapPackage, *FPackageName::GetShortName(MapPackage));
+
+		CurrentWorld = FSoftObjectPath(MapPackage);
+	}
+
 	FSoftObjectPath Sequence(InSequence);
 	NewJob->Map = CurrentWorld;
 	NewJob->Author = FPlatformProcess::UserName(false);
@@ -163,5 +183,27 @@ UMoviePipelineExecutorJob* UMoviePipelineEditorBlueprintLibrary::CreateJobFromSe
 	return NewJob;
 }
 
+void UMoviePipelineEditorBlueprintLibrary::EnsureJobHasDefaultSettings(UMoviePipelineExecutorJob* NewJob)
+{
+	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
+	for (TSubclassOf<UMoviePipelineSetting> SettingClass : ProjectSettings->DefaultClasses)
+	{
+		if (!SettingClass)
+		{
+			continue;
+		}
+
+		if (SettingClass->HasAnyClassFlags(CLASS_Abstract))
+		{
+			continue;
+		}
+
+		UMoviePipelineSetting* ExistingSetting = NewJob->GetConfiguration()->FindSettingByClass(SettingClass);
+		if (!ExistingSetting)
+		{
+			NewJob->GetConfiguration()->FindOrAddSettingByClass(SettingClass);
+		}
+	}
+}
 
 #undef LOCTEXT_NAMESPACE // "MoviePipelineEditorBlueprintLibrary"

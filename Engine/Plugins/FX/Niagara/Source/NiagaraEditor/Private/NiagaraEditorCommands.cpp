@@ -9,6 +9,7 @@
 void FNiagaraEditorCommands::RegisterCommands()
 {
 	UI_COMMAND(Apply, "Apply", "Apply unsaved changes to the current object.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ApplyScratchPadChanges, "Apply Scratch", "Applies changes to all scratch pad scripts which have pending changes.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(Discard, "Discard", "Discard unsaved changes from the current object.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(Compile, "Compile", "Compile the current scripts", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(RefreshNodes, "Refresh", "Refreshes the current graph nodes, and updates pins due to external changes.", EUserInterfaceActionType::Button, FInputChord());
@@ -31,7 +32,8 @@ void FNiagaraEditorCommands::RegisterCommands()
 	UI_COMMAND(ToggleStatPerformanceModePercent, "Display Relative Values", "Displays the captured module stats in percent of the parent script.", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ToggleStatPerformanceModeAbsolute, "Display Absolute Values", "Displays the captured module stats times directly.", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ToggleBounds, "Bounds", "Display Bounds", EUserInterfaceActionType::ToggleButton, FInputChord());
-	UI_COMMAND(ToggleBounds_SetFixedBounds, "Set Fixed Bounds", "Set Fixed Bounds", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ToggleBounds_SetFixedBounds_SelectedEmitters, "Set Fixed Bounds (Emitters)", "Set Fixed Bounds on emitters (only the selected emitters when in a System asset) ", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ToggleBounds_SetFixedBounds_System, "Set Fixed Bounds (System)", "Set Fixed Bounds on the system", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ToggleOrbit, "Orbit Mode", "Toggle Orbit Navigation", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(SaveThumbnailImage, "Thumbnail", "Generate Thumbnail", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ToggleAutoPlay, "Auto-play", "Toggles whether or not simulations auto-play when their asset editor is opened, and when the asset is modified.", EUserInterfaceActionType::ToggleButton, FInputChord());
@@ -42,6 +44,10 @@ void FNiagaraEditorCommands::RegisterCommands()
 
 	UI_COMMAND(IsolateSelectedEmitters, "Isolate selected emitters", "Isolate all currently selected emitters.", EUserInterfaceActionType::Button, FInputChord(EKeys::S));
 	UI_COMMAND(DisableSelectedEmitters, "Disable selected emitters", "Disables all currently selected emitters and recompiles the system.", EUserInterfaceActionType::Button, FInputChord(EKeys::D));
+	
+	UI_COMMAND(OpenDebugHUD, "Debug HUD", "Open the Niagara Debug HUD.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(OpenDebugOutliner, "FX Outliner", "Open the Niagara FX Outliner.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(OpenAttributeSpreadsheet, "Attribute Spreadsheet", "Open the Niagara Debug Outliner.", EUserInterfaceActionType::Button, FInputChord());
 
 	// todo
 	/*UI_COMMAND(SelectNextEmitter, "Select Next Emitter", "Toggles whether or not simulations auto-play when their asset editor is opened, and when the asset is modified.", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Shift, EKeys::D));

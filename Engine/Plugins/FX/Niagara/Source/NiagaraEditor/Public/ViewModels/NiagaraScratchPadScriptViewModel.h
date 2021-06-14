@@ -6,18 +6,21 @@
 #include "GraphEditAction.h"
 
 class INiagaraParameterPanelViewModel;
+class FNiagaraScriptToolkitParameterPanelViewModel;
 class FUICommandList;
+
 
 class NIAGARAEDITOR_API FNiagaraScratchPadScriptViewModel : public FNiagaraScriptViewModel, public FGCObject
 {
 public:
 	DECLARE_MULTICAST_DELEGATE(FOnRenamed);
 	DECLARE_MULTICAST_DELEGATE(FOnPinnedChanged);
+	DECLARE_MULTICAST_DELEGATE(FOnHasUnappliedChangesChanged);
 	DECLARE_MULTICAST_DELEGATE(FOnChangesApplied);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnNodeIDFocusRequested, FNiagaraScriptIDAndGraphFocusInfo*  /* FocusInfo */);
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPinIDFocusRequested, FNiagaraScriptIDAndGraphFocusInfo*  /* FocusInfo */);
 
-	FNiagaraScratchPadScriptViewModel();
+	FNiagaraScratchPadScriptViewModel(bool bInIsForDataProcessingOnly);
 
 	~FNiagaraScratchPadScriptViewModel();
 
@@ -25,7 +28,16 @@ public:
 
 	void Finalize();
 
+	//~ Begin FGCObject
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	//~ End FGCObject
+
+	//~ Begin NiagaraParameterDefinitionsSubscriberViewModel Interface
+protected:
+	virtual INiagaraParameterDefinitionsSubscriber* GetParameterDefinitionsSubscriber() override { return &EditScript; };
+	//~ End NiagaraParameterDefinitionsSubscriberViewModel Interface
+
+public:
 
 	UNiagaraScript* GetOriginalScript() const;
 
@@ -61,6 +73,8 @@ public:
 
 	FOnPinnedChanged& OnPinnedChanged();
 
+	FOnHasUnappliedChangesChanged& OnHasUnappliedChangesChanged();
+
 	FOnChangesApplied& OnChangesApplied();
 
 	FSimpleDelegate& OnRequestDiscardChanges();
@@ -88,14 +102,15 @@ private:
 	bool bHasPendingChanges;
 
 	TSharedPtr<FUICommandList> ParameterPanelCommands;
-	TSharedPtr<INiagaraParameterPanelViewModel> ParameterPaneViewModel;
+	TSharedPtr<FNiagaraScriptToolkitParameterPanelViewModel> ParameterPaneViewModel;
 
 	FDelegateHandle OnGraphNeedsRecompileHandle;
 
 	FOnRenamed OnRenamedDelegate;
 	FOnPinnedChanged OnPinnedChangedDelegate;
+	FOnHasUnappliedChangesChanged OnHasUnappliedChangesChangedDelegate;
 	FOnChangesApplied OnChangesAppliedDelegate;
-	FSimpleDelegate		OnRequestDiscardChangesDelegate;
+	FSimpleDelegate	OnRequestDiscardChangesDelegate;
 
 	FOnNodeIDFocusRequested OnNodeIDFocusRequestedDelegate;
 	FOnPinIDFocusRequested OnPinIDFocusRequestedDelegate;

@@ -72,13 +72,6 @@ namespace CADLibrary
 		int32 TriangleCount = Body.TriangleCount;
 		TArray<FTessellationData>& FaceTessellationSet = Body.Faces;
 
-		// Add offset to the bounding box to avoid to remove good vertex
-		FVector Size = Body.BBox.GetSize();
-		FBox BBox = Body.BBox.ExpandBy(Size.Size());
-		BBox.IsValid = Body.BBox.IsValid;
-		BBox.Min *= ImportParams.ScaleFactor;
-		BBox.Max *= ImportParams.ScaleFactor;
-
 		TVertexAttributesRef<FVector> VertexPositions = MeshDescription.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
 
 		// Create a list of vertex Z/index pairs
@@ -121,13 +114,7 @@ namespace CADLibrary
 			int32 Index_i = VertexDataSet[i].Index;
 			IndexOfCoincidentNode[Index_i] = Index_i;
 
-			// Check if mesh vertex is not outside body bbox
 			const FVector& PositionA = VertexDataSet[i].Coordinates;
-			if (BBox.IsValid && !BBox.IsInside(PositionA))
-			{
-				VertexDataSet[i].Index = -1;
-				continue;
-			}
 
 			// only need to search forward, since we add pairs both ways
 			for (int32 j = i + 1; j < VertexDataSet.Num(); j++)
@@ -658,13 +645,14 @@ namespace CADLibrary
 
 	bool LoadFile(const FString& FileName, FMeshDescription& MeshDescription, const FImportParameters& ImportParameters, FMeshParameters& MeshParameters)
 	{
-		FCoreTechSessionBase Session(TEXT("CoreTechMeshLoader::LoadFile"), ImportParameters.MetricUnit);
+		FCoreTechSessionBase Session(TEXT("CoreTechMeshLoader::LoadFile"));
 		if (!Session.IsSessionValid())
 		{
 			return false;
 		}
 
 		uint64 MainObjectID;
+		CTKIO_ChangeUnit(ImportParameters.MetricUnit);
 		if(!CTKIO_LoadModel(*FileName, MainObjectID, 0x00020000 /* CT_LOAD_FLAGS_READ_META_DATA */))
 		{
 			// Something wrong happened during the load, abort
@@ -673,7 +661,7 @@ namespace CADLibrary
 
 		if (ImportParameters.StitchingTechnique != StitchingNone)
 		{
-			CTKIO_Repair(MainObjectID, StitchingHeal);
+			CTKIO_Repair(MainObjectID, StitchingSew);
 		}
 
 		return Tessellate(MainObjectID, ImportParameters, MeshDescription, MeshParameters);

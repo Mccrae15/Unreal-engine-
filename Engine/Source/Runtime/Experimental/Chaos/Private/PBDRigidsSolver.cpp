@@ -44,6 +44,14 @@ DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumJoints"), STAT_ChaosCounter_NumJoints, S
 
 CSV_DEFINE_CATEGORY(ChaosCounters, true);
 
+// Stat Iteration counters
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumIterations"), STAT_ChaosIterations_NumIterations, STATGROUP_ChaosIterations);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumCollisionIterations"), STAT_ChaosIterations_NumCollisionIterations, STATGROUP_ChaosIterations);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumJointIterations"), STAT_ChaosIterations_NumJointIterations, STATGROUP_ChaosIterations);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumPushOutIterations"), STAT_ChaosIterations_NumPushOutIterations, STATGROUP_ChaosIterations);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumPushOutCollisionIterations"), STAT_ChaosIterations_NumPushOutCollisionIterations, STATGROUP_ChaosIterations);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumPushOutJointIterations"), STAT_ChaosIterations_NumPushOutJointIterations, STATGROUP_ChaosIterations);
+
 
 // DebugDraw CVars
 #if CHAOS_DEBUG_DRAW
@@ -53,20 +61,34 @@ CSV_DEFINE_CATEGORY(ChaosCounters, true);
 
 int32 ChaosSolverDebugDrawShapes = CHAOS_SOLVER_ENABLE_DEBUG_DRAW;
 int32 ChaosSolverDebugDrawCollisions = CHAOS_SOLVER_ENABLE_DEBUG_DRAW;
+int32 ChaosSolverDebugDrawCollidingShapes = 0;
 int32 ChaosSolverDebugDrawBounds = 0;
 int32 ChaosSolverDrawTransforms = 0;
 int32 ChaosSolverDrawIslands = 0;
 int32 ChaosSolverDrawShapesShowStatic = 1;
 int32 ChaosSolverDrawShapesShowKinematic = 1;
 int32 ChaosSolverDrawShapesShowDynamic = 1;
+int32 ChaosSolverDrawJoints = 0;
+Chaos::DebugDraw::FChaosDebugDrawJointFeatures ChaosSolverDrawJointFeatures = Chaos::DebugDraw::FChaosDebugDrawJointFeatures::MakeDefault();
 FAutoConsoleVariableRef CVarChaosSolverDrawShapes(TEXT("p.Chaos.Solver.DebugDrawShapes"), ChaosSolverDebugDrawShapes, TEXT("Draw Shapes (0 = never; 1 = end of frame)."));
 FAutoConsoleVariableRef CVarChaosSolverDrawCollisions(TEXT("p.Chaos.Solver.DebugDrawCollisions"), ChaosSolverDebugDrawCollisions, TEXT("Draw Collisions (0 = never; 1 = end of frame)."));
+FAutoConsoleVariableRef CVarChaosSolverDrawCollidingShapes(TEXT("p.Chaos.Solver.DebugDrawCollidingShapes"), ChaosSolverDebugDrawCollidingShapes, TEXT("Draw Shapes that have collisions on them (0 = never; 1 = end of frame)."));
 FAutoConsoleVariableRef CVarChaosSolverDrawBounds(TEXT("p.Chaos.Solver.DebugDrawBounds"), ChaosSolverDebugDrawBounds, TEXT("Draw bounding volumes inside the broadphase (0 = never; 1 = end of frame)."));
 FAutoConsoleVariableRef CVarChaosSolverDrawTransforms(TEXT("p.Chaos.Solver.DebugDrawTransforms"), ChaosSolverDrawTransforms, TEXT("Draw particle transforms (0 = never; 1 = end of frame)."));
 FAutoConsoleVariableRef CVarChaosSolverDrawIslands(TEXT("p.Chaos.Solver.DebugDrawIslands"), ChaosSolverDrawIslands, TEXT("Draw solver islands (0 = never; 1 = end of frame)."));
 FAutoConsoleVariableRef CVarChaosSolverDrawShapesShapesStatic(TEXT("p.Chaos.Solver.DebugDraw.ShowStatics"), ChaosSolverDrawShapesShowStatic, TEXT("If DebugDrawShapes is enabled, whether to show static objects"));
 FAutoConsoleVariableRef CVarChaosSolverDrawShapesShapesKinematic(TEXT("p.Chaos.Solver.DebugDraw.ShowKinematics"), ChaosSolverDrawShapesShowKinematic, TEXT("If DebugDrawShapes is enabled, whether to show kinematic objects"));
 FAutoConsoleVariableRef CVarChaosSolverDrawShapesShapesDynamic(TEXT("p.Chaos.Solver.DebugDraw.ShowDynamics"), ChaosSolverDrawShapesShowDynamic, TEXT("If DebugDrawShapes is enabled, whether to show dynamic objects"));
+FAutoConsoleVariableRef CVarChaosSolverDrawJoints(TEXT("p.Chaos.Solver.DebugDrawJoints"), ChaosSolverDrawJoints, TEXT("Draw joints"));
+FAutoConsoleVariableRef CVarChaosSolverDrawJointFeaturesCoMConnector(TEXT("p.Chaos.Solver.DebugDraw.JointFeatures.CoMConnector"), ChaosSolverDrawJointFeatures.bCoMConnector, TEXT("Joint features mask (see FDebugDrawJointFeatures)."));
+FAutoConsoleVariableRef CVarChaosSolverDrawJointFeaturesActorConnector(TEXT("p.Chaos.Solver.DebugDraw.JointFeatures.ActorConnector"), ChaosSolverDrawJointFeatures.bActorConnector, TEXT("Joint features mask (see FDebugDrawJointFeatures)."));
+FAutoConsoleVariableRef CVarChaosSolverDrawJointFeaturesStretch(TEXT("p.Chaos.Solver.DebugDraw.JointFeatures.Stretch"), ChaosSolverDrawJointFeatures.bStretch, TEXT("Joint features mask (see FDebugDrawJointFeatures)."));
+FAutoConsoleVariableRef CVarChaosSolverDrawJointFeaturesAxes(TEXT("p.Chaos.Solver.DebugDraw.JointFeatures.Axes"), ChaosSolverDrawJointFeatures.bAxes, TEXT("Joint features mask (see FDebugDrawJointFeatures)."));
+FAutoConsoleVariableRef CVarChaosSolverDrawJointFeaturesLevel(TEXT("p.Chaos.Solver.DebugDraw.JointFeatures.Level"), ChaosSolverDrawJointFeatures.bLevel, TEXT("Joint features mask (see FDebugDrawJointFeatures)."));
+FAutoConsoleVariableRef CVarChaosSolverDrawJointFeaturesIndex(TEXT("p.Chaos.Solver.DebugDraw.JointFeatures.Index"), ChaosSolverDrawJointFeatures.bIndex, TEXT("Joint features mask (see FDebugDrawJointFeatures)."));
+FAutoConsoleVariableRef CVarChaosSolverDrawJointFeaturesColor(TEXT("p.Chaos.Solver.DebugDraw.JointFeatures.Color"), ChaosSolverDrawJointFeatures.bColor, TEXT("Joint features mask (see FDebugDrawJointFeatures)."));
+FAutoConsoleVariableRef CVarChaosSolverDrawJointFeaturesBatch(TEXT("p.Chaos.Solver.DebugDraw.JointFeatures.Batch"), ChaosSolverDrawJointFeatures.bBatch, TEXT("Joint features mask (see FDebugDrawJointFeatures)."));
+FAutoConsoleVariableRef CVarChaosSolverDrawJointFeaturesIsland(TEXT("p.Chaos.Solver.DebugDraw.JointFeatures.Island"), ChaosSolverDrawJointFeatures.bIsland, TEXT("Joint features mask (see FDebugDrawJointFeatures)."));
 
 Chaos::DebugDraw::FChaosDebugDrawSettings ChaosSolverDebugDebugDrawSettings(
 	/* ArrowSize =					*/ 10.0f,
@@ -117,6 +139,10 @@ FAutoConsoleVariableRef CVarChaosSolverUseParticlePool(TEXT("p.Chaos.Solver.UseP
 int32 ChaosSolverParticlePoolNumFrameUntilShrink = 30;
 FAutoConsoleVariableRef CVarChaosSolverParticlePoolNumFrameUntilShrink(TEXT("p.Chaos.Solver.ParticlePoolNumFrameUntilShrink"), ChaosSolverParticlePoolNumFrameUntilShrink, TEXT("Num Frame until we can potentially shrink the pool"));
 
+// Select the solver technique to use until we settle on the final one...
+int32 ChaosSolver_SolverType = (int32)Chaos::EConstraintSolverType::GbfPbd;
+FAutoConsoleVariableRef CVarChaosSolverSolverType(TEXT("p.Chaos.Solver.SolverType"), ChaosSolver_SolverType, TEXT("0 = None; 1 = GbfPbd; 2 = Pbd; 3 = QuasiPbd"));
+
 // Iteration count cvars
 // These override the engine config if >= 0
 
@@ -153,6 +179,16 @@ FAutoConsoleVariableRef CVarChaosSolverCollisionDeferNarrowPhase(TEXT("p.Chaos.S
 // Allow one-shot or incremental manifolds where supported (which depends on shape pair types)
 int32 ChaosSolverCollisionUseManifolds = 1;
 FAutoConsoleVariableRef CVarChaosSolverCollisionUseManifolds(TEXT("p.Chaos.Solver.Collision.UseManifolds"), ChaosSolverCollisionUseManifolds, TEXT("Enable/Disable use of manifolds in collision."));
+
+
+// Joint cvars
+float ChaosSolverJointMinSolverStiffness = 1.0f;
+float ChaosSolverJointMaxSolverStiffness = 1.0f;
+int32 ChaosSolverJointNumIterationsAtMaxSolverStiffness = 1;
+FAutoConsoleVariableRef CVarChaosSolverJointMinSolverStiffness(TEXT("p.Chaos.Solver.Joint.MinSolverStiffness"), ChaosSolverJointMinSolverStiffness, TEXT("Solver stiffness on first iteration, increases each iteration toward MaxSolverStiffness."));
+FAutoConsoleVariableRef CVarChaosSolverJointMaxSolverStiffness(TEXT("p.Chaos.Solver.Joint.MaxSolverStiffness"), ChaosSolverJointMaxSolverStiffness, TEXT("Solver stiffness on last iteration, increases each iteration from MinSolverStiffness."));
+FAutoConsoleVariableRef CVarChaosSolverJointNumIterationsAtMaxSolverStiffness(TEXT("p.Chaos.Solver.Joint.NumIterationsAtMaxSolverStiffness"), ChaosSolverJointNumIterationsAtMaxSolverStiffness, TEXT("How many iterations we want at MaxSolverStiffness."));
+
 
 int32 ChaosVisualDebuggerEnable = 1;
 FAutoConsoleVariableRef CVarChaosVisualDebuggerEnable(TEXT("p.Chaos.VisualDebuggerEnable"), ChaosVisualDebuggerEnable, TEXT("Enable/Disable pushing/saving data to the visual debugger"));
@@ -281,37 +317,7 @@ namespace Chaos
 #endif
 			}
 
-			{
-				// Particle counts
-				SET_DWORD_STAT(STAT_ChaosCounter_NumDisabledParticles, MSolver->GetEvolution()->GetParticles().GetAllParticlesView().Num() - MSolver->GetEvolution()->GetParticles().GetNonDisabledView().Num());
-				SET_DWORD_STAT(STAT_ChaosCounter_NumParticles, MSolver->GetEvolution()->GetParticles().GetNonDisabledView().Num());
-				SET_DWORD_STAT(STAT_ChaosCounter_NumDynamicParticles, MSolver->GetEvolution()->GetParticles().GetNonDisabledDynamicView().Num());
-				SET_DWORD_STAT(STAT_ChaosCounter_NumActiveDynamicParticles, MSolver->GetEvolution()->GetParticles().GetActiveParticlesView().Num());
-				SET_DWORD_STAT(STAT_ChaosCounter_NumKinematicParticles, MSolver->GetEvolution()->GetParticles().GetActiveKinematicParticlesView().Num());
-				SET_DWORD_STAT(STAT_ChaosCounter_NumStaticParticles, MSolver->GetEvolution()->GetParticles().GetActiveStaticParticlesView().Num());
-				SET_DWORD_STAT(STAT_ChaosCounter_NumGeometryCollectionParticles, MSolver->GetEvolution()->GetParticles().GetGeometryCollectionParticles().Size());
-
-				// Constraint counts
-				SET_DWORD_STAT(STAT_ChaosCounter_NumIslands, MSolver->GetEvolution()->GetConstraintGraph().NumIslands());
-				SET_DWORD_STAT(STAT_ChaosCounter_NumContacts, MSolver->NumCollisionConstraints());
-				SET_DWORD_STAT(STAT_ChaosCounter_NumJoints, MSolver->NumJointConstraints());
-
-#if CSV_PROFILER
-				// Particle counts
-				CSV_CUSTOM_STAT(ChaosCounters, NumDisabledParticles, MSolver->GetEvolution()->GetParticles().GetAllParticlesView().Num() - MSolver->GetEvolution()->GetParticles().GetNonDisabledView().Num(), ECsvCustomStatOp::Accumulate);
-				CSV_CUSTOM_STAT(ChaosCounters, NumParticles, MSolver->GetEvolution()->GetParticles().GetNonDisabledView().Num(), ECsvCustomStatOp::Accumulate);
-				CSV_CUSTOM_STAT(ChaosCounters, NumDynamicParticles, MSolver->GetEvolution()->GetParticles().GetNonDisabledDynamicView().Num(), ECsvCustomStatOp::Accumulate);
-				CSV_CUSTOM_STAT(ChaosCounters, NumKinematicParticles, MSolver->GetEvolution()->GetParticles().GetActiveKinematicParticlesView().Num(), ECsvCustomStatOp::Accumulate);
-				CSV_CUSTOM_STAT(ChaosCounters, NumStaticParticles, MSolver->GetEvolution()->GetParticles().GetActiveStaticParticlesView().Num(), ECsvCustomStatOp::Accumulate);
-				CSV_CUSTOM_STAT(ChaosCounters, NumGeometryCollectionParticles, (int)MSolver->GetEvolution()->GetParticles().GetGeometryCollectionParticles().Size(), ECsvCustomStatOp::Accumulate);
-
-				// Constraint counts
-				CSV_CUSTOM_STAT(ChaosCounters, NumIslands, MSolver->GetEvolution()->GetConstraintGraph().NumIslands(), ECsvCustomStatOp::Accumulate);
-				CSV_CUSTOM_STAT(ChaosCounters, NumContacts, MSolver->NumCollisionConstraints(), ECsvCustomStatOp::Accumulate);
-				CSV_CUSTOM_STAT(ChaosCounters, NumJoints, MSolver->NumJointConstraints(), ECsvCustomStatOp::Accumulate);
-#endif
-			}
-
+			MSolver->UpdateCounters();
 
 			{
 				SCOPE_CYCLE_COUNTER(STAT_EventDataGathering);
@@ -717,9 +723,19 @@ namespace Chaos
 		const FReal StartSimTime = GetSolverTime();
 		MEvolution->GetCollisionDetector().GetNarrowPhase().GetContext().bDeferUpdate = (ChaosSolverCollisionDeferNarrowPhase != 0);
 		MEvolution->GetCollisionDetector().GetNarrowPhase().GetContext().bAllowManifolds = (ChaosSolverCollisionUseManifolds != 0);
+		
+		FPBDJointSolverSettings JointsSettings = JointConstraints.GetSettings();
+		JointsSettings.MinSolverStiffness = ChaosSolverJointMinSolverStiffness;
+		JointsSettings.MaxSolverStiffness = ChaosSolverJointMaxSolverStiffness;
+		JointsSettings.NumIterationsAtMaxSolverStiffness = ChaosSolverJointNumIterationsAtMaxSolverStiffness;
+		JointConstraints.SetSettings(JointsSettings);
 
 		// Apply CVAR overrides if set
 		{
+			GetEvolution()->GetCollisionConstraints().SetSolverType((EConstraintSolverType)ChaosSolver_SolverType);
+			// @todo(chaos): implement solver type switching for joints
+			//GetJointConstraints().SetSolverType((EConstraintSolverType)ChaosImmediate_SolverType);
+
 			if (ChaosSolverIterations >= 0)
 			{
 				SetIterations(ChaosSolverIterations);
@@ -1251,6 +1267,54 @@ namespace Chaos
 		{
 			DebugDraw::DrawConstraintGraph(FRigidTransform3(), GetEvolution()->GetCollisionConstraintsRule().GetGraphColor(), &ChaosSolverDebugDebugDrawSettings);
 		}
+		if (ChaosSolverDebugDrawCollidingShapes == 1)
+		{
+			DebugDraw::DrawCollidingShapes(FRigidTransform3(), GetEvolution()->GetCollisionConstraints(), 1.f, &ChaosSolverDebugDebugDrawSettings);
+		}
+		if (ChaosSolverDrawJoints == 1)
+		{
+			DebugDraw::DrawJointConstraints(FRigidTransform3(), JointConstraints, 1.0f, ChaosSolverDrawJointFeatures, &ChaosSolverDebugDebugDrawSettings);
+		}
+#endif
+	}
+
+	void FPBDRigidsSolver::UpdateCounters() const
+	{
+		// Particle counts
+		SET_DWORD_STAT(STAT_ChaosCounter_NumDisabledParticles, GetEvolution()->GetParticles().GetAllParticlesView().Num() - GetEvolution()->GetParticles().GetNonDisabledView().Num());
+		SET_DWORD_STAT(STAT_ChaosCounter_NumParticles, GetEvolution()->GetParticles().GetNonDisabledView().Num());
+		SET_DWORD_STAT(STAT_ChaosCounter_NumDynamicParticles, GetEvolution()->GetParticles().GetNonDisabledDynamicView().Num());
+		SET_DWORD_STAT(STAT_ChaosCounter_NumActiveDynamicParticles, GetEvolution()->GetParticles().GetActiveParticlesView().Num());
+		SET_DWORD_STAT(STAT_ChaosCounter_NumKinematicParticles, GetEvolution()->GetParticles().GetActiveKinematicParticlesView().Num());
+		SET_DWORD_STAT(STAT_ChaosCounter_NumStaticParticles, GetEvolution()->GetParticles().GetActiveStaticParticlesView().Num());
+		SET_DWORD_STAT(STAT_ChaosCounter_NumGeometryCollectionParticles, GetEvolution()->GetParticles().GetGeometryCollectionParticles().Size());
+
+		// Constraint counts
+		SET_DWORD_STAT(STAT_ChaosCounter_NumIslands, GetEvolution()->GetConstraintGraph().NumIslands());
+		SET_DWORD_STAT(STAT_ChaosCounter_NumContacts, NumCollisionConstraints());
+		SET_DWORD_STAT(STAT_ChaosCounter_NumJoints, NumJointConstraints());
+
+		// Iterations
+		SET_DWORD_STAT(STAT_ChaosIterations_NumIterations, GetEvolution()->GetNumIterations());
+		SET_DWORD_STAT(STAT_ChaosIterations_NumCollisionIterations, GetEvolution()->GetCollisionConstraints().GetPairIterations());
+		SET_DWORD_STAT(STAT_ChaosIterations_NumJointIterations, GetJointConstraints().GetSettings().ApplyPairIterations);
+		SET_DWORD_STAT(STAT_ChaosIterations_NumPushOutIterations, GetEvolution()->GetNumPushOutIterations());
+		SET_DWORD_STAT(STAT_ChaosIterations_NumPushOutCollisionIterations, GetEvolution()->GetCollisionConstraints().GetPushOutPairIterations());
+		SET_DWORD_STAT(STAT_ChaosIterations_NumPushOutJointIterations, GetJointConstraints().GetSettings().ApplyPushOutPairIterations);
+
+#if CSV_PROFILER
+		// Particle counts
+		CSV_CUSTOM_STAT(ChaosCounters, NumDisabledParticles, GetEvolution()->GetParticles().GetAllParticlesView().Num() - GetEvolution()->GetParticles().GetNonDisabledView().Num(), ECsvCustomStatOp::Accumulate);
+		CSV_CUSTOM_STAT(ChaosCounters, NumParticles, GetEvolution()->GetParticles().GetNonDisabledView().Num(), ECsvCustomStatOp::Accumulate);
+		CSV_CUSTOM_STAT(ChaosCounters, NumDynamicParticles, GetEvolution()->GetParticles().GetNonDisabledDynamicView().Num(), ECsvCustomStatOp::Accumulate);
+		CSV_CUSTOM_STAT(ChaosCounters, NumKinematicParticles, GetEvolution()->GetParticles().GetActiveKinematicParticlesView().Num(), ECsvCustomStatOp::Accumulate);
+		CSV_CUSTOM_STAT(ChaosCounters, NumStaticParticles, GetEvolution()->GetParticles().GetActiveStaticParticlesView().Num(), ECsvCustomStatOp::Accumulate);
+		CSV_CUSTOM_STAT(ChaosCounters, NumGeometryCollectionParticles, (int)GetEvolution()->GetParticles().GetGeometryCollectionParticles().Size(), ECsvCustomStatOp::Accumulate);
+
+		// Constraint counts
+		CSV_CUSTOM_STAT(ChaosCounters, NumIslands, GetEvolution()->GetConstraintGraph().NumIslands(), ECsvCustomStatOp::Accumulate);
+		CSV_CUSTOM_STAT(ChaosCounters, NumContacts, NumCollisionConstraints(), ECsvCustomStatOp::Accumulate);
+		CSV_CUSTOM_STAT(ChaosCounters, NumJoints, NumJointConstraints(), ECsvCustomStatOp::Accumulate);
 #endif
 	}
 

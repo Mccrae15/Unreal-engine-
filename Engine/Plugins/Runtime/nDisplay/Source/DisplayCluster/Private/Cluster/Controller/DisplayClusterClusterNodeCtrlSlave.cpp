@@ -27,22 +27,22 @@ FDisplayClusterClusterNodeCtrlSlave::~FDisplayClusterClusterNodeCtrlSlave()
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterProtocolClusterSync
 //////////////////////////////////////////////////////////////////////////////////////////////
-void FDisplayClusterClusterNodeCtrlSlave::WaitForGameStart(double* ThreadWaitTime, double* BarrierWaitTime)
+void FDisplayClusterClusterNodeCtrlSlave::WaitForGameStart()
 {
 	check(ClusterSyncClient);
-	ClusterSyncClient->WaitForGameStart(ThreadWaitTime, BarrierWaitTime);
+	ClusterSyncClient->WaitForGameStart();
 }
 
-void FDisplayClusterClusterNodeCtrlSlave::WaitForFrameStart(double* ThreadWaitTime, double* BarrierWaitTime)
+void FDisplayClusterClusterNodeCtrlSlave::WaitForFrameStart()
 {
 	check(ClusterSyncClient);
-	ClusterSyncClient->WaitForFrameStart(ThreadWaitTime, BarrierWaitTime);
+	ClusterSyncClient->WaitForFrameStart();
 }
 
-void FDisplayClusterClusterNodeCtrlSlave::WaitForFrameEnd(double* ThreadWaitTime, double* BarrierWaitTime)
+void FDisplayClusterClusterNodeCtrlSlave::WaitForFrameEnd()
 {
 	check(ClusterSyncClient);
-	ClusterSyncClient->WaitForFrameEnd(ThreadWaitTime, BarrierWaitTime);
+	ClusterSyncClient->WaitForFrameEnd();
 }
 
 void FDisplayClusterClusterNodeCtrlSlave::GetTimeData(float& InOutDeltaTime, double& InOutGameTime, TOptional<FQualifiedFrameTime>& InOutFrameTime)
@@ -55,12 +55,6 @@ void FDisplayClusterClusterNodeCtrlSlave::GetSyncData(TMap<FString, FString>& Sy
 {
 	check(ClusterSyncClient);
 	ClusterSyncClient->GetSyncData(SyncData, SyncGroup);
-}
-
-void FDisplayClusterClusterNodeCtrlSlave::GetInputData(TMap<FString, FString>& InputData)
-{
-	check(ClusterSyncClient);
-	ClusterSyncClient->GetInputData(InputData);
 }
 
 void FDisplayClusterClusterNodeCtrlSlave::GetEventsData(TArray<TSharedPtr<FDisplayClusterClusterEventJson, ESPMode::ThreadSafe>>& JsonEvents, TArray<TSharedPtr<FDisplayClusterClusterEventBinary, ESPMode::ThreadSafe>>& BinaryEvents)
@@ -79,10 +73,10 @@ void FDisplayClusterClusterNodeCtrlSlave::GetNativeInputData(TMap<FString, FStri
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterProtocolRenderSync
 //////////////////////////////////////////////////////////////////////////////////////////////
-void FDisplayClusterClusterNodeCtrlSlave::WaitForSwapSync(double* ThreadWaitTime, double* BarrierWaitTime)
+void FDisplayClusterClusterNodeCtrlSlave::WaitForSwapSync()
 {
 	check(RenderSyncClient.IsValid());
-	RenderSyncClient->WaitForSwapSync(ThreadWaitTime, BarrierWaitTime);
+	RenderSyncClient->WaitForSwapSync();
 }
 
 

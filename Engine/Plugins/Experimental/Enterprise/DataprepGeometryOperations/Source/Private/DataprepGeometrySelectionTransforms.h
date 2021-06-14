@@ -5,7 +5,9 @@
 #include "SelectionSystem/DataprepSelectionTransform.h"
 
 #include "CoreMinimal.h"
+#include "IDetailCustomization.h"
 #include "Delegates/DelegateCombinations.h"
+#include "DetailLayoutBuilder.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/TextProperty.h"
@@ -20,12 +22,17 @@ class UDataprepOverlappingActorsSelectionTransform : public UDataprepSelectionTr
 
 protected:
 	virtual void OnExecution_Implementation(const TArray<UObject*>& InObjects, TArray<UObject*>& OutObjects) override;
+};
 
-	/** Accuracy of the distance field approximation, in cm. */
-	UPROPERTY(EditAnywhere, Category = JacketingFilter, meta = (UIMin = "1", UIMax = "100"))
-	float Accuracy;
+// The purpose of this class is to hide the field bOutputCanIncludeInput, since it does not make sense for this operation
+class FDataprepOverlappingActorsSelectionTransformDetails : public IDetailCustomization
+{
+public:
+	static TSharedRef< IDetailCustomization > MakeDetails() { return MakeShared<FDataprepOverlappingActorsSelectionTransformDetails>(); };
 
-	/** Merge distance used to fill gap, in cm. */
-	UPROPERTY(EditAnywhere, Category = JacketingFilter)
-	float MergeDistance;
+	/** Called when details should be customized */
+	virtual void CustomizeDetails( IDetailLayoutBuilder& DetailBuilder ) override
+	{
+		DetailBuilder.HideProperty( DetailBuilder.GetProperty( GET_MEMBER_NAME_CHECKED( UDataprepSelectionTransform, bOutputCanIncludeInput ), UDataprepSelectionTransform::StaticClass() ) );
+	}
 };

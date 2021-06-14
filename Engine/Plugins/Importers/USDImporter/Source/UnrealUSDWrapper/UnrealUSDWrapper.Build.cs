@@ -2,6 +2,7 @@
 
 using System.Linq;
 using System.IO;
+using System.Collections.Generic;
 
 namespace UnrealBuildTool.Rules
 {
@@ -21,12 +22,12 @@ namespace UnrealBuildTool.Rules
 				}
 			);
 
-			if (EnableUsdSdk(Target))
+			// Temporarily disabled runtime USD support until Mac and Linux dynamic linking issues are resolved
+			if (EnableUsdSdk(Target) && (Target.Type == TargetType.Editor || Target.Platform == UnrealTargetPlatform.Win64))
 			{
 				PublicDependencyModuleNames.Add("Python3");
 
 				PublicDefinitions.Add("USE_USD_SDK=1");
-				PublicDefinitions.Add("BOOST_LIB_TOOLSET=\"vc141\"");
 
 				var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
 				var PythonSourceTPSDir = Path.Combine(EngineDir, "Source", "ThirdParty", "Python3", Target.Platform.ToString());
@@ -34,6 +35,7 @@ namespace UnrealBuildTool.Rules
 				string IntelTBBLibs = Path.Combine(Target.UEThirdPartySourceDirectory, "Intel", "TBB", "IntelTBB-2019u8", "lib", Target.Platform.ToString());
 				string IntelTBBBinaries = Path.Combine(Target.UEThirdPartyBinariesDirectory, "Intel", "TBB", Target.Platform.ToString());
 				string IntelTBBIncludes = Path.Combine(Target.UEThirdPartySourceDirectory, "Intel", "TBB", "IntelTBB-2019u8", "include");
+				string USDLibsDir = Path.Combine(ModuleDirectory, "..", "ThirdParty", "USD", "lib");
 
 				if (Target.Platform == UnrealTargetPlatform.Win64)
 				{
@@ -48,9 +50,18 @@ namespace UnrealBuildTool.Rules
 					PublicSystemLibraryPaths.Add(Path.Combine(PythonSourceTPSDir, "libs"));
 					RuntimeDependencies.Add(Path.Combine("$(TargetOutputDir)", "python37.dll"), Path.Combine(PythonBinaryTPSDir, "python37.dll"));
 
+					// Boost
+					// Stops Boost from using pragma link to choose which lib to link against.
+					// We explicitly link against the boost libs here to choose the correct CRT flavor.
+					PublicDefinitions.Add("BOOST_ALL_NO_LIB");
+					string BoostLibSearchPattern = "boost_*-mt-x64-*.lib";
+					foreach (string BoostLib in Directory.EnumerateFiles(USDLibsDir, BoostLibSearchPattern, SearchOption.AllDirectories))
+					{
+						PublicAdditionalLibraries.Add(BoostLib);
+					}
+
 					// USD
 					PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "USD", "include"));
-					var USDLibsDir = Path.Combine(ModuleDirectory, "..", "ThirdParty", "USD", "lib");
 					PublicSystemLibraryPaths.Add(USDLibsDir);
 					foreach (string UsdLib in Directory.EnumerateFiles(USDLibsDir, "*.lib", SearchOption.AllDirectories))
 					{
@@ -76,11 +87,8 @@ namespace UnrealBuildTool.Rules
 					PublicSystemIncludePaths.Add(IntelTBBIncludes);
 					PrivateRuntimeLibraryPaths.Add(IntelTBBBinaries);
 					PublicAdditionalLibraries.Add(Path.Combine(IntelTBBBinaries, "libtbb.so"));
-					PublicAdditionalLibraries.Add(Path.Combine(IntelTBBBinaries, "libtbbmalloc.so"));
 					RuntimeDependencies.Add(Path.Combine(IntelTBBBinaries, "libtbb.so"));
 					RuntimeDependencies.Add(Path.Combine(IntelTBBBinaries, "libtbb.so.2"));
-					RuntimeDependencies.Add(Path.Combine(IntelTBBBinaries, "libtbbmalloc.so"));
-					RuntimeDependencies.Add(Path.Combine(IntelTBBBinaries, "libtbbmalloc.so.2"));
 
 					// Python3
 					PublicIncludePaths.Add(Path.Combine(PythonSourceTPSDir, "include"));
@@ -101,41 +109,62 @@ namespace UnrealBuildTool.Rules
 
 						RuntimeDependencies.Add(LibPath);
 					}
+					// Redirect plugInfo.json to Plugin/Binaries for the editor, but leave them pointing at the executable folder otherwise
+					// (which is the default when USD_DLL_LOCATION_OVERRIDE is not defined)
+					if (Target.Type == TargetType.Editor && (Target.BuildEnvironment != TargetBuildEnvironment.Unique))
+					{
+						PublicDefinitions.Add("USD_DLL_LOCATION_OVERRIDE=TEXT(\"" + USDBinDir.Replace("\\", "/") + "\")");
+					}
 				}
 				else if (Target.Platform == UnrealTargetPlatform.Mac)
 				{
 					PublicDefinitions.Add("USD_USES_SYSTEM_MALLOC=0");
 
+					List<string> RuntimeModulePaths = new List<string>();
+
 					// TBB
-					RuntimeDependencies.Add(Path.Combine(IntelTBBBinaries, "libtbb.dylib"));
-					RuntimeDependencies.Add(Path.Combine(IntelTBBBinaries, "libtbbmalloc.dylib"));
+					RuntimeModulePaths.Add(Path.Combine(IntelTBBBinaries, "libtbb.dylib"));
+					RuntimeModulePaths.Add(Path.Combine(IntelTBBBinaries, "libtbbmalloc.dylib"));
 
 					// Python3
 					PublicIncludePaths.Add(Path.Combine(PythonSourceTPSDir, "include"));
 					PublicSystemLibraryPaths.Add(Path.Combine(PythonBinaryTPSDir, "lib"));
 					PrivateRuntimeLibraryPaths.Add(Path.Combine(PythonBinaryTPSDir, "bin"));
-					PublicAdditionalLibraries.Add(Path.Combine(PythonBinaryTPSDir, "lib", "libpython3.7.dylib"));
+					RuntimeModulePaths.Add(Path.Combine(PythonBinaryTPSDir, "lib", "libpython3.7.dylib"));
 
 					// USD
 					PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "USD", "include"));
 					var USDBinDir = Path.Combine(ModuleDirectory, "..", "ThirdParty", "Mac", "bin");
 					foreach (string LibPath in Directory.EnumerateFiles(USDBinDir, "*.dylib", SearchOption.AllDirectories))
 					{
-						PublicAdditionalLibraries.Add(LibPath);
-						
-						RuntimeDependencies.Add(Path.Combine("$(TargetOutputDir)", Path.GetFileName(LibPath)), LibPath);
+						RuntimeModulePaths.Add(LibPath);
+					}
+
+					foreach (string RuntimeModulePath in RuntimeModulePaths)
+					{
+						if (!File.Exists(RuntimeModulePath))
+						{
+							string Err = string.Format("USD SDK module '{0}' not found.", RuntimeModulePath);
+							System.Console.WriteLine(Err);
+							throw new BuildException(Err);
+						}
+
+						PublicDelayLoadDLLs.Add(RuntimeModulePath);
+						RuntimeDependencies.Add(RuntimeModulePath);
+					}
+					// Redirect plugInfo.json to Plugin/Binaries for the editor, but leave them pointing at the executable folder otherwise
+					// (which is the default when USD_DLL_LOCATION_OVERRIDE is not defined)
+					if (Target.Type == TargetType.Editor && (Target.BuildEnvironment != TargetBuildEnvironment.Unique))
+					{
+						PublicDefinitions.Add("USD_DLL_LOCATION_OVERRIDE=TEXT(\"" + USDBinDir.Replace("\\", "/") + "\")");
 					}
 				}
 
-				// When packaging we also need to move our USD plugins to the packaged executable
-				if (Target.Type == TargetType.Game)
-				{
-					// The multiple nested folders make sure that the USD plugin plugInfo.json files can reference their library dlls in the engine folder or in the packaged game folder with the same relative path
-					RuntimeDependencies.Add(
-						Path.Combine("$(ProjectDir)", "Resources", "RequiredNestedFolder", "RequiredNestedFolder", "RequiredNestedFolder", "UsdResources", Target.Platform.ToString()),
-						Path.Combine("$(PluginDir)", "Resources", "UsdResources", Target.Platform.ToString(), "...") // Moves everything that's inside the Windows folder
-					);
-				}
+				// Move UsdResources to <Target>/Binaries/ThirdParty/UsdResources. UnrealUSDWrapper.cpp will expect them to be there
+				RuntimeDependencies.Add(
+					Path.Combine("$(TargetOutputDir)", "..", "ThirdParty", "USD", "UsdResources", Target.Platform.ToString()),
+					Path.Combine("$(PluginDir)", "Resources", "UsdResources", Target.Platform.ToString(), "...")
+				);
 			}
 			else
 			{

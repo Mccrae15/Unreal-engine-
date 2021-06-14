@@ -34,7 +34,7 @@ DECLARE_CYCLE_STAT(TEXT("Take recorder record sample"), STAT_DMXTakeRecorderReco
 #define LOCTEXT_NAMESPACE "MovieSceneDMXLibraryTrackRecorder"
 
 
-TWeakObjectPtr<UMovieSceneDMXLibraryTrack> UMovieSceneDMXLibraryTrackRecorder::CreateTrack(UMovieScene* InMovieScene, UDMXLibrary* Library, const TArray<FDMXEntityFixturePatchRef>& InFixturePatchRefs, bool bInDiscardSamplesBeforeStart, UMovieSceneTrackRecorderSettings* InSettingsObject)
+TWeakObjectPtr<UMovieSceneDMXLibraryTrack> UMovieSceneDMXLibraryTrackRecorder::CreateTrack(UMovieScene* InMovieScene, UDMXLibrary* Library, const TArray<FDMXEntityFixturePatchRef>& InFixturePatchRefs, bool bInDiscardSamplesBeforeStart, bool bRecordNormalizedValues)
 {
 	check(Library);
 
@@ -44,23 +44,14 @@ TWeakObjectPtr<UMovieSceneDMXLibraryTrack> UMovieSceneDMXLibraryTrackRecorder::C
 	FixturePatchRefs.RemoveAll([](const FDMXEntityFixturePatchRef& Ref) {
 		UDMXEntityFixturePatch* FixturePatch = Ref.GetFixturePatch();
 		return
-			!FixturePatch ||
-			!FixturePatch->IsValidLowLevel() ||
-			!FixturePatch->ParentFixtureTypeTemplate ||
-			!FixturePatch->ParentFixtureTypeTemplate->IsValidLowLevel();
+			!IsValid(FixturePatch) ||
+			!IsValid(FixturePatch->GetFixtureType());
 		});
 
 	MovieScene = InMovieScene;
 	// TODO? bDiscardSamplesBeforeStart = bInDiscardSamplesBeforeStart;
 
-	DMXLibraryTrack = nullptr;
-	DMXLibrarySection.Reset();
-
-	if (!DMXLibraryTrack.IsValid())
-	{
-		DMXLibraryTrack = MovieScene->AddMasterTrack<UMovieSceneDMXLibraryTrack>();
-	}
-
+	DMXLibraryTrack = MovieScene->AddMasterTrack<UMovieSceneDMXLibraryTrack>();
 	DMXLibraryTrack->SetDMXLibrary(Library);
 
 	DMXLibrarySection = Cast<UMovieSceneDMXLibrarySection>(DMXLibraryTrack->CreateNewSection());
@@ -70,6 +61,8 @@ TWeakObjectPtr<UMovieSceneDMXLibraryTrack> UMovieSceneDMXLibraryTrackRecorder::C
 		DMXLibraryTrack->AddSection(*DMXLibrarySection);
 
 		DMXLibrarySection->AddFixturePatches(FixturePatchRefs);
+
+		DMXLibrarySection->bUseNormalizedValues = bRecordNormalizedValues;
 
 		// Erase existing data in the track related to the Fixture Patches we're going to record.
 		// This way, the user can record different Patches incrementally, one at a time.
@@ -96,7 +89,6 @@ TWeakObjectPtr<UMovieSceneDMXLibraryTrack> UMovieSceneDMXLibraryTrackRecorder::C
 
 		// Create an async dmx recorder
 		AsyncDMXRecorder = MakeShared<FDMXAsyncDMXRecorder>(Library, DMXLibrarySection.Get());
-
 	}
 	
 	return DMXLibraryTrack;
@@ -174,7 +166,10 @@ void UMovieSceneDMXLibraryTrackRecorder::FinalizeTrackImpl()
 			DMXLibrarySection->SetRange(DefaultSectionLength.GetValue());
 		}
 
-		// Activate the channel
+		// Rebuild the section's cache so it can be played back right away
+		DMXLibrarySection->RebuildPlaybackCache();
+
+		// Activate the section
 		DMXLibrarySection->SetIsActive(true);
 	}
 }

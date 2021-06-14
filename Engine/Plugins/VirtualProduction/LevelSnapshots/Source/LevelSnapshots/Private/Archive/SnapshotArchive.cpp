@@ -3,13 +3,24 @@
 #include "SnapshotArchive.h"
 
 #include "ObjectSnapshotData.h"
+#include "SnapshotRestorability.h"
+#include "SnapshotVersion.h"
 #include "WorldSnapshotData.h"
 
+#include "Components/ActorComponent.h"
+#include "GameFramework/Actor.h"
+#include "Internationalization/TextNamespaceUtil.h"
+#include "Internationalization/TextPackageNamespaceUtil.h"
+#include "Serialization/ArchiveSerializedPropertyChain.h"
 #include "UObject/ObjectMacros.h"
 
-FSnapshotArchive FSnapshotArchive::MakeArchiveForRestoring(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData)
+void FSnapshotArchive::ApplyToSnapshotWorldObject(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InObjectToRestore, UPackage* InLocalisationSnapshotPackage)
 {
-	return FSnapshotArchive(InObjectData, InSharedData, true);
+	FSnapshotArchive Archive(InObjectData, InSharedData, true, InObjectToRestore);
+#if USE_STABLE_LOCALIZATION_KEYS
+	Archive.SetLocalizationNamespace(TextNamespaceUtil::EnsurePackageNamespace(InLocalisationSnapshotPackage));
+#endif
+	InObjectToRestore->Serialize(Archive);
 }
 
 FString FSnapshotArchive::GetArchiveName() const
@@ -35,9 +46,10 @@ void FSnapshotArchive::Seek(int64 InPos)
 
 bool FSnapshotArchive::ShouldSkipProperty(const FProperty* InProperty) const
 {
-	return InProperty->HasAnyPropertyFlags(ExcludedPropertyFlags)
-		// We do not support (instanced) subobjects at this moment
-		|| InProperty->HasAnyPropertyFlags(CPF_InstancedReference | CPF_ContainsInstancedReference | CPF_PersistentInstance);
+	const bool bIsPropertyUnsupported = InProperty->HasAnyPropertyFlags(ExcludedPropertyFlags)|| IsPropertyReferenceToSubobject(InProperty);
+	const bool bIsBlacklisted = FSnapshotRestorability::IsPropertyBlacklistedForCapture(InProperty);
+	const bool bIsWhitelisted = FSnapshotRestorability::IsPropertyWhitelistedForCapture(InProperty);
+	return bIsPropertyUnsupported || bIsBlacklisted || (!bIsPropertyUnsupported && bIsWhitelisted);
 }
 
 FArchive& FSnapshotArchive::operator<<(FName& Value)
@@ -84,13 +96,11 @@ FArchive& FSnapshotArchive::operator<<(UObject*& Value)
 			return *this;
 		}
 
-		TOptional<UObject*> Resolved = SharedData.ResolveObjectDependency(ReferencedIndex, bShouldLoadObjectDependenciesForTempWorld ? FWorldSnapshotData::EResolveType::ResolveForUseInTempWorld : FWorldSnapshotData::EResolveType::ResolveForUseInOriginalWorld);
-		Value = Resolved.Get(nullptr);
+		Value = ResolveObjectDependency(ReferencedIndex);
 	}
 	else
 	{
 		int32 ReferenceIndex = SharedData.AddObjectDependency(Value);
-		// TODO: Check whether subobject and allocate
 		*this << ReferenceIndex;
 	}
 	
@@ -128,9 +138,34 @@ void FSnapshotArchive::Serialize(void* Data, int64 Length)
 	}
 }
 
-FSnapshotArchive::FSnapshotArchive(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, bool bIsLoading)
+UObject* FSnapshotArchive::ResolveObjectDependency(int32 ObjectIndex) const
+{
+	return SharedData.ResolveObjectDependencyForSnapshotWorld(ObjectIndex);
+}
+
+bool FSnapshotArchive::IsPropertyReferenceToSubobject(const FProperty* InProperty) const
+{
+	const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(InProperty);
+	if (!ObjectProperty)
+	{
+		return false;
+	}
+
+	const bool bIsMarkedAsSubobject = InProperty->HasAnyPropertyFlags(CPF_InstancedReference | CPF_ContainsInstancedReference | CPF_PersistentInstance);
+	const bool bIsComponentPtr = ObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass());
+	if (bIsMarkedAsSubobject || bIsComponentPtr)
+	{
+		return true;
+	}
+
+	// TODO: Walk GetSerializedPropertyChain to get the value ptr of ObjectProperty. Then check whether contained object IsIn(GetSerializedObject()). Extra complicated because sometimes values may be in arrays, set, and tmaps.
+	return false;
+}
+
+FSnapshotArchive::FSnapshotArchive(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, bool bIsLoading, UObject* InSerializedObject)
 	:
 	ExcludedPropertyFlags(CPF_BlueprintAssignable | CPF_Transient | CPF_Deprecated),
+	SerializedObject(InSerializedObject),
     ObjectData(InObjectData),
     SharedData(InSharedData)
 {
@@ -142,9 +177,16 @@ FSnapshotArchive::FSnapshotArchive(FObjectSnapshotData& InObjectData, FWorldSnap
 	if (bIsLoading)
 	{
 		Super::SetIsLoading(true);
+		Super::SetIsSaving(false);
 	}
 	else
 	{
+		Super::SetIsLoading(false);
 		Super::SetIsSaving(true);
+	}
+
+	if (bIsLoading)
+	{
+		InSharedData.GetSnapshotVersionInfo().ApplyToArchive(*this);
 	}
 }

@@ -1,11 +1,15 @@
+
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 import { Badge } from '../common/badge';
 import { ContextualLogger } from '../common/logger';
 import { PerforceContext } from '../common/perforce';
 import { Blockage, Branch, BranchGraphInterface, ChangeInfo } from './branch-interfaces';
+import { BeginIntegratingToGateEvent, EndIntegratingToGateEvent, GateEventContext } from './branch-interfaces';
 import { PersistentConflict, Resolution } from './conflict-interfaces';
 import { BotEventHandler, BotEvents } from './events';
+
+const CIS_PAUSE_REFRESH_INTERVAL_SECONDS = 30*60
 
 const BADGE_LABEL = 'Merge'
 
@@ -33,8 +37,6 @@ function isChangeUpstreamFromBadgeProject(change: ChangeInfo) {
 
 	return false
 }
-
-
 
 class BadgeHandler implements BotEventHandler {
 	public readonly p4: PerforceContext
@@ -127,6 +129,59 @@ class BadgeHandler implements BotEventHandler {
 	private externalUrl: string
 }
 
+class GateHandler implements BotEventHandler {
+	// for now just a map from target stream to timeout
+	// could in theory keep counters to support multiple sources
+	// should also wait for responses to deal with unpauses happening before pause is complete
+	private pausedFlows = new Map<string, NodeJS.Timeout>();
+	private logger: ContextualLogger
+
+	constructor(parentLogger: ContextualLogger) {
+		this.logger = parentLogger.createChild('GateHandler')
+	}
+
+	private static logStringFor(context: GateEventContext) {
+		return `${context.from.name} -> ${context.to.name} (@${context.edgeLastCl})`
+	}
+
+	onBeginIntegratingToGate(arg: BeginIntegratingToGateEvent) {
+		const suffix = arg.changesRemaining > 0 ? ` (${arg.changesRemaining} behind)` : ''
+		this.logger.info(GateHandler.logStringFor(arg.context) + ` catching up to CL#${arg.info.cl}` + suffix)
+		if (arg.context.pauseCIS && !this.pausedFlows.has(arg.context.to.upperName)) {
+			this.pausedFlows.set(arg.context.to.upperName, setTimeout(() => {
+				// @todo fill this in to pause!
+				const url = ''
+				const body = ''
+				Badge.postWithRetry({
+					url,
+					body,
+					contentType: 'application/json'
+				}, `Pause of CIS for ${arg.context.to}`)
+
+			}, CIS_PAUSE_REFRESH_INTERVAL_SECONDS * 1000.))
+		}
+	}
+
+	onEndIntegratingToGate(arg: EndIntegratingToGateEvent) {
+		const suffix = arg.targetCl > 0 ? ` (-> @${arg.targetCl})` : ''
+		this.logger.info(GateHandler.logStringFor(arg.context) + ' caught up' + suffix)
+		const pauseRefresher = this.pausedFlows.get(arg.context.to.upperName)
+		if (pauseRefresher) {
+			// @todo fill this in to unpause!
+			const url = ''
+			const body = ''
+			Badge.postWithRetry({
+				url,
+				body,
+				contentType: 'application/json'
+			}, `Unpause of CIS for ${arg.context.to}`)
+
+			clearTimeout(pauseRefresher)
+			this.pausedFlows.delete(arg.context.to.upperName)
+		}
+	}
+}
+
 /** Add badges to branches listed as 'via' */
 async function markViaBranches(viaClStrings: string[], badgeFunc: BadgeFunc, branchGraph: BranchGraphInterface, p4: PerforceContext, logger: ContextualLogger) {
 	for (const viaClStr of viaClStrings) {
@@ -190,4 +245,6 @@ export function bindBadgeHandler(events: BotEvents, branchGraph: BranchGraphInte
 		}
 		events.registerHandler(new BadgeHandler(badgeBranch, allStreams, externalUrl, logger))
 	}
+
+	events.registerHandler(new GateHandler(logger))
 }

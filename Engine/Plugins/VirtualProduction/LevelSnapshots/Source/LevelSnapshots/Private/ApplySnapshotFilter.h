@@ -31,6 +31,12 @@ public:
 
 private:
 
+	enum class EFilterObjectPropertiesResult
+	{
+		HasCustomSubobjects,
+		HasOnlyNormalProperties
+	};
+	
 	struct FPropertyContainerContext
 	{
 		FPropertySelection& SelectionToAddTo;
@@ -44,7 +50,12 @@ private:
 		 */
 		TArray<FString> AuthoredPathInformation;
 
-		FPropertyContainerContext(FPropertySelection& SelectionToAddTo, UStruct* ContainerClass, void* SnapshotContainer, void* WorldContainer, TArray<FString> AuthoredPathInformation);
+		/* Keeps track of the structs leading to this container */
+		FLevelSnapshotPropertyChain PropertyChain;
+		/* Class that PropertyChain begins from. */
+		UClass* RootClass;
+
+		FPropertyContainerContext(FPropertySelection& SelectionToAddTo, UStruct* ContainerClass, void* SnapshotContainer, void* WorldContainer, const TArray<FString>& AuthoredPathInformation, const FLevelSnapshotPropertyChain& PropertyChain, UClass* RootClass);
 	};
 	
 	FApplySnapshotFilter(ULevelSnapshot* Snapshot, AActor* DeserializedSnapshotActor, AActor* WorldActor, const ULevelSnapshotFilter* Filter);
@@ -53,10 +64,13 @@ private:
 	void AnalyseComponentProperties(FPropertySelectionMap& MapToAddTo);
 
 	void FilterActorPair(FPropertySelectionMap& MapToAddTo);
-	void FilterComponentPair(FPropertySelectionMap& MapToAddTo, UActorComponent* SnapshotComponent, UActorComponent* WorldComponent);
+	/* @return Whether any property selection was added */
+	bool FilterSubobjectPair(FPropertySelectionMap& MapToAddTo, UObject* SnapshotSubobject, UObject* WorldSubobject);
 	void FilterStructPair(FPropertyContainerContext& Parent, FStructProperty* StructProperty);
+	EFilterObjectPropertiesResult FindAndFilterCustomSubobjectPairs(FPropertySelectionMap& MapToAddTo, UObject* SnapshotOwner, UObject* WorldOwner);
 
-	void AnalyseProperties(FPropertyContainerContext& ContainerContext);
+	void AnalyseRootProperties(FPropertyContainerContext& ContainerContext, UObject* SnapshotObject, UObject* WorldObject);
+	void AnalyseStructProperties(FPropertyContainerContext& ContainerContext);
 	void HandleStructProperties(FPropertyContainerContext& ContainerContext, FProperty* PropertyToHandle);
 	
 	enum ECheckSubproperties
@@ -64,7 +78,7 @@ private:
 		CheckSubproperties,
         SkipSubproperties
     }; 
-	ECheckSubproperties AnalyseProperty(FPropertyContainerContext& ContainerContext, FProperty* PropertyInCommon);
+	ECheckSubproperties AnalyseProperty(FPropertyContainerContext& ContainerContext, FProperty* PropertyInCommon, bool bSkipEqualityTest = false);
 
 	
 	ULevelSnapshot* Snapshot;

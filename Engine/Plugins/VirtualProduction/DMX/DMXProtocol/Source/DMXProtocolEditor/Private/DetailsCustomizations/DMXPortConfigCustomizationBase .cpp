@@ -15,6 +15,7 @@
 #include "DetailWidgetRow.h"
 #include "IDetailChildrenBuilder.h"
 #include "IDetailPropertyRow.h" 
+#include "IPropertyUtilities.h"
 #include "IPAddress.h" 
 #include "ScopedTransaction.h"
 #include "SocketSubsystem.h"
@@ -26,6 +27,8 @@
 
 void FDMXPortConfigCustomizationBase::CustomizeHeader(TSharedRef<IPropertyHandle> StructPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 {
+	PropertyUtilities = StructCustomizationUtils.GetPropertyUtilities();
+
 	const bool bDisplayResetToDefault = false;
 	const FText DisplayNameOverride = FText::GetEmpty();
 	const FText DisplayToolTipOverride = FText::GetEmpty();
@@ -57,6 +60,20 @@ void FDMXPortConfigCustomizationBase::CustomizeChildren(TSharedRef<IPropertyHand
 	DeviceAddressHandle = PropertyHandles.FindChecked(GetDeviceAddressPropertyNameChecked());
 	PortGuidHandle = PropertyHandles.FindChecked(GetPortGuidPropertyNameChecked());
 
+	// Ports always need a valid Guid (cannot be blueprinted)
+	if (!GetPortGuid().IsValid())
+	{
+		ChildBuilder.AddCustomRow(LOCTEXT("InvalidPortConfigSearchString", "Invalid"))
+			.WholeRowContent()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("InvalidPortConfigText", "Cannot utilize Port Configs in Blueprints"))
+			];
+
+		return;
+	}
+
+	// Add customized properties
 	for (auto Iter(PropertyHandles.CreateConstIterator()); Iter; ++Iter)
 	{
 		// Don't add the PortGuid property
@@ -80,16 +97,11 @@ void FDMXPortConfigCustomizationBase::CustomizeChildren(TSharedRef<IPropertyHand
 		{
 			GenerateIPAddressRow(PropertyRow);
 		}
-		if (Iter.Key() == GET_MEMBER_NAME_CHECKED(FDMXOutputPortConfig, DestinationAddress))
+		else if (Iter.Key() == FDMXOutputPortConfig::GetDestinationAddressPropertyNameChecked())
 		{
 			// Customize the destination address for DMXOutputPortConfig only, instead of doing it in DMXOutputPortConfigCustomization.
 			// This is not beautiful code, but otherwise the whole customization with almost identical code would have to be moved to child classes.
-
-			// Bind to communication type changes, instead of directly using in the visibility attribute
-			// since the CommunicationTypeHandle may no longer be accessible when the getter is called.
-			FSimpleDelegate OnCommunicationTypeChangedDelegate = FSimpleDelegate::CreateSP(this, &FDMXPortConfigCustomizationBase::UpdateDestinationAddressVisibility);
-			CommunicationTypeHandle->SetOnPropertyValueChanged(OnCommunicationTypeChangedDelegate);
-
+				
 			UpdateDestinationAddressVisibility();
 
 			TAttribute<EVisibility> DestinationAddressVisibilityAttribute =
@@ -104,6 +116,8 @@ void FDMXPortConfigCustomizationBase::CustomizeChildren(TSharedRef<IPropertyHand
 
 IDMXProtocolPtr FDMXPortConfigCustomizationBase::GetProtocolChecked() const
 {
+	// We don't expect this to ever fail. 
+	// If there's no protocol, there's no DMX, and this is details customizations for DMX only, this should not be dealt with here.
 	check(ProtocolNameHandle.IsValid());
 
 	FName ProtocolName;
@@ -111,8 +125,28 @@ IDMXProtocolPtr FDMXPortConfigCustomizationBase::GetProtocolChecked() const
 
 	IDMXProtocolPtr Protocol = IDMXProtocol::Get(ProtocolName);
 	check(Protocol.IsValid());
-
+	
 	return Protocol;
+}
+
+FGuid FDMXPortConfigCustomizationBase::GetPortGuid() const
+{
+	check(PortGuidHandle.IsValid());
+
+	TArray<void*> RawData;
+	PortGuidHandle->AccessRawData(RawData);
+
+	// Multiediting is not supported, may fire if this is used in a blueprint way that would support it
+	if (ensureMsgf(RawData.Num() == 1, TEXT("Using port config in ways that would enable multiediting is not supported.")))
+	{
+		const FGuid* PortGuidPtr = reinterpret_cast<FGuid*>(RawData[0]);
+		if (PortGuidPtr && PortGuidPtr->IsValid())
+		{
+			return *PortGuidPtr;
+		}
+	}
+
+	return FGuid();
 }
 
 FGuid FDMXPortConfigCustomizationBase::GetPortGuidChecked() const
@@ -166,9 +200,9 @@ void FDMXPortConfigCustomizationBase::GenerateProtocolNameRow(IDetailPropertyRow
 	TSharedPtr<SWidget> ValueWidget;
 	FDetailWidgetRow Row;
 	PropertyRow.GetDefaultWidgets(NameWidget, ValueWidget, Row);
-			
-	FName InitialSelection = GetProtocolChecked()->GetProtocolName();
-
+	
+	const FName InitialSelection = GetProtocolChecked()->GetProtocolName();
+		
 	PropertyRow.CustomWidget()
 		.NameContent()
 		[
@@ -246,6 +280,7 @@ void FDMXPortConfigCustomizationBase::OnProtocolNameSelected()
 {
 	check(ProtocolNameHandle.IsValid());
 	check(ProtocolNameComboBox.IsValid());
+	check(CommunicationTypeComboBox.IsValid());
 
 	FName ProtocolName = ProtocolNameComboBox->GetSelectedProtocolName();
 
@@ -254,21 +289,24 @@ void FDMXPortConfigCustomizationBase::OnProtocolNameSelected()
 	ProtocolNameHandle->NotifyPreChange();
 	ProtocolNameHandle->SetValue(ProtocolName);
 	ProtocolNameHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
+
+	PropertyUtilities->ForceRefresh();
 }
 
 void FDMXPortConfigCustomizationBase::OnCommunicationTypeSelected()
 {
 	check(CommunicationTypeHandle.IsValid());
 	check(CommunicationTypeComboBox.IsValid());
-	check(IPAddressEditWidget.IsValid());
 
 	EDMXCommunicationType SelectedCommunicationType = CommunicationTypeComboBox->GetSelectedCommunicationType();
 
 	const FScopedTransaction Transaction(LOCTEXT("CommunicationTypeSelected", "DMX: Selected Communication Type"));
 	
-	DeviceAddressHandle->NotifyPreChange();
+	CommunicationTypeHandle->NotifyPreChange();
 	CommunicationTypeHandle->SetValue(static_cast<uint8>(SelectedCommunicationType));
-	DeviceAddressHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
+	CommunicationTypeHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
+
+	PropertyUtilities->ForceRefresh();
 }
 
 void FDMXPortConfigCustomizationBase::OnIPAddressSelected()

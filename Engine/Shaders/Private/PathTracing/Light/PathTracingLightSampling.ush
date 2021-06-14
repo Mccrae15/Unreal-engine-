@@ -36,7 +36,7 @@ FLightHit TraceLight(RayDesc Ray, int LightId)
 // Choose a point on a light as seen from the given shading point
 FLightSample SampleLight(
 	int LightId,
-	float4 RandSample,
+	float2 RandSample,
 	float3 WorldPos,
 	float3 WorldNormal
 )
@@ -102,17 +102,17 @@ float InitLightPickingCdf(
 }
 
 // #dxr_todo: passing LightPickingCdf as anything but inout causes performance to drop significantly -- why ?
-void SelectLight(float RandSample, inout float LightPickingCdf[RAY_TRACING_LIGHT_COUNT_MAXIMUM], out uint LightId, out float LightPickPdf)
+void SelectLight(float RandSample, int NumLights, inout float LightPickingCdf[RAY_TRACING_LIGHT_COUNT_MAXIMUM], out uint LightId, out float LightPickPdf)
 {
 	// This code assumes SceneLightCount > 0
 #ifdef UNIFORM_LIGHT_SELECTION
-	LightId = min(int(floor(RandSample * SceneLightCount)), SceneLightCount - 1);
+	LightId = min(int(floor(RandSample)), NumLights - 1);
 	LightPickPdf = 1.0;
 #else
 #if 0
 	// linear search
 	float PreviousCdfValue = 0;
-	for (LightId = 0; LightId < SceneLightCount - 1; ++LightId)
+	for (LightId = 0; LightId < NumLights - 1; ++LightId)
 	{
 		if (RandSample < LightPickingCdf[LightId])
 		{
@@ -125,7 +125,7 @@ void SelectLight(float RandSample, inout float LightPickingCdf[RAY_TRACING_LIGHT
 #else
 	// binary search
 	LightId = 0;
-	for (int Count = SceneLightCount; Count > 0;)
+	for (int Count = NumLights; Count > 0;)
 	{
 		int Step = Count / 2;
 		int Iterator = LightId + Step;
@@ -146,7 +146,7 @@ void SelectLight(float RandSample, inout float LightPickingCdf[RAY_TRACING_LIGHT
 }
 
 bool SampleLight(
-	float4 RandSample,
+	float3 RandSample,
 	float3 WorldPos,
 	float3 WorldNormal,
 	uint PrimitiveLightingChannelMask,
@@ -174,7 +174,7 @@ bool SampleLight(
 
 	float LightPickingCdfSum = InitLightPickingCdf(WorldPos, WorldNormal, PrimitiveLightingChannelMask, IsTransmissiveMaterial, LightPickingCdf);
 
-	if (LightPickingCdfSum > 0.0)
+	if (LightPickingCdfSum == 0.0)
 	{
 		// light picking cdf is all 0
 		return false;
@@ -182,11 +182,11 @@ bool SampleLight(
 
 	float LightPickPdf = 0;
 
-	SelectLight(RandSample.x * LightPickingCdfSum, LightPickingCdf, OutLightId, LightPickPdf);
+	SelectLight(RandSample.x * LightPickingCdfSum, SceneLightCount, LightPickingCdf, OutLightId, LightPickPdf);
 
 	LightPickPdf /= LightPickingCdfSum;
 
-	FLightSample Result = SampleLight(OutLightId, RandSample, WorldPos, WorldNormal);
+	FLightSample Result = SampleLight(OutLightId, RandSample.yz, WorldPos, WorldNormal);
 	OutDirection = Result.Direction;
 	OutDistance = Result.Distance;
 	OutRadianceOverPdf = Result.RadianceOverPdf / LightPickPdf;

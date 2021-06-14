@@ -20,22 +20,16 @@ namespace DisplayClusterClusterSyncStrings
 	namespace WaitForGameStart
 	{
 		constexpr static auto Name = "WaitForGameStart";
-		constexpr static auto ArgThreadTime  = "ThreadTime";
-		constexpr static auto ArgBarrierTime = "BarrierTime";
 	}
 
 	namespace WaitForFrameStart
 	{
 		constexpr static auto Name = "WaitForFrameStart";
-		constexpr static auto ArgThreadTime  = "ThreadTime";
-		constexpr static auto ArgBarrierTime = "BarrierTime";
 	}
 
 	namespace WaitForFrameEnd
 	{
 		constexpr static auto Name = "WaitForFrameEnd";
-		constexpr static auto ArgThreadTime  = "ThreadTime";
-		constexpr static auto ArgBarrierTime = "BarrierTime";
 	}
 
 	namespace GetTimeData
@@ -51,11 +45,6 @@ namespace DisplayClusterClusterSyncStrings
 	{
 		constexpr static auto Name = "GetSyncData";
 		constexpr static auto ArgSyncGroup = "SyncGroup";
-	}
-
-	namespace GetInputData
-	{
-		constexpr static auto Name = "GetInputData";
 	}
 
 	namespace GetEventsData

@@ -7,7 +7,6 @@
 #include "InfoLog.h"
 #include "StreamTypes.h"
 
-
 namespace Electra
 {
 	class ISynchronizedUTCTime;
@@ -18,6 +17,8 @@ namespace Electra
 	class IAdaptiveStreamingPlayerResourceProvider;
 	class IPlayerEntityCache;
 	class IPlaylistReader;
+	class IAdaptiveStreamingPlayerAEMSHandler;
+	class FDRMManager;
 
 
 	class IPlayerMessage
@@ -116,10 +117,20 @@ namespace Electra
 
 
 		/**
+		 * Returns the "Application Event or Metadata Streams" (AEMS) handler.
+		 */
+		virtual IAdaptiveStreamingPlayerAEMSHandler* GetAEMSEventHandler() = 0;
+
+		/**
 		 * Returns the mutable player option dictionary. Other than initial options this serves as an interface to
 		 * pass values between internal sub systems.
 		 */
 		 virtual FParamDict& GetOptions() = 0;
+
+		 /**
+		  * Returns the DRM manager, if any.
+		  */
+		virtual TSharedPtrTS<FDRMManager> GetDRMManager() = 0;
 	};
 
 

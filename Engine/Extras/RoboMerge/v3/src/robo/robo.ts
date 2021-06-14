@@ -5,12 +5,13 @@ import { OnUncaughtException, OnUnhandledRejection } from '@sentry/node/dist/int
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as p4util from '../common/p4util';
 import { Analytics } from '../common/analytics';
 import { Arg, readProcessArgs } from '../common/args';
 import { _setTimeout } from '../common/helper';
 import { ContextualLogger } from '../common/logger';
 import { Mailer } from '../common/mailer';
-import { ClientSpec, getPerforceUsername, getRootDirectoryForBranch, initializePerforce, PerforceContext } from '../common/perforce';
+import { ClientSpec, getPerforceUsername, getRootDirectoryForBranch, initializePerforce, PerforceContext, StreamSpecs } from '../common/perforce';
 import { BuildVersion, VersionReader } from '../common/version';
 import { CertFiles } from '../common/webserver';
 import { addBranchGraph, Graph, GraphAPI } from '../new/graph';
@@ -288,7 +289,7 @@ async function _initWorkspacesForGraphBot(graphBot: GraphBot, existingWorkspaces
 
 	if (workspacesToReset.length > 0) {
 		logger.info('The following workspaces already exist and will be reset: ' + workspacesToReset.join(', '))
-		await Promise.all(workspacesToReset.map(ws => robo.p4.sync(ws, `//${ws}/...#0`)))
+		await p4util.cleanWorkspaces(robo.p4, workspacesToReset)
 	}
 }
 
@@ -387,7 +388,7 @@ async function init(logger: ContextualLogger) {
 	}
 
 	_initMailer(logger)
-	_initGraphBots(logger)
+	_initGraphBots(await robo.p4.streams(), logger)
 	if (!DEBUG_SKIP_BRANCH_SETUP) {
 		await _initBranchWorkspacesForAllBots(logger)
 	}
@@ -521,10 +522,10 @@ function shutdown(exitCode: number, logger: ContextualLogger) {
 process.once('SIGINT', () => { roboStartupLogger.error("Caught SIGINT"); shutdown(2, roboStartupLogger); });
 process.once('SIGTERM', () => { roboStartupLogger.error("Caught SIGTERM"); shutdown(0, roboStartupLogger); });
 
-function _initGraphBots(logger: ContextualLogger) {
+function _initGraphBots(allStreamSpecs: StreamSpecs, logger: ContextualLogger) {
 	for (const botname of args.botname)	{
 		logger.info(`Initializing bot ${botname}`)
-		const graphBot = new GraphBot(botname, robo.mailer, args.externalUrl)
+		const graphBot = new GraphBot(botname, robo.mailer, args.externalUrl, allStreamSpecs)
 		robo.graphBots.set(graphBot.branchGraph.botname, graphBot)
 
 		graphBot.reloadAsyncListeners.add(_onBranchSpecReloaded)

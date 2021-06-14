@@ -3,26 +3,28 @@
 #include "Components/DMXPixelMappingScreenComponent.h"
 
 #include "DMXPixelMappingRuntimeCommon.h"
-#include "DMXPixelMappingUtils.h"
 #include "DMXPixelMappingTypes.h"
-#include "IDMXPixelMappingRenderer.h"
+#include "DMXPixelMappingUtils.h"
 #include "Components/DMXPixelMappingRendererComponent.h"
 #include "IO/DMXOutputPort.h"
 #include "IO/DMXPortManager.h"
 
-#include "Engine/TextureRenderTarget2D.h"
+#include "Engine/Texture.h"
+#include "Widgets/SOverlay.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScaleBox.h"
-#include "Widgets/Images/SImage.h"
+#include "Widgets/Text/STextBlock.h"
 
 #if WITH_EDITOR
 #include "SDMXPixelMappingEditorWidgets.h"
 #endif // WITH_EDITOR
 
 
+DECLARE_CYCLE_STAT(TEXT("Send Screen"), STAT_DMXPixelMaping_SendScreen, STATGROUP_DMXPIXELMAPPING);
+
 #define LOCTEXT_NAMESPACE "DMXPixelMappingScreenComponent"
 
-const FVector2D UDMXPixelMappingScreenComponent::MixGridSize = FVector2D(1.f);
+const FVector2D UDMXPixelMappingScreenComponent::MinGridSize = FVector2D(1.f);
 
 #if WITH_EDITORONLY_DATA
 const uint32 UDMXPixelMappingScreenComponent::MaxGridUICells = 40 * 40;
@@ -54,13 +56,6 @@ UDMXPixelMappingScreenComponent::UDMXPixelMappingScreenComponent()
 #endif // WITH_EDITOR
 }
 
-void UDMXPixelMappingScreenComponent::PostParentAssigned()
-{
-	Super::PostParentAssigned();
-
-	ResizeOutputTarget(NumXCells, NumYCells);
-}
-
 void UDMXPixelMappingScreenComponent::Tick(float DeltaTime)
 {
 #if WITH_EDITOR
@@ -78,12 +73,6 @@ void UDMXPixelMappingScreenComponent::PostEditChangeChainProperty(FPropertyChang
 {
 	// Call the parent at the first place
 	Super::PostEditChangeChainProperty(PropertyChangedChainEvent);
-
-	if (PropertyChangedChainEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDMXPixelMappingScreenComponent, NumXCells) ||
-		PropertyChangedChainEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDMXPixelMappingScreenComponent, NumYCells))
-	{
-		ResizeOutputTarget(NumXCells, NumYCells);
-	}
 	
 	if (PropertyChangedChainEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDMXPixelMappingScreenComponent, NumXCells) ||
 		PropertyChangedChainEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDMXPixelMappingScreenComponent, NumYCells) ||
@@ -278,13 +267,6 @@ const FName& UDMXPixelMappingScreenComponent::GetNamePrefix()
 	return NamePrefix;
 }
 
-void UDMXPixelMappingScreenComponent::PostLoad()
-{
-	Super::PostLoad();
-
-	ResizeOutputTarget(NumXCells, NumYCells);
-}
-
 void UDMXPixelMappingScreenComponent::AddColorToSendBuffer(const FColor& InColor, TArray<uint8>& OutDMXSendBuffer)
 {
 	if (PixelFormat == EDMXCellFormat::PF_R)
@@ -383,21 +365,33 @@ void UDMXPixelMappingScreenComponent::AddColorToSendBuffer(const FColor& InColor
 	}
 }
 
+UDMXPixelMappingRendererComponent* UDMXPixelMappingScreenComponent::GetRendererComponent() const
+{
+	return Cast<UDMXPixelMappingRendererComponent>(Parent);
+}
+
 void UDMXPixelMappingScreenComponent::ResetDMX()
 {
-	UpdateSurfaceBuffer([this](TArray<FColor>& InSurfaceBuffer, FIntRect& InSurfaceRect)
+	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
+	if (!ensure(RendererComponent))
 	{
-		for (FColor& Color : InSurfaceBuffer)
-		{
-			Color = FColor::Black;
-		}
-	});
-
+		return;
+	}
+	
+	RendererComponent->ResetColorDownsampleBufferPixels(PixelDownsamplePositionRange.Key, PixelDownsamplePositionRange.Value);
 	SendDMX();
 }
 
 void UDMXPixelMappingScreenComponent::SendDMX()
 {
+	SCOPE_CYCLE_COUNTER(STAT_DMXPixelMaping_SendScreen);
+
+	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
+	if (!ensure(RendererComponent))
+	{
+		return;
+	}
+
 	if (RemoteUniverse < 0)
 	{
 		UE_LOG(LogDMXPixelMappingRuntime, Warning, TEXT("RemoteUniverse < 0"));
@@ -423,79 +417,127 @@ void UDMXPixelMappingScreenComponent::SendDMX()
 		}
 	};
 
-	TArray<FColor> SortedList;
-	GetSurfaceBuffer([this, &SortedList](const TArray<FColor>& InSurfaceBuffer, const FIntRect& InSurfaceRect)
+	TArray<FLinearColor> UnsortedList; 
+	if (RendererComponent->GetDownsampleBufferPixels(PixelDownsamplePositionRange.Key, PixelDownsamplePositionRange.Value, UnsortedList))
 	{
-		int32 NumXPanelsLocal = InSurfaceRect.Width();
-		int32 NumYPanelsLocal = InSurfaceRect.Height();
-		FDMXPixelMappingUtils::TextureDistributionSort<FColor>(Distribution, NumXPanelsLocal, NumYPanelsLocal, InSurfaceBuffer, SortedList);
-	});
+		TArray<FLinearColor> SortedList;
+		SortedList.Reserve(UnsortedList.Num());
+		FDMXPixelMappingUtils::TextureDistributionSort<FLinearColor>(Distribution, NumXCells, NumYCells, UnsortedList, SortedList);
 
-	// Sending only if there enough space at least for one pixel
-	if (!FDMXPixelMappingUtils::CanFitCellIntoChannels(PixelFormat, StartAddress))
+		// Sending only if there enough space at least for one pixel
+		if (!FDMXPixelMappingUtils::CanFitCellIntoChannels(PixelFormat, StartAddress))
+		{
+			return;
+		}
+
+		// Prepare Universes for send
+		TArray<uint8> SendBuffer;
+		for (const FLinearColor& LinearColor : SortedList)
+		{
+			constexpr bool bUseSRGB = true;
+			FColor Color = LinearColor.ToFColor(bUseSRGB);
+		
+			const float MaxValue = 255.f;
+			Color.R = static_cast<uint8>(FMath::Min(Color.R * PixelIntensity, MaxValue));
+			Color.G = static_cast<uint8>(FMath::Min(Color.G * PixelIntensity, MaxValue));
+			Color.B = static_cast<uint8>(FMath::Min(Color.B * PixelIntensity, MaxValue));
+			Color.A = static_cast<uint8>(FMath::Min(Color.A * AlphaIntensity, MaxValue));;
+			AddColorToSendBuffer(Color, SendBuffer);
+		}
+
+		// Start sending
+		const uint32 UniverseMaxChannels = FDMXPixelMappingUtils::GetUniverseMaxChannels(PixelFormat, StartAddress);
+		uint32 SendDMXIndex = StartAddress;
+		int32 UniverseToSend = RemoteUniverse;
+		const int32 SendBufferNum = SendBuffer.Num();
+		TMap<int32, uint8> ChannelToValueMap;
+		for (int32 FragmentMapIndex = 0; FragmentMapIndex < SendBufferNum; FragmentMapIndex++)
+		{
+			// ready to send here
+			if (SendDMXIndex > UniverseMaxChannels)
+			{
+				SendDMXToPorts(UniverseToSend, ChannelToValueMap);
+
+				// Now reset
+				ChannelToValueMap.Empty();
+				SendDMXIndex = StartAddress;
+				UniverseToSend++;
+			}
+
+			// should be channels from 1...UniverseMaxChannels
+			ChannelToValueMap.Add(SendDMXIndex, SendBuffer[FragmentMapIndex]);
+			if (SendDMXIndex > UniverseMaxChannels || SendDMXIndex < 1)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("WrongIndex FragmentMapIndex %d, SendDMXIndex %d"), FragmentMapIndex, SendDMXIndex);
+			}
+
+			// send dmx if next iteration is the last one
+			if ((SendBufferNum > FragmentMapIndex + 1) == false)
+			{
+				SendDMXToPorts(UniverseToSend, ChannelToValueMap);
+				break;
+			}
+
+			SendDMXIndex++;
+		}
+	}
+}
+
+void UDMXPixelMappingScreenComponent::QueueDownsample()
+{
+	// Queue pixels into the downsample rendering
+	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
+	if (!ensure(RendererComponent))
 	{
 		return;
 	}
 
-	// Prepare Universes for send
-	TArray<uint8> SendBuffer;
-	for (const FColor& Color : SortedList)
+	UTexture* InputTexture = RendererComponent->GetRendererInputTexture();
+	if (!ensure(InputTexture))
 	{
-		FColor ColorWithAppliedIntensity = Color;
-		const float MaxValue = 255;
-		ColorWithAppliedIntensity.R = static_cast<uint8>(FMath::Min(ColorWithAppliedIntensity.R * PixelIntensity, MaxValue));
-		ColorWithAppliedIntensity.G = static_cast<uint8>(FMath::Min(ColorWithAppliedIntensity.G * PixelIntensity, MaxValue));
-		ColorWithAppliedIntensity.B = static_cast<uint8>(FMath::Min(ColorWithAppliedIntensity.B * PixelIntensity, MaxValue));
-		ColorWithAppliedIntensity.A = static_cast<uint8>(FMath::Min(ColorWithAppliedIntensity.A * AlphaIntensity, MaxValue));;
-		AddColorToSendBuffer(ColorWithAppliedIntensity, SendBuffer);
+		return;
 	}
 
-	// Start sending
-	uint32 UniverseMaxChannels = FDMXPixelMappingUtils::GetUniverseMaxChannels(PixelFormat, StartAddress);
-	uint32 SendDMXIndex = StartAddress;
-	int32 UniverseToSend = RemoteUniverse;
-	int32 SendBufferNum = SendBuffer.Num();
-	TMap<int32, uint8> ChannelToValueMap;
-	for (int32 FragmentMapIndex = 0; FragmentMapIndex < SendBufferNum; FragmentMapIndex++)
-	{			
-		// ready to send here
-		if (SendDMXIndex > UniverseMaxChannels)
-		{
-			SendDMXToPorts(UniverseToSend, ChannelToValueMap);
+	const uint32 TextureSizeX = InputTexture->Resource->GetSizeX();
+	const uint32 TextureSizeY = InputTexture->Resource->GetSizeY();
+	check(TextureSizeX > 0 && TextureSizeY > 0);
+	
+	constexpr bool bStaticCalculateUV = true;
+	const FVector2D SizePixel(SizeX / NumXCells, SizeY / NumYCells);
+	const FVector2D UVSize(SizePixel.X / TextureSizeX, SizePixel.Y / TextureSizeY);
+	const FVector2D UVCellSize = UVSize / 2.f;
+	const int32 PixelNum = NumXCells * NumYCells;
+	const FVector4 PixelFactor(1.f, 1.f, 1.f, 1.f);
+	const FIntVector4 InvertPixel(0);
 
-			// Now reset
-			ChannelToValueMap.Empty();
-			SendDMXIndex = StartAddress;
-			UniverseToSend++;
-		}
+	// Start of downsample index
+	PixelDownsamplePositionRange.Key = RendererComponent->GetDownsamplePixelNum();
 
-		// should be channels from 1...UniverseMaxChannels
-		ChannelToValueMap.Add(SendDMXIndex, SendBuffer[FragmentMapIndex]);
-		if (SendDMXIndex > UniverseMaxChannels || SendDMXIndex < 1)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("WrongIndex FragmentMapIndex %d, SendDMXIndex %d"), FragmentMapIndex, SendDMXIndex);
-		}
+	int32 IterationCount = 0;
+	ForEachPixel([&](const int32 InXYIndex, const int32 XIndex, const int32 YIndex)
+        {
+            const FIntPoint PixelPosition = RendererComponent->GetPixelPosition(InXYIndex + PixelDownsamplePositionRange.Key);
+            const FVector2D UV = FVector2D((PositionX + SizePixel.X * XIndex) / TextureSizeX, (PositionY + SizePixel.Y * YIndex) / TextureSizeY);
 
-		// send dmx if next iteration is the last one
-		if ((SendBufferNum > FragmentMapIndex + 1) == false)
-		{
-			SendDMXToPorts(UniverseToSend, ChannelToValueMap);
-			break;
-		}
+            FDMXPixelMappingDownsamplePixelParam DownsamplePixelParam
+            {
+                PixelFactor,
+                InvertPixel,
+                PixelPosition,
+                UV,
+                UVSize,
+                UVCellSize,
+                CellBlendingQuality,
+                bStaticCalculateUV
+            };
 
-		SendDMXIndex++;
-	}
-}
+            RendererComponent->AddPixelToDownsampleSet(MoveTemp(DownsamplePixelParam));
 
-void UDMXPixelMappingScreenComponent::Render()
-{
-	RendererOutputTexture();
-}
+            IterationCount = InXYIndex;
+        });
 
-void UDMXPixelMappingScreenComponent::RenderAndSendDMX()
-{
-	Render();
-	SendDMX();
+	// End of downsample index
+	PixelDownsamplePositionRange.Value = PixelDownsamplePositionRange.Key + IterationCount;
 }
 
 FVector2D UDMXPixelMappingScreenComponent::GetSize() const
@@ -529,32 +571,6 @@ void UDMXPixelMappingScreenComponent::SetPosition(const FVector2D& InPosition)
 #endif // WITH_EDITOR
 }
 
-UTextureRenderTarget2D* UDMXPixelMappingScreenComponent::GetOutputTexture()
-{
-	if (OutputTarget == nullptr)
-	{
-		const FName TargetName = MakeUniqueObjectName(this, UTextureRenderTarget2D::StaticClass(), TEXT("DstTarget"));
-		OutputTarget = NewObject<UTextureRenderTarget2D>(this, TargetName);
-		OutputTarget->ClearColor = FLinearColor(0.f, 0.f, 0.f, 0.f);
-		OutputTarget->InitCustomFormat(10, 10, EPixelFormat::PF_B8G8R8A8, false);
-	}
-
-	return OutputTarget;
-}
-
-void UDMXPixelMappingScreenComponent::ResizeOutputTarget(uint32 InSizeX, uint32 InSizeY)
-{
-	UTextureRenderTarget2D* Target = GetOutputTexture();
-
-	if ((InSizeX > 0 && InSizeY > 0) && (Target->SizeX != InSizeX || Target->SizeY != InSizeY))
-	{
-		check(Target);
-
-		Target->ResizeTarget(InSizeX, InSizeY);
-		Target->UpdateResourceImmediate();
-	}
-}
-
 void UDMXPixelMappingScreenComponent::RenderWithInputAndSendDMX()
 {
 	if (UDMXPixelMappingRendererComponent* RendererComponent = GetFirstParentByClass<UDMXPixelMappingRendererComponent>(this))
@@ -567,18 +583,18 @@ void UDMXPixelMappingScreenComponent::RenderWithInputAndSendDMX()
 
 void UDMXPixelMappingScreenComponent::SetSizeInternal(const FVector2D& InSize)
 {
-	if (InSize.X <= MixGridSize.X)
+	if (InSize.X <= MinGridSize.X)
 	{
-		SizeX = MixGridSize.X;
+		SizeX = MinGridSize.X;
 	}
 	else
 	{
 		SizeX = InSize.X;
 	}
 
-	if (InSize.Y <= MixGridSize.Y)
+	if (InSize.Y <= MinGridSize.Y)
 	{
-		SizeY = MixGridSize.Y;
+		SizeY = MinGridSize.Y;
 	}
 	else
 	{
@@ -595,56 +611,27 @@ void UDMXPixelMappingScreenComponent::SetSizeInternal(const FVector2D& InSize)
 #endif // WITH_EDITOR
 }
 
-void UDMXPixelMappingScreenComponent::RendererOutputTexture()
-{
-	if (UDMXPixelMappingRendererComponent* RendererComponent = Cast<UDMXPixelMappingRendererComponent>(Parent))
-	{
-		UTexture* Texture = RendererComponent->GetRendererInputTexture();
-		const TSharedPtr<IDMXPixelMappingRenderer>& Renderer = RendererComponent->GetRenderer();
-
-		if (Texture != nullptr && Renderer.IsValid())
-		{
-			GetOutputTexture();
-			
-			const uint32 TexureSizeX = Texture->Resource->GetSizeX();
-			const uint32 TexureSizeY = Texture->Resource->GetSizeY();
-
-			const FVector2D Position = FVector2D(0.f, 0.f);
-			const FVector2D Size = FVector2D(OutputTarget->Resource->GetSizeX(), OutputTarget->Resource->GetSizeY());
-			const FVector2D UV = FVector2D(PositionX / TexureSizeX, PositionY / TexureSizeY);
-
-			const FVector2D UVSize(SizeX / TexureSizeX, SizeY / TexureSizeY);
-			const FVector2D UVCellSize(UVSize.X / NumXCells / 2.f, UVSize.Y / NumYCells / 2.f);
-
-			const FIntPoint TargetSize(OutputTarget->Resource->GetSizeX(), OutputTarget->Resource->GetSizeY());
-			const FIntPoint TextureSize(1, 1);
-
-			const bool bStaticCalculateUV = false;
-			
-			Renderer->DownsampleRender_GameThread(
-				Texture->Resource,
-				OutputTarget->Resource,
-				OutputTarget->GameThread_GetRenderTargetResource(),
-				FVector4(1.f, 1.f, 1.f, 1.f),
-				FIntVector4(0),
-				Position, // X, Y Position in screen pixels of the top left corner of the quad
-				Size, // SizeX, SizeY	Size in screen pixels of the quad
-				UV, // U, V	Position in texels of the top left corner of the quad's UV's
-				UVSize, // SizeU, SizeV	Size in texels of the quad's UV's,
-				UVCellSize,
-				TargetSize, // TargetSizeX, TargetSizeY Size in screen pixels of the target surface
-				TextureSize, // TextureSize Size in texels of the source texture
-				CellBlendingQuality,
-				bStaticCalculateUV,
-				[=](TArray<FColor>& InSurfaceBuffer, FIntRect& InRect) { SetSurfaceBuffer(InSurfaceBuffer, InRect); }
-			);
-		}
-	}
-}
-
 bool UDMXPixelMappingScreenComponent::CanBeMovedTo(const UDMXPixelMappingBaseComponent* Component) const
 {
 	return Component && Component->IsA<UDMXPixelMappingRendererComponent>();
+}
+
+const FVector2D UDMXPixelMappingScreenComponent::GetScreenPixelSize() const
+{
+	return FVector2D(SizeX / NumXCells, SizeY / NumYCells);
+}
+
+void UDMXPixelMappingScreenComponent::ForEachPixel(ForEachPixelCallback InCallback)
+{
+	int32 IndexXY = 0;
+	for (int32 NumXIndex = 0; NumXIndex < NumXCells; ++NumXIndex)
+	{
+		for (int32 NumYIndex = 0; NumYIndex < NumYCells; ++NumYIndex)
+		{
+			InCallback(IndexXY, NumXIndex, NumYIndex);
+			IndexXY++;
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

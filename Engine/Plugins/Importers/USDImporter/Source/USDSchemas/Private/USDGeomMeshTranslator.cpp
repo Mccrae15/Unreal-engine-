@@ -603,8 +603,10 @@ namespace UsdGeomMeshTranslatorImpl
 			// Create and configure a new USDTrack to be added to the GeometryCache
 			UGeometryCacheTrackUsd* UsdTrack = NewObject< UGeometryCacheTrackUsd >( GeometryCache );
 
-			// #ueent_todo: Remove the context from the read function if possible
-			TSharedPtr< FUsdSchemaTranslationContext > ContextPtr( Context );
+			UE::FUsdStage Stage = Context->Stage;
+			TMap< FString, TMap< FString, int32 > > MaterialToPrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex ? *Context->MaterialToPrimvarToUVIndex : TMap< FString, TMap< FString, int32 > >();
+			const bool bAllowInterpretingLODs = Context->bAllowInterpretingLODs;
+			FName RenderContext = Context->RenderContext;
 			UsdTrack->Initialize( [ = ]( FGeometryCacheMeshData& OutMeshData, const FString& InPrimPath, float Time )
 				{
 					// Get MeshDescription associated with the prim
@@ -613,19 +615,16 @@ namespace UsdGeomMeshTranslatorImpl
 					TArray< UsdUtils::FUsdPrimMaterialAssignmentInfo > LODIndexToMaterialInfo;
 
 					UE::FSdfPath PrimPath( *InPrimPath );
-					UE::FUsdPrim Prim = ContextPtr->Stage.GetPrimAtPath( PrimPath );
-
-					TMap< FString, TMap< FString, int32 > > Unused;
-					TMap< FString, TMap< FString, int32 > >* MaterialToPrimvarToUVIndex = ContextPtr->MaterialToPrimvarToUVIndex ? ContextPtr->MaterialToPrimvarToUVIndex : &Unused;
+					UE::FUsdPrim Prim = Stage.GetPrimAtPath( PrimPath );
 
 					UsdGeomMeshTranslatorImpl::LoadMeshDescriptions(
 						pxr::UsdTyped( Prim ),
 						LODIndexToMeshDescription,
 						LODIndexToMaterialInfo,
-						*MaterialToPrimvarToUVIndex,
+						MaterialToPrimvarToUVIndex,
 						pxr::UsdTimeCode( Time ),
-						ContextPtr->bAllowInterpretingLODs,
-						ContextPtr->RenderContext
+						bAllowInterpretingLODs,
+						RenderContext
 					);
 
 					// Convert the MeshDescription to MeshData
@@ -655,8 +654,8 @@ namespace UsdGeomMeshTranslatorImpl
 					return false;
 				},
 				InPrimPath,
-				Context->Stage.GetStartTimeCode(),
-				Context->Stage.GetEndTimeCode()
+				Stage.GetStartTimeCode(),
+				Stage.GetEndTimeCode()
 			);
 
 			GeometryCache->AddTrack( UsdTrack );
@@ -754,7 +753,8 @@ namespace UsdGeomMeshTranslatorImpl
 						OutMeshData.TangentsZ.Add( Normal );
 						OutMeshData.TangentsX.Add( VertexInstanceTangents[ VertexInstanceID ] );
 
-						OutMeshData.Colors.Add( FLinearColor( VertexInstanceColors[ VertexInstanceID ] ).ToFColor( false ) );
+						const bool bSRGB = true;
+						OutMeshData.Colors.Add( FLinearColor( VertexInstanceColors[ VertexInstanceID ] ).ToFColor( bSRGB ) );
 
 						// Supporting only one UV channel
 						const int32 UVIndex = 0;
@@ -772,105 +772,6 @@ namespace UsdGeomMeshTranslatorImpl
 		}
 	}
 #endif // WITH_EDITOR
-
-	/** Warning: This function will temporarily switch the active LOD variant if one exists, so it's *not* thread safe! */
-	void SetMaterialOverrides( const pxr::UsdPrim& Prim, const TArray<UMaterialInterface*>& ExistingAssignments, UMeshComponent& MeshComponent, UUsdAssetCache& AssetCache, float Time, EObjectFlags Flags, bool bInterpretLODs, const FName& RenderContext )
-	{
-		FScopedUsdAllocs Allocs;
-
-		pxr::UsdGeomMesh Mesh{ Prim };
-		if ( !Mesh )
-		{
-			return;
-		}
-		pxr::SdfPath PrimPath = Prim.GetPath();
-		pxr::UsdStageRefPtr Stage = Prim.GetStage();
-
-		pxr::TfToken RenderContextToken = pxr::UsdShadeTokens->universalRenderContext;
-
-		if ( !RenderContext.IsNone())
-		{
-			RenderContextToken = UnrealToUsd::ConvertToken( *RenderContext.ToString() ).Get();
-		}
-
-		TArray<UsdUtils::FUsdPrimMaterialAssignmentInfo> LODIndexToAssignments;
-		const bool bProvideMaterialIndices = false; // We have no use for material indices and it can be slow to retrieve, as it will iterate all faces
-
-		// Extract material assignment info from prim if it is a LOD mesh
-		bool bInterpretedLODs = false;
-		if ( bInterpretLODs && UsdUtils::IsGeomMeshALOD( Prim ) )
-		{
-			TMap<int32, UsdUtils::FUsdPrimMaterialAssignmentInfo> LODIndexToAssignmentsMap;
-			TFunction<bool( const pxr::UsdGeomMesh&, int32 )> IterateLODs = [ & ]( const pxr::UsdGeomMesh& LODMesh, int32 LODIndex )
-			{
-				UsdUtils::FUsdPrimMaterialAssignmentInfo LODInfo = UsdUtils::GetPrimMaterialAssignments( LODMesh.GetPrim(), pxr::UsdTimeCode( Time ), bProvideMaterialIndices, RenderContextToken );
-				LODIndexToAssignmentsMap.Add( LODIndex, LODInfo );
-				return true;
-			};
-
-			pxr::UsdPrim ParentPrim = Prim.GetParent();
-			bInterpretedLODs = UsdUtils::IterateLODMeshes( ParentPrim, IterateLODs );
-
-			if ( bInterpretedLODs )
-			{
-				LODIndexToAssignmentsMap.KeySort( TLess<int32>() );
-				for ( TPair<int32, UsdUtils::FUsdPrimMaterialAssignmentInfo>& Entry : LODIndexToAssignmentsMap )
-				{
-					LODIndexToAssignments.Add( MoveTemp( Entry.Value ) );
-				}
-			}
-		}
-
-		// Refresh reference to Prim because variant switching potentially invalidated it
-		pxr::UsdPrim ValidPrim = Stage->GetPrimAtPath( PrimPath );
-
-		// Extract material assignment info from prim if its *not* a LOD mesh, or if we failed to parse LODs
-		if ( !bInterpretedLODs )
-		{
-			LODIndexToAssignments = { UsdUtils::GetPrimMaterialAssignments( ValidPrim, pxr::UsdTimeCode( Time ), bProvideMaterialIndices, RenderContextToken ) };
-		}
-
-		TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> ResolvedMaterials = MeshTranslationImpl::ResolveMaterialAssignmentInfo(
-			ValidPrim,
-			LODIndexToAssignments,
-			ExistingAssignments,
-			AssetCache,
-			Time,
-			Flags
-		);
-
-		// Compare resolved materials with existing assignments, and create overrides if we need to
-		uint32 StaticMeshSlotIndex = 0;
-		for ( int32 LODIndex = 0; LODIndex < LODIndexToAssignments.Num(); ++LODIndex )
-		{
-			const TArray< UsdUtils::FUsdPrimMaterialSlot >& LODSlots = LODIndexToAssignments[ LODIndex ].Slots;
-			for ( int32 LODSlotIndex = 0; LODSlotIndex < LODSlots.Num(); ++LODSlotIndex, ++StaticMeshSlotIndex )
-			{
-				const UsdUtils::FUsdPrimMaterialSlot& Slot = LODSlots[ LODSlotIndex ];
-
-				UMaterialInterface* Material = nullptr;
-				if ( UMaterialInterface** FoundMaterial = ResolvedMaterials.Find( &Slot ) )
-				{
-					Material = *FoundMaterial;
-				}
-				else
-				{
-					UE_LOG( LogUsd, Error, TEXT( "Lost track of resolved material for slot '%d' of LOD '%d' for mesh '%s'" ), LODSlotIndex, LODIndex, *UsdToUnreal::ConvertPath( Prim.GetPath() ) );
-					continue;
-				}
-
-				UMaterialInterface* ExistingMaterial = ExistingAssignments[ StaticMeshSlotIndex ];
-				if ( ExistingMaterial == Material )
-				{
-					continue;
-				}
-				else
-				{
-					MeshComponent.SetMaterial( StaticMeshSlotIndex, Material );
-				}
-			}
-		}
-	}
 }
 
 FBuildStaticMeshTaskChain::FBuildStaticMeshTaskChain( const TSharedRef< FUsdSchemaTranslationContext >& InContext, const UE::FSdfPath& InPrimPath )
@@ -1206,7 +1107,7 @@ USceneComponent* FUsdGeomMeshTranslator::CreateComponents()
 					ExistingAssignments.Add( StaticMaterial.MaterialInterface );
 				}
 
-				UsdGeomMeshTranslatorImpl::SetMaterialOverrides(
+				MeshTranslationImpl::SetMaterialOverrides(
 					GetPrim(),
 					ExistingAssignments,
 					*StaticMeshComponent,

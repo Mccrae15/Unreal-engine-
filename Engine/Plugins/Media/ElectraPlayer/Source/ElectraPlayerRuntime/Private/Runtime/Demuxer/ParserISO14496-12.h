@@ -10,6 +10,9 @@
 #include "StreamTypes.h"
 #include "ParameterDictionary.h"
 
+#include "ElectraEncryptedSampleInfo.h"
+
+
 namespace Electra
 {
 	//
@@ -158,6 +161,8 @@ namespace Electra
 
 		virtual int32 GetNumberOfSegmentIndices() const = 0;
 
+		virtual int32 GetNumberOfEventMessages() const = 0;
+
 		class ITrackIterator
 		{
 		public:
@@ -189,6 +194,8 @@ namespace Electra
 			virtual int64 GetRawPTS() const = 0;
 			virtual int64 GetCompositionTimeEdit() const = 0;
 			virtual int64 GetEmptyEditOffset() const = 0;
+
+			virtual bool GetEncryptionInfo(ElectraCDM::FMediaCDMSampleInfo& OutSampleEncryptionInfo) const = 0;
 		};
 
 		class ITrack
@@ -208,6 +215,7 @@ namespace Electra
 			virtual ~ITrack() = default;
 
 			virtual uint32 GetID() const = 0;
+			virtual FString GetNameFromHandler() const = 0;
 			virtual FTimeFraction GetDuration() const = 0;
 
 			virtual ITrackIterator* CreateIterator() const = 0;
@@ -217,6 +225,7 @@ namespace Electra
 			virtual const FStreamCodecInformation& GetCodecInformation() const = 0;
 			virtual const FBitrateInfo& GetBitrateInfo() const = 0;
 			virtual const FString GetLanguage() const = 0;
+			virtual void GetPSSHBoxes(TArray<TArray<uint8>>& OutBoxes, bool bFromMOOV, bool bFromMOOF) const = 0;
 		};
 
 
@@ -259,13 +268,30 @@ namespace Electra
 			virtual const FEntry& GetEntry(int32 Index) const = 0;
 		};
 
-		virtual TSharedPtr<IAllTrackIterator, ESPMode::ThreadSafe> CreateAllTrackIteratorByFilePos(int64 InFromFilePos) const = 0;
+		class IEventMessage
+		{
+		public:
+			virtual ~IEventMessage() = default;
+			virtual int32 GetVersion() const = 0;
+			virtual const FString& GetSchemeIdUri() const = 0;
+			virtual const FString& GetValue() const = 0;
+			virtual uint32 GetTimescale() const = 0;
+			virtual uint32 GetPresentationTimeDelta() const = 0;
+			virtual uint64 GetPresentationTime() const = 0;
+			virtual uint32 GetEventDuration() const = 0;
+			virtual uint32 GetID() const = 0;
+			virtual const TArray<uint8>& GetMessageData() const = 0;
+		};
+
+
+		virtual TSharedPtrTS<IAllTrackIterator> CreateAllTrackIteratorByFilePos(int64 InFromFilePos) const = 0;
 
 		virtual const ITrack* GetTrackByIndex(int32 Index) const = 0;
 		virtual const ITrack* GetTrackByTrackID(int32 TrackID) const = 0;
 
 		virtual const ISegmentIndex* GetSegmentIndexByIndex(int32 Index) const = 0;
 
+		virtual const IEventMessage* GetEventMessageByIndex(int32 Index) const = 0;
 	};
 
 } // namespace Electra

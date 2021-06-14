@@ -1043,7 +1043,8 @@ RENDERCORE_API bool AllowPixelDepthOffset(const FStaticShaderPlatform Platform)
 
 RENDERCORE_API bool IsMobileDistanceFieldEnabled(const FStaticShaderPlatform Platform)
 {
-	return IsMobilePlatform(Platform) && IsSwitchPlatform(Platform) && IsUsingDistanceFields(Platform);
+	return IsMobilePlatform(Platform) && IsUsingDistanceFields(Platform)
+		&& FDataDrivenShaderPlatformInfo::GetSupportsMobileDistanceField(Platform);
 }
 
 RENDERCORE_API bool IsMobileDistanceFieldShadowingEnabled(const FStaticShaderPlatform Platform)
@@ -1060,6 +1061,17 @@ static_assert(SP_NumPlatforms <= sizeof(GMobileAmbientOcclusionPlatformMask) * 8
 RENDERCORE_API bool UseMobileAmbientOcclusion(const FStaticShaderPlatform Platform)
 {
 	return (IsMobilePlatform(Platform) && !!(GMobileAmbientOcclusionPlatformMask & (1ull << Platform)));
+}
+
+RENDERCORE_API bool SupportsGen4TAA(const FStaticShaderPlatform Platform)
+{
+	if (IsMobilePlatform(Platform))
+	{
+		static FShaderPlatformCachedIniValue<bool> MobileSupportsGen4TAAIniValue(TEXT("/Script/Engine.RendererSettings"), TEXT("r.Mobile.SupportsGen4TAA"));
+		return (MobileSupportsGen4TAAIniValue.Get(Platform) != 0);
+	}
+
+	return true;
 }
 
 template<typename Type>
@@ -1223,7 +1235,7 @@ RENDERCORE_API void RenderUtilsInit()
 					GForwardShadingPlatformMask &= ~Mask;
 				}
 
-				if (TargetPlatform->UsesDBuffer())
+				if (TargetPlatform->UsesDBuffer() && !IsMobilePlatform(ShaderPlatform))
 				{
 					GDBufferPlatformMask |= Mask;
 				}
@@ -1300,6 +1312,7 @@ RENDERCORE_API void RenderUtilsInit()
 #else
 	if (IsMobilePlatform(GMaxRHIShaderPlatform))
 	{
+		GDBufferPlatformMask = 0;
 		GBasePassVelocityPlatformMask = 0;
 	}
 #endif // WITH_EDITOR
@@ -1508,10 +1521,22 @@ RENDERCORE_API bool UseVirtualTexturing(const FStaticFeatureLevel InFeatureLevel
 	}
 }
 
-RENDERCORE_API bool SupportsDesktopTemporalAA(const FStaticShaderPlatform Platform)
+RENDERCORE_API bool UseVirtualTextureLightmap(const FStaticFeatureLevel InFeatureLevel, const ITargetPlatform* TargetPlatform)
 {
-	static auto* MobileTemporalAAMethodCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.TemporalAAMethod"));
-	return !IsMobilePlatform(Platform) || MobileTemporalAAMethodCvar->GetValueOnAnyThread() == 1;
+	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTexturedLightmaps"));
+	const bool bUseVirtualTextureLightmap = (CVar->GetValueOnAnyThread() != 0) && UseVirtualTexturing(InFeatureLevel, TargetPlatform);
+	return bUseVirtualTextureLightmap;
+}
+
+RENDERCORE_API bool PlatformSupportsVelocityRendering(const FStaticShaderPlatform Platform)
+{
+	if (IsMobilePlatform(Platform))
+	{
+		// Enable velocity rendering if desktop Gen4 TAA is supported on mobile.
+		return SupportsGen4TAA(Platform);
+	}
+	
+	return true;
 }
 
 /** Returns whether DBuffer decals are enabled for a given shader platform */

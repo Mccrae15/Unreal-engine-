@@ -5,33 +5,50 @@
 #include "DMXProtocolCommon.h"
 
 #include "CoreMinimal.h"
+#include "ModuleDescriptor.h"
 #include "Modules/ModuleInterface.h"
 
 
 class IDMXProtocolFactory;
 
+struct FDMXProtocolRegistrationParams
+{
+	/** The name to use for the protocol (also used in UIs) */
+	FName ProtocolName;
+
+	/** The factory used to create the protocol */
+	IDMXProtocolFactory* ProtocolFactory = nullptr;
+};
+
+
+DECLARE_EVENT_OneParam(FDMXProtocolModule, FDMXOnRequestProtocolRegistrationDelegate, TArray<FDMXProtocolRegistrationParams>& /** InOutProtocolRegistrationParamsArray */);
+DECLARE_EVENT_OneParam(FDMXProtocolModule, FDMXOnRequestProtocolBlacklistDelegate, TArray<FName>& /** InOutBlacklistedProtocols */);
+
 /** Implements the Protocol Module, that enables specific Protocol implementations */
 class DMXPROTOCOL_API FDMXProtocolModule 
 	: public IModuleInterface
 {
-public:
-	FDMXProtocolModule();
-
-	void RegisterProtocol(const FName& FactoryName, IDMXProtocolFactory* Factory);
-
-	void UnregisterProtocol(const FName& FactoryName);
-
-	/** Delegate called when all protocols are registered */
-	FSimpleMulticastDelegate OnProtocolsRegisteredDelegate;
-
-	/** Needs to be set to the number of protocol implementations */
-	static const int32 NumProtocols;
-
-private:
-	/** The number of protocols registered */
-	int32 NumRegisteredProtocols;
 
 public:
+	/** Delegate for Protocol implementations to register themself with the Protocol Module. Broadcast at the end of the PreDefault loading phase. See DMXProtocolArtNet for an example. */
+	static FDMXOnRequestProtocolRegistrationDelegate& GetOnRequestProtocolRegistration()
+	{
+		static FDMXOnRequestProtocolRegistrationDelegate OnRequestProtocolRegistration;
+		return OnRequestProtocolRegistration;
+	};
+
+	/** Delegate for other Plugins that want to disable a specific protocol */
+	static FDMXOnRequestProtocolBlacklistDelegate& GetOnRequestProtocolBlacklistDelegate()
+	{
+		static FDMXOnRequestProtocolBlacklistDelegate OnRequestProtocolBlacklistDelegate;
+		return OnRequestProtocolBlacklistDelegate;
+	};
+
+	UE_DEPRECATED(4.27, "Use the OnRequestProtocolRegistration delegate please.")
+	void RegisterProtocol(const FName& ProtocolName, IDMXProtocolFactory* Factory);
+
+	void UnregisterProtocol(const FName& ProtocolName);
+
 	/** Get the instance of this module. */
 	static FDMXProtocolModule& Get();
 
@@ -48,21 +65,22 @@ public:
 	/**  Get the reference to all protocols map */
 	const TMap<FName, IDMXProtocolPtr>& GetProtocols() const;
 
-public:
 	//~ Begin IModuleInterface implementation
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 	//~ End IModuleInterface implementation
 
 private:
-	/** Called when all protocols are registered */
-	void OnProtocolsRegistered();
+	/** Called after each loading phase during startup */
+	void OnPluginLoadingPhaseComplete(ELoadingPhase::Type LoadingPhase, bool bPhaseSuccessful);
 
 	void ShutdownDMXProtocol(const FName& ProtocolName);
 	void ShutdownAllDMXProtocols();
 
 private:
+	static const FName DefaultProtocolArtNetName;
+	static const FName DefaultProtocolSACNName;
+
 	TMap<FName, IDMXProtocolFactory*> DMXProtocolFactories;
 	TMap<FName, IDMXProtocolPtr> DMXProtocols;
-	TMap<FName, bool> DMXProtocolFailureNotes;
 };

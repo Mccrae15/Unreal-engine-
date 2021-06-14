@@ -4,6 +4,19 @@
 #include "Views/Viewport/DisplayClusterConfiguratorSCSEditorViewportClient.h"
 #include "DisplayClusterConfiguratorCommands.h"
 
+#include "DisplayClusterConfiguratorUtils.h"
+#include "DisplayClusterProjectionStrings.h"
+#include "DisplayClusterConfiguratorBlueprintEditor.h"
+#include "Views/DragDrop/DisplayClusterConfiguratorValidatedDragDropOp.h"
+#include "Views/DragDrop/DisplayClusterConfiguratorViewportDragDropOp.h"
+#include "ClusterConfiguration/ViewModels/DisplayClusterConfiguratorProjectionPolicyViewModel.h"
+
+#include "Components/DisplayClusterScreenComponent.h"
+#include "Components/DisplayClusterICVFXCameraComponent.h"
+
+#include "Camera/CameraComponent.h"
+
+#include "EngineUtils.h"
 #include "BlueprintEditor.h"
 #include "SSCSEditor.h"
 #include "EditorViewportCommands.h"
@@ -14,6 +27,7 @@
 #include "ViewportTabContent.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Slate/SceneViewport.h"
+#include "Widgets/Input/SNumericEntryBox.h"
 
 #define LOCTEXT_NAMESPACE "DisplayClusterSCSEditorViewport"
 
@@ -25,8 +39,9 @@ public:
 	SLATE_END_ARGS()
 
 	/** Constructs this widget with the given parameters */
-	void Construct(const FArguments& InArgs)
+	void Construct(const FArguments& InArgs, TSharedPtr<FDisplayClusterConfiguratorSCSEditorViewportClient> InViewportClient)
 	{
+		ViewportClient = InViewportClient;
 		EditorViewport = InArgs._EditorViewport;
 
 		static const FName DefaultForegroundName("DefaultForeground");
@@ -110,6 +125,8 @@ public:
 				PreviewOptionsMenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorCommands::Get().ShowFloor);
 				PreviewOptionsMenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorCommands::Get().ShowGrid);
 				PreviewOptionsMenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorCommands::Get().ShowOrigin);
+				PreviewOptionsMenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorCommands::Get().EnableAA);
+				
 				{
 					PreviewOptionsMenuBuilder.AddSubMenu(
 						LOCTEXT("nDisplayConfigLayout", "Layouts"),
@@ -245,8 +262,91 @@ public:
 		const bool bInShouldCloseWindowAfterMenuSelection = true;
 		FMenuBuilder ViewportsMenuBuilder(bInShouldCloseWindowAfterMenuSelection, CommandList);
 
-		ViewportsMenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorCommands::Get().ShowPreview);
-		ViewportsMenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorCommands::Get().Show3DViewportNames);
+		ViewportsMenuBuilder.BeginSection(TEXT("PreviewScale"), LOCTEXT("PreviewScaleSection", "Preview"));
+		{
+			ViewportsMenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorCommands::Get().ShowPreview);
+			ViewportsMenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorCommands::Get().Show3DViewportNames);
+
+			ViewportsMenuBuilder.AddWidget(
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("PreviewResolution_Label", "Preview Resolution"))
+				]
+
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Bottom)
+				.AutoWidth()
+				[
+					SNew(SBox)
+					.MinDesiredWidth(64)
+					[
+						SNew(SNumericEntryBox<float>)
+						.Value(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::GetPreviewResolutionScale)
+						.OnValueChanged(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::SetPreviewResolutionScale)
+						.OnValueCommitted_Lambda([this](const float InValue, ETextCommit::Type)
+						{
+							if (ViewportClient.IsValid())
+							{
+								ViewportClient->Invalidate();
+							}
+						})
+
+						.MinValue(0.05f)
+						.MaxValue(1.f)
+						.MinSliderValue(0.05f)
+						.MaxSliderValue(1.f)
+						.AllowSpin(true)
+					]
+				],
+				FText::GetEmpty()
+		);
+		}
+		ViewportsMenuBuilder.EndSection();
+		
+		ViewportsMenuBuilder.BeginSection(TEXT("XformGizmo"), LOCTEXT("XformGizmoSection", "Xform"));
+		{
+			ViewportsMenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorCommands::Get().ToggleShowXformGizmos);
+
+			ViewportsMenuBuilder.AddWidget(
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("XformGizmoScale_Label", "Xform Gizmo Scale"))
+				]
+
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Bottom)
+				.AutoWidth()
+				[
+					SNew(SBox)
+					.MinDesiredWidth(64)
+					[
+						SNew(SNumericEntryBox<float>)
+						.Value(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::GetXformGizmoScale)
+						.OnValueChanged(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::SetXformGizmoScale)
+						.MinValue(0)
+						.MaxValue(FLT_MAX)
+						.MinSliderValue(0)
+						.MaxSliderValue(2)
+						.AllowSpin(true)
+					]
+				],
+				FText::GetEmpty()
+			);
+		}
+		ViewportsMenuBuilder.EndSection();
+
 		return ViewportsMenuBuilder.MakeWidget();
 	}
 
@@ -368,6 +468,7 @@ public:
 private:
 	/** Reference to the parent viewport */
 	TWeakPtr<SEditorViewport> EditorViewport;
+	TSharedPtr<FDisplayClusterConfiguratorSCSEditorViewportClient> ViewportClient;
 };
 
 void SDisplayClusterConfiguratorSCSEditorViewport::Construct(const FArguments& InArgs)
@@ -481,7 +582,7 @@ TSharedRef<FEditorViewportClient> SDisplayClusterConfiguratorSCSEditorViewport::
 TSharedPtr<SWidget> SDisplayClusterConfiguratorSCSEditorViewport::MakeViewportToolbar()
 {
 	return
-		SNew(SDisplayClusterConfiguratorSCSEditorViewportToolBar)
+		SNew(SDisplayClusterConfiguratorSCSEditorViewportToolBar, ViewportClient)
 		.EditorViewport(SharedThis(this))
 		.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute());
 }
@@ -532,6 +633,12 @@ void SDisplayClusterConfiguratorSCSEditorViewport::BindCommands()
 		FIsActionChecked::CreateSP(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::GetShowOrigin));
 
 	CommandList->MapAction(
+		Commands.EnableAA,
+		FExecuteAction::CreateSP(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::ToggleEnableAA),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::GetEnableAA));
+	
+	CommandList->MapAction(
 		Commands.ShowPreview,
 		FExecuteAction::CreateSP(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::ToggleShowPreview),
 		FCanExecuteAction(),
@@ -542,8 +649,171 @@ void SDisplayClusterConfiguratorSCSEditorViewport::BindCommands()
 		FExecuteAction::CreateSP(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::ToggleShowViewportNames),
 		FCanExecuteAction::CreateSP(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::CanToggleViewportNames),
 		FIsActionChecked::CreateSP(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::GetShowViewportNames));
+
+	CommandList->MapAction(
+		Commands.ToggleShowXformGizmos,
+		FExecuteAction::CreateSP(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::ToggleShowXformGizmos),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(ViewportClient.Get(), &FDisplayClusterConfiguratorSCSEditorViewportClient::IsShowingXformGizmos));
 	
 	SAssetEditorViewport::BindCommands();
+}
+
+void SDisplayClusterConfiguratorSCSEditorViewport::OnDragLeave(const FDragDropEvent& DragDropEvent)
+{
+	TSharedPtr<FDisplayClusterConfiguratorValidatedDragDropOp> ValidatedDragDropOp = DragDropEvent.GetOperationAs<FDisplayClusterConfiguratorValidatedDragDropOp>();
+	if (ValidatedDragDropOp.IsValid())
+	{
+		// Use an opt-in policy for drag-drop operations, always marking it as invalid until another widget marks it as a valid drop operation
+		ValidatedDragDropOp->SetDropAsInvalid();
+		return;
+	}
+
+	SAssetEditorViewport::OnDragLeave(DragDropEvent);
+}
+
+FReply SDisplayClusterConfiguratorSCSEditorViewport::OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	TSharedPtr<FDisplayClusterConfiguratorViewportDragDropOp> ViewportDragDropOp = DragDropEvent.GetOperationAs<FDisplayClusterConfiguratorViewportDragDropOp>();
+	if (ViewportDragDropOp.IsValid())
+	{
+		FIntPoint ViewportOrigin, ViewportSize;
+		ViewportClient->GetViewportDimensions(ViewportOrigin, ViewportSize);
+
+		const FVector2D MousePos = MyGeometry.AbsoluteToLocal(DragDropEvent.GetScreenSpacePosition()) * MyGeometry.Scale - ViewportOrigin;
+		HHitProxy* HitProxy = ViewportClient->GetHitProxyWithoutGizmos(MousePos.X, MousePos.Y);
+		if (HActor* ActorProxy = HitProxyCast<HActor>(HitProxy))
+		{
+			if (ActorProxy->Actor && ActorProxy->PrimComponent)
+			{
+				if (const UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(ActorProxy->PrimComponent))
+				{
+					if (MeshComponent->GetName().EndsWith(FDisplayClusterConfiguratorUtils::GetImplSuffix()))
+					{
+						// If the mesh component is marked with an "_impl" suffix, then it is a child component of a display cluster component.
+						// Check to see if its parent component is a screen component
+						if (UDisplayClusterScreenComponent* ScreenComponent = Cast<UDisplayClusterScreenComponent>(MeshComponent->GetAttachParent()))
+						{
+							ViewportDragDropOp->SetDropAsValid(FText::Format(LOCTEXT("ViewportDragDropOp_ScreenMessage", "Project to screen {0}"), FText::FromName(ScreenComponent->GetFName())));
+						}
+					}
+					else
+					{
+						USceneComponent* AttachParent = MeshComponent->GetAttachParent();
+						const bool bIsCamera = AttachParent && (AttachParent->IsA<UCameraComponent>());
+						
+						if (bIsCamera)
+						{
+							ViewportDragDropOp->SetDropAsValid(FText::Format(LOCTEXT("ViewportDragDropOp_CameraMessage", "Project to camera {0}"), FText::FromName(AttachParent->GetFName())));
+						}
+						else if (!MeshComponent->IsVisualizationComponent())
+						{
+							ViewportDragDropOp->SetDropAsValid(FText::Format(LOCTEXT("ViewportDragDropOp_MeshMessage", "Project to mesh {0}"), FText::FromName(MeshComponent->GetFName())));
+						}
+					}
+
+					return FReply::Handled();
+				}
+			}
+		}
+
+		ViewportDragDropOp->SetDropAsInvalid();
+	}
+
+	return SAssetEditorViewport::OnDragOver(MyGeometry, DragDropEvent);
+}
+
+FReply SDisplayClusterConfiguratorSCSEditorViewport::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	TSharedPtr<FDisplayClusterConfiguratorViewportDragDropOp> ViewportDragDropOp = DragDropEvent.GetOperationAs<FDisplayClusterConfiguratorViewportDragDropOp>();
+	if (ViewportDragDropOp.IsValid())
+	{
+		FIntPoint ViewportOrigin, ViewportSize;
+		ViewportClient->GetViewportDimensions(ViewportOrigin, ViewportSize);
+
+		const FVector2D MousePos = MyGeometry.AbsoluteToLocal(DragDropEvent.GetScreenSpacePosition()) * MyGeometry.Scale - ViewportOrigin;
+		HHitProxy* HitProxy = ViewportClient->GetHitProxyWithoutGizmos(MousePos.X, MousePos.Y);
+		if (HActor* ActorProxy = HitProxyCast<HActor>(HitProxy))
+		{
+			if (ActorProxy->Actor && ActorProxy->PrimComponent)
+			{
+				if (const UStaticMeshComponent* MeshComponent = Cast<UStaticMeshComponent>(ActorProxy->PrimComponent))
+				{
+					FString PolicyType;
+					FString ParameterKey;
+					FString ComponentName;
+
+					if (MeshComponent->GetName().EndsWith(FDisplayClusterConfiguratorUtils::GetImplSuffix()))
+					{
+						// If the mesh component is marked with an "_impl" suffix, then it is a child component of a display cluster component.
+						// Check to see if its parent component is a screen component
+						if (UDisplayClusterScreenComponent* ScreenComponent = Cast<UDisplayClusterScreenComponent>(MeshComponent->GetAttachParent()))
+						{
+							PolicyType = DisplayClusterProjectionStrings::projection::Simple;
+							ParameterKey = DisplayClusterProjectionStrings::cfg::simple::Screen;
+							ComponentName = ScreenComponent->GetName();
+						}
+					}
+					else
+					{
+						USceneComponent* AttachParent = MeshComponent->GetAttachParent();
+						const bool bIsCamera = AttachParent && (AttachParent->IsA<UCameraComponent>());
+						
+						if (bIsCamera)
+						{
+							PolicyType = DisplayClusterProjectionStrings::projection::Camera;
+							ParameterKey = DisplayClusterProjectionStrings::cfg::camera::Component;
+							ComponentName = AttachParent->GetName();
+						}
+						else if (!MeshComponent->IsVisualizationComponent())
+						{
+							PolicyType = DisplayClusterProjectionStrings::projection::Mesh;
+							ParameterKey = DisplayClusterProjectionStrings::cfg::mesh::Component;
+							ComponentName = MeshComponent->GetName();
+						}
+					}
+
+					if (!PolicyType.IsEmpty() && !ParameterKey.IsEmpty() && !ComponentName.IsEmpty())
+					{
+						FScopedTransaction Transaction(FText::Format(LOCTEXT("ProjectViewports", "Project {0}|plural(one=Viewport, other=Viewports)"), ViewportDragDropOp->GetDraggedViewports().Num()));
+
+						bool bClusterModified = false;
+						for (TWeakObjectPtr<UDisplayClusterConfigurationViewport> Viewport : ViewportDragDropOp->GetDraggedViewports())
+						{
+							if (Viewport.IsValid())
+							{
+								bClusterModified = true;
+
+								FDisplayClusterConfiguratorProjectionPolicyViewModel PPViewModel(Viewport.Get());
+								PPViewModel.ClearParameters();
+								PPViewModel.SetPolicyType(PolicyType);
+								PPViewModel.SetIsCustom(false);
+								PPViewModel.SetParameterValue(ParameterKey, ComponentName);
+							}
+						}
+
+						if (bClusterModified)
+						{
+							if (TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> DCBlueprintEditor = StaticCastSharedPtr<FDisplayClusterConfiguratorBlueprintEditor>(BlueprintEditorPtr.Pin()))
+							{
+								DCBlueprintEditor->ClusterChanged();
+								DCBlueprintEditor->RefreshDisplayClusterPreviewActor();
+								DCBlueprintEditor->RefreshInspector();
+							}
+
+							return FReply::Handled();
+						}
+						else
+						{
+							Transaction.Cancel();
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return SAssetEditorViewport::OnDrop(MyGeometry, DragDropEvent);
 }
 
 void SDisplayClusterConfiguratorSCSEditorViewport::OnFocusViewportToSelection()

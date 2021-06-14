@@ -3,25 +3,27 @@
 #include "VideoCapturer.h"
 #include "Utils.h"
 
+#include "CommonRenderResources.h"
+#include "GlobalShader.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/Timespan.h"
-
+#include "Modules/ModuleManager.h"
 #include "PixelStreamingFrameBuffer.h"
+#include "PixelStreamingSettings.h"
+#include "ClearQuad.h"
+#include "LatencyTester.h"
+#include "RHIStaticStates.h"
+#include "ScreenRendering.h"
 
 #if PLATFORM_LINUX
 #include "CudaModule.h"
 #endif
 
-//#include "VulkanRHIPrivate.h"
-
-extern TAutoConsoleVariable<int32> CVarPixelStreamingEncoderUseBackBufferSize;
 extern TAutoConsoleVariable<FString> CVarPixelStreamingEncoderTargetSize;
 
 FVideoCapturer::FVideoCapturer()
 {
-	this->CurrentState = webrtc::MediaSourceInterface::SourceState::kInitializing;
-
-	LastTimestampUs = rtc::TimeMicros();
+	CurrentState = webrtc::MediaSourceInterface::SourceState::kInitializing;
 
 	if (GDynamicRHI)
 	{
@@ -29,66 +31,76 @@ FVideoCapturer::FVideoCapturer()
 
 #if PLATFORM_WINDOWS
 		if (RHIName == TEXT("D3D11"))
-		{
 			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForD3D11(GDynamicRHI->RHIGetNativeDevice(), Width, Height, true);
-		}
 		else if (RHIName == TEXT("D3D12"))
-		{
 			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForD3D12(GDynamicRHI->RHIGetNativeDevice(), Width, Height, true);
-		}
 		else
 #endif
 #if WITH_CUDA
-		{
 			VideoEncoderInput = AVEncoder::FVideoEncoderInput::CreateForCUDA(FModuleManager::GetModuleChecked<FCUDAModule>("CUDA").GetCudaContext(), Width, Height, true);
-		}
 #else
-		{
 			unimplemented();
-		}
 #endif
 	}
 }
 
 void FVideoCapturer::OnFrameReady(const FTexture2DRHIRef& FrameBuffer)
 {
-	int64 TimestampUs = rtc::TimeMicros();
+	const int64 TimestampUs = rtc::TimeMicros();
 
-	if(this->CurrentState != webrtc::MediaSourceInterface::SourceState::kLive)
+	if (!AdaptCaptureFrame(TimestampUs, FrameBuffer->GetSizeXY()))
 	{
-		this->CurrentState = webrtc::MediaSourceInterface::SourceState::kLive;
+		return;
 	}
 
-	// Adjust capture resolution to match frame buffer
-	this->SetCaptureResolution(FrameBuffer->GetSizeX(), FrameBuffer->GetSizeY());
+	if (CurrentState != webrtc::MediaSourceInterface::SourceState::kLive)
+		CurrentState = webrtc::MediaSourceInterface::SourceState::kLive;
 
-	/* TODO (M84FIX) this currently does nothing
+	AVEncoder::FVideoEncoderInputFrame* InputFrame = ObtainInputFrame();
+	const int32 FrameId = InputFrame->GetFrameID();
+	InputFrame->SetTimestampUs(TimestampUs);
 
-	FIntPoint Resolution = FrameBuffer->GetSizeXY();
-	if (CVarPixelStreamingEncoderUseBackBufferSize.GetValueOnRenderThread() == 0)
+	// Latency test pre capture
+	if(FLatencyTester::IsTestRunning() && FLatencyTester::GetTestStage() == FLatencyTester::ELatencyTestStage::PRE_CAPTURE)
 	{
-		FString EncoderTargetSize = CVarPixelStreamingEncoderTargetSize.GetValueOnRenderThread();
-		FString TargetWidth, TargetHeight;
-		bool bValidSize = EncoderTargetSize.Split(TEXT("x"), &TargetWidth, &TargetHeight);
-		if (bValidSize)
-		{
-			Resolution.X = FCString::Atoi(*TargetWidth);
-			Resolution.Y = FCString::Atoi(*TargetHeight);
-		}
-		else
-		{
-			UE_LOG(PixelStreamer, Error, TEXT("CVarPixelStreamingEncoderTargetSize is not in a valid format: %s. It should be e.g: \"1920x1080\""), *EncoderTargetSize);
-			CVarPixelStreamingEncoderTargetSize->Set(*FString::Printf(TEXT("%dx%d"), Resolution.X, Resolution.Y));
-		}
+		FLatencyTester::RecordPreCaptureTime(FrameId);
 	}
 
-	*/
+	// Actual texture copy (i.e the actual "capture")
+	CopyTexture(FrameBuffer, BackBuffers[InputFrame]);
 
-	// TODO (M84FIX) it should be possible to limit the number of allowed back buffers here to save texture memory
+	// Latency test post capture
+	if(FLatencyTester::IsTestRunning() && FLatencyTester::GetTestStage() == FLatencyTester::ELatencyTestStage::POST_CAPTURE)
+	{
+		// Render a fully red frame for latency testing purposes
+		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+		FTexture2DRHIRef& DestinationTexture = BackBuffers[InputFrame];
+		FRHIRenderPassInfo RPInfo(DestinationTexture, ERenderTargetActions::Load_Store);
+		RHICmdList.BeginRenderPass(RPInfo, TEXT("ClearRT"));
+        DrawClearQuad(RHICmdList, FLinearColor::Red);
+        RHICmdList.EndRenderPass();
+		FLatencyTester::RecordPostCaptureTime(FrameId);
+	}
 
+	UE_LOG(PixelStreamer, VeryVerbose, TEXT("(%d) captured video %lld"), RtcTimeMs(), TimestampUs);
+
+	// pass to webrtc which will pass it to the correct encoder
+	// TODO couldnt we pass directly to PixelStreamingVideoEncoder here and have it output to the webrtc broadcaster or something?
+	rtc::scoped_refptr<FPixelStreamingFrameBuffer> Buffer = new rtc::RefCountedObject<FPixelStreamingFrameBuffer>(BackBuffers[InputFrame], InputFrame, VideoEncoderInput);
+	webrtc::VideoFrame Frame = webrtc::VideoFrame::Builder().
+		set_video_frame_buffer(Buffer).
+		set_timestamp_us(TimestampUs).
+		set_rotation(webrtc::VideoRotation::kVideoRotation_0).
+		set_id(FrameId).
+		build();
+	OnFrame(Frame);
+
+	InputFrame->Release();
+}
+
+AVEncoder::FVideoEncoderInputFrame* FVideoCapturer::ObtainInputFrame()
+{
 	AVEncoder::FVideoEncoderInputFrame* InputFrame = VideoEncoderInput->ObtainInputFrame();
-	InputFrame->PTS = FTimespan::FromSeconds(FPlatformTime::Seconds()).GetTicks();
-	auto FrameId = InputFrame->GetFrameID();
 
 	if (!BackBuffers.Contains(InputFrame))
 	{
@@ -97,32 +109,32 @@ void FVideoCapturer::OnFrameReady(const FTexture2DRHIRef& FrameBuffer)
 		if (RHIName == TEXT("D3D11"))
 		{
 			FRHIResourceCreateInfo CreateInfo(TEXT("VideoCapturerBackBuffer"));
-			auto Texture = GDynamicRHI->RHICreateTexture2D(Width, Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
+			FTexture2DRHIRef Texture = GDynamicRHI->RHICreateTexture2D(Width, Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
 			InputFrame->SetTexture((ID3D11Texture2D*)Texture->GetNativeResource(), [&, InputFrame](ID3D11Texture2D* NativeTexture) { BackBuffers.Remove(InputFrame); });
 			BackBuffers.Add(InputFrame, Texture);
 		}
 		else if (RHIName == TEXT("D3D12"))
 		{
 			FRHIResourceCreateInfo CreateInfo(TEXT("VideoCapturerBackBuffer"));
-			auto Texture = GDynamicRHI->RHICreateTexture2D(Width, Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
+			FTexture2DRHIRef Texture = GDynamicRHI->RHICreateTexture2D(Width, Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
 			InputFrame->SetTexture((ID3D12Resource*)Texture->GetNativeResource(), [&, InputFrame](ID3D12Resource* NativeTexture) { BackBuffers.Remove(InputFrame); });
 			BackBuffers.Add(InputFrame, Texture);
 		}
 #endif // PLATFORM_WINDOWS
 #if WITH_CUDA
 #if PLATFORM_WINDOWS
-		else if(RHIName == TEXT("Vulkan"))
+		else if (RHIName == TEXT("Vulkan"))
 #endif // PLATFORM_WINDOWS
 		{
 			FRHIResourceCreateInfo CreateInfo(TEXT("VideoCapturerBackBuffer"));
 
 			// TODO (M84FIX) Replace with CUDA texture
 			// Create a texture that can be exposed to external memory
-			auto Texture = GDynamicRHI->RHICreateTexture2D(Width, Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
+			FTexture2DRHIRef Texture = GDynamicRHI->RHICreateTexture2D(Width, Height, EPixelFormat::PF_B8G8R8A8, 1, 1, TexCreate_Shared | TexCreate_RenderTargetable | TexCreate_UAV, ERHIAccess::CopyDest, CreateInfo);
 
-			auto VulkanTexture = static_cast<FVulkanTexture2D*>(Texture.GetReference());
+			FVulkanTexture2D* VulkanTexture = static_cast<FVulkanTexture2D*>(Texture.GetReference());
 
-			auto device = static_cast<FVulkanDynamicRHI*>(GDynamicRHI)->GetDevice()->GetInstanceHandle();
+			FVulkanDynamicRHI* device = static_cast<FVulkanDynamicRHI*>(GDynamicRHI)->GetDevice()->GetInstanceHandle();
 
 			// Get the CUarray to that textures memory making sure the clear it when done
 			int fd;
@@ -219,103 +231,115 @@ void FVideoCapturer::OnFrameReady(const FTexture2DRHIRef& FrameBuffer)
 		UE_LOG(PixelStreamer, Log, TEXT("%d backbuffers currently allocated"), BackBuffers.Num());
 	}
 
-	CopyTexture(FrameBuffer, BackBuffers[InputFrame]);
-
-	rtc::scoped_refptr<FPixelStreamingFrameBuffer> Buffer = new rtc::RefCountedObject<FPixelStreamingFrameBuffer>(InputFrame, VideoEncoderInput);
-
-	webrtc::VideoFrame Frame = webrtc::VideoFrame::Builder().
-		set_video_frame_buffer(Buffer).
-		set_timestamp_us(TimestampUs).
-		set_rotation(webrtc::VideoRotation::kVideoRotation_0).
-		set_id(FrameId).
-		build();
-
-	UE_LOG(PixelStreamer, VeryVerbose, TEXT("(%d) captured video %lld"), RtcTimeMs(), TimestampUs);
-	OnFrame(Frame);
-	InputFrame->Release();
+	return InputFrame;
 }
 
-
-void FVideoCapturer::CopyTexture(const FTexture2DRHIRef& SourceTexture, FTexture2DRHIRef& DestinationTexture)
+void FVideoCapturer::CopyTexture(const FTexture2DRHIRef& SourceTexture, FTexture2DRHIRef& DestinationTexture) const
 {
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 
-	if (SourceTexture->GetFormat() == DestinationTexture->GetFormat() &&
-		SourceTexture->GetSizeXY() == DestinationTexture->GetSizeXY())
+	IRendererModule* RendererModule = &FModuleManager::GetModuleChecked<IRendererModule>("Renderer");
+
+	// #todo-renderpasses there's no explicit resolve here? Do we need one?
+	FRHIRenderPassInfo RPInfo(DestinationTexture, ERenderTargetActions::Load_Store);
+
+	RHICmdList.BeginRenderPass(RPInfo, TEXT("CopyBackbuffer"));
+
 	{
-		RHICmdList.CopyToResolveTarget(SourceTexture, DestinationTexture, FResolveParams{});
-	}
-	else // Texture format mismatch, use a shader to do the copy.
-	{
-		IRendererModule* RendererModule = &FModuleManager::GetModuleChecked<IRendererModule>("Renderer");
+		RHICmdList.SetViewport(0, 0, 0.0f, DestinationTexture->GetSizeX(), DestinationTexture->GetSizeY(), 1.0f);
 
-		// #todo-renderpasses there's no explicit resolve here? Do we need one?
-		FRHIRenderPassInfo RPInfo(DestinationTexture, ERenderTargetActions::Load_Store);
+		FGraphicsPipelineStateInitializer GraphicsPSOInit;
+		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+		GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+		GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 
-		RHICmdList.BeginRenderPass(RPInfo, TEXT("CopyBackbuffer"));
+		// New engine version...
+		FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+		TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
+		TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
 
+		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
+		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+
+		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
+
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+
+		if (DestinationTexture->GetSizeX() != SourceTexture->GetSizeX() || DestinationTexture->GetSizeY() != SourceTexture->GetSizeY())
 		{
-			RHICmdList.SetViewport(0, 0, 0.0f, DestinationTexture->GetSizeX(), DestinationTexture->GetSizeY(), 1.0f);
-
-			FGraphicsPipelineStateInitializer GraphicsPSOInit;
-			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-			GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-			GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
-			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-
-			// New engine version...
-			FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-			TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
-			TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
-
-			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-
-			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-
-			if (DestinationTexture->GetSizeX() != SourceTexture->GetSizeX() || DestinationTexture->GetSizeY() != SourceTexture->GetSizeY())
-			{
-				PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Bilinear>::GetRHI(), SourceTexture);
-			}
-			else
-			{
-				PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), SourceTexture);
-			}
-
-			RendererModule->DrawRectangle(
-				RHICmdList,
-				0, 0,									// Dest X, Y
-				DestinationTexture->GetSizeX(),			// Dest Width
-				DestinationTexture->GetSizeY(),			// Dest Height
-				0, 0,									// Source U, V
-				1, 1,									// Source USize, VSize
-				DestinationTexture->GetSizeXY(),		// Target buffer size
-				FIntPoint(1, 1),						// Source texture size
-				VertexShader,
-				EDRF_Default);
+			PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Bilinear>::GetRHI(), SourceTexture);
+		}
+		else
+		{
+			PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), SourceTexture);
 		}
 
-		RHICmdList.EndRenderPass();
+		RendererModule->DrawRectangle(
+			RHICmdList,
+			0, 0,									// Dest X, Y
+			DestinationTexture->GetSizeX(),			// Dest Width
+			DestinationTexture->GetSizeY(),			// Dest Height
+			0, 0,									// Source U, V
+			1, 1,									// Source USize, VSize
+			DestinationTexture->GetSizeXY(),		// Target buffer size
+			FIntPoint(1, 1),						// Source texture size
+			VertexShader,
+			EDRF_Default);
 	}
 
+	RHICmdList.EndRenderPass();
 }
 
-bool FVideoCapturer::SetCaptureResolution(int NewCaptureWidth, int NewCaptureHeight)
+bool FVideoCapturer::AdaptCaptureFrame(const int64 TimestampUs, FIntPoint Resolution)
 {
-	// Check is requested resolution is same as current resolution, if so, do nothing.
-	if(this->Width == NewCaptureWidth && this->Height == NewCaptureHeight)
+	int outWidth, outHeight, cropWidth, cropHeight, cropX, cropY;
+	if (!AdaptFrame(Resolution.X, Resolution.Y, TimestampUs, &outWidth, &outHeight, &cropWidth, &cropHeight, &cropX, &cropY))
 	{
 		return false;
 	}
 
+	// Set resolution of encoder using user-defined params (i.e. not the back buffer).
+	if (PixelStreamingSettings::CVarPixelStreamingUseBackBufferCaptureSize.GetValueOnRenderThread() == 0)
+	{
+		// set resolution based on cvars
+		FString CaptureSize = PixelStreamingSettings::CVarPixelStreamingCaptureSize.GetValueOnRenderThread();
+		FString TargetWidth, TargetHeight;
+		bool bValidSize = CaptureSize.Split(TEXT("x"), &TargetWidth, &TargetHeight);
+		if (bValidSize)
+		{
+			Resolution.X = FCString::Atoi(*TargetWidth);
+			Resolution.Y = FCString::Atoi(*TargetHeight);
+		}
+		else
+		{
+			UE_LOG(PixelStreamer, Error, TEXT("CVarPixelStreamingCaptureSize is not in a valid format: %s. It should be e.g: \"1920x1080\""), *CaptureSize);
+			PixelStreamingSettings::CVarPixelStreamingCaptureSize->Set(*FString::Printf(TEXT("%dx%d"), Resolution.X, Resolution.Y));
+		}
+	}
+	else
+	{
+		Resolution.X = outWidth;
+		Resolution.Y = outHeight;
+	}
+
+	SetCaptureResolution(Resolution.X, Resolution.Y);
+
+	return true;
+}
+
+void FVideoCapturer::SetCaptureResolution(int NewCaptureWidth, int NewCaptureHeight)
+{
+	// Check is requested resolution is same as current resolution, if so, do nothing.
+	if (Width == NewCaptureWidth && Height == NewCaptureHeight)
+		return;
+
 	verifyf(NewCaptureWidth > 0, TEXT("Capture width must be greater than zero."));
 	verifyf(NewCaptureHeight  > 0, TEXT("Capture height must be greater than zero."));
-	this->Width = NewCaptureWidth;
-	this->Height = NewCaptureHeight;
-	this->VideoEncoderInput->SetResolution(NewCaptureWidth, NewCaptureHeight);
-	this->VideoEncoderInput->Flush();
-	return true;
+
+	Width = NewCaptureWidth;
+	Height = NewCaptureHeight;
+	VideoEncoderInput->SetResolution(Width, Height);
+	VideoEncoderInput->Flush();
 }

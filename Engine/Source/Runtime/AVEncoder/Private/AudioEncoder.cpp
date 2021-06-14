@@ -1,4 +1,7 @@
+// Copyright Epic Games, Inc. All Rights Reserved
+
 #include "AudioEncoder.h"
+#include "Misc/ScopeLock.h"
 
 namespace AVEncoder
 {

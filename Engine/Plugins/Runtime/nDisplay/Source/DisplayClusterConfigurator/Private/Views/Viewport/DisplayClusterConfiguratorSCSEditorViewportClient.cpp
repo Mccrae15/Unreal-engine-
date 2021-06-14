@@ -7,6 +7,7 @@
 #include "Settings/DisplayClusterConfiguratorSettings.h"
 #include "DisplayClusterConfigurationTypes.h"
 #include "DisplayClusterConfigurationStrings.h"
+#include "DisplayClusterConfiguratorPropertyUtils.h"
 
 #include "DisplayClusterRootActor.h"
 #include "Components/DisplayClusterPreviewComponent.h"
@@ -41,7 +42,6 @@ FDisplayClusterConfiguratorSCSEditorViewportClient::FDisplayClusterConfiguratorS
 {
 	WidgetMode = FWidget::WM_Translate;
 	WidgetCoordSystem = COORD_Local;
-	EngineShowFlags.DisableAdvancedFeatures();
 
 	check(Widget);
 	Widget->SetSnapEnabled(true);
@@ -51,12 +51,17 @@ FDisplayClusterConfiguratorSCSEditorViewportClient::FDisplayClusterConfiguratorS
 
 	DefaultSettings = UAssetViewerSettings::Get();
 	check(DefaultSettings);
+
+	const UDisplayClusterConfiguratorEditorSettings* DisplayClusterSettings = GetDefault<UDisplayClusterConfiguratorEditorSettings>();
 	
 	ShowWidget(true);
 
 	SetViewMode(VMI_Lit);
 
 	SyncEditorSettings();
+
+	EngineShowFlags.AntiAliasing = DisplayClusterSettings->bEditorEnableAA;
+	EngineShowFlags.EyeAdaptation = false;
 	
 	//OverrideNearClipPlane(1.0f);
 	bUsingOrbitCamera = true;
@@ -105,11 +110,21 @@ FDisplayClusterConfiguratorSCSEditorViewportClient::FDisplayClusterConfiguratorS
 	PostProcessComponent->Settings = Profile.PostProcessingSettings;
 	PostProcessComponent->bUnbound = true;
 	PreviewScene->AddComponent(PostProcessComponent, Transform);
-
-	const UDisplayClusterConfiguratorEditorSettings* DisplayClusterSettings = GetDefault<UDisplayClusterConfiguratorEditorSettings>();
 	
 	EditorFloorComp = NewObject<UStaticMeshComponent>(GetTransientPackage(),
 		MakeUniqueObjectName(GetTransientPackage(), UStaticMeshComponent::StaticClass(), TEXT("EditorFloorComp")));
+
+#if 0
+
+#if WITH_EDITOR
+	//@todo: need decision - preview with grid or without?
+	// Hide FloorGrid in preview
+	EditorFloorComp->SetIsVisualizationComponent(true);
+	EditorFloorComp->bHiddenInSceneCapture = true;
+	EditorFloorComp->bHiddenInGame = true;
+#endif /*WITH_EDITOR*/
+
+#endif
 
 	UStaticMesh* FloorMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/nDisplay/Meshes/sm_nDisplayGrid.sm_nDisplayGrid"), nullptr, LOAD_None, nullptr);
 	if (ensure(FloorMesh))
@@ -824,6 +839,43 @@ void FDisplayClusterConfiguratorSCSEditorViewportClient::SetCameraSpeedSetting(i
 	GetMutableDefault<UEditorPerProjectUserSettings>()->SCSViewportCameraSpeed = SpeedSetting;
 }
 
+HHitProxy* FDisplayClusterConfiguratorSCSEditorViewportClient::GetHitProxyWithoutGizmos(int32 X, int32 Y)
+{
+	HHitProxy* HitProxy = Viewport->GetHitProxy(X, Y);
+
+	if (!HitProxy)
+	{
+		return nullptr;
+	}
+
+	if (HitProxy->IsA(HWidgetAxis::StaticGetType()))
+	{
+		const bool bOldModeWidgets = EngineShowFlags.ModeWidgets;
+
+		EngineShowFlags.SetModeWidgets(false);
+		bool bWasWidgetDragging = Widget->IsDragging();
+		Widget->SetDragging(false);
+
+		// Invalidate the hit proxy map so it will be rendered out again when GetHitProxy
+		// is called
+		Viewport->InvalidateHitProxy();
+
+		// This will actually re-render the viewport's hit proxies!
+		HitProxy = Viewport->GetHitProxy(X, Y);
+
+		// Undo the evil
+		EngineShowFlags.SetModeWidgets(bOldModeWidgets);
+
+		Widget->SetDragging(bWasWidgetDragging);
+
+		// Invalidate the hit proxy map again so that it'll be refreshed with the original
+		// scene contents if we need it again later.
+		Viewport->InvalidateHitProxy();
+	}
+
+	return HitProxy;
+}
+
 void FDisplayClusterConfiguratorSCSEditorViewportClient::InvalidatePreview(bool bResetCamera)
 {
 	// Ensure that the editor is valid before continuing
@@ -832,13 +884,8 @@ void FDisplayClusterConfiguratorSCSEditorViewportClient::InvalidatePreview(bool 
 		return;
 	}
 
-	UBlueprint* Blueprint = BlueprintEditorPtr.Pin()->GetBlueprintObj();
-	check(Blueprint);
-
-	const bool bIsPreviewActorValid = GetPreviewActor() != nullptr;
-
 	// Create or update the Blueprint actor instance in the preview scene
-	BlueprintEditorPtr.Pin()->UpdatePreviewActor(Blueprint, !bIsPreviewActorValid);
+	BlueprintEditorPtr.Pin()->RefreshDisplayClusterPreviewActor();
 
 	Invalidate();
 	RefreshPreviewBounds();
@@ -983,6 +1030,22 @@ bool FDisplayClusterConfiguratorSCSEditorViewportClient::GetShowOrigin() const
 	return Settings->bEditorShowWorldOrigin;
 }
 
+bool FDisplayClusterConfiguratorSCSEditorViewportClient::GetEnableAA() const
+{
+	const UDisplayClusterConfiguratorEditorSettings* Settings = GetDefault<UDisplayClusterConfiguratorEditorSettings>();
+	return Settings->bEditorEnableAA;
+}
+
+void FDisplayClusterConfiguratorSCSEditorViewportClient::ToggleEnableAA()
+{
+	UDisplayClusterConfiguratorEditorSettings* Settings = GetMutableDefault<UDisplayClusterConfiguratorEditorSettings>();
+	Settings->bEditorEnableAA = !Settings->bEditorEnableAA;
+	EngineShowFlags.AntiAliasing = Settings->bEditorEnableAA;
+	
+	Settings->PostEditChange();
+	Settings->SaveConfig();
+}
+
 void FDisplayClusterConfiguratorSCSEditorViewportClient::ToggleShowPreview()
 {
 	check(BlueprintEditorPtr.IsValid());
@@ -1042,6 +1105,77 @@ void FDisplayClusterConfiguratorSCSEditorViewportClient::ToggleShowViewportNames
 bool FDisplayClusterConfiguratorSCSEditorViewportClient::CanToggleViewportNames() const
 {
 	return GetShowPreview();
+}
+
+TOptional<float> FDisplayClusterConfiguratorSCSEditorViewportClient::GetPreviewResolutionScale() const
+{
+	const TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> BlueprintEditor = BlueprintEditorPtr.Pin();
+	if (BlueprintEditor.IsValid())
+	{
+		if (ADisplayClusterRootActor* CDO = BlueprintEditor->GetDefaultRootActor())
+		{
+			return CDO->PreviewRenderTargetRatioMult;
+		}
+	}
+
+	return TOptional<float>();
+}
+
+void FDisplayClusterConfiguratorSCSEditorViewportClient::SetPreviewResolutionScale(float InScale)
+{
+	const TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> BlueprintEditor = BlueprintEditorPtr.Pin();
+	if (BlueprintEditor.IsValid())
+	{
+		if (ADisplayClusterRootActor* CDO = BlueprintEditor->GetDefaultRootActor())
+		{
+			DisplayClusterConfiguratorPropertyUtils::SetPropertyHandleValue(
+				CDO, GET_MEMBER_NAME_CHECKED(ADisplayClusterRootActor, PreviewRenderTargetRatioMult), InScale);
+		}
+	}
+}
+
+TOptional<float> FDisplayClusterConfiguratorSCSEditorViewportClient::GetXformGizmoScale() const
+{
+	const UDisplayClusterConfiguratorEditorSettings* Settings = GetDefault<UDisplayClusterConfiguratorEditorSettings>();
+	return Settings->VisXformScale;
+}
+
+void FDisplayClusterConfiguratorSCSEditorViewportClient::SetXformGizmoScale(float InScale)
+{
+	UDisplayClusterConfiguratorEditorSettings* Settings = GetMutableDefault<UDisplayClusterConfiguratorEditorSettings>();
+	Settings->VisXformScale = FMath::Max(0.0f, InScale);
+
+	Settings->PostEditChange();
+	Settings->SaveConfig();
+
+	TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> BlueprintEditor = BlueprintEditorPtr.Pin();
+	if (BlueprintEditor.IsValid())
+	{
+		BlueprintEditor->UpdateXformGizmos();
+		Invalidate();
+	}
+}
+
+bool FDisplayClusterConfiguratorSCSEditorViewportClient::IsShowingXformGizmos() const
+{
+	const UDisplayClusterConfiguratorEditorSettings* Settings = GetDefault<UDisplayClusterConfiguratorEditorSettings>();
+	return Settings->bShowVisXforms;
+}
+
+void FDisplayClusterConfiguratorSCSEditorViewportClient::ToggleShowXformGizmos()
+{
+	UDisplayClusterConfiguratorEditorSettings* Settings = GetMutableDefault<UDisplayClusterConfiguratorEditorSettings>();
+	Settings->bShowVisXforms = !Settings->bShowVisXforms;
+
+	Settings->PostEditChange();
+	Settings->SaveConfig();
+
+	TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> BlueprintEditor = BlueprintEditorPtr.Pin();
+	if (BlueprintEditor.IsValid())
+	{
+		BlueprintEditor->UpdateXformGizmos();
+		Invalidate();
+	}
 }
 
 void FDisplayClusterConfiguratorSCSEditorViewportClient::BeginTransaction(const FText& Description)

@@ -154,7 +154,7 @@ void UDMXEntityFixtureType::SetModesFromDMXImport(UDMXImport* DMXImportAsset)
 			}
 
 			// Compute mode channel span from functions' addresses and sizes
-			UpdateModeChannelProperties(Mode);
+			UpdateChannelSpan(Mode);
 		}
 	}
 }
@@ -463,7 +463,29 @@ void UDMXEntityFixtureType::PostEditChangeProperty(FPropertyChangedEvent& Proper
 			{
 				Mode.FixtureMatrixConfig.CellAttributes.Reset();
 			}
-			UpdateModeChannelProperties(Mode);
+			UpdateChannelSpan(Mode);
+		}
+	}
+
+	// Update the cache of the library's patches if relevant data changed
+	const FProperty* Property = PropertyChangedEvent.Property;
+	const UScriptStruct* ModeStruct = FDMXFixtureMode::StaticStruct();
+	const UScriptStruct* FunctionStruct = FDMXFixtureFunction::StaticStruct();
+	const UScriptStruct* FixtureMatrixStruct = FDMXFixtureMatrix::StaticStruct();
+	const UStruct* PropertyOwnerStruct = Property ? Property->GetOwnerStruct() : nullptr;
+
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UDMXEntityFixtureType, bFixtureMatrixEnabled) ||
+		PropertyName == GET_MEMBER_NAME_CHECKED(UDMXEntityFixtureType, Modes) ||
+		PropertyName == GET_MEMBER_NAME_CHECKED(UDMXEntityFixtureType, InputModulators) ||
+		(PropertyOwnerStruct == ModeStruct) ||
+		(PropertyOwnerStruct == FunctionStruct))
+	{
+		if (UDMXLibrary* Library = ParentLibrary.Get())
+		{
+			for (UDMXEntityFixturePatch* FixturePatch : Library->GetEntitiesTypeCast<UDMXEntityFixturePatch>())
+			{
+				FixturePatch->RebuildCache();
+			}
 		}
 	}
 }
@@ -503,7 +525,16 @@ void UDMXEntityFixtureType::PostEditChangeChainProperty(FPropertyChangedChainEve
 		const int32 ModeIndex = PropertyChangedEvent.GetArrayIndex(GET_MEMBER_NAME_CHECKED(UDMXEntityFixtureType, Modes).ToString());
 		if (ModeIndex != INDEX_NONE)
 		{
-			UpdateModeChannelProperties(Modes[ModeIndex]);
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(FDMXFixtureMatrix, XCells))
+			{
+				UpdateYCellsFromXCells(Modes[ModeIndex]);
+			}
+			else if (PropertyName == GET_MEMBER_NAME_CHECKED(FDMXFixtureMatrix, YCells))
+			{
+				UpdateXCellsFromYCells(Modes[ModeIndex]);
+			}
+
+			UpdateChannelSpan(Modes[ModeIndex]);
 		}
 		else
 		{
@@ -516,7 +547,16 @@ void UDMXEntityFixtureType::PostEditChangeChainProperty(FPropertyChangedChainEve
 			{
 				for (FDMXFixtureMode& Mode : Modes)
 				{
-					UpdateModeChannelProperties(Mode);
+					if (PropertyName == GET_MEMBER_NAME_CHECKED(FDMXFixtureMatrix, XCells))
+					{
+						UpdateYCellsFromXCells(Mode);
+					}
+					else if (PropertyName == GET_MEMBER_NAME_CHECKED(FDMXFixtureMatrix, YCells))
+					{
+						UpdateXCellsFromYCells(Mode);
+					}
+
+					UpdateChannelSpan(Mode);
 				}
 			}
 		}
@@ -589,7 +629,7 @@ void UDMXEntityFixtureType::PostEditChangeChainProperty(FPropertyChangedChainEve
 		{
 			ParentLibrary->ForEachEntityOfType<UDMXEntityFixturePatch>([this](UDMXEntityFixturePatch* Patch)
 			{
-				if (Patch->ParentFixtureTypeTemplate == this)
+				if (Patch->GetFixtureType() == this)
 				{
 					Patch->ValidateActiveMode();					
 				}
@@ -604,7 +644,9 @@ void UDMXEntityFixtureType::PostEditUndo()
 {
 	for (FDMXFixtureMode& Mode : Modes)
 	{
-		UpdateModeChannelProperties(Mode);
+		UpdateYCellsFromXCells(Mode);
+
+		UpdateChannelSpan(Mode);
 	}
 
 	Super::PostEditUndo();
@@ -613,6 +655,14 @@ void UDMXEntityFixtureType::PostEditUndo()
 
 #if WITH_EDITOR
 void UDMXEntityFixtureType::UpdateModeChannelProperties(FDMXFixtureMode& Mode)
+{
+	// DEPRECATED 4.27
+	UpdateChannelSpan(Mode);
+}
+#endif // WITH_EDITOR
+
+#if WITH_EDITOR
+void UDMXEntityFixtureType::UpdateChannelSpan(FDMXFixtureMode& Mode)
 {
 	if (Mode.bAutoChannelSpan)
 	{
@@ -623,7 +673,6 @@ void UDMXEntityFixtureType::UpdateModeChannelProperties(FDMXFixtureMode& Mode)
 		}
 		else
 		{
-
 			int32 ChannelSpan = 0;
 
 			// Update span from common Functions
@@ -675,6 +724,26 @@ void UDMXEntityFixtureType::UpdateModeChannelProperties(FDMXFixtureMode& Mode)
 		// Notify DataType changes
 		DataTypeChangeDelegate.Broadcast(this, Mode);
 	}
+}
+#endif // WITH_EDITOR
+
+#if WITH_EDITOR
+void UDMXEntityFixtureType::UpdateYCellsFromXCells(FDMXFixtureMode& Mode)
+{
+	const int32 MaxNumCells = 512;
+
+	Mode.FixtureMatrixConfig.XCells = FMath::Clamp(Mode.FixtureMatrixConfig.XCells, 1, MaxNumCells);
+	Mode.FixtureMatrixConfig.YCells = FMath::Clamp(Mode.FixtureMatrixConfig.YCells, 1, MaxNumCells - Mode.FixtureMatrixConfig.XCells + 1);
+}
+#endif // WITH_EDITOR
+
+#if WITH_EDITOR
+void UDMXEntityFixtureType::UpdateXCellsFromYCells(FDMXFixtureMode& Mode)
+{
+	const int32 MaxNumCells = 512;
+
+	Mode.FixtureMatrixConfig.YCells = FMath::Clamp(Mode.FixtureMatrixConfig.YCells, 1, MaxNumCells);
+	Mode.FixtureMatrixConfig.XCells = FMath::Clamp(Mode.FixtureMatrixConfig.XCells, 1, MaxNumCells - Mode.FixtureMatrixConfig.YCells + 1);
 }
 #endif // WITH_EDITOR
 

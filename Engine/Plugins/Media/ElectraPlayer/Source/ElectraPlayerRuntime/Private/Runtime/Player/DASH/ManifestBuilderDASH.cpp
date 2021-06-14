@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PlayerCore.h"
+#include "ElectraPlayerPrivate.h"
 #include "Player/Manifest.h"
 #include "Player/PlaybackTimeline.h"
 
@@ -9,6 +10,7 @@
 #include "Player/PlayerEntityCache.h"
 #include "Player/DASH/OptionKeynamesDASH.h"
 #include "Player/AdaptivePlayerOptionKeynames.h"
+#include "Player/DASH/PlayerEventDASH.h"
 
 #include "ManifestBuilderDASH.h"
 #include "ManifestParserDASH.h"
@@ -22,7 +24,9 @@
 #include "Utilities/URLParser.h"
 #include "Utilities/Utilities.h"
 #include "Utilities/TimeUtilities.h"
+#include "Utilities/ISO639-Map.h"
 
+#include "Player/DRM/DRMManager.h"
 
 #define ERRCODE_DASH_MPD_BUILDER_INTERNAL							1
 #define ERRCODE_DASH_MPD_BUILDER_UNSUPPORTED_PROFILE				100
@@ -39,6 +43,9 @@
 #define ERRCODE_DASH_MPD_BUILDER_MEDIAPRESENTATIONDURATION_NEEDED	202
 #define ERRCODE_DASH_MPD_BUILDER_BAD_PERIOD_DURATION				203
 
+
+DECLARE_CYCLE_STAT(TEXT("FManifestDASHInternal::Build"), STAT_ElectraPlayer_FManifestDASHInternal_Build, STATGROUP_ElectraPlayer);
+DECLARE_CYCLE_STAT(TEXT("FManifestDASHInternal::XLink"), STAT_ElectraPlayer_FManifestDASHInternal_XLink, STATGROUP_ElectraPlayer);
 
 
 namespace Electra
@@ -86,7 +93,27 @@ namespace
 		TEXT("urn:mpeg:dash:urlparam:2016"),
 	};
 
+    const TCHAR* const Scheme_urn_mpeg_dash_mp4protection_2011 = TEXT("urn:mpeg:dash:mp4protection:2011");
 }
+
+
+namespace DASHAttributeHelpers
+{
+	const IDashMPDElement::FXmlAttribute* GetAttribute(const TSharedPtrTS<FDashMPD_DescriptorType>& InDescriptor, const TCHAR* InAttribute, const TCHAR* InOptionalNamespace)
+	{
+		const TArray<IDashMPDElement::FXmlAttribute>& Attributes = InDescriptor->GetOtherAttributes();
+		FString NameWithNS = InOptionalNamespace ? FString::Printf(TEXT("%s:%s"), InOptionalNamespace, InAttribute) : FString(InAttribute);
+		for(int32 i=0; i<Attributes.Num(); ++i)
+		{
+			if (Attributes[i].GetName().Equals(NameWithNS) || Attributes[i].GetName().Equals(InAttribute))
+			{
+				return &Attributes[i];
+			}
+		}
+		return nullptr;
+	}
+};
+
 
 namespace DASHUrlHelpers
 {
@@ -689,7 +716,7 @@ public:
 	FManifestBuilderDASH(IPlayerSessionServices* InPlayerSessionServices);
 	virtual ~FManifestBuilderDASH() = default;
 	
-	virtual FErrorDetail BuildFromMPD(TSharedPtrTS<FManifestDASHInternal>& OutMPD, TCHAR* InOutMPDXML, const FString& EffectiveURL, const FTimeValue& FetchTime, const FString& ETag) override;
+	virtual FErrorDetail BuildFromMPD(TSharedPtrTS<FManifestDASHInternal>& OutMPD, TCHAR* InOutMPDXML, const FString& EffectiveURL, const FString& ETag) override;
 
 private:
 	ELECTRA_IMPL_DEFAULT_ERROR_METHODS(DASHMPDBuilder);
@@ -711,7 +738,7 @@ FManifestBuilderDASH::FManifestBuilderDASH(IPlayerSessionServices* InPlayerSessi
 {
 }
 
-FErrorDetail FManifestBuilderDASH::BuildFromMPD(TSharedPtrTS<FManifestDASHInternal>& OutMPD, TCHAR* InOutMPDXML, const FString& EffectiveURL, const FTimeValue& FetchTime, const FString& ETag)
+FErrorDetail FManifestBuilderDASH::BuildFromMPD(TSharedPtrTS<FManifestDASHInternal>& OutMPD, TCHAR* InOutMPDXML, const FString& EffectiveURL, const FString& ETag)
 {
 	TSharedPtrTS<FDashMPD_MPDType> NewMPD;
 	TArray<TWeakPtrTS<IDashMPDElement>> XLinkElements;
@@ -728,7 +755,6 @@ FErrorDetail FManifestBuilderDASH::BuildFromMPD(TSharedPtrTS<FManifestDASHIntern
 	}
 	NewMPD = RootEntities.MPDs[0];
 	NewMPD->SetDocumentURL(EffectiveURL);
-	NewMPD->SetFetchTime(FetchTime);
 	NewMPD->SetETag(ETag);
 
 	// Check if this MPD uses a profile we can handle. (If our array is empty we claim to handle anything)
@@ -1005,6 +1031,9 @@ FErrorDetail FManifestDASHInternal::Build(IPlayerSessionServices* InPlayerSessio
 
 FErrorDetail FManifestDASHInternal::BuildAfterInitialRemoteElementDownload()
 {
+	SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_FManifestDASHInternal_Build);
+	CSV_SCOPED_TIMING_STAT(ElectraPlayer, FManifestDASHInternal_Build);
+
 	FErrorDetail Error;
 
 	bool bWarnedPresentationDuration = false;
@@ -1177,6 +1206,13 @@ FErrorDetail FManifestDASHInternal::BuildAfterInitialRemoteElementDownload()
 		Periods.Emplace(MoveTemp(p));
 	}
 
+	// As per ISO/IEC 23009-1:2019/DAM 1 "Change 2: Event Stream and Timed Metadata Processing" Section A.11.11 Detailed processing
+	// all events from MPD EventStreams are to be collected right now.
+	for(int32 i=0; i<Periods.Num(); ++i)
+	{
+		SendEventsFromAllPeriodEventStreams(Periods[i]);
+	}
+
 	return Error;
 }
 
@@ -1192,6 +1228,10 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 		{
 			return;
 		}
+
+		SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_FManifestDASHInternal_Build);
+		CSV_SCOPED_TIMING_STAT(ElectraPlayer, FManifestDASHInternal_Build);
+
 		Period->AdaptationSets.Empty();
 		const TArray<TSharedPtrTS<FDashMPD_AdaptationSetType>>& MPDAdaptationSets = MPDPeriod->GetAdaptationSets();
 		for(int32 nAdapt=0, nAdaptMax=MPDAdaptationSets.Num(); nAdapt<nAdaptMax; ++nAdapt)
@@ -1204,10 +1244,10 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 			// Keeping the index helps locate the adaptation set in the enclosing period's adaptation set array.
 			// Even with MPD updates the adaptation sets are not permitted to change so in theory the index will
 			// be valid at all times.
-			AdaptationSet->IndexOfSelf = nAdapt;
+			AdaptationSet->UniqueSequentialSetIndex = nAdapt;
 			AdaptationSet->AdaptationSet = MPDAdaptationSet;
 			AdaptationSet->PAR = MPDAdaptationSet->GetPAR();
-			AdaptationSet->Language = MPDAdaptationSet->GetLanguage();
+			AdaptationSet->Language = ISO639::RFC5646To639_1(MPDAdaptationSet->GetLanguage());
 
 			// Content components are not supported.
 			if (MPDAdaptationSet->GetContentComponents().Num())
@@ -1289,11 +1329,15 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 						LogMessage(PlayerSessionServices, IInfoLog::ELevel::Info, FString::Printf(TEXT("Unsupported Accessibility type \"%s\" found."), *Accessibility));
 					}
 				}
-				// Note: 608 captions are recognized but not 708 ones.
 				else if (MPDAdaptationSet->GetAccessibilities()[nAcc]->GetSchemeIdUri().Equals(TEXT("urn:scte:dash:cc:cea-608:2015")))
 				{
 					// We do not parse this out here. We prepend a "608:" prefix and take the value verbatim for now.
 					AdaptationSet->Accessibilities.Emplace(FString(TEXT("608:"))+MPDAdaptationSet->GetAccessibilities()[nAcc]->GetValue());
+				}
+				else if (MPDAdaptationSet->GetAccessibilities()[nAcc]->GetSchemeIdUri().Equals(TEXT("urn:scte:dash:cc:cea-708:2015")))
+				{
+					// We do not parse this out here. We prepend a "708:" prefix and take the value verbatim for now.
+					AdaptationSet->Accessibilities.Emplace(FString(TEXT("708:"))+MPDAdaptationSet->GetAccessibilities()[nAcc]->GetValue());
 				}
 			}
 
@@ -1333,10 +1377,10 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 					continue;
 				}
 
-				// Encryption?
-				if (MPDRepresentation->GetContentProtections().Num() || MPDAdaptationSet->GetContentProtections().Num())
+				// Encryption on representation level is not supported. As per DASH-IF-IOP v4.3 encryption must be specified on adaptation set level.
+				if (MPDRepresentation->GetContentProtections().Num())
 				{
-					LogMessage(PlayerSessionServices, IInfoLog::ELevel::Warning, FString::Printf(TEXT("ContentProtection is not supported, ignoring this Representation.")));
+					LogMessage(PlayerSessionServices, IInfoLog::ELevel::Warning, FString::Printf(TEXT("ContentProtection in Representation is not supported. Must be on enclosing AdaptationSet! Ignoring this Representation.")));
 					continue;
 				}
 
@@ -1516,9 +1560,20 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 				RepresentationQualityIndexMap.Add(MPDRepresentation->GetBandwidth(), Representation);
 			}
 
+
 			// If the adaptation set contains usable Representations we mark the AdaptationSet as usable as well.
 			if (AdaptationSet->Representations.Num())
 			{
+				// Encryption?
+				if (MPDAdaptationSet->GetContentProtections().Num())
+				{
+					if (!CanUseEncryptedAdaptation(AdaptationSet))
+					{
+						LogMessage(PlayerSessionServices, IInfoLog::ELevel::Warning, FString::Printf(TEXT("ContentProtection is not supported, ignoring this AdaptationSet.")));
+						continue;
+					}
+				}
+
 				RepresentationQualityIndexMap.KeySort([](int32 A, int32 B){return A<B;});
 				int32 CurrentQualityIndex = -1;
 				int32 CurrentQualityBitrate = -1;
@@ -1534,9 +1589,133 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 				AdaptationSet->bIsUsable = true;
 				Period->AdaptationSets.Emplace(AdaptationSet);
 			}
-
 		}
 		Period->SetHasBeenPrepared(true);
+	}
+}
+
+
+bool FManifestDASHInternal::CanUseEncryptedAdaptation(const TSharedPtrTS<FAdaptationSet>& InAdaptationSet)
+{
+	TSharedPtrTS<FDRMManager> DRMManager = PlayerSessionServices->GetDRMManager();
+	if (DRMManager.IsValid())
+	{
+		const TSharedPtrTS<FDashMPD_AdaptationSetType> MPDAdaptationSet = InAdaptationSet->AdaptationSet.Pin();
+		const TArray<TSharedPtrTS<FDashMPD_DescriptorType>>& ContentProtections = MPDAdaptationSet->GetContentProtections();
+		FString Mime = InAdaptationSet->GetCodec().GetMimeTypeWithCodecAndFeatures();
+		// See if there is a DASH scheme saying that common encryption is in use.
+		for(int32 i=0; i<ContentProtections.Num(); ++i)
+		{
+			if (ContentProtections[i]->GetSchemeIdUri().Equals(Scheme_urn_mpeg_dash_mp4protection_2011, ESearchCase::IgnoreCase))
+			{
+				InAdaptationSet->CommonEncryptionScheme = ContentProtections[i]->GetValue();
+				const IDashMPDElement::FXmlAttribute* default_KID = DASHAttributeHelpers::GetAttribute(ContentProtections[i], TEXT("default_KID"), TEXT("cenc"));
+				InAdaptationSet->DefaultKID = default_KID ? default_KID->GetValue() : FString();
+				break;
+			}
+		}
+		for(int32 i=0; i<ContentProtections.Num(); ++i)
+		{
+			TSharedPtr<ElectraCDM::IMediaCDMCapabilities, ESPMode::ThreadSafe> DRMCapabilities;
+			// Skip over the common encryption scheme which we handled in the first pass already.
+			if (ContentProtections[i]->GetSchemeIdUri().Equals(Scheme_urn_mpeg_dash_mp4protection_2011, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
+
+			// Get the scheme specific attributes and child elements as a JSON. If this does not exist yet
+			// create it and store with the descriptor for later use.
+			FString SchemeSpecificData = ContentProtections[i]->GetCustomElementAndAttributeJSON();
+			if (SchemeSpecificData.IsEmpty())
+			{
+				FString AttrPrefix, TextProp;
+				bool bNoNamespaces = false;
+				DRMManager->GetCDMCustomJSONPrefixes(ContentProtections[i]->GetSchemeIdUri(), ContentProtections[i]->GetValue(), AttrPrefix, TextProp, bNoNamespaces);
+				IManifestParserDASH::BuildJSONFromCustomElement(SchemeSpecificData, ContentProtections[i], false, bNoNamespaces, false, true, *AttrPrefix, *TextProp);
+				ContentProtections[i]->SetCustomElementAndAttributeJSON(SchemeSpecificData);
+			}
+
+			DRMCapabilities = DRMManager->GetCDMCapabilitiesForScheme(ContentProtections[i]->GetSchemeIdUri(), ContentProtections[i]->GetValue(), SchemeSpecificData);
+			if (DRMCapabilities.IsValid())
+			{
+				ElectraCDM::IMediaCDMCapabilities::ESupportResult Result;
+				Result = DRMCapabilities->SupportsType(Mime);
+				if (Result != ElectraCDM::IMediaCDMCapabilities::ESupportResult::Supported)
+				{
+					continue;
+				}
+				Result = DRMCapabilities->RequiresSecureDecoder(Mime);
+				if (Result == ElectraCDM::IMediaCDMCapabilities::ESupportResult::SecureDecoderRequired)
+				{
+					//LogMessage(PlayerSessionServices, IInfoLog::ELevel::Warning, FString::Printf(TEXT("Use of secure decoders is not supported.")));
+					continue;
+				}
+
+				FAdaptationSet::FContentProtection Prot;
+				Prot.Descriptor = ContentProtections[i];
+				Prot.DefaultKID = InAdaptationSet->GetDefaultKID();
+				Prot.CommonScheme = InAdaptationSet->GetCommonEncryptionScheme();
+				InAdaptationSet->PossibleContentProtections.Emplace(MoveTemp(Prot));
+			}
+		}
+	}
+	return InAdaptationSet->PossibleContentProtections.Num() > 0;
+}
+
+
+
+void FManifestDASHInternal::SendEventsFromAllPeriodEventStreams(TSharedPtrTS<FPeriod> InPeriod)
+{
+	check(InPeriod.IsValid());
+	TSharedPtrTS<FDashMPD_PeriodType> MPDPeriod = InPeriod->Period.Pin();
+	if (MPDPeriod.IsValid())
+	{
+		FTimeValue PeriodTimeOffset = GetAnchorTime() + InPeriod->GetStart();
+		// Iterate of all the period event streams. We expect them to have been xlink resolved already.
+		const TArray<TSharedPtrTS<FDashMPD_EventStreamType>>& MPDEventStreams = MPDPeriod->GetEventStreams();
+		for(int32 nEvS=0; nEvS<MPDEventStreams.Num(); ++nEvS)
+		{
+			const TSharedPtrTS<FDashMPD_EventStreamType>& EvS = MPDEventStreams[nEvS];
+			uint32 Timescale = EvS->GetTimescale().GetWithDefault(1);
+			int64 PTO = (int64) EvS->GetPresentationTimeOffset().GetWithDefault(0);
+			
+			const TArray<TSharedPtrTS<FDashMPD_EventType>>& Events = EvS->GetEvents();
+			for(int32 i=0; i<Events.Num(); ++i)
+			{
+				const TSharedPtrTS<FDashMPD_EventType>& Event = Events[i];
+				TSharedPtrTS<DASH::FPlayerEvent> NewEvent = MakeSharedTS<DASH::FPlayerEvent>();
+				NewEvent->SetOrigin(IAdaptiveStreamingPlayerAEMSEvent::EOrigin::EventStream);
+				NewEvent->SetSchemeIdUri(EvS->GetSchemeIdUri());
+				NewEvent->SetValue(EvS->GetValue());
+				if (Event->GetID().IsSet())
+				{
+					NewEvent->SetID(LexToString(Event->GetID().Value()));
+				}
+				FTimeValue PTS((int64)Event->GetPresentationTime() - PTO, Timescale);
+				PTS += PeriodTimeOffset;
+				NewEvent->SetPresentationTime(PTS);
+				if (Event->GetDuration().IsSet())
+				{
+					NewEvent->SetDuration(FTimeValue((int64)Event->GetDuration().Value(), Timescale));
+				}
+				FString Data = Event->GetData();
+				if (Data.IsEmpty())
+				{
+					Data = Event->GetMessageData();
+				}
+				// If the data is still empty then there could have been an entire XML element tree which we have parsed.
+				// We could reconstruct the XML from it here and pass that along, but for now we do not do this.
+				/*
+					if (Data.IsEmpty())
+					{
+					}
+				*/
+				NewEvent->SetMessageData(Data, Event->GetContentEncoding().Equals(TEXT("base64")));
+				NewEvent->SetPeriodID(InPeriod->GetUniqueIdentifier());
+				// Add the event to the handler.
+				PlayerSessionServices->GetAEMSEventHandler()->AddEvent(NewEvent, InPeriod->GetID(), IAdaptiveStreamingPlayerAEMSHandler::EEventAddMode::UpdateIfExists);
+			}
+		}
 	}
 }
 
@@ -1547,6 +1726,9 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
  */
 FErrorDetail FManifestDASHInternal::ResolveInitialRemoteElementRequest(TSharedPtrTS<FMPDLoadRequestDASH> RequestResponse, FString XMLResponse, bool bSuccess)
 {
+	SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_FManifestDASHInternal_XLink);
+	CSV_SCOPED_TIMING_STAT(ElectraPlayer, FManifestDASHInternal_XLink);
+
 	// Because this is intended solely for initial MPD entities we do not need to worry about anyone accessing our internal structures
 	// while we update them. The player proper has not been informed yet that the initial manifest is ready for use.
 	FErrorDetail Error;
@@ -1834,7 +2016,10 @@ FTimeValue FManifestDASHInternal::GetLastPeriodEndTime() const
 	}
 
 	FTimeValue End = ast + MediaPresentationDuration;
-	if (MPDRoot->GetMinimumUpdatePeriod().IsValid())
+	// If MUP is zero then it is expected that InbandEventStream is used to signal when to update the MPD.
+	// Since the MPD will not update through MUP in this case we need to return that the period goes up
+	// to mediaPresentationDuration, in this case infinity.
+	if (MPDRoot->GetMinimumUpdatePeriod().IsValid() && MPDRoot->GetMinimumUpdatePeriod() > FTimeValue::GetZero())
 	{
 		FTimeValue CheckTime = FetchTime + MPDRoot->GetMinimumUpdatePeriod();
 		return CheckTime < End ? CheckTime : End;
@@ -1982,6 +2167,32 @@ FTimeValue FManifestDASHInternal::GetDuration() const
 		return FTimeValue::GetPositiveInfinity();
 	}
 }
+
+
+void FManifestDASHInternal::EndPresentationAt(const FTimeValue& EndsAt, const FString& InPeriod)
+{
+	TSharedPtrTS<FPeriod> Period;
+	if (InPeriod.IsEmpty() && Periods.Num())
+	{
+		Period = Periods.Last();
+	}
+	else
+	{
+		Period = GetPeriodByUniqueID(InPeriod);
+	}
+	if (Period.IsValid())
+	{
+		Period->EndPresentationAt(EndsAt - GetAnchorTime());
+	}
+	// Updates no longer expected.
+	MPDRoot->SetMinimumUpdatePeriod(FTimeValue::GetInvalid());
+	if (Periods.Num())
+	{
+		FTimeValue NewDuration = EndsAt - (GetAnchorTime() + Periods[0]->GetStart());
+		MPDRoot->SetMediaPresentationDuration(NewDuration);
+	}
+}
+
 
 
 FTimeRange FManifestDASHInternal::GetPlayTimesFromURI() const

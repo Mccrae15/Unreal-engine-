@@ -707,20 +707,12 @@ FPropertyAccess::Result FPropertyValueImpl::SetValueAsString( const FString& InV
 
 		FString Value = InValue;
 
-		// Strip any leading underscores and spaces from names.
+		// Strip any leading spaces from names.
 		if( NodeProperty && NodeProperty->IsA( FNameProperty::StaticClass() ) )
 		{
 			while ( true )
 			{
-				if ( Value.StartsWith( TEXT("_"), ESearchCase::CaseSensitive ) )
-				{
-					// Strip leading underscores.
-					do
-					{
-						Value.RightInline( Value.Len()-1, false);
-					} while ( Value.StartsWith( TEXT("_"), ESearchCase::CaseSensitive ) );
-				}
-				else if ( Value.StartsWith( TEXT(" "), ESearchCase::CaseSensitive) )
+				if ( Value.StartsWith( TEXT(" "), ESearchCase::CaseSensitive) )
 				{
 					// Strip leading spaces.
 					do
@@ -1293,7 +1285,7 @@ void FPropertyValueImpl::InsertChild( TSharedPtr<FPropertyNode> ChildNodeToInser
 			UObject* Obj = ObjectNode ? ObjectNode->GetUObject(0) : nullptr;
 			if (IsTemplate(Obj))
 			{
-				ChildNodePtr->GatherInstancesAffectedByContainerPropertyChange(Obj, Addr, EPropertyArrayChangeType::Add, AffectedInstances);
+				ChildNodePtr->GatherInstancesAffectedByContainerPropertyChange(Obj, Addr, EPropertyArrayChangeType::Insert, AffectedInstances);
 			}
 		}
 
@@ -2883,11 +2875,25 @@ bool FPropertyHandleBase::GeneratePossibleValues(TArray< TSharedPtr<FString> >& 
 	}
 	else if (const TCHAR* MetaDataKey = PropertyEditorHelpers::GetPropertyOptionsMetaDataKey(Property))
 	{
-		const FString GetOptionsFunctionName = Property->GetOwnerProperty()->GetMetaData(MetaDataKey);
+		FString GetOptionsFunctionName = Property->GetOwnerProperty()->GetMetaData(MetaDataKey);
 		if (!GetOptionsFunctionName.IsEmpty())
 		{
 			TArray<UObject*> OutObjects;
 			GetOuterObjects(OutObjects);
+
+			// Check for external function references
+			if (GetOptionsFunctionName.Contains(TEXT(".")))
+			{
+				OutObjects.Empty();
+				UFunction* GetOptionsFunction = FindObject<UFunction>(nullptr, *GetOptionsFunctionName, true);
+
+				if (ensureMsgf(GetOptionsFunction && GetOptionsFunction->HasAnyFunctionFlags(EFunctionFlags::FUNC_Static), TEXT("Invalid GetOptions: %s"), *GetOptionsFunctionName))
+				{
+					UObject* GetOptionsCDO = GetOptionsFunction->GetOuterUClass()->GetDefaultObject();
+					GetOptionsFunction->GetName(GetOptionsFunctionName);
+					OutObjects.Add(GetOptionsCDO);
+				}
+			}
 
 			if (OutObjects.Num() > 0)
 			{

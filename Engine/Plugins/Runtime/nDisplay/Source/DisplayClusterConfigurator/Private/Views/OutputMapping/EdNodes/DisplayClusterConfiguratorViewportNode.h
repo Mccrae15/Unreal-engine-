@@ -9,8 +9,9 @@
 #include "DisplayClusterConfiguratorViewportNode.generated.h"
 
 class UDisplayClusterConfigurationViewport;
-struct FDisplayClusterConfigurationRectangle;
 class FDisplayClusterConfiguratorBlueprintEditor;
+class FDisplayClusterConfiguratorViewportViewModel;
+struct FDisplayClusterConfigurationRectangle;
 
 UCLASS(MinimalAPI)
 class UDisplayClusterConfiguratorViewportNode final
@@ -18,23 +19,22 @@ class UDisplayClusterConfiguratorViewportNode final
 {
 	GENERATED_BODY()
 
-	DECLARE_DELEGATE(FOnPreviewUpdated);
-
 public:
-	~UDisplayClusterConfiguratorViewportNode();
-	virtual void Initialize(const FString& InNodeName, UObject* InObject, const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit) override;
+	virtual void Initialize(const FString& InNodeName, int32 InNodeZIndex, UObject* InObject, const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& InToolkit) override;
+	virtual void Cleanup() override;
 
 	//~ Begin EdGraphNode Interface
 	virtual TSharedPtr<SGraphNode> CreateVisualWidget() override;
 	virtual bool CanDuplicateNode() const override { return true; }
 	virtual bool CanUserDeleteNode() const override { return true; }
 	//~ End EdGraphNode Interface
-
-	FOnPreviewUpdated& GetOnPreviewUpdated() { return OnPreviewUpdated; }
 	
 	//~ Begin UDisplayClusterConfiguratorBaseNode Interface
 	virtual bool IsNodeVisible() const override;
 	virtual bool IsNodeEnabled() const override;
+	virtual bool CanNodeOverlapSiblings() const override { return false; }
+	virtual bool CanNodeHaveNegativePosition() const { return false; }
+
 	virtual void DeleteObject() override;
 
 protected:
@@ -47,13 +47,11 @@ public:
 	const FDisplayClusterConfigurationRectangle& GetCfgViewportRegion() const;
 	bool IsFixedAspectRatio() const;
 
-	void SetPreviewTexture(UTexture* InTexture);
 	UTexture* GetPreviewTexture() const;
 
 private:
 	void OnPostEditChangeChainProperty(const FPropertyChangedChainEvent& PropertyChangedEvent);
 
 private:
-	TWeakObjectPtr<UTexture> PreviewTexture;
-	FOnPreviewUpdated OnPreviewUpdated;
+	TSharedPtr<FDisplayClusterConfiguratorViewportViewModel> ViewportVM;
 };

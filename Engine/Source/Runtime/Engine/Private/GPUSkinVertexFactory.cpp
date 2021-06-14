@@ -108,12 +108,12 @@ static TAutoConsoleVariable<int32> CVarVelocityTest(
 // These should match USE_BONES_SRV_BUFFER
 static inline bool SupportsBonesBufferSRV(EShaderPlatform Platform)
 {
-	return IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5) || IsVulkanPlatform(Platform) || IsMetalPlatform(Platform);
+	return true;
 }
 
 static inline bool SupportsBonesBufferSRV(ERHIFeatureLevel::Type InFeatureLevel)
 {
-	return InFeatureLevel > ERHIFeatureLevel::ES3_1 || IsVulkanPlatform(GMaxRHIShaderPlatform) || IsMetalPlatform(GMaxRHIShaderPlatform);
+	return true;
 }
 // ---
 
@@ -415,6 +415,10 @@ int32 FGPUBaseSkinVertexFactory::GetMaxGPUSkinBones(const ITargetPlatform* Targe
 		MaxGPUSkinBones = FMath::Min(MaxGPUSkinBones, GCVarMaxGPUSkinBones);
 		
 	}
+
+	//We cannot go under MAX_TOTAL_INFLUENCES
+	MaxGPUSkinBones = FMath::Max(MaxGPUSkinBones, MAX_TOTAL_INFLUENCES);
+
 	if (GCVarSupport16BitBoneIndex > 0)
 	{
 		// 16-bit bone index is supported
@@ -457,8 +461,6 @@ template <GPUSkinBoneInfluenceType BoneInfluenceType>
 void TGPUSkinVertexFactory<BoneInfluenceType>::ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment )
 {
 	FVertexFactory::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	const int32 MaxGPUSkinBones = GetFeatureLevelMaxNumberOfBones(GetMaxSupportedFeatureLevel(Parameters.Platform));
-	OutEnvironment.SetDefine(TEXT("MAX_SHADER_BONES"), MaxGPUSkinBones);
 	{
 		bool bLimit2BoneInfluences = (CVarGPUSkinLimit2BoneInfluences.GetValueOnAnyThread() != 0);
 		OutEnvironment.SetDefine(TEXT("GPUSKIN_LIMIT_2BONE_INFLUENCES"), (bLimit2BoneInfluences ? 1 : 0));

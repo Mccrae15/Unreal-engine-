@@ -27,19 +27,28 @@ void FSyncContext::FStats::ResetAll()
 	TotalMeshesCreated = 0;
 	TotalMeshesReused = 0;
 	TotalBugsCount = 0;
+	TotalMeshClassesCreated = 0;
+	TotalEmptyMeshClassesCreated = 0;
+	TotalInstancesCreated = 0;
+	TotalEmptyInstancesCreated = 0;
+	TotalMeshClassesForgot = 0;
+	TotalMeshClassesResactivated = 0;
 }
 
 void FSyncContext::FStats::Print()
 {
 #if UE_AC_DO_STATS
-	UE_AC_TraceF("AC Elements %d, AC Elements with geometry %d, AC Elements modified %d\n", int(TotalElements),
-				 int(TotalElementsWithGeometry), int(TotalElementsModified));
-	UE_AC_TraceF("Owner %d, Mesh Actors %d, Meshes %d, Empty Actors %d, Meshes reused %d\n", int(TotalOwnerCreated),
-				 int(TotalActorsCreated), int(TotalMeshesCreated), int(TotalEmptyActorsCreated),
-				 int(TotalMeshesReused));
+	UE_AC_ReportF("ARCHICAD Elements: Total=%d, With geometry=%d, Modified=%d\n", int(TotalElements),
+				  int(TotalElementsWithGeometry), int(TotalElementsModified));
+	UE_AC_ReportF("Datasmith Actors : Owner=%d, Created With Mesh=%d, Created Empty %d\n", int(TotalOwnerCreated),
+				  int(TotalActorsCreated), int(TotalEmptyActorsCreated));
+	UE_AC_ReportF("Datasmith Meshes : Created=%d, Reused=%d\n", int(TotalMeshesCreated), int(TotalMeshesReused));
+	UE_AC_ReportF("Mesh Class :	Created=%d, Empty=%d, Forgot=%d, Reactivated=%d, Instances=%d (Empty=%d)\n",
+				  int(TotalMeshClassesCreated), int(TotalEmptyMeshClassesCreated), int(TotalMeshClassesForgot),
+				  int(TotalMeshClassesResactivated), int(TotalInstancesCreated), int(TotalEmptyInstancesCreated));
 	if (TotalBugsCount != 0)
 	{
-		UE_AC_TraceF("Conversion bug count=%d\n", int(TotalBugsCount));
+		UE_AC_ReportF("Conversion bug count=%d\n", int(TotalBugsCount));
 	}
 	#if UE_AC_VERBOSEF_ON
 	UE_AC_TraceF("Bodies %s\n", BodiesStats.asStrings().c_str());
@@ -55,11 +64,13 @@ void FSyncContext::FStats::Print()
 #endif
 }
 
-FSyncContext::FSyncContext(const ModelerAPI::Model& InModel, FSyncDatabase& InSyncDatabase, FProgression* InProgression)
+FSyncContext::FSyncContext(bool bInIsSynchronizer, const ModelerAPI::Model& InModel, FSyncDatabase& InSyncDatabase,
+						   FProgression* InProgression)
 	: Model(InModel)
 	, Progression(InProgression)
 	, SyncDatabase(InSyncDatabase)
 	, Stats(*new FStats)
+	, bIsSynchronizer(bInIsSynchronizer)
 {
 }
 

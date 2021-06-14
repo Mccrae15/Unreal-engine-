@@ -4,14 +4,19 @@
 #include "NiagaraMessageManager.h"
 #include "NiagaraMessages.h"
 #include "NiagaraMessageUtilities.h"
+#include "NiagaraScriptVariable.h"
+#include "NiagaraScriptSource.h"
+#include "NiagaraParameterDefinitions.h"
+
 
 FNiagaraStandaloneScriptViewModel::FNiagaraStandaloneScriptViewModel(
 	FText DisplayName,
 	ENiagaraParameterEditMode InParameterEditMode,
 	TSharedPtr<FNiagaraMessageLogViewModel> InNiagaraMessageLogViewModel,
-	const FGuid& InSourceScriptObjKey
+	const FGuid& InSourceScriptObjKey,
+	bool bInIsForDataProcessingOnly
 )
-	: FNiagaraScriptViewModel(DisplayName, InParameterEditMode)
+	: FNiagaraScriptViewModel(DisplayName, InParameterEditMode, bInIsForDataProcessingOnly)
 	, NiagaraMessageLogViewModel(InNiagaraMessageLogViewModel)
 	, ScriptMessageLogGuidKey(InSourceScriptObjKey)
 {
@@ -21,6 +26,7 @@ void FNiagaraStandaloneScriptViewModel::Initialize(FVersionedNiagaraScript& InSc
 {
 	SetScript(InScript);
 	SourceScript = InSourceScript;
+
 	SendLastCompileMessages(SourceScript);
 }
 
@@ -30,10 +36,21 @@ FVersionedNiagaraScript FNiagaraStandaloneScriptViewModel::GetStandaloneScript()
 	return Scripts[0].Pin();
 }
 
+const FVersionedNiagaraScript FNiagaraStandaloneScriptViewModel::GetStandaloneScript() const
+{
+	return const_cast<FNiagaraStandaloneScriptViewModel*>(this)->GetStandaloneScript();
+}
+
+INiagaraParameterDefinitionsSubscriber* FNiagaraStandaloneScriptViewModel::GetParameterDefinitionsSubscriber()
+{
+	checkf(Scripts.Num() == 1, TEXT("StandaloneScriptViewModel did not have exactly one script!"));
+	return &Scripts[0];
+}
+
 void FNiagaraStandaloneScriptViewModel::OnVMScriptCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion)
 {
 	FNiagaraScriptViewModel::OnVMScriptCompiled(InScript, ScriptVersion);
-	SendLastCompileMessages( { InScript, ScriptVersion });
+	SendLastCompileMessages(FVersionedNiagaraScript(InScript, ScriptVersion));
 }
 
 void FNiagaraStandaloneScriptViewModel::SendLastCompileMessages(const FVersionedNiagaraScript& InScript)

@@ -8,6 +8,7 @@
 #include "DisplayClusterRootActor.h"
 #include "DisplayClusterConfigurationTypes.h"
 
+#include "Misc/DisplayClusterLog.h"
 #include "Misc/DisplayClusterStrings.h"
 #include "Render/Projection/IDisplayClusterProjectionPolicy.h"
 #include "Render/Projection/IDisplayClusterProjectionPolicyFactory.h"
@@ -15,9 +16,11 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
+#include "RHI.h"
 #include "Engine/RendererSettings.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/Texture2D.h"
+#include "CanvasTypes.h"
 
 #include "IDisplayClusterProjection.h"
 #include "Render/Viewport/IDisplayClusterViewport.h"
@@ -42,8 +45,12 @@ UDisplayClusterPreviewComponent::UDisplayClusterPreviewComponent(const FObjectIn
 
 #if WITH_EDITOR
 
+const uint32 UDisplayClusterPreviewComponent::MaxRenderTargetDimension = 2048;
+
 void UDisplayClusterPreviewComponent::OnComponentCreated()
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UDisplayClusterPreviewComponent::OnComponentCreated"), STAT_OnComponentCreated, STATGROUP_NDisplay);
+	
 	Super::OnComponentCreated();
 
 	InitializeInternals();
@@ -51,6 +58,8 @@ void UDisplayClusterPreviewComponent::OnComponentCreated()
 
 void UDisplayClusterPreviewComponent::DestroyComponent(bool bPromoteChildren)
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UDisplayClusterPreviewComponent::DestroyComponent"), STAT_DestroyComponent, STATGROUP_NDisplay);
+	
 	if (PreviewMesh)
 	{
 		bUseMeshUsePreviewMaterialInstance = false;
@@ -84,6 +93,10 @@ bool UDisplayClusterPreviewComponent::InitializePreviewComponent(ADisplayCluster
 
 bool UDisplayClusterPreviewComponent::UpdatePreviewMesh()
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UDisplayClusterPreviewComponent::UpdatePreviewMesh"), STAT_UpdatePreviewMesh, STATGROUP_NDisplay);
+	
+	check(IsInGameThread());
+
 	// And search for new mesh reference
 	IDisplayClusterViewport* Viewport = GetCurrentViewport();
 	if (Viewport != nullptr && Viewport->GetProjectionPolicy().IsValid())
@@ -119,6 +132,13 @@ bool UDisplayClusterPreviewComponent::UpdatePreviewMesh()
 					{
 						OriginalMaterial = MatInterface->GetMaterial();
 					}
+					
+					if (!ensure(ViewportConfig))
+					{
+						// Can be null during a reimport.
+						// @TODO reimport: See if we can avoid this during reimport.
+						return false;
+					}
 
 					// Update saved proj policy parameters
 					WarpMeshSavedProjectionPolicy = ViewportConfig->ProjectionPolicy;
@@ -133,6 +153,8 @@ bool UDisplayClusterPreviewComponent::UpdatePreviewMesh()
 
 void UDisplayClusterPreviewComponent::UpdatePreviewResources()
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UDisplayClusterPreviewComponent::UpdatePreviewResources"), STAT_UpdatePreviewResources, STATGROUP_NDisplay);
+	
 	if (PreviewMesh && PreviewMesh->GetName().Find(TEXT("TRASH_")) != INDEX_NONE)
 	{
 		// Screen components are regenerated from construction scripts, but preview components are added in dynamically. This preview component may end up
@@ -182,6 +204,8 @@ void UDisplayClusterPreviewComponent::InitializeInternals()
 
 void UDisplayClusterPreviewComponent::UpdatePreviewRenderTarget()
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UDisplayClusterPreviewComponent::UpdatePreviewRenderTarget"), STAT_UpdatePreviewRenderTarget, STATGROUP_NDisplay);
+	
 	FIntPoint TextureSize(1,1);
 	float     TextureGamma = 1.f;
 
@@ -216,6 +240,20 @@ void UDisplayClusterPreviewComponent::UpdatePreviewRenderTarget()
 			RenderTarget->TargetGamma = TextureGamma;
 		}
 	}
+	else
+	{
+		//@todo: disable this viewport
+		if (RenderTarget)
+		{
+			// clear preview RTT to black in this case
+			FTextureRenderTarget2DResource* TexResource = (FTextureRenderTarget2DResource*)RenderTarget->Resource;
+			if (TexResource)
+			{
+				FCanvas Canvas(TexResource, NULL, 0, 0, 0, GMaxRHIFeatureLevel);
+				Canvas.Clear(FLinearColor::Black);
+			}
+		}
+	}
 }
 
 bool UDisplayClusterPreviewComponent::GetPreviewTextureSettings(FIntPoint& OutSize, float& OutGamma) const
@@ -223,15 +261,26 @@ bool UDisplayClusterPreviewComponent::GetPreviewTextureSettings(FIntPoint& OutSi
 	IDisplayClusterViewport* Viewport = GetCurrentViewport();
 	if (Viewport != nullptr)
 	{
-		float PreviewScale = RootActor->GetPreviewRenderTargetRatioMult();
+		// The viewport size is already capped for RenderSettings
+		const TArray<FDisplayClusterViewport_Context>& Contexts = Viewport->GetContexts();
+		if (Contexts.Num() > 0)
+		{
+			OutSize = Contexts[0].FrameTargetRect.Size();
 
-		FIntPoint ViewportSize = Viewport->GetRenderSettings().Rect.Size();
-		OutSize = FIntPoint(ViewportSize.X * PreviewScale, ViewportSize.Y * PreviewScale);
+			//! Debug purpose
+			// The int casts above can sometimes cause the OutSize to have a zero in one or both its components, which will cause crashes when
+			// creating the render target on the preview component. Clamp OutSize so that it always has a size of at least 1 in each coordinate
+			static const int32 MaxTextureSize = 1 << (GMaxTextureMipCount - 1);
+			check(OutSize.X <= MaxTextureSize);
+			check(OutSize.Y <= MaxTextureSize);
+			check(OutSize.X > 0);
+			check(OutSize.Y > 0);
 
-		//! Get gamma from current FViewport
-		OutGamma = 2.2f;
+			//! Get gamma from current FViewport
+			OutGamma = 2.2f;
 
-		return true;
+			return true;
+		}
 	}
 
 	return false;
@@ -246,7 +295,7 @@ bool UDisplayClusterPreviewComponent::IsPreviewAvailable() const
 void UDisplayClusterPreviewComponent::RemovePreviewTexture()
 {
 #if WITH_EDITOR
-	//! FIXme Add/remove texture for UE4 resource collection
+	//! FIXme Add/remove texture for UE resource collection
 
 	//! @todo: add correct RenderTexture delete
 	//! 
@@ -256,6 +305,8 @@ void UDisplayClusterPreviewComponent::RemovePreviewTexture()
 
 bool UDisplayClusterPreviewComponent::UpdatePreviewTexture()
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UDisplayClusterPreviewComponent::UpdatePreviewTexture"), STAT_UpdatePreviewTexture, STATGROUP_NDisplay);
+	
 	check(RenderTarget);
 
 	TArray<FColor> SurfData;
@@ -320,13 +371,13 @@ bool UDisplayClusterPreviewComponent::UpdatePreviewTexture()
 	return true;
 }
 
-void UDisplayClusterPreviewComponent::HandleRenderTargetTextureUpdate_RenderThread()
+void UDisplayClusterPreviewComponent::HandleRenderTargetTextureDeferredUpdate()
 {
-	check(IsInRenderingThread());
+	check(IsInGameThread());
 
 	//! @todo: integrate to configurator logic
-	//! Use ScopeLock to sync access to shared data (from game and render threads)
-	bIsRenderTargetSurfaceChanged = true;
+	//! deffered update flag
+	RenderTargetSurfaceChangedCnt = 2;
 }
 
 UTexture2D* UDisplayClusterPreviewComponent::GetOrCreateRenderTexture2D()
@@ -336,9 +387,12 @@ UTexture2D* UDisplayClusterPreviewComponent::GetOrCreateRenderTexture2D()
 		RemovePreviewTexture();
 	}
 	else
-	if (RenderTarget && bIsRenderTargetSurfaceChanged)
+	if (RenderTarget && RenderTargetSurfaceChangedCnt)
 	{
-		UpdatePreviewTexture();
+		if (--RenderTargetSurfaceChangedCnt == 0)
+		{
+			UpdatePreviewTexture();
+		}
 	}
 
 	return PreviewTexture;

@@ -40,14 +40,14 @@ struct FDisplayClusterWarpBlendConstruct
 	};
 };
 
+
 class IDisplayClusterWarpBlendManager
 {
 public:
-	virtual ~IDisplayClusterWarpBlendManager()
-	{ }
+	virtual ~IDisplayClusterWarpBlendManager() = default;
 
 public:
-	virtual bool Create(const FDisplayClusterWarpBlendConstruct::FLoadMPCDIFile&  InConstructParameters, TSharedPtr<IDisplayClusterWarpBlend>& OutWarpBlend) const = 0;
-	virtual bool Create(const FDisplayClusterWarpBlendConstruct::FLoadPFMFile&    InConstructParameters, TSharedPtr<IDisplayClusterWarpBlend>& OutWarpBlend) const = 0;
-	virtual bool Create(const FDisplayClusterWarpBlendConstruct::FAssignWarpMesh& InConstructParameters, TSharedPtr<IDisplayClusterWarpBlend>& OutWarpBlend) const = 0;
+	virtual bool Create(const FDisplayClusterWarpBlendConstruct::FLoadMPCDIFile&  InConstructParameters, TSharedPtr<IDisplayClusterWarpBlend, ESPMode::ThreadSafe>& OutWarpBlend) const = 0;
+	virtual bool Create(const FDisplayClusterWarpBlendConstruct::FLoadPFMFile&    InConstructParameters, TSharedPtr<IDisplayClusterWarpBlend, ESPMode::ThreadSafe>& OutWarpBlend) const = 0;
+	virtual bool Create(const FDisplayClusterWarpBlendConstruct::FAssignWarpMesh& InConstructParameters, TSharedPtr<IDisplayClusterWarpBlend, ESPMode::ThreadSafe>& OutWarpBlend) const = 0;
 };

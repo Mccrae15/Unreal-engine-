@@ -4,7 +4,7 @@ import { BranchSpec, ConflictedResolveNFile, RoboWorkspace } from '../common/per
 // TODO: Remove Circular Dependency on bot-interfaces
 import { NodeBotInterface } from './bot-interfaces';
 import { FailureKind } from './status-types';
-import { BotConfig, BranchBase, EdgeOptions, NodeOptions } from './branchdefs';
+import { BotConfig, BranchBase, EdgeOptions, NodeOptions, IntegrationWindowPane } from './branchdefs';
 import { BlockageNodeOpUrls } from './roboserver';
 
 export type BranchArg = Branch | string
@@ -188,4 +188,80 @@ export interface ForcedCl {
 	previousCl: number
 	culprit: string
 	reason: string
+}
+
+export type GateInfo = {
+	cl: number
+	link?: string
+	timestamp?: number
+
+	// optional overrides for integration window (takes precedence over any in config)
+	integrationWindow?: IntegrationWindowPane[]
+	invertIntegrationWindow?: boolean
+}
+
+export function gatesSame(lhs: GateInfo | null, rhs: GateInfo | null) {
+	if (!lhs && !rhs) {
+		return true
+	}
+
+	if (!lhs || !rhs) {
+		return false
+	}
+
+	if (lhs.cl !== rhs.cl) {
+		return false
+	}
+
+	// neither has windows? no need to check further
+	if (!lhs.integrationWindow && !rhs.integrationWindow) {
+		return true
+	}
+
+	if (!lhs.integrationWindow || !rhs.integrationWindow) {
+		return false
+	}
+
+	if (lhs.integrationWindow.length !== rhs.integrationWindow.length) {
+		return false
+	}
+
+	if (!lhs.invertIntegrationWindow !== !rhs.invertIntegrationWindow) {
+		return false
+	}
+
+	for (let n = 0; n < lhs.integrationWindow.length; ++n) {
+		const lhsWindow = lhs.integrationWindow[n]
+		const rhsWindow = rhs.integrationWindow[n]
+		const lhsDays = lhsWindow.daysOfTheWeek || []
+		const rhsDays = rhsWindow.daysOfTheWeek || []
+		if (lhsWindow.startHourUTC !== rhsWindow.startHourUTC ||
+				lhsWindow.durationHours !== rhsWindow.durationHours ||
+				lhsDays.length !== rhsDays.length ||
+				!lhsDays.every((lhsDay, index) => lhsDay === rhsDays[index])) {
+			return false
+		}
+	}
+
+	return true
+}
+
+export type GateEventContext = {
+	from: Branch
+	to: Branch
+	edgeLastCl: number
+	pauseCIS: boolean
+}
+
+export type BeginIntegratingToGateEvent = {
+	context: GateEventContext
+	info: GateInfo
+
+	// would like to provide this for logging, but I'm not storing it in a convenient place yet
+	changesRemaining: number
+}
+
+export type EndIntegratingToGateEvent = {
+	context: GateEventContext
+	targetCl: number
 }

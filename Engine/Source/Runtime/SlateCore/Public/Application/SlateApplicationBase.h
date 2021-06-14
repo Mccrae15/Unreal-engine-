@@ -493,6 +493,13 @@ private:
 	TArray<TWeakPtr<FActiveTimerHandle>> ActiveTimerHandles;
 
 protected:
+	enum class ECustomSafeZoneState : uint8
+	{
+		Unset,
+		Set,
+		Debug
+	};
+
 	/**
 	 * Used to determine if any active timer handles are ready to fire.
 	 * Means we need to tick slate even if no user interaction.
@@ -572,28 +579,10 @@ protected:
 
 	/** Given a window, locate a widget under the cursor in it; returns an invalid path if cursor is not over this window. */
 	virtual FWidgetPath LocateWidgetInWindow(FVector2D ScreenspaceMouseCoordinate, const TSharedRef<SWindow>& Window, bool bIgnoreEnabledStatus, int32 UserIndex) const = 0;
-
+	
+	void UpdateCustomSafeZone(const FMargin& NewSafeZoneRatio, bool bShouldRecacheMetrics);
 #if WITH_EDITOR
-	void UpdateCustomSafeZone(const FMargin& NewSafeZoneRatio, bool bShouldRecacheMetrics) 
-	{
-		if (bShouldRecacheMetrics)
-		{
-			FDisplayMetrics DisplayMetrics;
-			GetDisplayMetrics(DisplayMetrics);
-		}
-		CustomSafeZoneRatio = NewSafeZoneRatio; 
-	}
-	void SwapSafeZoneTypes()
-	{
-		FDisplayMetrics DisplayMetrics;
-		GetDisplayMetrics(DisplayMetrics);
-
-		if (FDisplayMetrics::GetDebugTitleSafeZoneRatio() < 1.0f)
-		{
-			CustomSafeZoneRatio = FMargin();
-			OnDebugSafeZoneChanged.Broadcast(FMargin(), false);
-		}
-	}
+	void SwapSafeZoneTypes();
 #endif
 
 protected:
@@ -635,10 +624,11 @@ public:
 	{
 		return PlatformApplication;
 	}
-#if WITH_EDITOR
-	void ResetCustomSafeZone() { CustomSafeZoneRatio = FMargin(); }
-	const FMargin& GetCustomSafeZone() { return CustomSafeZoneRatio; }
-#endif
+
+	void ResetCustomSafeZone();
+	bool IsCustomSafeZoneSet() const;
+	void SetCustomSafeZone(const FMargin& InSafeZone);
+	const FMargin& GetCustomSafeZone() const { return CustomSafeZoneRatio; }
 
 #if WITH_EDITORONLY_DATA
 	FOnDebugSafeZoneChanged OnDebugSafeZoneChanged;
@@ -660,8 +650,10 @@ protected:
 	// Gets set when Slate goes to sleep and cleared when active.
 	bool bIsSlateAsleep;
 
-#if WITH_EDITORONLY_DATA
+	/** If Safe Zone ratio has been manually set, unset, or set via debug */
+	ECustomSafeZoneState CustomSafeZoneState;
+
+	/** Safe Zone ratio to override platform settings */
 	FMargin CustomSafeZoneRatio;
-#endif
 };
 

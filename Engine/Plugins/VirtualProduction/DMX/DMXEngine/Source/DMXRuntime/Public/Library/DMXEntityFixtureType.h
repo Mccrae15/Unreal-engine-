@@ -2,9 +2,10 @@
 
 #pragma once
 
-#include "Library/DMXEntity.h"
-#include "DMXProtocolTypes.h"
 #include "DMXAttribute.h"
+#include "DMXProtocolTypes.h"
+#include "Library/DMXEntity.h"
+#include "Modulators/DMXModulator.h"
 
 #include "DMXEntityFixtureType.generated.h"
 
@@ -195,9 +196,11 @@ struct DMXRUNTIME_API FDMXCell
 {
 	GENERATED_BODY()
 
+	/** The cell index in a 1D Array (row order), starting from 0 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (DisplayPriority = "20", DisplayName = "Cell ID", ClampMin = "0"), Category = "DMX")
 	int32 CellID;
 
+	/** The cell coordinate in a 2D Array, starting from (0, 0) */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, meta = (DisplayPriority = "30", DisplayName = "Coordinate"), Category = "DMX")
 	FIntPoint Coordinate;
 
@@ -275,6 +278,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fixture Settings")
 	TArray<FDMXFixtureMode> Modes;
 
+	/** 
+	 * Modulators applied right before a patch of this type is received. 
+	 * NOTE: Modulators only affect the patch's normalized values! Untouched values are still available when accesing raw values. 
+	 */
+	UPROPERTY(EditAnywhere, Instanced, Category = "Fixture Settings")
+	TArray<UDMXModulator*> InputModulators;
+
 public:
 #if WITH_EDITOR
 	UFUNCTION(BlueprintCallable, Category = "Fixture Settings")
@@ -322,7 +332,19 @@ public:
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
 	virtual void PostEditUndo() override;
 
+	/** DEPRECATED 4.27 */
+	UE_DEPRECATED(4.27, "Use UpdateChannelSpan instead.")
 	void UpdateModeChannelProperties(FDMXFixtureMode& Mode);
+
+	/** Updates the channel span of the Mode */
+	void UpdateChannelSpan(FDMXFixtureMode& Mode);
+
+	/** Updates the FixtureMatrixConfig's YCells property given num XCells for the specified Mode */
+	void UpdateYCellsFromXCells(FDMXFixtureMode& Mode);
+
+	/** Updates the FixtureMatrixConfig's XCells property given num YCells for the specified Mode */
+	void UpdateXCellsFromYCells(FDMXFixtureMode& Mode);
+
 #endif // WITH_EDITOR
 
 private:

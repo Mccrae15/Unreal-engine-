@@ -39,6 +39,8 @@
 #include "MoviePipelineQueue.h"
 #include "HAL/FileManager.h"
 #include "Misc/CoreDelegates.h"
+#include "MoviePipelineCommandLineEncoder.h"
+
 #if WITH_EDITOR
 #include "MovieSceneExportMetadata.h"
 #endif
@@ -350,6 +352,9 @@ void UMoviePipeline::Shutdown(bool bIsError)
 {
 	check(IsInGameThread());
 
+	// We flag this so you can check if the shutdown was requested even when we do a stall-stop.
+	bShutdownRequested = true;
+
 	// It's possible for a previous call to RequestionShutdown to have set an error before this call that may not
 	// We don't want to unset a previously set error state
 	if (bIsError)
@@ -466,6 +471,10 @@ void UMoviePipeline::TransitionToState(const EMovieRenderPipelineState InNewStat
 			// will be set when the render is canceled early
 			LevelSequenceActor->GetSequencePlayer()->Stop();
 			RestoreTargetSequenceToOriginalState();
+
+			// Ensure all of our Futures have been converted to the GeneratedOutputData. This has to happen
+			// after finalize finishes, because the futures won't be available until actually written to disk.
+			ProcessOutstandingFutures();
 	
 			BeginExport();
 		}
@@ -829,7 +838,6 @@ void UMoviePipeline::BuildShotListFromSequence()
 		const bool bPrePass = true;
 		ExpandShot(Shot, OutputSettings->HandleFrameCount, bPrePass);
 
-
 		bool bUseCameraCutForWarmUp = AntiAliasingSettings->bUseCameraCutForWarmUp;
 		if (Shot->ShotInfo.NumEngineWarmUpFramesRemaining == 0 && bUseCameraCutForWarmUp)
 		{
@@ -849,35 +857,6 @@ void UMoviePipeline::BuildShotListFromSequence()
 		// When we expanded the shot above, it pushed the first/last camera cuts ranges to account for Handle Frames.
 		// We want to start rendering from the first handle frame. Shutter Timing is a fixed offset from this number.
 		Shot->ShotInfo.CurrentTickInMaster = Shot->ShotInfo.TotalOutputRangeMaster.GetLowerBoundValue();
-	}
-
-	int32 ShotIndex = 0;
-
-	// Find any duplicate shot names and append a number to keep them unique
-	TMap<FString, int32> ShotNameUseCount;
-	for (UMoviePipelineExecutorShot* Shot : GetCurrentJob()->ShotInfo)
-	{
-		int32& Count = ShotNameUseCount.FindOrAdd(Shot->OuterName, 0);
-		if (++Count > 1)
-		{
-			Shot->OuterName.Append(FString::Format(TEXT("({0})"), { ShotNameUseCount[Shot->OuterName] }));
-		}
-	}
-
-	// For any shot names we found duplicates, append 1 to the first to keep naming consistent
-	for (TPair<FString, int32>& Pair : ShotNameUseCount)
-	{
-		if (Pair.Value > 1)
-		{
-			for (UMoviePipelineExecutorShot* Shot : GetCurrentJob()->ShotInfo)
-			{
-				if (Shot->OuterName.Equals(Pair.Key))
-				{
-					Shot->OuterName.Append(TEXT("(1)"));
-					break;
-				}
-			}
-		}
 	}
 
 	// The active shot-list is a subset of the whole shot-list; The ShotInfo contains information about every range it detected to render
@@ -956,6 +935,25 @@ void UMoviePipeline::TeardownShot(UMoviePipelineExecutorShot* InShot)
 	{
 		ProcessOutstandingFutures();
 
+		TArray<FMoviePipelineShotOutputData> LatestShotData;
+		if (GeneratedShotOutputData.Num() > 0)
+		{
+			LatestShotData.Add(GeneratedShotOutputData.Last());
+
+			// Temporarily remove it from the global array, as the encode may modify it.
+			GeneratedShotOutputData.RemoveAt(GeneratedShotOutputData.Num() - 1);
+		}
+
+		// We call the command line encoder as a special case here because it may want to modify the file list
+		// ie: if it deletes the file after use we probably don't want scripting looking for those files.
+		const bool bIncludeDisabledSettings = false;
+		UMoviePipelineCommandLineEncoder* Encoder = GetPipelineMasterConfig()->FindSetting<UMoviePipelineCommandLineEncoder>(bIncludeDisabledSettings);
+		if (Encoder)
+		{
+			const bool bInIsShotEncode = true;
+			Encoder->StartEncodingProcess(LatestShotData, bInIsShotEncode);
+		}
+
 		FMoviePipelineOutputData Params;
 		Params.Pipeline = this;
 		Params.Job = GetCurrentJob();
@@ -963,9 +961,14 @@ void UMoviePipeline::TeardownShot(UMoviePipelineExecutorShot* InShot)
 
 		// The per-shot callback only includes data from the latest shot, but packed into an
 		// array to re-use the same datastructures.
-		TArray<FMoviePipelineShotOutputData> LatestShotData;
-		LatestShotData.Add(GeneratedShotOutputData.Last());
 		Params.ShotData = LatestShotData;
+
+		// Re-add this to our global list (as it has potentially been modified by the CLI encoder)
+		GeneratedShotOutputData.Append(LatestShotData);
+
+		UE_LOG(LogMovieRenderPipelineIO, Verbose, TEXT("Files written to disk for current shot:"));
+		PrintVerboseLogForFiles(LatestShotData);
+		UE_LOG(LogMovieRenderPipelineIO, Verbose, TEXT("Completed outputting files written to disk."));
 
 		OnMoviePipelineShotWorkFinishedDelegateNative.Broadcast(Params);
 		OnMoviePipelineShotWorkFinishedDelegate.Broadcast(Params);
@@ -1110,9 +1113,44 @@ void UMoviePipeline::ExpandShot(UMoviePipelineExecutorShot* InShot, const int32 
 				Node->MovieScene->SetPlaybackRange(UE::MovieScene::DilateRange(Node->MovieScene->GetPlaybackRange(), -LeftDeltaTicks, RightDeltaTicks));
 				Node->MovieScene->MarkAsChanged();
 			}
+
+			FFrameNumber LowerCheckBound = InShot->ShotInfo.TotalOutputRangeMaster.GetLowerBoundValue() - LeftDeltaTicksUserPoV;
+			FFrameNumber UpperCheckBound = InShot->ShotInfo.TotalOutputRangeMaster.GetLowerBoundValue();
+
+			TRange<FFrameNumber> CheckRange = TRange<FFrameNumber>(TRangeBound<FFrameNumber>::Exclusive(LowerCheckBound), TRangeBound<FFrameNumber>::Inclusive(UpperCheckBound));
+
+			for (const TTuple<UMovieSceneSection*, TRange<FFrameNumber>>& Pair : Node->AdditionalSectionsToExpand)
+			{
+				// Expand the section. Because it's an infinite range, we know the contents won't get shifted.
+				TRange<FFrameNumber> NewRange = TRange<FFrameNumber>::Hull(Pair.Key->GetRange(), CheckRange);
+				Pair.Key->SetRange(NewRange);
+				Pair.Key->MarkAsChanged();
+			}
 		}
 		else
 		{
+			if (Node->MovieScene.IsValid())
+			{
+				for (UMovieSceneSection* Section : Node->MovieScene->GetAllSections())
+				{
+					if (!Section)
+					{
+						continue;
+					}
+
+					// Their data is already cached for restore elsewhere.
+					if (Section == Node->Section || Section == Node->CameraCutSection)
+					{
+						continue;
+					}
+
+					if (Section->GetSupportsInfiniteRange())
+					{
+						Node->AdditionalSectionsToExpand.Add(MakeTuple(Section, Section->GetRange()));
+					}
+				}
+			}
+
 			// We only do our warnings during the pre-pass
 			// Check for sections that start in the expanded evaluation range and warn user. Only check the frames user expects to (handle + temporal, no need for warm up frames to get checked as well)
 			MoviePipeline::CheckPartialSectionEvaluationAndWarn(LeftDeltaTicksUserPoV, Node, InShot, MasterDisplayRate);
@@ -1127,7 +1165,10 @@ void UMoviePipeline::ExpandShot(UMoviePipelineExecutorShot* InShot, const int32 
 	{
 		// We expand on the pre-pass so that we have the correct number of frames set up in our datastructures before we reach each shot so that metrics
 		// work as expected.
-		InShot->ShotInfo.TotalOutputRangeMaster = UE::MovieScene::DilateRange(InShot->ShotInfo.TotalOutputRangeMaster, -LeftDeltaTicksUserPoV, RightDeltaTicks);
+		FFrameNumber LeftHandleTicks = FFrameRate::TransformTime(FFrameTime(InNumHandleFrames), FrameMetrics.FrameRate, FrameMetrics.TickResolution).CeilToFrame().Value;
+		FFrameNumber RightHandleTicks = FFrameRate::TransformTime(FFrameTime(InNumHandleFrames), FrameMetrics.FrameRate, FrameMetrics.TickResolution).CeilToFrame().Value;
+
+		InShot->ShotInfo.TotalOutputRangeMaster = UE::MovieScene::DilateRange(InShot->ShotInfo.TotalOutputRangeMaster, -LeftHandleTicks, RightHandleTicks);
 	}
 }
 
@@ -1438,10 +1479,37 @@ void UMoviePipeline::OnMoviePipelineFinishedImpl()
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// Generate a params struct containing the data generated by this job.
-	FMoviePipelineOutputData Params = GetOutputDataParams();
+	FMoviePipelineOutputData Params;
+	Params.Pipeline = this;
+	Params.Job = GetCurrentJob();
+	Params.bSuccess = !bFatalError;
+	Params.ShotData = GeneratedShotOutputData;
+
+	UE_LOG(LogMovieRenderPipelineIO, Verbose, TEXT("Files written to disk for entire sequence:"));
+	PrintVerboseLogForFiles(GeneratedShotOutputData);
+	UE_LOG(LogMovieRenderPipelineIO, Verbose, TEXT("Completed outputting files written to disk."));
 
 	OnMoviePipelineWorkFinishedDelegateNative.Broadcast(Params);
 	OnMoviePipelineWorkFinishedDelegate.Broadcast(Params);
 }
 
+void UMoviePipeline::PrintVerboseLogForFiles(const TArray<FMoviePipelineShotOutputData>& InOutputData) const
+{
+	for (const FMoviePipelineShotOutputData& OutputData : InOutputData)
+	{
+		const UMoviePipelineExecutorShot* Shot = OutputData.Shot.Get();
+		if (Shot)
+		{
+			UE_LOG(LogMovieRenderPipelineIO, Verbose, TEXT("Shot: %s [%s]"), *Shot->OuterName, *Shot->InnerName);
+		}
+		for (const TPair<FMoviePipelinePassIdentifier, FMoviePipelineRenderPassOutputData>& Pair : OutputData.RenderPassData)
+		{
+			UE_LOG(LogMovieRenderPipelineIO, Verbose, TEXT("Render Pass: %s"), *Pair.Key.Name);
+			for (const FString& FilePath : Pair.Value.FilePaths)
+			{
+				UE_LOG(LogMovieRenderPipelineIO, Verbose, TEXT("\t\t%s"), *FilePath);
+			}
+		}
+	}
+}
 #undef LOCTEXT_NAMESPACE // "MoviePipeline"

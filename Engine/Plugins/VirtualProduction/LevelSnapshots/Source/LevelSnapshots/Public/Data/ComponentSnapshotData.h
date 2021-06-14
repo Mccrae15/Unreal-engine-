@@ -7,6 +7,7 @@
 #include "ObjectSnapshotData.h"
 #include "ComponentSnapshotData.generated.h"
 
+class UPackage;
 struct FWorldSnapshotData;
 struct FPropertySelection;
 
@@ -17,11 +18,9 @@ struct LEVELSNAPSHOTS_API FComponentSnapshotData
 
 	static TOptional<FComponentSnapshotData> SnapshotComponent(UActorComponent* OriginalComponent, FWorldSnapshotData& WorldData);
 	
-	bool IsRestoreSupportedForSavedComponent();
+	bool IsRestoreSupportedForSavedComponent() const;
 	
-	void DeserializeIntoTransient(FObjectSnapshotData& SerializedComponentData, UActorComponent* ComponentToDeserializeInto, FWorldSnapshotData& WorldData);
-	void DeserializeIntoWorld(FObjectSnapshotData& SerializedComponentData, UActorComponent* OriginalComponentToDeserializeInto, UActorComponent* DeserializedComponentCounterpart, FWorldSnapshotData& WorldData, const FPropertySelection& PropertySelection);
-
+	void DeserializeIntoTransient(FObjectSnapshotData& SerializedComponentData, UActorComponent* ComponentToDeserializeInto, FWorldSnapshotData& WorldData, UPackage* InLocalisationSnapshotPackage);
 	/* Describes how the component was created */
 	UPROPERTY()
 	EComponentCreationMethod CreationMethod;

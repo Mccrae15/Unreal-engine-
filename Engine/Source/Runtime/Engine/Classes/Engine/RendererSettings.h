@@ -412,20 +412,8 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip="The axis that sorting will occur along when Translucent Sort Policy is set to SortAlongAxis."))
 	FVector TranslucentSortAxis;
 
-	UPROPERTY(config, EditAnywhere, Category = VariableRateShading, meta = (
-		ConsoleVariable = "r.VRS.Enable",
-		ToolTip = "Whether to enable Variable Rate Shading for all tiers (if supported).",
-		ConfigRestartRequired = false))
-		uint32 bEnableVRS : 1;
-
-	UPROPERTY(config, EditAnywhere, Category = VariableRateShading, meta = (
-		ConsoleVariable = "r.VRS.EnableImage",
-		ToolTip = "Whether to enable image-based Variable Rate Shading",
-		ConfigRestartRequired = false))
-		uint32 bEnableImageVRS : 1;
-
-	UPROPERTY(config, EditAnywhere, Category = VariableRateShading, meta = (
-		ConsoleVariable = "r.VRS.HMDFixedFoveationLevel", DisplayName = "HMD Fixed Foveation Level (experimental)",
+	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
+		ConsoleVariable = "vr.VRS.HMDFixedFoveationLevel", DisplayName = "HMD Fixed Foveation Level (experimental)",
 		ToolTip = "Set the level of fixed-foveation to apply when generating the Variable Rate Shading attachment. This feature is currently experimental.\nThis can yield some fairly significant performance benefits on GPUs that support Tier 2 VRS.\nLower settings will result in almost no discernible artifacting on most HMDs; higher settings will show some artifacts towards the edges of the view."))
 		TEnumAsByte<EFixedFoveationLevels::Type> HMDFixedFoveationLevel;
 
@@ -861,10 +849,14 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ToolTip = "When Unlimited Bone Influence is enabled, it still uses a fixed bone inflence buffer until the max bone influence of a mesh exceeds this value"))
 		int32 UnlimitedBonInfluencesThreshold;
 
+	/*
+	 * The maximum bones count section vertices's skinning can use before being chunked into more sections. The minimum value is the maximum total influences define (MAX_TOTAL_INFLUENCES).
+	 */
 	UPROPERTY(config, EditAnywhere, Category = Skinning, meta = (
 		DisplayName = "Maximum bones per Sections",
 		ToolTip = "Max number of bones that can be skinned on the GPU in a single draw call. The default value is set by the Compat.MAX_GPUSKIN_BONES consolevariable. Changing this setting requires restarting the editor.",
-		ConfigRestartRequired = true))
+		ConfigRestartRequired = true,
+		ClampMin = "12", UIMin = "12"))
 		FPerPlatformInt MaxSkinBones;
 	
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (
@@ -874,9 +866,10 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		TEnumAsByte<EMobilePlanarReflectionMode::Type> MobilePlanarReflectionMode;
 
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (
-		ConsoleVariable = "r.Mobile.TemporalAAMethod", DisplayName = "Desktop TemporalAA On Mobile",
-		ToolTip = "Use desktop TAA on mobile."))
-		uint32 bMobileTemporalAAMethod : 1;
+		ConsoleVariable = "r.Mobile.SupportsGen4TAA", DisplayName = "Supports desktop Gen4 TAA on mobile",
+		ToolTip = "Support desktop Gen4 TAA with mobile rendering. Changing this setting requires restarting the editor.",
+		ConfigRestartRequired = true))
+		uint32 bMobileSupportsGen4TAA : 1;
 
 	UPROPERTY(config, EditAnywhere, Category="Experimental|LOD Streaming|Skeletal Mesh", meta=(
 		DisplayName="Stream LODs by default",

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PlayerCore.h"
+#include "ElectraPlayerPrivate.h"
 #include "ManifestDASH.h"
 #include "ManifestBuilderDASH.h"
 #include "PlaylistReaderDASH.h"
@@ -16,13 +17,18 @@
 #include "Player/DASH/OptionKeynamesDASH.h"
 #include "Player/PlayerEntityCache.h"
 #include "Player/AdaptivePlayerOptionKeynames.h"
+#include "Player/DRM/DRMManager.h"
 
+
+DECLARE_CYCLE_STAT(TEXT("FRepresentation::FindSegment"), STAT_ElectraPlayer_DASH_FindSegment, STATGROUP_ElectraPlayer);
+DECLARE_CYCLE_STAT(TEXT("FDASHPlayPeriod::GetSegmentInformation"), STAT_ElectraPlayer_DASH_GetSegmentInformation, STATGROUP_ElectraPlayer);
 
 namespace Electra
 {
 
 #define ERRCODE_DASH_MPD_INTERNAL						1
 #define ERRCODE_DASH_MPD_BAD_REPRESENTATION				1000
+#define ERRCODE_DASH_DRM_ERROR							2000
 
 
 namespace DashUtils
@@ -95,17 +101,27 @@ public:
 
 	virtual ~FDASHPlayPeriod()
 	{
+		if (DrmClient.IsValid())
+		{
+			DrmClient->UnregisterEventListener(PlayerSessionServices->GetDRMManager());
+		}
 	}
 
 	//----------------------------------------------
 	// Methods from IManifest::IPlayPeriod
 	//
-	virtual void SetStreamPreferences(const FStreamPreferences& Preferences) override;
+	virtual void SetStreamPreferences(EStreamType ForStreamType, const FStreamSelectionAttributes& StreamAttributes) override;
 	virtual EReadyState GetReadyState() override;
+	virtual void Load() override;
 	virtual void PrepareForPlay() override;
+	virtual int64 GetDefaultStartingBitrate() const override;
+	virtual TSharedPtrTS<FBufferSourceInfo> GetSelectedStreamBufferSourceInfo(EStreamType StreamType) override;
+	virtual FString GetSelectedAdaptationSetID(EStreamType StreamType) override;
+	virtual ETrackChangeResult ChangeTrackStreamPreference(EStreamType ForStreamType, const FStreamSelectionAttributes& StreamAttributes) override;
 	virtual TSharedPtrTS<ITimelineMediaAsset> GetMediaAsset() const override;
 	virtual void SelectStream(const FString& AdaptationSetID, const FString& RepresentationID) override;
 	virtual IManifest::FResult GetStartingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType) override;
+	virtual IManifest::FResult GetContinuationSegment(TSharedPtrTS<IStreamSegment>& OutSegment, EStreamType StreamType, const FPlayerLoopState& LoopState, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType) override;
 	virtual IManifest::FResult GetLoopingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, FPlayerLoopState& InOutLoopState, const TMultiMap<EStreamType, TSharedPtrTS<IStreamSegment>>& InFinishedSegments, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType) override;
 	virtual IManifest::FResult GetNextSegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment) override;
 	virtual IManifest::FResult GetRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> CurrentSegment, bool bReplaceWithFillerData) override;
@@ -122,13 +138,22 @@ private:
 	{
 		SamePeriodNext,
 		SamePeriodRetry,
-		NextPeriod
+		SamePeriodStartOver,
+		NextPeriod,
 	};
 	IManifest::FResult GetNextOrRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> InCurrentSegment, ENextSegType InNextType);
 
+	bool PrepareDRM(const TArray<FManifestDASHInternal::FAdaptationSet::FContentProtection>& InContentProtections);
+
+	void SetupCommonSegmentRequestInfos(TSharedPtrTS<FStreamSegmentRequestFMP4DASH>& InOutSegmentRequest);
+
+	TSharedPtrTS<FManifestDASHInternal::FAdaptationSet> SelectAdaptationSetByAttributes(TSharedPtrTS<FBufferSourceInfo>& OutBufferSourceInfo, TSharedPtrTS<FManifestDASHInternal::FPeriod> Period, EStreamType StreamType, const FStreamSelectionAttributes& Attributes);
+
 	IPlayerSessionServices* PlayerSessionServices = nullptr;
-	EReadyState ReadyState = EReadyState::NotReady;
-	FStreamPreferences StreamPreferences;
+	EReadyState ReadyState = EReadyState::NotLoaded;
+	FStreamSelectionAttributes VideoStreamPreferences;
+	FStreamSelectionAttributes AudioStreamPreferences;
+	FStreamSelectionAttributes SubtitleStreamPreferences;
 
 	FTimeValue SegmentFetchDelay = FTimeValue::GetZero();
 
@@ -136,9 +161,16 @@ private:
 
 	FString ActiveVideoAdaptationSetID;
 	FString ActiveAudioAdaptationSetID;
+	FString ActiveSubtitleAdaptationSetID;
 
 	FString ActiveVideoRepresentationID;
 	FString ActiveAudioRepresentationID;
+
+	TSharedPtrTS<FBufferSourceInfo> SourceBufferInfoVideo;
+	TSharedPtrTS<FBufferSourceInfo> SourceBufferInfoAudio;
+	TSharedPtrTS<FBufferSourceInfo> SourceBufferInfoSubtitles;
+
+	TSharedPtr<ElectraCDM::IMediaCDMClient, ESPMode::ThreadSafe> DrmClient;
 };
 
 /***************************************************************************************************************************************************/
@@ -225,11 +257,6 @@ void FManifestDASH::ClearDefaultStartTime()
 	}
 }
 
-int64 FManifestDASH::GetDefaultStartingBitrate() const
-{
-	return 2 * 1000 * 1000;
-}
-
 FTimeValue FManifestDASH::GetMinBufferTime() const
 {
 	TSharedPtrTS<FManifestDASHInternal> Manifest(CurrentManifest);
@@ -256,6 +283,17 @@ void FManifestDASH::GetTrackMetadata(TArray<FTrackMetadata>& OutMetadata, EStrea
 void FManifestDASH::UpdateDynamicRefetchCounter()
 {
 	++CurrentPeriodAndAdaptationXLinkResolveID;
+
+	// Since we don't know which streams will be used now we have to let the manifest reader know
+	// that currently no stream is active that is providing inband events.
+	TSharedPtrTS<IPlaylistReader> ManifestReader = PlayerSessionServices->GetManifestReader();
+	IPlaylistReaderDASH* Reader = static_cast<IPlaylistReaderDASH*>(ManifestReader.Get());
+	if (Reader)
+	{
+		Reader->SetStreamInbandEventUsage(EStreamType::Video, false);
+		Reader->SetStreamInbandEventUsage(EStreamType::Audio, false);
+		Reader->SetStreamInbandEventUsage(EStreamType::Subtitle, false);
+	}
 }
 
 IStreamReader* FManifestDASH::CreateStreamReaderHandler()
@@ -424,21 +462,157 @@ TSharedPtrTS<FManifestDASHInternal> FDASHPlayPeriod::GetCurrentManifest() const
 	TSharedPtrTS<IPlaylistReader> ManifestReader = PlayerSessionServices->GetManifestReader();
 	if (ManifestReader.IsValid())
 	{
-		check(ManifestReader->GetPlaylistType().Equals(TEXT("dash")));
 		IPlaylistReaderDASH* Reader = static_cast<IPlaylistReaderDASH*>(ManifestReader.Get());
 		return Reader->GetCurrentMPD();
 	}
 	return nullptr;
 }
 
-void FDASHPlayPeriod::SetStreamPreferences(const FStreamPreferences& Preferences)
+void FDASHPlayPeriod::SetStreamPreferences(EStreamType ForStreamType, const FStreamSelectionAttributes& StreamAttributes)
 {
-	StreamPreferences = Preferences;
+	if (ForStreamType == EStreamType::Audio)
+	{
+		AudioStreamPreferences = StreamAttributes;
+	}
 }
 
 IManifest::IPlayPeriod::EReadyState FDASHPlayPeriod::GetReadyState()
 {
 	return ReadyState;
+}
+
+TSharedPtrTS<FManifestDASHInternal::FAdaptationSet> FDASHPlayPeriod::SelectAdaptationSetByAttributes(TSharedPtrTS<FBufferSourceInfo>& OutBufferSourceInfo, TSharedPtrTS<FManifestDASHInternal::FPeriod> Period, EStreamType StreamType, const FStreamSelectionAttributes& Attributes)
+{
+	TSharedPtrTS<FManifestDASHInternal::FAdaptationSet> AS;
+	int32 NumAdaptationSets = Period->GetNumberOfAdaptationSets(StreamType);
+	if (NumAdaptationSets > 0)
+	{
+		int32 SelectedTypeIndex = 0;
+		// For video just select the first one for now.
+		if (StreamType == EStreamType::Video)
+		{
+			AS = StaticCastSharedPtr<FManifestDASHInternal::FAdaptationSet>(Period->GetAdaptationSetByTypeAndIndex(StreamType, 0));
+		}
+		else if (StreamType == EStreamType::Audio)
+		{
+			// Check for a matching language.
+			// For now we ignore the track kind.
+			if (Attributes.Language_ISO639.IsSet())
+			{
+				for(int32 i=0; i<NumAdaptationSets; ++i)
+				{
+					TSharedPtrTS<FManifestDASHInternal::FAdaptationSet> A;
+					A = StaticCastSharedPtr<FManifestDASHInternal::FAdaptationSet>(Period->GetAdaptationSetByTypeAndIndex(StreamType, i));
+					if (A->GetLanguage().Equals(Attributes.Language_ISO639.GetValue()))
+					{
+						SelectedTypeIndex = i;
+						AS = MoveTemp(A);
+						break;
+					}
+				}
+			}
+			// Matching language not found. Is there an explicit index given?
+			if (!AS.IsValid())
+			{
+				if (Attributes.OverrideIndex.IsSet() && Attributes.OverrideIndex.GetValue() < NumAdaptationSets)
+				{
+					SelectedTypeIndex = Attributes.OverrideIndex.GetValue();
+					AS = StaticCastSharedPtr<FManifestDASHInternal::FAdaptationSet>(Period->GetAdaptationSetByTypeAndIndex(StreamType, SelectedTypeIndex));
+				}
+			}
+			// Still nothing? Use the first one.
+			if (!AS.IsValid())
+			{
+				AS = StaticCastSharedPtr<FManifestDASHInternal::FAdaptationSet>(Period->GetAdaptationSetByTypeAndIndex(StreamType, 0));
+				SelectedTypeIndex = 0;
+			}
+		}
+		if (AS.IsValid())
+		{
+			FTrackMetadata tm;
+			AS->GetMetaData(tm, StreamType);
+			OutBufferSourceInfo = MakeSharedTS<FBufferSourceInfo>();
+			OutBufferSourceInfo->Kind = tm.Kind;
+			OutBufferSourceInfo->Language = tm.Language;
+			OutBufferSourceInfo->HardIndex = SelectedTypeIndex;
+			OutBufferSourceInfo->PeriodAdaptationSetID = Period->GetUniqueIdentifier() + TEXT("/") + AS->GetUniqueIdentifier();
+		}
+	}
+	return AS;
+}
+
+
+int64 FDASHPlayPeriod::GetDefaultStartingBitrate() const
+{
+	TSharedPtrTS<FManifestDASHInternal> Manifest = GetCurrentManifest();
+	TSharedPtrTS<FManifestDASHInternal::FPeriod> Period = Manifest.IsValid() ? Manifest->GetPeriodByUniqueID(PeriodID) : nullptr;
+	if (Period.IsValid())
+	{
+		TSharedPtrTS<FManifestDASHInternal::FAdaptationSet> VideoAS = Period->GetAdaptationSetByUniqueID(ActiveVideoAdaptationSetID);
+		if (VideoAS.IsValid() && VideoAS->GetNumberOfRepresentations())
+		{
+			TSharedPtrTS<IPlaybackAssetRepresentation> VideoRepr = VideoAS->GetRepresentationByIndex(0);
+			return VideoRepr->GetBitrate();
+		}
+
+		TSharedPtrTS<FManifestDASHInternal::FAdaptationSet> AudioAS = Period->GetAdaptationSetByUniqueID(ActiveAudioAdaptationSetID);
+		if (AudioAS.IsValid() && AudioAS->GetNumberOfRepresentations())
+		{
+			TSharedPtrTS<IPlaybackAssetRepresentation> AudioRepr = AudioAS->GetRepresentationByIndex(0);
+			return AudioRepr->GetBitrate();
+		}
+	}
+	return 2 * 1000 * 1000;
+}
+
+void FDASHPlayPeriod::Load()
+{
+	TSharedPtrTS<FManifestDASHInternal> Manifest = GetCurrentManifest();
+	TSharedPtrTS<FManifestDASHInternal::FPeriod> Period = Manifest.IsValid() ? Manifest->GetPeriodByUniqueID(PeriodID) : nullptr;
+	if (Period.IsValid())
+	{
+		TArray<FManifestDASHInternal::FAdaptationSet::FContentProtection> ContentProtections;
+
+		// Prepare the adaptation sets and periods.
+		Manifest->PreparePeriodAdaptationSets(Period, false);
+
+		// We need to select one adaptation set per stream type we wish to play.
+		TSharedPtrTS<FManifestDASHInternal::FAdaptationSet> VideoAS = SelectAdaptationSetByAttributes(SourceBufferInfoVideo, Period, EStreamType::Video, VideoStreamPreferences);
+		if (VideoAS.IsValid())
+		{
+			ActiveVideoAdaptationSetID = VideoAS->GetUniqueIdentifier();
+
+			// Add encryption schemes, if any.
+			const FManifestDASHInternal::FAdaptationSet* Adapt = static_cast<const FManifestDASHInternal::FAdaptationSet*>(VideoAS.Get());
+			ContentProtections.Append(Adapt->GetPossibleContentProtections());
+		}
+
+		TSharedPtrTS<FManifestDASHInternal::FAdaptationSet> AudioAS = SelectAdaptationSetByAttributes(SourceBufferInfoAudio, Period, EStreamType::Audio, AudioStreamPreferences);
+		if (AudioAS.IsValid())
+		{
+			ActiveAudioAdaptationSetID = AudioAS->GetUniqueIdentifier();
+
+			// Add encryption schemes, if any.
+			const FManifestDASHInternal::FAdaptationSet* Adapt = static_cast<const FManifestDASHInternal::FAdaptationSet*>(AudioAS.Get());
+			ContentProtections.Append(Adapt->GetPossibleContentProtections());
+		}
+
+		// Prepare the DRM system for decryption.
+		if (PrepareDRM(ContentProtections))
+		{
+			ReadyState = EReadyState::Loaded;
+		}
+		else
+		{
+			// Set state to preparing to prevent the player from progressing while
+			// the posted error works its magic.
+			ReadyState = EReadyState::Loading;
+		}
+	}
+	else
+	{
+		ReadyState = EReadyState::Loading;
+	}
 }
 
 void FDASHPlayPeriod::PrepareForPlay()
@@ -447,36 +621,107 @@ void FDASHPlayPeriod::PrepareForPlay()
 	TSharedPtrTS<FManifestDASHInternal::FPeriod> Period = Manifest.IsValid() ? Manifest->GetPeriodByUniqueID(PeriodID) : nullptr;
 	if (Period.IsValid())
 	{
-		// Prepare the adaptation sets and periods.
-		Manifest->PreparePeriodAdaptationSets(Period, false);
-	
-		// We need to select one adaptation set per stream type we wish to play.
-		int32 NumVideoAdaptationSets = Period->GetNumberOfAdaptationSets(EStreamType::Video);
-		if (NumVideoAdaptationSets > 0)
+		TSharedPtrTS<FManifestDASHInternal::FAdaptationSet> VideoAS = Period->GetAdaptationSetByUniqueID(ActiveVideoAdaptationSetID);
+		if (VideoAS.IsValid())
 		{
-			// For now pick the first one!
-			TSharedPtrTS<IPlaybackAssetAdaptationSet> VideoAS = Period->GetAdaptationSetByTypeAndIndex(EStreamType::Video, 0);
-			ActiveVideoAdaptationSetID = VideoAS->GetUniqueIdentifier();
+			// Get the current average video bitrate with some sensible default if it is not set.
+			int64 StartingBitrate = PlayerSessionServices->GetOptions().GetValue(OptionKeyCurrentAvgStartingVideoBitrate).SafeGetInt64(2*1000*1000);
 
-			TSharedPtrTS<IPlaybackAssetRepresentation> VideoRepr = GetRepresentationFromAdaptationByMaxBandwidth(VideoAS, 2*1000*1000);
+			TSharedPtrTS<IPlaybackAssetRepresentation> VideoRepr = GetRepresentationFromAdaptationByMaxBandwidth(VideoAS, (int32) StartingBitrate);
 			ActiveVideoRepresentationID = VideoRepr->GetUniqueIdentifier();
 		}
 
-		int32 NumAudioAdaptationSets = Period->GetNumberOfAdaptationSets(EStreamType::Audio);
-		if (NumAudioAdaptationSets > 0)
+		TSharedPtrTS<FManifestDASHInternal::FAdaptationSet> AudioAS = Period->GetAdaptationSetByUniqueID(ActiveAudioAdaptationSetID);
+		if (AudioAS.IsValid())
 		{
-			// For now pick the first one!
-			TSharedPtrTS<IPlaybackAssetAdaptationSet> AudioAS = Period->GetAdaptationSetByTypeAndIndex(EStreamType::Audio, 0);
-			ActiveAudioAdaptationSetID = AudioAS->GetUniqueIdentifier();
-
-			TSharedPtrTS<IPlaybackAssetRepresentation> AudioRepr = GetRepresentationFromAdaptationByMaxBandwidth(AudioAS, 128 * 1000);
+			TSharedPtrTS<IPlaybackAssetRepresentation> AudioRepr = GetRepresentationFromAdaptationByMaxBandwidth(AudioAS, 256 * 1000);
 			ActiveAudioRepresentationID = AudioRepr->GetUniqueIdentifier();
 		}
 
-	//	ReadyState = EReadyState::Preparing;
+		// Emit all <EventStream> events of the period to the AEMS event handler.
+		Manifest->SendEventsFromAllPeriodEventStreams(Period);
+
 		ReadyState = EReadyState::IsReady;
 	}
+	else
+	{
+		ReadyState = EReadyState::Preparing;
+	}
 }
+
+TSharedPtrTS<FBufferSourceInfo> FDASHPlayPeriod::GetSelectedStreamBufferSourceInfo(EStreamType StreamType)
+{
+	switch(StreamType)
+	{
+		case EStreamType::Video:
+			return SourceBufferInfoVideo;
+		case EStreamType::Audio:
+			return SourceBufferInfoAudio;
+		case EStreamType::Subtitle:
+			return SourceBufferInfoSubtitles;
+		default:
+			return nullptr;
+	}
+}
+
+FString FDASHPlayPeriod::GetSelectedAdaptationSetID(EStreamType StreamType)
+{
+	switch(StreamType)
+	{
+		case EStreamType::Video:
+			return ActiveVideoAdaptationSetID;
+		case EStreamType::Audio:
+			return ActiveAudioAdaptationSetID;
+		case EStreamType::Subtitle:
+			return ActiveSubtitleAdaptationSetID;
+		default:
+			return FString();
+	}
+}
+
+
+IManifest::IPlayPeriod::ETrackChangeResult FDASHPlayPeriod::ChangeTrackStreamPreference(EStreamType ForStreamType, const FStreamSelectionAttributes& StreamAttributes)
+{
+	// We cannot check if the the new stream to be selected is already the one that is active because a track change is
+	// triggered at the current playback position, while we could already be in a later period!
+	// Checking against a later period makes no sense, so we have to forcibly start over.
+	return IManifest::IPlayPeriod::ETrackChangeResult::NewPeriodNeeded;
+}
+
+
+bool FDASHPlayPeriod::PrepareDRM(const TArray<FManifestDASHInternal::FAdaptationSet::FContentProtection>& InContentProtections)
+{
+	if (InContentProtections.Num())
+	{
+		static const TCHAR* const Delimiters[] { TEXT(" "), TEXT("\t"), TEXT("\n"), TEXT("\r") };
+		// Set up DRM CRM candidates and settle on one.
+		TArray<ElectraCDM::IMediaCDM::FCDMCandidate> Candidates;
+		ElectraCDM::IMediaCDM::FCDMCandidate cand;
+		for(int32 i=0; i<InContentProtections.Num(); ++i)
+		{
+			cand.SchemeId = InContentProtections[i].Descriptor->GetSchemeIdUri();
+			cand.Value = InContentProtections[i].Descriptor->GetValue();
+			cand.CommonScheme = InContentProtections[i].CommonScheme;
+			cand.AdditionalElements = InContentProtections[i].Descriptor->GetCustomElementAndAttributeJSON();
+			InContentProtections[i].DefaultKID.ParseIntoArray(cand.DefaultKIDs, Delimiters, UE_ARRAY_COUNT(Delimiters), true);
+			Candidates.Emplace(MoveTemp(cand));
+		}
+		ElectraCDM::ECDMError Result = PlayerSessionServices->GetDRMManager()->CreateDRMClient(DrmClient, Candidates);
+		if (Result == ElectraCDM::ECDMError::Success && DrmClient.IsValid())
+		{
+			DrmClient->RegisterEventListener(PlayerSessionServices->GetDRMManager());
+			DrmClient->PrepareLicenses();
+			return true;
+		}
+		else
+		{
+			PostError(PlayerSessionServices, FString::Printf(TEXT("Failed to create DRM client with error %d"), (int32)Result), ERRCODE_DASH_DRM_ERROR);
+			return false;
+		}
+	}
+	return true;
+}
+
 
 TSharedPtrTS<ITimelineMediaAsset> FDASHPlayPeriod::GetMediaAsset() const
 {
@@ -508,6 +753,21 @@ void FDASHPlayPeriod::SelectStream(const FString& AdaptationSetID, const FString
 		LogMessage(PlayerSessionServices, IInfoLog::ELevel::Warning, FString::Printf(TEXT("ABR tried to activate a stream from an inactive AdaptationSet!")));
 	}
 }
+
+void FDASHPlayPeriod::SetupCommonSegmentRequestInfos(TSharedPtrTS<FStreamSegmentRequestFMP4DASH>& InOutSegmentRequest)
+{
+	FManifestDASHInternal::FRepresentation* Repr = static_cast<FManifestDASHInternal::FRepresentation*>(InOutSegmentRequest->Representation.Get());
+
+	// Source buffer info
+	InOutSegmentRequest->SourceBufferInfo = InOutSegmentRequest->StreamType == EStreamType::Video ? SourceBufferInfoVideo :
+											InOutSegmentRequest->StreamType == EStreamType::Audio ? SourceBufferInfoAudio :
+											InOutSegmentRequest->StreamType == EStreamType::Subtitle ? SourceBufferInfoSubtitles : nullptr;
+
+	// Encryption stuff
+	InOutSegmentRequest->DrmClient = DrmClient;
+	InOutSegmentRequest->DrmMimeType = Repr->GetCodecInformation().GetMimeTypeWithCodecAndFeatures();
+}
+
 
 IManifest::FResult FDASHPlayPeriod::GetStartingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType)
 {
@@ -601,7 +861,6 @@ IManifest::FResult FDASHPlayPeriod::GetStartingSegment(TSharedPtrTS<IStreamSegme
 				{
 					return IManifest::FResult(IManifest::FResult::EType::NotLoaded).SetErrorDetail(FErrorDetail().SetMessage("Entity loader disappeared"));
 				}
-				check(ManifestReader->GetPlaylistType().Equals(TEXT("dash")));
 				IPlaylistReaderDASH* Reader = static_cast<IPlaylistReaderDASH*>(ManifestReader.Get());
 				Reader->AddElementLoadRequests(RemoteElementLoadRequests);
 				bTryAgainLater = true;
@@ -622,6 +881,7 @@ IManifest::FResult FDASHPlayPeriod::GetStartingSegment(TSharedPtrTS<IStreamSegme
 				}
 				SegmentRequest->Segment = MoveTemp(SegmentInfo);
 				SegmentRequest->bIsEOSSegment = true;
+				SetupCommonSegmentRequestInfos(SegmentRequest);
 				StartSegmentRequest->DependentStreams.Emplace(MoveTemp(SegmentRequest));
 				bAnyStreamAtEOS = true;
 			}
@@ -693,6 +953,7 @@ IManifest::FResult FDASHPlayPeriod::GetStartingSegment(TSharedPtrTS<IStreamSegme
 					StartSegmentRequest->SAET = SegmentRequest->SAET;
 				}
 
+				SetupCommonSegmentRequestInfos(SegmentRequest);
 				StartSegmentRequest->DependentStreams.Emplace(MoveTemp(SegmentRequest));
 				bAllStreamsAtEOS = false;
 			}
@@ -719,6 +980,24 @@ IManifest::FResult FDASHPlayPeriod::GetStartingSegment(TSharedPtrTS<IStreamSegme
 	OutSegment = MoveTemp(StartSegmentRequest);
 	return IManifest::FResult(IManifest::FResult::EType::Found);
 }
+
+
+//-----------------------------------------------------------------------------
+/**
+ * Same as GetStartingSegment() except this is for a specific stream (video, audio, ...) only.
+ * To be used when a track (language) change is made and a new segment is needed at the current playback position.
+ */
+IManifest::FResult FDASHPlayPeriod::GetContinuationSegment(TSharedPtrTS<IStreamSegment>& OutSegment, EStreamType StreamType, const FPlayerLoopState& LoopState, const FPlayStartPosition& StartPosition, IManifest::ESearchType SearchType)
+{
+	// Create a dummy request we can use to pass into GetNextOrRetrySegment().
+	// Only set the values that that method requires.
+	auto DummyReq = MakeSharedTS<FStreamSegmentRequestFMP4DASH>();
+	DummyReq->StreamType = StreamType;
+	DummyReq->PeriodStart = StartPosition.Time;
+	DummyReq->PlayerLoopState = LoopState;
+	return GetNextOrRetrySegment(OutSegment, DummyReq, ENextSegType::SamePeriodStartOver);
+}
+
 
 
 IManifest::FResult FDASHPlayPeriod::GetNextOrRetrySegment(TSharedPtrTS<IStreamSegment>& OutSegment, TSharedPtrTS<const IStreamSegment> InCurrentSegment, ENextSegType InNextType)
@@ -759,6 +1038,10 @@ IManifest::FResult FDASHPlayPeriod::GetNextOrRetrySegment(TSharedPtrTS<IStreamSe
 		return IManifest::FResult(IManifest::FResult::EType::NotFound).SetErrorDetail(FErrorDetail().SetMessage("No active stream found to get next segment for"));
 	}
 
+	FTimeValue AST = Manifest->GetAnchorTime();
+	bool bUsesAST = Manifest->UsesAST();
+	bool bIsStaticType = Manifest->IsStaticType() || Manifest->IsEventType();
+
 	FManifestDASHInternal::FSegmentInformation SegmentInfo;
 	FManifestDASHInternal::FSegmentSearchOption SearchOpt;
 	TArray<TWeakPtrTS<FMPDLoadRequestDASH>> RemoteElementLoadRequests;
@@ -777,15 +1060,29 @@ IManifest::FResult FDASHPlayPeriod::GetNextOrRetrySegment(TSharedPtrTS<IStreamSe
 		SearchOpt.PeriodDuration = Period->GetDuration();
 		SearchOpt.SearchType = IManifest::ESearchType::Closest;
 	}
+	else if (InNextType == ENextSegType::SamePeriodStartOver)
+	{
+		FTimeValue StartTime = Current->PeriodStart - AST;
+		if (StartTime < Period->GetStart())
+		{
+			StartTime = Period->GetStart();
+		}
+		else if (StartTime >= Period->GetEnd())
+		{
+			StartTime = Period->GetEnd();
+		}
+		StartTime -= Period->GetStart();
+
+		SearchOpt.PeriodLocalTime = StartTime;
+		SearchOpt.PeriodDuration = Period->GetDuration();
+		SearchOpt.SearchType = IManifest::ESearchType::Before;
+	}
 	else //if (InNextType == ENextSegType::NextPeriod)
 	{
 		SearchOpt.PeriodLocalTime.SetToZero();
 		SearchOpt.PeriodDuration = Period->GetDuration();
 		SearchOpt.SearchType = IManifest::ESearchType::Closest;
 	}
-	FTimeValue AST = Manifest->GetAnchorTime();
-	bool bUsesAST = Manifest->UsesAST();
-	bool bIsStaticType = Manifest->IsStaticType() || Manifest->IsEventType();
 	if (!SearchOpt.PeriodDuration.IsValid() || SearchOpt.PeriodDuration.IsPositiveInfinity())
 	{
 		SearchOpt.PeriodDuration = Manifest->GetLastPeriodEndTime() - AST;
@@ -800,7 +1097,6 @@ IManifest::FResult FDASHPlayPeriod::GetNextOrRetrySegment(TSharedPtrTS<IStreamSe
 		{
 			return IManifest::FResult(IManifest::FResult::EType::NotFound).SetErrorDetail(FErrorDetail().SetMessage("Entity loader disappeared"));
 		}
-		check(ManifestReader->GetPlaylistType().Equals(TEXT("dash")));
 		IPlaylistReaderDASH* Reader = static_cast<IPlaylistReaderDASH*>(ManifestReader.Get());
 		Reader->AddElementLoadRequests(RemoteElementLoadRequests);
 		return IManifest::FResult().RetryAfterMilliseconds(100);
@@ -822,8 +1118,7 @@ IManifest::FResult FDASHPlayPeriod::GetNextOrRetrySegment(TSharedPtrTS<IStreamSe
 		}
 
 		IPlaylistReaderDASH* Reader = static_cast<IPlaylistReaderDASH*>(PlayerSessionServices->GetManifestReader().Get());
-		check(Reader->GetPlaylistType().Equals(TEXT("dash")));
-		Reader->RequestMPDUpdate(false);
+		Reader->RequestMPDUpdate(IPlaylistReaderDASH::EMPDRequestType::GetLatestSegment);
 		return IManifest::FResult().RetryAfterMilliseconds(250);
 	}
 	else if (SearchResult == FManifestDASHInternal::FRepresentation::ESearchResult::Gone)
@@ -857,8 +1152,8 @@ IManifest::FResult FDASHPlayPeriod::GetNextOrRetrySegment(TSharedPtrTS<IStreamSe
 		{
 			SegmentRequest->bInsertFillerData = true;
 		}
-		
-		if (InNextType != ENextSegType::NextPeriod)
+
+		if (InNextType == ENextSegType::SamePeriodNext || InNextType == ENextSegType::SamePeriodRetry)
 		{
 			// Because we are searching for the next segment we do not want any first access units to be truncated.
 			// We keep the current media local AU time for the case where with <SegmentTemplate> addressing we get greatly varying
@@ -882,6 +1177,7 @@ IManifest::FResult FDASHPlayPeriod::GetNextOrRetrySegment(TSharedPtrTS<IStreamSe
 		}
 
 		SegmentRequest->Segment = MoveTemp(SegmentInfo);
+		SetupCommonSegmentRequestInfos(SegmentRequest);
 		OutSegment = MoveTemp(SegmentRequest);
 		return IManifest::FResult(IManifest::FResult::EType::Found);
 	}
@@ -964,7 +1260,7 @@ IManifest::FResult FDASHPlayPeriod::GetLoopingSegment(TSharedPtrTS<IStreamSegmen
 			LoopRequest->PlayerLoopState = InOutLoopState;
 			// We have to subtract all the values that are added to the access units from the loop base time
 			// to avoid adding them twice.
-			LoopRequest->PlayerLoopState.LoopBasetime -= LoopRequest->PeriodStart + LoopRequest->AST + LoopRequest->AdditionalAdjustmentTime;			
+			LoopRequest->PlayerLoopState.LoopBasetime -= LoopRequest->PeriodStart + LoopRequest->AST + LoopRequest->AdditionalAdjustmentTime;
 			// Set the loop state in the dependent streams as well.
 			for(int32 nDep=0, nDepMax=LoopRequest->DependentStreams.Num(); nDep<nDepMax; ++nDep)
 			{
@@ -987,6 +1283,9 @@ void FDASHPlayPeriod::IncreaseSegmentFetchDelay(const FTimeValue& IncreaseAmount
 
 void FDASHPlayPeriod::GetSegmentInformation(TArray<FSegmentInformation>& OutSegmentInformation, FTimeValue& OutAverageSegmentDuration, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FTimeValue& LookAheadTime, const FString& AdaptationSetID, const FString& RepresentationID)
 {
+	SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_DASH_GetSegmentInformation);
+	CSV_SCOPED_TIMING_STAT(ElectraPlayer, DASH_GetSegmentInformation);
+
 	OutSegmentInformation.Empty();
 	OutAverageSegmentDuration.SetToInvalid();
 
@@ -1480,14 +1779,39 @@ FString FManifestDASHInternal::FRepresentation::ApplyTemplateStrings(FString Tem
 		}
 	}
 	return NewURL;
+}
 
+void FManifestDASHInternal::FRepresentation::CollectInbandEventStreams(IPlayerSessionServices* InPlayerSessionServices, FSegmentInformation& InOutSegmentInfo)
+{
+	TSharedPtrTS<FDashMPD_RepresentationType> MPDRepresentation = Representation.Pin();
 
+	TArray<TSharedPtrTS<FDashMPD_EventStreamType>> EvS = MPDRepresentation->GetInbandEventStreams();
+	for(TSharedPtrTS<const IDashMPDElement> Parent = MPDRepresentation->GetParentElement(); Parent.IsValid(); Parent=Parent->GetParentElement())
+	{
+		if (Parent->GetElementType() == IDashMPDElement::EType::AdaptationSet)
+		{
+			EvS.Append(static_cast<const FDashMPD_AdaptationSetType*>(Parent.Get())->GetInbandEventStreams());
+			break;
+		}
+	}
+	for(int32 i=0; i<EvS.Num(); ++i)
+	{
+		FSegmentInformation::FInbandEventStream ibs;
+		ibs.SchemeIdUri = EvS[i]->GetSchemeIdUri();
+		ibs.Value = EvS[i]->GetValue();
+		ibs.PTO = (int64) EvS[i]->GetPresentationTimeOffset().GetWithDefault(0);
+		ibs.Timescale = EvS[i]->GetTimescale().GetWithDefault(1);
+		InOutSegmentInfo.InbandEventStreams.Emplace(MoveTemp(ibs));
+	}
 }
 
 
 
 FManifestDASHInternal::FRepresentation::ESearchResult FManifestDASHInternal::FRepresentation::FindSegment(IPlayerSessionServices* InPlayerSessionServices, FSegmentInformation& OutSegmentInfo, TArray<TWeakPtrTS<FMPDLoadRequestDASH>>& OutRemoteElementLoadRequests, const FSegmentSearchOption& InSearchOptions)
 {
+	SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_DASH_FindSegment);
+	CSV_SCOPED_TIMING_STAT(ElectraPlayer, DASH_FindSegment);
+
 	/*
 		Note: We use the DASH-IF-IOP specification and timing model. This is more strict than the general DASH standard and removes ambiguities
 		      and otherwise conflicting information.
@@ -1771,6 +2095,7 @@ FManifestDASHInternal::FRepresentation::ESearchResult FManifestDASHInternal::FRe
 		OutSegmentInfo.Timescale = SidxTimescale;
 		OutSegmentInfo.ATO = ATO;
 		OutSegmentInfo.bIsLastInPeriod = CurrentT + CurrentD >= MediaLocalPeriodEnd;
+		CollectInbandEventStreams(InPlayerSessionServices, OutSegmentInfo);
 		if (!PrepareDownloadURLs(InPlayerSessionServices, OutSegmentInfo, SegmentBase))
 		{
 			bIsUsable = false;
@@ -1924,6 +2249,7 @@ FManifestDASHInternal::FRepresentation::ESearchResult FManifestDASHInternal::FRe
 	OutSegmentInfo.bMayBeMissing = SegmentNum + 1 >= MaxSegmentsInPeriod;
 	OutSegmentInfo.bIsLastInPeriod = OutSegmentInfo.bMayBeMissing && InSearchOptions.bHasFollowingPeriod;
 	OutSegmentInfo.ATO = ATO;
+	CollectInbandEventStreams(InPlayerSessionServices, OutSegmentInfo);
 	if (!PrepareDownloadURLs(InPlayerSessionServices, OutSegmentInfo, SegmentTemplate))
 	{
 		bIsUsable = false;
@@ -2250,6 +2576,7 @@ FManifestDASHInternal::FRepresentation::ESearchResult FManifestDASHInternal::FRe
 			LogMessage(InPlayerSessionServices, IInfoLog::ELevel::Warning, FString::Printf(TEXT("Representation \"%s\" <SegmentTimeline> gap encountered for needed 't' value of %lld. Replacing with an empty filler segment."), *MPDRepresentation->GetID(), (long long int)CurrentT));
 		}
 		OutSegmentInfo.ATO = ATO;
+		CollectInbandEventStreams(InPlayerSessionServices, OutSegmentInfo);
 		if (!PrepareDownloadURLs(InPlayerSessionServices, OutSegmentInfo, SegmentTemplate))
 		{
 			bIsUsable = false;

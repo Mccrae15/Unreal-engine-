@@ -727,13 +727,14 @@ int32 ReportCrashForMonitor(
 	SharedContext->UserSettings.bImplicitSend = bImplicitSend;
 
 	SharedContext->SessionContext.bIsExitRequested = IsEngineExitRequested();
-	FCString::Strcpy(SharedContext->ErrorMessage, CR_MAX_ERROR_MESSAGE_CHARS-1, ErrorMessage);
+	FCString::Strncpy(SharedContext->ErrorMessage, ErrorMessage, CR_MAX_ERROR_MESSAGE_CHARS);
 
 	// Setup all the thread ids and names using snapshot dbghelp. Since it's not possible to 
 	// query thread names from an external process.
 	uint32 ThreadIdx = 0;
 	DWORD CurrentProcessId = GetCurrentProcessId();
 	HANDLE ThreadSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+	bool bCapturedCrashingThreadId = false;
 	if (ThreadSnapshot != INVALID_HANDLE_VALUE)
 	{
 		THREADENTRY32 ThreadEntry;
@@ -744,15 +745,24 @@ int32 ReportCrashForMonitor(
 			{
 				if (ThreadEntry.th32OwnerProcessID == CurrentProcessId)
 				{
-					SharedContext->ThreadIds[ThreadIdx] = ThreadEntry.th32ThreadID;
-					const FString& TmThreadName = FThreadManager::GetThreadName(ThreadEntry.th32ThreadID);
-					const TCHAR* ThreadName = TmThreadName.IsEmpty() ? TEXT("Unknown") : *TmThreadName;
-					FCString::Strcpy(
-						&SharedContext->ThreadNames[ThreadIdx*CR_MAX_THREAD_NAME_CHARS],
-						CR_MAX_THREAD_NAME_CHARS - 1,
-						ThreadName
-					);
-					ThreadIdx++;
+					if (CrashingThreadId == ThreadEntry.th32ThreadID)
+					{
+						bCapturedCrashingThreadId = true;
+					}
+
+					// Always keep one spot for the crashing thread in case the number of captured threads is about to reach our limit.
+					if (bCapturedCrashingThreadId || ThreadIdx < CR_MAX_THREADS - 1)
+					{
+						SharedContext->ThreadIds[ThreadIdx] = ThreadEntry.th32ThreadID;
+						const FString& TmThreadName = FThreadManager::GetThreadName(ThreadEntry.th32ThreadID);
+						const TCHAR* ThreadName = TmThreadName.IsEmpty() ? TEXT("Unknown") : *TmThreadName;
+						FCString::Strncpy(
+							&SharedContext->ThreadNames[ThreadIdx*CR_MAX_THREAD_NAME_CHARS],
+							ThreadName,
+							CR_MAX_THREAD_NAME_CHARS
+						);
+						ThreadIdx++;
+					}
 				}
 			} while (Thread32Next(ThreadSnapshot, &ThreadEntry) && (ThreadIdx < CR_MAX_THREADS));
 		}
@@ -763,7 +773,7 @@ int32 ReportCrashForMonitor(
 	FString CrashDirectoryAbsolute;
 	if (FGenericCrashContext::CreateCrashReportDirectory(SharedContext->SessionContext.CrashGUIDRoot, ReportCallCount++, CrashDirectoryAbsolute))
 	{
-		FCString::Strcpy(SharedContext->CrashFilesDirectory, *CrashDirectoryAbsolute);
+		FCString::Strncpy(SharedContext->CrashFilesDirectory, *CrashDirectoryAbsolute, CR_MAX_DIRECTORY_CHARS);
 		// Copy the log file to output
 		FGenericCrashContext::DumpLog(CrashDirectoryAbsolute);
 

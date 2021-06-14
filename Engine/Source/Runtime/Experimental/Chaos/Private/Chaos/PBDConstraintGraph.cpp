@@ -108,6 +108,7 @@ void FPBDConstraintGraph::ParticleRemove(FGeometryParticleHandle* RemovedParticl
 
 		Visited[NodeIdx]=0;
 		ParticleToNodeIndex.Remove(RemovedParticle);
+		UpdatedNodes.RemoveSwap(NodeIdx, false);
 	}
 }
 
@@ -165,7 +166,7 @@ void FPBDConstraintGraph::InitializeGraph(const TParticleView<FGeometryParticles
 	}
 	else
 	{
-		if (!CHAOS_ENSURE(NumNonDisabledParticles <= Nodes.Num()))
+		if (!(NumNonDisabledParticles <= Nodes.Num())) 
 		{
 			for (auto& Particle : Particles)
 			{
@@ -449,7 +450,7 @@ void FPBDConstraintGraph::ComputeIslands(const TParticleView<FPBDRigidParticles>
 
 				for (FGeometryParticleHandle* Particle : NewIslandParticles[Island])
 				{
-					if (!Particle->Sleeping())
+					if (Particle->ObjectState() != EObjectStateType::Static && !Particle->Sleeping())
 					{
 						bSleepState = false;
 						break;
@@ -458,15 +459,21 @@ void FPBDConstraintGraph::ComputeIslands(const TParticleView<FPBDRigidParticles>
 
 				for (FGeometryParticleHandle* Particle : NewIslandParticles[Island])
 				{
-					//@todo(DEMO_HACK) : Need to fix, remove the !InParticles.Disabled(Index)
-					if (Particle->Sleeping() && !bSleepState/* && !Particle->Disabled()*/)
+					if (Particle->Sleeping() && !bSleepState)
 					{
 						Particles.ActivateParticle(Particle); 	//todo: record state change for array reorder
 					}
 
 					FPBDRigidParticleHandle* PBDRigid = Particle->CastToRigidParticle();
-					if(PBDRigid && PBDRigid->ObjectState() != EObjectStateType::Kinematic)
+					if(PBDRigid)
 					{
+						const EObjectStateType CurrState = PBDRigid->ObjectState();
+						if(CurrState == EObjectStateType::Kinematic || CurrState == EObjectStateType::Static)
+						{
+							// Statics and kinematics can't have sleeping states so don't attempt to set one.
+							break;
+						}
+
 						if (!Particle->Sleeping() && bSleepState)
 						{
 							Particles.DeactivateParticle(Particle); 	//todo: record state change for array reorder
@@ -477,7 +484,7 @@ void FPBDConstraintGraph::ComputeIslands(const TParticleView<FPBDRigidParticles>
 						PBDRigid->SetSleeping(bSleepState);
 					}
 
-					if ((Particle->Sleeping() /*|| Particle->Disabled()*/))
+					if (Particle->Sleeping())
 					{
 						Particles.DeactivateParticle(Particle);	//todo: record state change for array reorder (function could return true/false)
 					}

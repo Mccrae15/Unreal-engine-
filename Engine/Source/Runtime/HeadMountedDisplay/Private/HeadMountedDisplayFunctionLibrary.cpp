@@ -57,9 +57,9 @@ FName UHeadMountedDisplayFunctionLibrary::GetHMDDeviceName()
 {
 	FName DeviceName(NAME_None);
 
-	if (GEngine->XRSystem.IsValid())
+	if (GEngine->XRSystem.IsValid() && GEngine->XRSystem->GetHMDDevice())
 	{
-		DeviceName = GEngine->XRSystem->GetSystemName();
+		DeviceName = GEngine->XRSystem->GetHMDDevice()->GetHMDName();
 	}
 
 	return DeviceName;
@@ -566,4 +566,29 @@ bool UHeadMountedDisplayFunctionLibrary::GetControllerTransformForTime(UObject* 
 		}
 	}
 	return false;
+}
+
+
+FVector2D UHeadMountedDisplayFunctionLibrary::GetPlayAreaBounds(TEnumAsByte<EHMDTrackingOrigin::Type> InOrigin)
+{
+	if (GEngine->XRSystem.IsValid())
+	{
+		EHMDTrackingOrigin::Type Origin = EHMDTrackingOrigin::Stage;
+		switch (InOrigin)
+		{
+		case EHMDTrackingOrigin::Eye:
+			Origin = EHMDTrackingOrigin::Eye;
+			break;
+		case EHMDTrackingOrigin::Floor:
+			Origin = EHMDTrackingOrigin::Floor;
+			break;
+		case EHMDTrackingOrigin::Stage:
+			Origin = EHMDTrackingOrigin::Stage;
+			break;
+		default:
+			break;
+		}
+		return GEngine->XRSystem->GetPlayAreaBounds(Origin);
+	}
+	return FVector2D::ZeroVector;
 }

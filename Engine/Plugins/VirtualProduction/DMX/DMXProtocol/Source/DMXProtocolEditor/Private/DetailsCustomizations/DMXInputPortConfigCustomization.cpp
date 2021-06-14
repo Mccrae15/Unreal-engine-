@@ -29,65 +29,29 @@ TSharedRef<IPropertyTypeCustomization> FDMXInputPortConfigCustomization::MakeIns
 	return MakeShared<FDMXInputPortConfigCustomization>();
 }
 
-void FDMXInputPortConfigCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> InStructPropertyHandle, class IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
-{
-	FDMXPortConfigCustomizationBase::CustomizeChildren(InStructPropertyHandle, ChildBuilder, StructCustomizationUtils);
-
-	StructPropertyHandle = InStructPropertyHandle;
-
-	// Update corresponding port on property changes
-	FSimpleDelegate UpdatePortDelegate = FSimpleDelegate::CreateSP(this, &FDMXInputPortConfigCustomization::UpdatePort);
-	StructPropertyHandle->SetOnChildPropertyValueChanged(UpdatePortDelegate);
-
-	// Since base may make changes to data we want to update the port already
-	UpdatePort();
-}
-
 FName FDMXInputPortConfigCustomization::GetProtocolNamePropertyNameChecked() const
 {
-	return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, ProtocolName);
+	return FDMXInputPortConfig::GetProtocolNamePropertyNameChecked();
 }
 
 FName FDMXInputPortConfigCustomization::GetCommunicationTypePropertyNameChecked() const
 {
-	return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, CommunicationType);
+	return FDMXInputPortConfig::GetCommunicationTypePropertyNameChecked();
 }
 
 FName FDMXInputPortConfigCustomization::GetDeviceAddressPropertyNameChecked() const
 {
-	return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, DeviceAddress);
+	return FDMXInputPortConfig::GetDeviceAddressPropertyNameChecked();
 }
 
 FName FDMXInputPortConfigCustomization::GetPortGuidPropertyNameChecked() const
 {
-	return FDMXInputPortConfig::GetPortGuidPropertyName();
+	return FDMXInputPortConfig::GetPortGuidPropertyNameChecked();
 }
 
 const TArray<EDMXCommunicationType> FDMXInputPortConfigCustomization::GetSupportedCommunicationTypes() const
 {
 	return GetProtocolChecked()->GetInputPortCommunicationTypes();
-}
-
-void FDMXInputPortConfigCustomization::UpdatePort()
-{
-	check(StructPropertyHandle.IsValid());
-
-	TArray<void*> RawData;
-	StructPropertyHandle->AccessRawData(RawData);
-
-	// Multiediting is not supported, may fire if this is used in a blueprint way that would support it
-	if (ensureMsgf(RawData.Num() == 1, TEXT("Using port config in ways that would enable multiediting is not supported.")))
-	{
-		const FDMXInputPortConfig* PortConfigPtr = reinterpret_cast<FDMXInputPortConfig*>(RawData[0]);
-		if (ensure(PortConfigPtr))
-		{
-			FDMXInputPortSharedPtr InputPort = FDMXPortManager::Get().FindInputPortByGuid(PortConfigPtr->GetPortGuid());
-			if (ensure(InputPort.IsValid()))
-			{
-				InputPort->UpdateFromConfig(*PortConfigPtr);
-			}
-		}
-	}
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -4,16 +4,16 @@
 
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
+#include "CameraCalibrationSubsystem.h"
 #include "CineCameraComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
-#include "ComposureLayersEditor/Private/ICompElementManager.h"
+#include "ComposureLayersEditor/Public/ICompElementManager.h"
 #include "ComposureLayersEditor/Public/CompElementEditorModule.h"
 #include "ComposurePlayerCompositingTarget.h"
 #include "ComposureUtils.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
 #include "LensDistortionModelHandlerBase.h"
-#include "LensDistortionSubsystem.h"
 #include "Modules/ModuleManager.h"
 #include "Slate/SceneViewport.h"
 
@@ -72,40 +72,33 @@ void UComposureBlueprintLibrary::GetPlayerDisplayGamma(const APlayerCameraManage
 	DisplayGamma = SceneViewport ? SceneViewport->GetDisplayGamma() : 0.0;
 }
 
-void UComposureBlueprintLibrary::CopyCameraSettingsToSceneCapture(UCameraComponent* Src, USceneCaptureComponent2D* Dst, bool bApplyDistortion)
+void UComposureBlueprintLibrary::CopyCameraSettingsToSceneCapture(UCameraComponent* Src, USceneCaptureComponent2D* Dst, float OriginalFocalLength, float OverscanFactor)
 {
 	if (Src && Dst)
 	{
 		Dst->SetWorldLocationAndRotation(Src->GetComponentLocation(), Src->GetComponentRotation());
-		Dst->FOVAngle = Src->FieldOfView;
 
 		FMinimalViewInfo CameraViewInfo;
 		Src->GetCameraView(/*DeltaTime =*/0.0f, CameraViewInfo);
 
-		// If distortion should be applied, get the overscan factor from the Src's lens distortion data handler, and use it to augment the Dst's FOV
-		if (bApplyDistortion)
-		{
-			if (UCineCameraComponent* SrcCineCameraComponent = Cast<UCineCameraComponent>(Src))
-			{ 			
-				ULensDistortionSubsystem* SubSystem = GEngine->GetEngineSubsystem<ULensDistortionSubsystem>();
-				if (SubSystem)
-				{
-					if (ULensDistortionModelHandlerBase* LensDistortionHandler = SubSystem->GetDistortionModelHandler(SrcCineCameraComponent))
-					{
-						const float OverscanFactor = LensDistortionHandler->GetOverscanFactor();
-						if (SrcCineCameraComponent->CurrentFocalLength <= 0.0f)
-						{
-							Dst->FOVAngle = 0.0f;
-						}
-						else
-						{
-							const float OverscanSensorWidth = (SrcCineCameraComponent->Filmback.SensorWidth * 0.5f) * OverscanFactor;
-							Dst->FOVAngle = FMath::RadiansToDegrees(2.0f * FMath::Atan(OverscanSensorWidth / SrcCineCameraComponent->CurrentFocalLength));
-						}
-					}
-
-				}
+		// Use the input overscan factor to augment the destination component's FOV angle
+		// Note: The math relies on the filmback and focal length of the input camera component, which necessitates that it be a CineCameraComponet
+		if (UCineCameraComponent* SrcCineCameraComponent = Cast<UCineCameraComponent>(Src))
+		{ 			
+			// Guard against divide-by-zero
+			if (SrcCineCameraComponent->CurrentFocalLength <= 0.0f)
+			{
+				Dst->FOVAngle = 0.0f;
 			}
+			else
+			{
+				const float OverscanSensorWidth = SrcCineCameraComponent->Filmback.SensorWidth * OverscanFactor;
+				Dst->FOVAngle = FMath::RadiansToDegrees(2.0f * FMath::Atan(OverscanSensorWidth / (2.0f * OriginalFocalLength)));
+			}
+		}
+		else
+		{
+			Dst->FOVAngle = Src->FieldOfView;
 		}
 
 		const FPostProcessSettings& SrcPPSettings = CameraViewInfo.PostProcessSettings;

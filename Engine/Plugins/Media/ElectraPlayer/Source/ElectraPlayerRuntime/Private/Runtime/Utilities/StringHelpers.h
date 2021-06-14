@@ -24,7 +24,9 @@ namespace Electra
 
 		bool StringStartsWith(const TCHAR * const s1, const TCHAR * const s2, SIZE_T n);
 
+		void StringToArray(TArray<uint8>& OutArray, const FString& InString);
 
+		FString ArrayToString(const TArray<uint8>& InArray);
 
 		/**
 		 * There is a known anomaly in the FString::TConstIterator. It iterates all TCHARs in the string *including* the terminating zero character.
@@ -103,6 +105,11 @@ namespace Electra
 			FORCEINLINE explicit operator bool() const
 			{
 				return Index >= 0 && Index < StringToIterate.Len();
+			}
+
+			const TCHAR* GetRemainder() const
+			{
+				return &StringToIterate[Index];
 			}
 
 			/** Returns an index to the current element. */

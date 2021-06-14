@@ -330,7 +330,7 @@ FSeparateTranslucencyDimensions UpdateTranslucencyTimers(FRHICommandListImmediat
 
 	FSeparateTranslucencyDimensions Dimensions;
 	Dimensions.Extent = GetScaledExtent(SceneContext.GetBufferSizeXY(), EffectiveScale);
-	Dimensions.NumSamples = SceneContext.GetSceneColorSurface()->GetNumSamples();
+	Dimensions.NumSamples = SceneContext.GetSceneDepthSurface()->GetNumSamples();
 	Dimensions.Scale = EffectiveScale;
 	return Dimensions;
 }
@@ -847,9 +847,9 @@ static void UpdateSeparateTranslucencyViewState(FScene* Scene, const FViewInfo& 
 	if ((View.IsInstancedStereoPass() || View.bIsMobileMultiViewEnabled) && View.Family->Views.Num() > 0)
 	{
 		// When drawing the left eye in a stereo scene, copy the right eye view values into the instanced view uniform buffer.
-		const int32 StereoPassIndex = IStereoRendering::IsStereoEyeView(View) ? View.StereoPass + 1 : eSSP_FULL;
+		const EStereoscopicPass StereoPassIndex = IStereoRendering::IsStereoEyeView(View) ? eSSP_RIGHT_EYE : eSSP_FULL;
 
-		const FViewInfo& InstancedView = static_cast<const FViewInfo&>(View.Family->GetStereoEyeView((EStereoscopicPass)StereoPassIndex));
+		const FViewInfo& InstancedView = static_cast<const FViewInfo&>(View.Family->GetStereoEyeView(StereoPassIndex));
 		SetupDownsampledTranslucencyViewParameters(InstancedView, TextureExtent, GetScaledRect(InstancedView.ViewRect, ViewportScale), DownsampledTranslucencyViewParameters);
 		Scene->UniformBuffers.InstancedViewUniformBuffer.UpdateUniformBufferImmediate(reinterpret_cast<FInstancedViewUniformShaderParameters&>(DownsampledTranslucencyViewParameters));
 		DrawRenderState.SetInstancedViewUniformBuffer(Scene->UniformBuffers.InstancedViewUniformBuffer);
@@ -1189,6 +1189,7 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(
 	FRDGBuilder& GraphBuilder,
 	FRDGTextureMSAA SceneColorTexture,
 	FRDGTextureMSAA SceneDepthTexture,
+	const FHairStrandsRenderingData* HairDatas,
 	FSeparateTranslucencyTextures* OutSeparateTranslucencyTextures,
 	ETranslucencyView ViewsToRender)
 {
@@ -1209,6 +1210,10 @@ void FDeferredShadingSceneRenderer::RenderTranslucency(
 	if (ViewFamily.AllowTranslucencyAfterDOF())
 	{
 		RenderTranslucencyInner(GraphBuilder, SceneColorTexture, SceneDepthTexture, OutSeparateTranslucencyTextures, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_StandardTranslucency);
+		if (GetHairStrandsComposition() == EHairStrandsCompositionType::AfterTranslucentTranslucentBeforeAfterDOF)
+		{
+			RenderHairComposition(GraphBuilder, Views, HairDatas, SceneColorTexture.Target, SceneDepthTexture.Target);
+		}
 		RenderTranslucencyInner(GraphBuilder, SceneColorTexture, SceneDepthTexture, OutSeparateTranslucencyTextures, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_TranslucencyAfterDOF);
 		RenderTranslucencyInner(GraphBuilder, SceneColorTexture, SceneDepthTexture, OutSeparateTranslucencyTextures, ViewsToRender, SceneColorCopyTexture, ETranslucencyPass::TPT_TranslucencyAfterDOFModulate);
 	}

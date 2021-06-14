@@ -37,6 +37,8 @@ public class DatasmithRuntime : ModuleRules
 				"MeshUtilitiesCommon",
 				"RawMesh",
 				"RHI",
+				"PhysicsCore",
+				"RuntimePhysXCooking",
 				"RenderCore",
 				"SlateCore",
 				"StaticMeshDescription",
@@ -52,6 +54,13 @@ public class DatasmithRuntime : ModuleRules
 					"UnrealEd",
 				}
 			);
+		}
+
+		// Set environment variable DIRECTLINK_LOG to get DirectLink logging
+		string DirectLog = System.Environment.GetEnvironmentVariable("DIRECTLINK_LOG");
+		if (DirectLog != null)
+		{
+			PublicDefinitions.Add("DIRECTLINK_LOG");
 		}
 
 		// Add dependency to CoreTech to enable load of CAD files on Windows
@@ -70,8 +79,9 @@ public class DatasmithRuntime : ModuleRules
 				new string[] {
 					"CADInterfaces",
 					"DatasmithCADTranslator",
-					"DatasmithWireTranslator",
-					"DatasmithOpenNurbsTranslator",
+					// Temporarily remove dependency to Rhino and Wire translators
+					//"DatasmithWireTranslator",
+					//"DatasmithOpenNurbsTranslator",
 					"DatasmithDispatcher",
 				}
 			);

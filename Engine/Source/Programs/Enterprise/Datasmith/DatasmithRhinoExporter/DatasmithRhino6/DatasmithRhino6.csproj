@@ -50,10 +50,13 @@
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Platform_OS)' == 'Win64'">
-    <DefineConstants>$(DefineConstants)WIN64_OS</DefineConstants>
+    <DefineConstants>$(DefineConstants);WIN64_OS</DefineConstants>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Platform_OS)' == 'Mac'">
-    <DefineConstants>$(DefineConstants)MAC_OS</DefineConstants>
+    <DefineConstants>$(DefineConstants);MAC_OS</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(DATASMITHRHINO_EXPERIMENTAL)' == 'TRUE'">
+    <DefineConstants>$(DefineConstants);DATASMITHRHINO_EXPERIMENTAL</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
@@ -76,21 +79,138 @@
       <Private>False</Private>
     </Reference>
   </ItemGroup>
+  <ItemGroup Condition="'$(Platform_OS)' == 'Mac'">
+    <Reference Include="RhinoMac">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>$(RHINO6_PATH)\RhinoMac.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
   <ItemGroup>
     <Compile Include="DatasmithRhino6.cs" />
     <Compile Include="$(AssemblyInfo)">
       <Link>Properties\AssemblyInfo.cs</Link>
-    </Compile>
-    <Compile Include="..\Private\**\*.cs">
-      <Link>DatasmithRhinoExporter\%(RecursiveDir)%(Filename)%(Extension)</Link>
     </Compile>
     <!-- DatasmithCSharpFacade API, possibly change that. -->
     <Compile Include="..\..\..\..\..\..\Binaries\$(Platform_OS)\DatasmithFacadeCSharp\Public\*.cs">
       <Link>DatasmithSwigFacade\%(Filename)%(Extension)</Link>
     </Compile>
   </ItemGroup>
+  <ItemGroup Condition="'$(Platform_OS)' == 'Win64'">
+    <Compile Include="..\Private\**\*.cs">
+      <Link>DatasmithRhinoExporter\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+  </ItemGroup>
+  <!-- TODO Remove this explicit definition once .net uses msbuild on Mac -->
+  <ItemGroup Condition="'$(Platform_OS)' == 'Mac'">
+    <Compile Include="..\Private\Commands\*.cs">
+      <Link>DatasmithRhinoExporter\Commands\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\Private\DirectLink\*.cs">
+      <Link>DatasmithRhinoExporter\DirectLink\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\Private\ElementExporters\*.cs">
+      <Link>DatasmithRhinoExporter\ElementExporters\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\Private\Utils\*.cs">
+      <Link>DatasmithRhinoExporter\Utils\%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="..\Private\*.cs">
+      <Link>DatasmithRhinoExporter\%(Filename)%(Extension)</Link>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\SharedResources\Localization\Resources.Designer.cs">
+      <Link>Properties\Localization\Resources.Designer.cs</Link>
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>Resources.resx</DependentUpon>
+    </Compile>
+    <Compile Include="..\SharedResources\Localization\Resources.de.Designer.cs">
+      <Link>Properties\Localization\Resources.de.Designer.cs</Link>
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>Resources.de.resx</DependentUpon>
+    </Compile>
+    <Compile Include="..\SharedResources\Localization\Resources.es.Designer.cs">
+      <Link>Properties\Localization\Resources.es.Designer.cs</Link>
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>Resources.es.resx</DependentUpon>
+    </Compile>
+    <Compile Include="..\SharedResources\Localization\Resources.fr.Designer.cs">
+      <Link>Properties\Localization\Resources.fr.Designer.cs</Link>
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>Resources.fr.resx</DependentUpon>
+    </Compile>
+    <Compile Include="..\SharedResources\Localization\Resources.ja.Designer.cs">
+      <Link>Properties\Localization\Resources.ja.Designer.cs</Link>
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>Resources.ja.resx</DependentUpon>
+    </Compile>
+    <Compile Include="..\SharedResources\Localization\Resources.ko.Designer.cs">
+      <Link>Properties\Localization\Resources.ko.Designer.cs</Link>
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>Resources.ko.resx</DependentUpon>
+    </Compile>
+    <Compile Include="..\SharedResources\Localization\Resources.pt.Designer.cs">
+      <Link>Properties\Localization\Resources.pt.Designer.cs</Link>
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>Resources.pt.resx</DependentUpon>
+    </Compile>
+    <Compile Include="..\SharedResources\Localization\Resources.zh.Designer.cs">
+      <Link>Properties\Localization\Resources.zh.Designer.cs</Link>
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+      <DependentUpon>Resources.zh.resx</DependentUpon>
+    </Compile>
+  </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="..\SharedResources\UnrealEngine.ico" />
+    <EmbeddedResource Include="..\SharedResources\Localization\Resources.resx">
+      <Link>Properties\Localization\Resources.resx</Link>
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\SharedResources\Localization\Resources.de.resx">
+      <Link>Properties\Localization\Resources.de.resx</Link>
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.de.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\SharedResources\Localization\Resources.es.resx">
+      <Link>Properties\Localization\Resources.es.resx</Link>
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.es.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\SharedResources\Localization\Resources.fr.resx">
+      <Link>Properties\Localization\Resources.fr.resx</Link>
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.fr.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\SharedResources\Localization\Resources.ja.resx">
+      <Link>Properties\Localization\Resources.ja.resx</Link>
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.ja.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\SharedResources\Localization\Resources.ko.resx">
+      <Link>Properties\Localization\Resources.ko.resx</Link>
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.ko.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\SharedResources\Localization\Resources.pt.resx">
+      <Link>Properties\Localization\Resources.pt.resx</Link>
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.pt.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\SharedResources\Localization\Resources.zh.resx">
+      <Link>Properties\Localization\Resources.zh.resx</Link>
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.zh.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
@@ -106,10 +226,9 @@
 		Copy "$(MSBuildProjectDirectory)\..\SharedResources\DatasmithRhino.rui" "$(TargetDir)$(TargetName).rui"
     </PostBuildEvent>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)' == 'Debug' And '$(Platform_OS)' == 'Mac'">
+  <PropertyGroup Condition="'$(Platform_OS)' == 'Mac'">
     <PostBuildEvent>
-		cp -f "$(MSBuildProjectDirectory)/$(OutputPath)$(AssemblyName).dll" "$(MSBuildProjectDirectory)/$(OutputPath)$(AssemblyName).rhp"
-		cp -f "$(MSBuildProjectDirectory)/../SharedResources/DatasmithRhino.rui" "$(MSBuildProjectDirectory)/$(OutputPath)$(AssemblyName).rui" 
+    sh "$(ProjectDir)../Installer/CreateMacPackages.sh" $(TargetName) 6
     </PostBuildEvent>
   </PropertyGroup>
   <PropertyGroup>

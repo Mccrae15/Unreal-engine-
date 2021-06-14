@@ -2,8 +2,8 @@
 
 #include "Export.h"
 #include "ResourcesIDs.h"
-#include "Error.h"
-#include "AutoChangeDatabase.h"
+#include "Utils/Error.h"
+#include "Utils/AutoChangeDatabase.h"
 #include "Exporter.h"
 
 #include "exp.h"
@@ -26,15 +26,16 @@ const utf8_t* StrFileExtension = "udatasmith";
 
 static GSErrCode __ACENV_CALL SaveToDatasmithFile(const API_IOParams* IOParams, Modeler::SightPtr sight)
 {
-	GSErrCode GSErr =
-		TryFunction("FExport::SaveDatasmithFile", FExport::SaveDatasmithFile, (void*)IOParams, (void*)&sight);
+	GSErrCode GSErr = TryFunctionCatchAndAlert("FExport::SaveDatasmithFile", [&IOParams, &sight]() -> GSErrCode {
+		return FExport::SaveDatasmithFile(*IOParams, *sight.GetPtr());
+	});
 	ACAPI_KeepInMemory(true);
 	return GSErr;
 }
 
 GSErrCode FExport::Register()
 {
-	return ACAPI_Register_FileType(kDatasmithFileRefCon, kStrFileType, kStrFileCreator, StrFileExtension, kIconDS,
+	return ACAPI_Register_FileType(kDatasmithFileRefCon, kStrFileType, kStrFileCreator, StrFileExtension, kIconDSFile,
 								   LocalizeResId(kStrListFileTypes), 0, SaveAs3DSupported);
 }
 
@@ -43,22 +44,19 @@ GSErrCode FExport::Initialize()
 	GSErrCode GSErr = ACAPI_Install_FileTypeHandler3D(kDatasmithFileRefCon, SaveToDatasmithFile);
 	if (GSErr != NoError)
 	{
-		UE_AC_DebugF("FExport::Initialize - ACAPI_Install_FileTypeHandler3D error=%d\n", GSErr);
+		UE_AC_DebugF("FExport::Initialize - ACAPI_Install_FileTypeHandler3D error=%s\n", GetErrorName(GSErr));
 	}
 	return GSErr;
 }
 
-GSErrCode FExport::SaveDatasmithFile(void* inIOParams, void* InSight)
+GSErrCode FExport::SaveDatasmithFile(const API_IOParams& IOParams, const Modeler::Sight& InSight)
 {
-	const API_IOParams&		 IOParams = *(const API_IOParams*)inIOParams;
-	const Modeler::SightPtr& sight = *reinterpret_cast< const Modeler::SightPtr* >(InSight);
-
 	try
 	{
 		FAutoChangeDatabase db(APIWind_FloorPlanID);
 
 		ModelerAPI::Model		 model;
-		Modeler::ConstModel3DPtr model3D(sight->GetMainModelPtr());
+		Modeler::ConstModel3DPtr model3D(InSight.GetMainModelPtr());
 		AttributeReader			 AttrReader; // deprecated constructor, temporary!
 		UE_AC_TestGSError(EXPGetModel(model3D, &model, &AttrReader));
 

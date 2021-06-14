@@ -351,11 +351,6 @@ bool FSoundSource::SetReverbApplied(bool bHardwareAvailable)
 	return(bReverbApplied);
 }
 
-float FSoundSource::SetStereoBleed()
-{
-	return 0.f;
-}
-
 float FSoundSource::SetLFEBleed()
 {
 	LFEBleed = WaveInstance->LFEBleed;
@@ -768,6 +763,11 @@ FArchive& operator<<( FArchive& Ar, FNotifyBufferFinishedHooks& NotifyHook )
 
 /** Helper to create good unique type hashs for FWaveInstance instances */
 uint32 FWaveInstance::TypeHashCounter = 0;
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FWaveInstance::FWaveInstance(FWaveInstance&&) = default;
+FWaveInstance& FWaveInstance::operator=(FWaveInstance&&) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /**
  * Constructor, initializing all member variables.

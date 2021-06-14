@@ -87,7 +87,7 @@ static void InitAtlasTexture(ResourceType* InResource, UTexture2D* InTexture, EH
 	ENQUEUE_RENDER_COMMAND(HairStrandsCardsTextureCommand)(
 	[InResource, InTexture, InType](FRHICommandListImmediate& RHICmdList)
 	{
-		FSamplerStateRHIRef DefaultSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+		FSamplerStateRHIRef DefaultSampler = TStaticSamplerState<SF_AnisotropicLinear, AM_Clamp, AM_Clamp, AM_Clamp, 0, 0>::GetRHI();
 		switch (InType)
 		{
 		case EHairAtlasTextureType::Depth:
@@ -2235,7 +2235,10 @@ static void InitCardsTextureResources(UGroomAsset* GroomAsset)
 					InitAtlasTexture(LOD.RestResource, Desc->Textures.AttributeTexture, EHairAtlasTextureType::Attribute);
 					InitAtlasTexture(LOD.RestResource, Desc->Textures.CoverageTexture, EHairAtlasTextureType::Coverage);
 					InitAtlasTexture(LOD.RestResource, Desc->Textures.AuxilaryDataTexture, EHairAtlasTextureType::AuxilaryData);
-					LOD.RestResource->bInvertUV = Desc->SourceType == EHairCardsSourceType::Procedural; // Should fix procedural texture so that this does not happen
+					if (LOD.RestResource)
+					{
+						LOD.RestResource->bInvertUV = Desc->SourceType == EHairCardsSourceType::Procedural; // Should fix procedural texture so that this does not happen
+					}
 				}
 			}
 		}

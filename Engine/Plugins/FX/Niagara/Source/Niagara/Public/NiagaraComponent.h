@@ -256,8 +256,13 @@ public:
 
 	void OnPooledReuse(UWorld* NewWorld);
 
+	/*
+	Switch which asset the component is using.
+	This requires Niagara to wait for concurrent execution and the override parameter store to be synchronized with the new asset.
+	By default existing parameters are reset when we call SetAsset, modify bResetExistingOverrideParameters to leave existing parameter data as is.
+	*/
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Niagara System Asset"))
-	void SetAsset(UNiagaraSystem* InAsset);
+	void SetAsset(UNiagaraSystem* InAsset, bool bResetExistingOverrideParameters = true);
 
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Get Niagara System Asset"))
 	UNiagaraSystem* GetAsset() const { return Asset; }
@@ -487,11 +492,17 @@ public:
 	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 
-	/** 
-	  * Find the value of an overridden parameter. 
+	/**
+	  * Find the value of an overridden parameter.  The value returned may not be the current value being used by the simulation but
+	  * will reflect the last value which has been set through the editor on a component placed in a level, or on a component in the 
+	  * blueprint editor.
 	  * Returns null if the parameter isn't overridden by this component.
 	  */
 	FNiagaraVariant FindParameterOverride(const FNiagaraVariableBase& InKey) const;
+
+	/** Gets the current value of a parameter which is being used by the simulation.  This value will reflect runtime changes such as
+	  * those made by sequencer, or in PIE through code or blueprint. */
+	FNiagaraVariant GetCurrentParameterValue(const FNiagaraVariableBase& InKey) const;
 
 	bool HasParameterOverride(const FNiagaraVariableBase& InKey) const;
 	void SetParameterOverride(const FNiagaraVariableBase& InKey, const FNiagaraVariant& InValue);
@@ -553,7 +564,7 @@ private:
 
 	void AssetExposedParametersChanged();
 
-	void CopyParametersFromAsset();
+	void CopyParametersFromAsset(bool bResetExistingOverrideParameters = true);
 	
 #if WITH_EDITOR
 	void SetOverrideParameterStoreValue(const FNiagaraVariableBase& InKey, const FNiagaraVariant& InValue);

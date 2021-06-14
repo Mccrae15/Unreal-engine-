@@ -23,6 +23,7 @@ public:
 	virtual void RegisterCommands() override;
 
 	TSharedPtr<FUICommandInfo> Apply;
+	TSharedPtr<FUICommandInfo> ApplyScratchPadChanges;
 	TSharedPtr<FUICommandInfo> Discard;
 	TSharedPtr<FUICommandInfo> Compile;
 	TSharedPtr<FUICommandInfo> RefreshNodes;
@@ -45,7 +46,8 @@ public:
 
 	TSharedPtr<FUICommandInfo> ToggleOrbit;
 	TSharedPtr<FUICommandInfo> ToggleBounds;
-	TSharedPtr<FUICommandInfo> ToggleBounds_SetFixedBounds;
+	TSharedPtr<FUICommandInfo> ToggleBounds_SetFixedBounds_SelectedEmitters;
+	TSharedPtr<FUICommandInfo> ToggleBounds_SetFixedBounds_System;
 	TSharedPtr<FUICommandInfo> SaveThumbnailImage;
 
 	TSharedPtr<FUICommandInfo> ToggleStatPerformance;
@@ -55,6 +57,10 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleStatPerformanceTypeMax;
 	TSharedPtr<FUICommandInfo> ToggleStatPerformanceModePercent;
 	TSharedPtr<FUICommandInfo> ToggleStatPerformanceModeAbsolute;
+
+	TSharedPtr<FUICommandInfo> OpenDebugHUD;
+	TSharedPtr<FUICommandInfo> OpenDebugOutliner;
+	TSharedPtr<FUICommandInfo> OpenAttributeSpreadsheet;
 
 	TSharedPtr<FUICommandInfo> ToggleAutoPlay;
 	TSharedPtr<FUICommandInfo> ToggleResetSimulationOnChange;

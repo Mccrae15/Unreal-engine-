@@ -33,7 +33,8 @@ struct FMPDLoadRequestDASH : public IHTTPResourceRequestObject
 		XLink_URLQuery,
 		XLink_InitializationSet,
 		Callback,
-		Segment
+		Segment,
+		TimeSync
 	};
 	const TCHAR* const GetRequestTypeName() const
 	{
@@ -49,6 +50,7 @@ struct FMPDLoadRequestDASH : public IHTTPResourceRequestObject
 			case ELoadType::XLink_InitializationSet:return TEXT("remote InitializationSet");
 			case ELoadType::Callback:				return TEXT("Callback");
 			case ELoadType::Segment:				return TEXT("Segment");
+			case ELoadType::TimeSync:				return TEXT("Time sync");
 			default:								return TEXT("<unknown>");
 		}
 	}
@@ -61,6 +63,7 @@ struct FMPDLoadRequestDASH : public IHTTPResourceRequestObject
 	FMPDLoadRequestDASH() : LoadType(ELoadType::MPD) {}
 	FString			URL;	// For xlink requests this could be "urn:mpeg:dash:resolve-to-zero:2013" indicating removal of the element.
 	FString			Range;
+	FString			Verb;
 	TArray<HTTP::FHTTPHeader> Headers;
 	FTimeValue		ExecuteAtUTC;
 
@@ -130,6 +133,13 @@ public:
 			FString CDN;
 			FString CustomHeader;
 		};
+		struct FInbandEventStream
+		{
+			FString SchemeIdUri;
+			FString Value;
+			int64 PTO = 0;
+			uint32 Timescale = 0;
+		};
 		FURL InitializationURL;
 		FURL MediaURL;
 		FTimeValue ATO;
@@ -148,6 +158,7 @@ public:
 		bool bMayBeMissing = false;					//!< true if the last segment in <SegmentTemplate> that might not exist.
 		bool bIsMissing = false;					//!< Set to true if known to be missing.
 		bool bSawLMSG = false;						//!< Will be set to true by the stream reader if the 'lmsg' brand was found.
+		TArray<FInbandEventStream> InbandEventStreams;
 
 		FTimeValue CalculateASAST(const FTimeValue& AST, const FTimeValue& PeriodStart, bool bIsStatic)
 		{
@@ -217,6 +228,7 @@ public:
 		void GetSegmentInformation(TArray<IManifest::IPlayPeriod::FSegmentInformation>& OutSegmentInformation, FTimeValue& OutAverageSegmentDuration, TSharedPtrTS<const IStreamSegment> CurrentSegment, const FTimeValue& LookAheadTime, const TSharedPtrTS<IPlaybackAssetAdaptationSet>& AdaptationSet);
 
 
+
 		//----------------------------------------------
 		// Methods from IPlaybackAssetRepresentation
 		//
@@ -249,8 +261,9 @@ public:
 		ESearchResult FindSegment_Timeline(IPlayerSessionServices* PlayerSessionServices, FSegmentInformation& OutSegmentInfo, TArray<TWeakPtrTS<FMPDLoadRequestDASH>>& OutRemoteElementLoadRequests, const FSegmentSearchOption& InSearchOptions, const TSharedPtrTS<FDashMPD_RepresentationType>& MPDRepresentation, const TArray<TSharedPtrTS<FDashMPD_SegmentTemplateType>>& SegmentTemplate, const TSharedPtrTS<FDashMPD_SegmentTimelineType>& SegmentTimeline);
 
 		bool PrepareDownloadURLs(IPlayerSessionServices* PlayerSessionServices, FSegmentInformation& InOutSegmentInfo, const TArray<TSharedPtrTS<FDashMPD_SegmentBaseType>>& SegmentBase);
-		bool PrepareDownloadURLs(IPlayerSessionServices* PlayerSessionServices, FSegmentInformation& InOutSegmentInfo, const TArray<TSharedPtrTS<FDashMPD_SegmentTemplateType>>& SegmentBase);
+		bool PrepareDownloadURLs(IPlayerSessionServices* PlayerSessionServices, FSegmentInformation& InOutSegmentInfo, const TArray<TSharedPtrTS<FDashMPD_SegmentTemplateType>>& SegmentTemplate);
 		FString ApplyTemplateStrings(FString TemplateURL, const FSegmentInformation& InSegmentInfo);
+		void CollectInbandEventStreams(IPlayerSessionServices* PlayerSessionServices, FSegmentInformation& InOutSegmentInfo);
 
 		void SegmentIndexDownloadComplete(TSharedPtrTS<FMPDLoadRequestDASH> Request, bool bSuccess);
 		friend class FManifestDASHInternal;
@@ -302,12 +315,164 @@ public:
 			return nullptr;
 		}
 
+
+		void MapRoleAccessibilityToHTML5(FTrackMetadata& InOutMetadata, EStreamType StreamType) const
+		{
+			/*
+				Role: "main", "alternate", "supplementary", "commentary", "dub", "emergency", "caption", "subtitle", "sign" or "description"
+				Accessibility: "sign", "caption", "description", "enhanced-audio-intelligibility", or starts with "608:"/"708:" followed by the Value
+			*/
+			auto IsCEAService = [=]() -> bool
+			{
+				for(auto &Acc : Accessibilities)
+				{
+					if (Acc.StartsWith(TEXT("608:")) || Acc.StartsWith(TEXT("708:")))
+					{
+						return true;
+					}
+				}
+				return false;
+			};
+
+			// See: https://dev.w3.org/html5/html-sourcing-inband-tracks/#mpegdash
+			bool bMain = Roles.Contains(TEXT("main"));
+			bool bAlternate = Roles.Contains(TEXT("alternate"));
+			bool bSupplementary = Roles.Contains(TEXT("supplementary"));
+			bool bCommentary = Roles.Contains(TEXT("commentary"));
+			bool bDub = Roles.Contains(TEXT("dub"));
+			bool bEmergency = Roles.Contains(TEXT("emergency"));
+			bool bCaption = Roles.Contains(TEXT("caption"));
+			bool bSubtitle = Roles.Contains(TEXT("subtitle"));
+			bool bSign = Roles.Contains(TEXT("sign"));
+			bool bDescription = Roles.Contains(TEXT("description"));
+			bool bIsCEAService = IsCEAService();
+			if (StreamType == EStreamType::Video || StreamType == EStreamType::Audio)
+			{
+				/*
+					"alternative": if the role is "alternate" but not also "main" or "commentary", or "dub"
+					"captions": if the role is "caption" and also "main"
+					"descriptions": if the role is "description" and also "supplementary"
+					"main": if the role is "main" but not also "caption", "subtitle", or "dub"
+					"main-desc": if the role is "main" and also "description"
+					"sign": not used
+					"subtitles": if the role is "subtitle" and also "main"
+					"translation": if the role is "dub" and also "main"
+					"commentary": if the role is "commentary" but not also "main"
+					"": otherwise
+				*/
+				if (bMain && !(bCaption || bSubtitle || bDub))
+				{
+					InOutMetadata.Kind = TEXT("main");
+				}
+				else if (bMain && bDescription)
+				{
+					InOutMetadata.Kind = TEXT("main-desc");
+				}
+				else if (bAlternate && !(bMain || bCommentary || bDub))
+				{
+					InOutMetadata.Kind = TEXT("alternative");
+				}
+				else if (bSubtitle && bMain)
+				{
+					InOutMetadata.Kind = TEXT("subtitles");
+				}
+				else if (bCaption && bMain)
+				{
+					InOutMetadata.Kind = TEXT("captions");
+				}
+				else if (bDescription && bSupplementary)
+				{
+					InOutMetadata.Kind = TEXT("descriptions");
+				}
+				else if (bDub && bMain)
+				{
+					InOutMetadata.Kind = TEXT("translation");
+				}
+				else if (bCommentary && !bMain)
+				{
+					InOutMetadata.Kind = TEXT("commentary");
+				}
+			}
+			else if (StreamType == EStreamType::Subtitle)
+			{
+				/*
+					Is an ISOBMFF CEA 608 or 708 caption service: "captions".
+					"captions": if the Role descriptor's value is "caption"
+					"subtitles": if the Role descriptor's value is "subtitle"
+					"metadata": otherwise
+				*/
+				if (bIsCEAService || bCaption)
+				{
+					InOutMetadata.Kind = TEXT("captions");
+				}
+				else if (bSubtitle)
+				{
+					InOutMetadata.Kind = TEXT("subtitles");
+				}
+				else
+				{
+					InOutMetadata.Kind = TEXT("metadata");
+				}
+				// TODO: ID and language (complicated by the CEA services)
+				check(!"need to add ID and language handling");
+				InOutMetadata.ID = TEXT("CC1");
+				InOutMetadata.Language = TEXT("en");
+			}
+		}
+
+
+		void GetMetaData(FTrackMetadata& OutMetadata, EStreamType StreamType) const
+		{
+			OutMetadata.ID = GetUniqueIdentifier();
+			OutMetadata.Language = GetLanguage();
+			OutMetadata.HighestBandwidth = GetMaxBandwidth();
+			OutMetadata.HighestBandwidthCodec = GetCodec();
+			// Map role and accessibility. Do this last since this is allowed to overwrite ID and Language
+			MapRoleAccessibilityToHTML5(OutMetadata, StreamType);
+			const TArray<TSharedPtrTS<FRepresentation>>& Reprs = GetRepresentations();
+			for(int32 j=0; j<Reprs.Num(); ++j)
+			{
+				if (Reprs[j]->CanBePlayed())
+				{
+					FStreamMetadata sd;
+					sd.Bandwidth = Reprs[j]->GetBitrate();
+					sd.CodecInformation = Reprs[j]->GetCodecInformation();
+					OutMetadata.StreamDetails.Emplace(MoveTemp(sd));
+				}
+			}
+		}
+
+
+		struct FContentProtection
+		{
+			TSharedPtrTS<FDashMPD_DescriptorType> Descriptor;
+			FString DefaultKID;
+			FString CommonScheme;
+		};
+		FString GetMimeType()
+		{
+			TSharedPtrTS<FDashMPD_AdaptationSetType> MPDAdaptationSet = AdaptationSet.Pin();
+			return MPDAdaptationSet.IsValid() ? MPDAdaptationSet->GetMimeType() : FString();
+		}
+		FString GetMimeTypeWithCodecs()
+		{
+			TSharedPtrTS<FDashMPD_AdaptationSetType> MPDAdaptationSet = AdaptationSet.Pin();
+			if (MPDAdaptationSet.IsValid())
+			{
+				return FString::Printf(TEXT("%s; codecs=\"%s\""), *MPDAdaptationSet->GetMimeType(), *GetListOfCodecs());
+			}
+			return FString();
+		}
+		const TArray<FContentProtection>& GetPossibleContentProtections() const { return PossibleContentProtections; }
+		const FString& GetCommonEncryptionScheme() const { return CommonEncryptionScheme; }
+		const FString& GetDefaultKID() const { return DefaultKID; }
+
 		//----------------------------------------------
 		// Methods from IPlaybackAssetAdaptationSet
 		//
 		virtual FString GetUniqueIdentifier() const override
 		{
-			return FString::Printf(TEXT("%d"), IndexOfSelf);
+			return FString::Printf(TEXT("%d"), UniqueSequentialSetIndex);
 		}
 		virtual FString GetListOfCodecs() const override
 		{
@@ -343,9 +508,13 @@ public:
 		FTimeFraction PAR;
 		FString Language;
 		int32 MaxBandwidth = 0;
-		int32 IndexOfSelf = 0;
+		int32 UniqueSequentialSetIndex = 0;
 		bool bIsUsable = false;
 		bool bIsEnabled = true;
+		// Encryption related
+		TArray<FContentProtection> PossibleContentProtections;
+		FString CommonEncryptionScheme;
+		FString DefaultKID;
 	};
 
 	class FPeriod : public ITimelineMediaAsset
@@ -389,6 +558,22 @@ public:
 			}
 			return nullptr;
 		}
+
+		void EndPresentationAt(const FTimeValue& EndsAt)
+		{
+			FTimeValue NewDur = EndsAt - Start;
+			if (NewDur >= FTimeValue::GetZero())
+			{
+				Duration = NewDur;
+				End = Start + NewDur;
+				TSharedPtrTS<FDashMPD_PeriodType> MPDPeriod = Period.Pin();
+				if (MPDPeriod.IsValid())
+				{
+					MPDPeriod->SetDuration(NewDur);
+				}
+			}
+		}
+
 /*
 		TSharedPtrTS<FRepresentation> GetRepresentationFromAdaptationSetIDs(const FString& AdaptationSetID, const FString& RepresentationID) const
 		{
@@ -459,21 +644,7 @@ public:
 				if (Adapt && Adapt->GetIsUsable())
 				{
 					FTrackMetadata tm;
-					tm.TrackID = Adapt->GetUniqueIdentifier();
-					tm.Language = Adapt->GetLanguage();
-					tm.HighestBandwidth = Adapt->GetMaxBandwidth();
-					tm.HighestBandwidthCodec = Adapt->GetCodec();
-					const TArray<TSharedPtrTS<FRepresentation>>& Reprs = Adapt->GetRepresentations();
-					for(int32 j=0; j<Reprs.Num(); ++j)
-					{
-						if (Reprs[j]->CanBePlayed())
-						{
-							FStreamMetadata sd;
-							sd.Bandwidth = Reprs[j]->GetBitrate();
-							sd.CodecInformation = Reprs[j]->GetCodecInformation();
-							tm.StreamDetails.Emplace(MoveTemp(sd));
-						}
-					}
+					Adapt->GetMetaData(tm, OfStreamType);
 					OutMetadata.Emplace(MoveTemp(tm));
 				}
 			}
@@ -559,6 +730,8 @@ public:
 
 	void PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> InPeriod, bool bRequestXlink);
 
+	void SendEventsFromAllPeriodEventStreams(TSharedPtrTS<FPeriod> InPeriod);
+
 	const TArray<FURL_RFC3986::FQueryParam>& GetURLFragmentComponents() const
 	{
 		return URLFragmentComponents;
@@ -596,6 +769,8 @@ public:
 	FTimeValue GetAvailabilityEndTime() const;
 	FTimeValue GetTimeshiftBufferDepth() const;
 
+	void EndPresentationAt(const FTimeValue& EndsAt, const FString& InPeriod);
+
 private:
 	FErrorDetail PrepareRemoteElementLoadRequest(TArray<TWeakPtrTS<FMPDLoadRequestDASH>>& OutRemoteElementLoadRequests, TWeakPtrTS<IDashMPDElement> ElementWithXLink, int64 RequestID);
 
@@ -603,6 +778,8 @@ private:
 
 	FTimeValue CalculateDistanceToLiveEdge() const;
 	FTimeRange GetPlayTimesFromURI() const;
+
+	bool CanUseEncryptedAdaptation(const TSharedPtrTS<FAdaptationSet>& InAdaptationSet);
 
 	IPlayerSessionServices* PlayerSessionServices = nullptr;
 

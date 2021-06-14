@@ -1399,53 +1399,28 @@ public:
 			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTangentBuffer, StaticBuffers->GetBufferTangentSRV());
 
 			SetShaderValue(RHICmdList, ComputeShaderRHI, MeshNumTexCoord, StaticBuffers->GetNumTexCoord());
-			if (StaticBuffers->GetNumTexCoord() > 0)
-			{
-				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTexCoordBuffer, StaticBuffers->GetBufferTexCoordSRV());
-			}
-			else
-			{
-				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTexCoordBuffer, FNiagaraRenderer::GetDummyFloatBuffer());
-			}
-			if (StaticBuffers->GetBufferColorSRV())
-			{
-				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshColorBuffer, StaticBuffers->GetBufferColorSRV());
-			}
-			else
-			{
-				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshColorBuffer, FNiagaraRenderer::GetDummyFloatBuffer());
-			}
+			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTexCoordBuffer, StaticBuffers->GetBufferTexCoordSRV() != nullptr ? StaticBuffers->GetBufferTexCoordSRV() : FNiagaraRenderer::GetDummyFloatBuffer());
+			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshColorBuffer, StaticBuffers->GetBufferColorSRV() != nullptr ? StaticBuffers->GetBufferColorSRV() : FNiagaraRenderer::GetDummyFloat4Buffer());
 			SetShaderValue(RHICmdList, ComputeShaderRHI, MeshTriangleCount, StaticBuffers->GetTriangleCount());
 			SetShaderValue(RHICmdList, ComputeShaderRHI, MeshVertexCount, StaticBuffers->GetVertexCount());
 
 			// Set triangle sampling buffer
-			if (InstanceData->bIsGpuUniformlyDistributedSampling)
-			{
-				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTriangleSamplerProbAliasBuffer, StaticBuffers->GetBufferTriangleUniformSamplerProbAliasSRV().GetReference());
-			}
-			else
-			{
-				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTriangleSamplerProbAliasBuffer, FNiagaraRenderer::GetDummyUIntBuffer());
-			}
+			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshTriangleSamplerProbAliasBuffer, StaticBuffers->GetBufferTriangleUniformSamplerProbAliasSRV() != nullptr ? StaticBuffers->GetBufferTriangleUniformSamplerProbAliasSRV() : FNiagaraRenderer::GetDummyUIntBuffer());
 
 			// Set triangle sampling region buffer
 			SetShaderValue(RHICmdList, ComputeShaderRHI, MeshNumSamplingRegionTriangles, StaticBuffers->GetNumSamplingRegionTriangles());
 			SetShaderValue(RHICmdList, ComputeShaderRHI, MeshNumSamplingRegionVertices, StaticBuffers->GetNumSamplingRegionVertices());
-			if (StaticBuffers->IsSamplingRegionsAllAreaWeighted() && StaticBuffers->GetNumSamplingRegionTriangles() > 0)
-			{
-				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSamplingRegionsProbAliasBuffer, StaticBuffers->GetSampleRegionsProbAliasSRV().GetReference());
-			}
-			else
-			{
-				SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSamplingRegionsProbAliasBuffer, FNiagaraRenderer::GetDummyUIntBuffer());
-			}
-			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSampleRegionsTriangleIndices, StaticBuffers->GetNumSamplingRegionTriangles() > 0 ? StaticBuffers->GetSampleRegionsTriangleIndicesSRV().GetReference() : FNiagaraRenderer::GetDummyUIntBuffer());
-			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSampleRegionsVertices, StaticBuffers->GetNumSamplingRegionVertices() > 0 ? StaticBuffers->GetSampleRegionsVerticesSRV().GetReference() : FNiagaraRenderer::GetDummyUIntBuffer());
+			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSamplingRegionsProbAliasBuffer, StaticBuffers->GetSampleRegionsProbAliasSRV() != nullptr ? StaticBuffers->GetSampleRegionsProbAliasSRV() : FNiagaraRenderer::GetDummyUIntBuffer());
+			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSampleRegionsTriangleIndices, StaticBuffers->GetSampleRegionsTriangleIndicesSRV() != nullptr ? StaticBuffers->GetSampleRegionsTriangleIndicesSRV() : FNiagaraRenderer::GetDummyUIntBuffer());
+			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSampleRegionsVertices, StaticBuffers->GetSampleRegionsVerticesSRV() != nullptr ? StaticBuffers->GetSampleRegionsVerticesSRV() : FNiagaraRenderer::GetDummyUIntBuffer());
 
-			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSkinWeightBuffer, InstanceData->MeshSkinWeightBuffer->GetSRV());
-			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSkinWeightLookupBuffer, InstanceData->MeshSkinWeightLookupBuffer->GetSRV());
+			FRHIShaderResourceView* MeshSkinWeightBufferSRV = InstanceData->MeshSkinWeightBuffer->GetSRV();
+			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSkinWeightBuffer, MeshSkinWeightBufferSRV ? MeshSkinWeightBufferSRV : FNiagaraRenderer::GetDummyUIntBuffer());
+			FRHIShaderResourceView* MeshSkinWeightLookupBufferSRV = InstanceData->MeshSkinWeightLookupBuffer->GetSRV();
+			SetSRVParameter(RHICmdList, ComputeShaderRHI, MeshSkinWeightLookupBuffer, MeshSkinWeightLookupBufferSRV ? MeshSkinWeightLookupBufferSRV : FNiagaraRenderer::GetDummyUIntBuffer());
 
 			SetShaderValue(RHICmdList, ComputeShaderRHI, MeshWeightStride, InstanceData->MeshWeightStrideByte/4);
+			SetShaderValue(RHICmdList, ComputeShaderRHI, MeshSkinWeightIndexSize, InstanceData->MeshSkinWeightIndexSizeByte);
 
 			uint32 EnabledFeaturesBits = 0;
 			EnabledFeaturesBits |= StaticBuffers->IsUseGpuUniformlyDistributedSampling() ? 1 : 0;
@@ -1476,7 +1451,7 @@ public:
 
 			SetShaderValue(RHICmdList, ComputeShaderRHI, NumBones, DynamicBuffers->GetNumBones());
 
-			FRHIShaderResourceView* FilteredAndUnfilteredBonesSRV = StaticBuffers->GetNumFilteredBones() > 0 ? StaticBuffers->GetFilteredAndUnfilteredBonesSRV() : FNiagaraRenderer::GetDummyUIntBuffer();
+			FRHIShaderResourceView* FilteredAndUnfilteredBonesSRV = StaticBuffers->GetFilteredAndUnfilteredBonesSRV() != nullptr ? StaticBuffers->GetFilteredAndUnfilteredBonesSRV() : FNiagaraRenderer::GetDummyUIntBuffer();
 			SetShaderValue(RHICmdList, ComputeShaderRHI, NumFilteredBones, StaticBuffers->GetNumFilteredBones());
 			SetShaderValue(RHICmdList, ComputeShaderRHI, NumUnfilteredBones, StaticBuffers->GetNumUnfilteredBones());
 			SetShaderValue(RHICmdList, ComputeShaderRHI, RandomMaxBone, StaticBuffers->GetExcludedBoneIndex() >= 0 ? DynamicBuffers->GetNumBones() - 2 : DynamicBuffers->GetNumBones() - 1);
@@ -2061,7 +2036,7 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 			}
 
 			//-TODO: If the DI does not use unfiltered bones we can skip adding them here...
-			TStringBuilder<256> MissingBones;
+			TStringBuilder<256> MissingFilteredBones;
 
 			FilteredAndUnfilteredBones.Reserve(RefSkel.GetNum());
 
@@ -2071,11 +2046,14 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 				const int32 Bone = RefSkel.FindBoneIndex(BoneName);
 				if (Bone == INDEX_NONE)
 				{
-					if (MissingBones.Len() > 0)
+					if ( FNiagaraUtilities::LogVerboseWarnings() )
 					{
-						MissingBones.Append(TEXT(", "));
+						if (MissingFilteredBones.Len() > 0)
+						{
+							MissingFilteredBones.Append(TEXT(", "));
+						}
+						MissingFilteredBones.Append(BoneName.ToString());
 					}
-					MissingBones.Append(BoneName.ToString());
 				}
 				else
 				{
@@ -2110,9 +2088,9 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 				}
 			}
 
-			if (MissingBones.Len() > 0)
+			if (MissingFilteredBones.Len() > 0)
 			{
-				UE_LOG(LogNiagara, Warning, TEXT("Skeletal Mesh Data Interface is trying to sample from bones that don't exist in it's skeleton. Mesh(%s) Bones(%s) System(%s)"), *GetFullNameSafe(Mesh), MissingBones.ToString(), *GetFullNameSafe(SystemInstance->GetSystem()));
+				UE_LOG(LogNiagara, Warning, TEXT("Skeletal Mesh Data Interface is trying to sample from filtered bones that don't exist in it's skeleton. Mesh(%s) Bones(%s) System(%s)"), *GetFullNameSafe(Mesh), MissingFilteredBones.ToString(), *GetFullNameSafe(SystemInstance->GetSystem()));
 			}
 		}
 		else
@@ -2155,22 +2133,25 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 				FilteredSocketTransforms[i].Append(FilteredSocketTransforms[0]);
 			}
 
-			TStringBuilder<512> MissingSockets;
-			for (FName SocketName : FilteredSockets)
+			if ( FNiagaraUtilities::LogVerboseWarnings() )
 			{
-				if (Mesh->FindSocket(SocketName) == nullptr)
+				TStringBuilder<512> MissingSockets;
+				for (FName SocketName : FilteredSockets)
 				{
-					if (MissingSockets.Len() != 0)
+					if (Mesh->FindSocket(SocketName) == nullptr)
 					{
-						MissingSockets.Append(TEXT(", "));
+						if (MissingSockets.Len() != 0)
+						{
+							MissingSockets.Append(TEXT(", "));
+						}
+						MissingSockets.Append(SocketName.ToString());
 					}
-					MissingSockets.Append(SocketName.ToString());
 				}
-			}
 
-			if (MissingSockets.Len() > 0)
-			{
-				UE_LOG(LogNiagara, Warning, TEXT("Skeletal Mesh Data Interface is trying to sample from sockets that don't exist in it's skeleton. Mesh(%s) Sockets(%s) System(%s)"), *GetFullNameSafe(Mesh), MissingSockets.ToString(), *GetFullNameSafe(SystemInstance->GetSystem()));
+				if (MissingSockets.Len() > 0)
+				{
+					UE_LOG(LogNiagara, Warning, TEXT("Skeletal Mesh Data Interface is trying to sample from filtered sockets that don't exist in it's skeleton. Mesh(%s) Sockets(%s) System(%s)"), *GetFullNameSafe(Mesh), MissingSockets.ToString(), *GetFullNameSafe(SystemInstance->GetSystem()));
+				}
 			}
 		}
 
@@ -2191,7 +2172,23 @@ bool FNDISkeletalMesh_InstanceData::Init(UNiagaraDataInterfaceSkeletalMesh* Inte
 			{
 				UE_LOG(LogNiagara, Warning, TEXT("Skeletal Mesh %s has cloth asset on it: spawning from it might not work properly."), *Mesh->GetName());
 			}
-			if (CachedLODData->GetVertexBufferMaxBoneInfluences() > MAX_INFLUENCES_PER_STREAM)
+
+			const auto MaxInfluenceType = GetDefault<UNiagaraSettings>()->NDISkelMesh_GpuMaxInfluences;
+			int32 MaxInfluenceCount = -1;
+			if (MaxInfluenceType == ENDISkelMesh_GpuMaxInfluences::Type::AllowMax4)
+			{
+				MaxInfluenceCount = 4;
+			}
+			else if (MaxInfluenceType == ENDISkelMesh_GpuMaxInfluences::Type::AllowMax8)
+			{
+				MaxInfluenceCount = 8;
+			}
+			else
+			{
+				checkf(MaxInfluenceType == ENDISkelMesh_GpuMaxInfluences::Type::Unlimited, TEXT("Unknown value for NDISkelMesh_GpuMaxInfluences: %d"), MaxInfluenceType);
+			}
+
+			if (MaxInfluenceCount > 0 && (static_cast<uint32>(MaxInfluenceCount) < CachedLODData->GetVertexBufferMaxBoneInfluences()))
 			{
 				UE_LOG(LogNiagara, Warning, TEXT("Skeletal Mesh %s has bones extra influence: spawning from it might not work properly."), *Mesh->GetName());
 			}
@@ -2341,24 +2338,24 @@ bool FNDISkeletalMesh_InstanceData::HasColorData()
 
 void FNDISkeletalMesh_InstanceData::Release()
 {
-	if (MeshGpuSpawnStaticBuffers)
+	if (MeshGpuSpawnStaticBuffers || MeshGpuSpawnDynamicBuffers)
 	{
-		BeginReleaseResource(MeshGpuSpawnStaticBuffers);
 		ENQUEUE_RENDER_COMMAND(DeleteResource)(
-			[ParamPointerToRelease = MeshGpuSpawnStaticBuffers](FRHICommandListImmediate& RHICmdList)
+			[RT_StaticBuffers=MeshGpuSpawnStaticBuffers, RT_DynamicBuffers=MeshGpuSpawnDynamicBuffers](FRHICommandListImmediate& RHICmdList)
 			{
-				delete ParamPointerToRelease;
-			});
+				if (RT_StaticBuffers)
+				{
+					RT_StaticBuffers->ReleaseResource();
+					delete RT_StaticBuffers;
+				}
+				if (RT_DynamicBuffers)
+				{
+					RT_DynamicBuffers->ReleaseResource();
+					delete RT_DynamicBuffers;
+				}
+			}
+		);
 		MeshGpuSpawnStaticBuffers = nullptr;
-	}
-	if (MeshGpuSpawnDynamicBuffers)
-	{
-		BeginReleaseResource(MeshGpuSpawnDynamicBuffers);
-		ENQUEUE_RENDER_COMMAND(DeleteResource)(
-			[ParamPointerToRelease = MeshGpuSpawnDynamicBuffers](FRHICommandListImmediate& RHICmdList)
-			{
-				delete ParamPointerToRelease;
-			});
 		MeshGpuSpawnDynamicBuffers = nullptr;
 	}
 }
@@ -2599,20 +2596,15 @@ void UNiagaraDataInterfaceSkeletalMesh::DestroyPerInstanceData(void* PerInstance
 	}
 #endif
 
+	ENQUEUE_RENDER_COMMAND(FNiagaraDestroySkeletalMeshInstanceData) (
+		[RT_Proxy=GetProxyAs<FNiagaraDataInterfaceProxySkeletalMesh>(), InstanceID=SystemInstance->GetId()](FRHICommandListImmediate& CmdList)
+		{
+			RT_Proxy->SystemInstancesToData.Remove(InstanceID);
+		}
+	);
+
 	Inst->Release();
 	Inst->~FNDISkeletalMesh_InstanceData();
-
-	{
-		// @todo this races
-		FNiagaraDataInterfaceProxySkeletalMesh* ThisProxy = GetProxyAs<FNiagaraDataInterfaceProxySkeletalMesh>();
-		ENQUEUE_RENDER_COMMAND(FNiagaraDestroySkeletalMeshInstanceData) (
-			[ThisProxy, InstanceID = SystemInstance->GetId()](FRHICommandListImmediate& CmdList)
-			{
-				//check(ThisProxy->Contains(InstanceID));
-				ThisProxy->SystemInstancesToData.Remove(InstanceID);
-			}
-		);
-	}
 }
 
 bool UNiagaraDataInterfaceSkeletalMesh::PerInstanceTick(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float InDeltaSeconds)

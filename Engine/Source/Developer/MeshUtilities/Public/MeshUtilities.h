@@ -7,7 +7,6 @@
 #include "Modules/ModuleInterface.h"
 #include "Components.h"
 #include "Engine/MeshMerging.h"
-#include "SkelImport.h"
 #include "MeshBuild.h"
 
 #include "IMeshMergeUtilities.h"
@@ -19,6 +18,8 @@ class UStaticMeshComponent;
 struct FFlattenMaterial;
 struct FRawMesh;
 struct FStaticMeshLODResources;
+class FSkeletalMeshLODModel;
+struct FRawSkinWeight;
 
 typedef FIntPoint FMeshIdAndLOD;
 struct FFlattenMaterial;
@@ -26,6 +27,13 @@ struct FReferenceSkeleton;
 struct FStaticMeshLODResources;
 class UMeshComponent;
 class UStaticMesh;
+
+namespace SkeletalMeshImportData
+{
+	struct FMeshFace;
+	struct FMeshWedge;
+	struct FVertInfluence;
+};
 
 namespace ETangentOptions
 {

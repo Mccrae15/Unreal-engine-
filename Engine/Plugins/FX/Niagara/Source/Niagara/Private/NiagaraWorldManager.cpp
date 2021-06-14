@@ -44,14 +44,6 @@ static FAutoConsoleVariableRef CVarNiagaraWaitOnPreGC(
 	ECVF_Default
 );
 
-static int GNiagaraUsePostActorMark = 1;
-static FAutoConsoleVariableRef CVarNiagaraUsePostActorMark(
-	TEXT("fx.Niagara.WorldManager.UsePostActorMark"),
-	GNiagaraUsePostActorMark,
-	TEXT("Should we use the post actor mark list to reduce the set we iterate over (default enabled)."),
-	ECVF_Default
-);
-
 static int GNiagaraSpawnPerTickGroup = 1;
 static FAutoConsoleVariableRef CVarNiagaraSpawnPerTickGroup(
 	TEXT("fx.Niagara.WorldManager.SpawnPerTickGroup"),
@@ -184,6 +176,7 @@ FDelegateHandle FNiagaraWorldManager::OnPostWorldCleanupHandle;
 FDelegateHandle FNiagaraWorldManager::OnPreWorldFinishDestroyHandle;
 FDelegateHandle FNiagaraWorldManager::OnWorldBeginTearDownHandle;
 FDelegateHandle FNiagaraWorldManager::TickWorldHandle;
+FDelegateHandle FNiagaraWorldManager::OnWorldPreSendAllEndOfFrameUpdatesHandle;
 FDelegateHandle FNiagaraWorldManager::PreGCHandle;
 FDelegateHandle FNiagaraWorldManager::PostReachabilityAnalysisHandle;
 FDelegateHandle FNiagaraWorldManager::PostGCHandle;
@@ -321,6 +314,15 @@ void FNiagaraWorldManager::OnStartup()
 	OnPreWorldFinishDestroyHandle = FWorldDelegates::OnPreWorldFinishDestroy.AddStatic(&FNiagaraWorldManager::OnPreWorldFinishDestroy);
 	OnWorldBeginTearDownHandle = FWorldDelegates::OnWorldBeginTearDown.AddStatic(&FNiagaraWorldManager::OnWorldBeginTearDown);
 	TickWorldHandle = FWorldDelegates::OnWorldPostActorTick.AddStatic(&FNiagaraWorldManager::TickWorld);
+	OnWorldPreSendAllEndOfFrameUpdatesHandle = FWorldDelegates::OnWorldPreSendAllEndOfFrameUpdates.AddLambda(
+		[](UWorld* InWorld)
+		{
+			if ( FNiagaraWorldManager* FoundManager = WorldManagers.FindRef(InWorld) )
+			{
+				FoundManager->PreSendAllEndOfFrameUpdates();
+			}
+		}
+	);
 
 	PreGCHandle = FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddStatic(&FNiagaraWorldManager::OnPreGarbageCollect);
 	PostReachabilityAnalysisHandle = FCoreUObjectDelegates::PostReachabilityAnalysis.AddStatic(&FNiagaraWorldManager::OnPostReachabilityAnalysis);
@@ -336,6 +338,7 @@ void FNiagaraWorldManager::OnShutdown()
 	FWorldDelegates::OnPreWorldFinishDestroy.Remove(OnPreWorldFinishDestroyHandle);
 	FWorldDelegates::OnWorldBeginTearDown.Remove(OnWorldBeginTearDownHandle);
 	FWorldDelegates::OnWorldPostActorTick.Remove(TickWorldHandle);
+	FWorldDelegates::OnWorldPreSendAllEndOfFrameUpdates.Remove(OnWorldPreSendAllEndOfFrameUpdatesHandle);
 
 	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().Remove(PreGCHandle);
 	FCoreUObjectDelegates::PostReachabilityAnalysis.Remove(PostReachabilityAnalysisHandle);
@@ -648,91 +651,47 @@ void FNiagaraWorldManager::PostActorTick(float DeltaSeconds)
 
 	DeltaSeconds *= DebugPlaybackRate;
 
-	if (GNiagaraUsePostActorMark)
+	// Update any systems with post actor work
+	// - Instances that need to move to a higher tick group
+	// - Instances that are pending spawn
+	// - Instances that were spawned and we need to ensure the async tick is complete
+	if (SimulationsWithPostActorWork.Num() > 0)
 	{
-		// Update any systems with post actor work
-		// - Instances that need to move to a higher tick group
-		// - Instances that are pending spawn
-		// - Instances that were spawned and we need to ensure the async tick is complete
-		if (SimulationsWithPostActorWork.Num() > 0)
+		for (int32 i=0; i < SimulationsWithPostActorWork.Num(); ++i )
 		{
-			for (int32 i=0; i < SimulationsWithPostActorWork.Num(); ++i )
+			if (!SimulationsWithPostActorWork[i]->IsValid())
 			{
-				if (!SimulationsWithPostActorWork[i]->IsValid())
-				{
-					SimulationsWithPostActorWork.RemoveAtSwap(i, 1, false);
-					--i;
-				}
-				else
-				{
-					SimulationsWithPostActorWork[i]->WaitForConcurrentTickComplete();
-				}
+				SimulationsWithPostActorWork.RemoveAtSwap(i, 1, false);
+				--i;
 			}
-
-			for (int32 i=0; i < SimulationsWithPostActorWork.Num(); ++i)
+			else
 			{
-				if (!SimulationsWithPostActorWork[i]->IsValid())
-				{
-					SimulationsWithPostActorWork.RemoveAtSwap(i, 1, false);
-					--i;
-				}
-				else
-				{
-					SimulationsWithPostActorWork[i]->UpdateTickGroups_GameThread();
-				}
+				SimulationsWithPostActorWork[i]->WaitForInstancesTickComplete();
 			}
-
-			for (const auto& Simulation : SimulationsWithPostActorWork)
-			{
-				if (Simulation->IsValid())
-				{
-					Simulation->Spawn_GameThread(DeltaSeconds, true);
-				}
-			}
-
-			SimulationsWithPostActorWork.Reset();
 		}
-	}
-	else
-	{
+
+		for (int32 i=0; i < SimulationsWithPostActorWork.Num(); ++i)
+		{
+			if (!SimulationsWithPostActorWork[i]->IsValid())
+			{
+				SimulationsWithPostActorWork.RemoveAtSwap(i, 1, false);
+				--i;
+			}
+			else
+			{
+				SimulationsWithPostActorWork[i]->UpdateTickGroups_GameThread();
+			}
+		}
+
+		for (const auto& Simulation : SimulationsWithPostActorWork)
+		{
+			if (Simulation->IsValid())
+			{
+				Simulation->Spawn_GameThread(DeltaSeconds, true);
+			}
+		}
+
 		SimulationsWithPostActorWork.Reset();
-
-		// Resolve tick groups for pending spawn instances
-		for (int TG = 0; TG < NiagaraNumTickGroups; ++TG)
-		{
-			for (TPair<UNiagaraSystem*, TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe>>& SystemSim : SystemSimulations[TG])
-			{
-				FNiagaraSystemSimulation* Sim = &SystemSim.Value.Get();
-				if (Sim->IsValid())
-				{
-					Sim->WaitForConcurrentTickComplete();
-				}
-			}
-		}
-
-		for (int TG=0; TG < NiagaraNumTickGroups; ++TG)
-		{
-			for (TPair<UNiagaraSystem*, TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe>>& SystemSim : SystemSimulations[TG])
-			{
-				FNiagaraSystemSimulation* Sim = &SystemSim.Value.Get();
-				if ( Sim->IsValid() )
-				{
-					Sim->UpdateTickGroups_GameThread();
-				}
-			}
-		}
-
-		for (int TG = 0; TG < NiagaraNumTickGroups; ++TG)
-		{
-			for (TPair<UNiagaraSystem*, TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe>>& SystemSim : SystemSimulations[TG])
-			{
-				FNiagaraSystemSimulation* Sim = &SystemSim.Value.Get();
-				if (Sim->IsValid())
-				{
-					Sim->Spawn_GameThread(DeltaSeconds, true);
-				}
-			}
-		}
 	}
 
 	// Clear cached player view location list, it should never be used outside of the world tick
@@ -760,6 +719,18 @@ void FNiagaraWorldManager::PostActorTick(float DeltaSeconds)
 		RequestedDebugPlaybackMode = ENiagaraDebugPlaybackMode::Paused;
 		DebugPlaybackMode = ENiagaraDebugPlaybackMode::Paused;
 	}
+}
+
+void FNiagaraWorldManager::PreSendAllEndOfFrameUpdates()
+{
+	for (const auto& Simulation : SimulationsWithPostActorWork)
+	{
+		if (Simulation->IsValid())
+		{
+			Simulation->WaitForInstancesTickComplete();
+		}
+	}
+	SimulationsWithPostActorWork.Reset();
 }
 
 void FNiagaraWorldManager::MarkSimulationForPostActorWork(FNiagaraSystemSimulation* SystemSimulation)
@@ -1259,7 +1230,7 @@ void FNiagaraWorldManager::PrimePoolForAllWorlds(UNiagaraSystem* System)
 
 void FNiagaraWorldManager::PrimePoolForAllSystems()
 {
-	if (GNigaraAllowPrimedPools && World && World->IsGameWorld())
+	if (GNigaraAllowPrimedPools && World && World->IsGameWorld() && !World->bIsTearingDown)
 	{
 		//Prime the pool for all currently loaded systems.
 		for (TObjectIterator<UNiagaraSystem> It; It; ++It)
@@ -1274,7 +1245,7 @@ void FNiagaraWorldManager::PrimePoolForAllSystems()
 
 void FNiagaraWorldManager::PrimePool(UNiagaraSystem* System)
 {
-	if (GNigaraAllowPrimedPools && World && World->IsGameWorld())
+	if (GNigaraAllowPrimedPools && World && World->IsGameWorld() && !World->bIsTearingDown)
 	{
 		ComponentPool->PrimePool(System, World);
 	}

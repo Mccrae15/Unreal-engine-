@@ -113,11 +113,6 @@ public:
 	/** Sets which channels are keyed when a channel is keyed */
 	void SetKeyGroupMode(EKeyGroupMode);
 
-	/** Gets whether or not to key interp properties only. */
-	bool GetKeyInterpPropertiesOnly() const;
-	/** Sets whether or not to key interp properties only. */
-	void SetKeyInterpPropertiesOnly(bool InbKeyInterpPropertiesOnly); 
-
 	/** Gets default key interpolation. */
 	EMovieSceneKeyInterpolation GetKeyInterpolation() const;
 	/** Sets default key interpolation */
@@ -249,11 +244,6 @@ public:
 	/** Set whether or not the cursor should be kept within the playback range while scrubbing in sequencer */
 	void SetKeepCursorInPlayRangeWhileScrubbing(bool bInKeepCursorInPlayRangeWhileScrubbing);
 
-	/** @return true if the cursor should be kept within the playback range during playback in sequencer, false otherwise */
-	bool ShouldKeepCursorInPlayRange() const;
-	/** Set whether or not the cursor should be kept within the playback range during playback in sequencer */
-	void SetKeepCursorInPlayRange(bool bInKeepCursorInPlayRange);
-
 	/** @return true if the playback range should be synced to the section bounds, false otherwise */
 	bool ShouldKeepPlayRangeInSectionBounds() const;
 	/** Set whether or not the playback range should be synced to the section bounds */
@@ -377,10 +367,6 @@ protected:
 	UPROPERTY(config, EditAnywhere, Category = Keyframing)
 	EKeyGroupMode KeyGroupMode;
 
-	/** Enable or disable only keyframing properties marked with the 'Interp' keyword. */
-	UPROPERTY( config, EditAnywhere, Category=Keyframing )
-	bool bKeyInterpPropertiesOnly;
-
 	/** The interpolation type for newly created keyframes */
 	UPROPERTY( config, EditAnywhere, Category=Keyframing )
 	EMovieSceneKeyInterpolation KeyInterpolation;
@@ -486,10 +472,6 @@ protected:
 	/** Enable or disable keeping the cursor in the current playback range while scrubbing. */
 	UPROPERTY(config, EditAnywhere, Category = Timeline)
 	bool bKeepCursorInPlayRangeWhileScrubbing;
-
-	/** Enable or disable keeping the cursor in the current playback range during playback. */
-	UPROPERTY( config, EditAnywhere, Category=Timeline )
-	bool bKeepCursorInPlayRange;
 
 	/** Enable or disable keeping the playback range constrained to the section bounds. */
 	UPROPERTY( config, EditAnywhere, Category=Timeline )
