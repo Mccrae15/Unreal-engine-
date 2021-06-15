@@ -6,21 +6,21 @@
 
 namespace PBIK
 {
+
+	static float ALMOST_ONE = 1.0f - KINDA_SMALL_NUMBER;
 	
 FJointConstraint::FJointConstraint(FRigidBody* InA, FRigidBody* InB)
 {
 	A = InA;
 	B = InB;
 
-	const FVector PinPoint = B->Bone->Position;
+	FVector PinPoint = B->Bone->Position;
 	PinPointLocalToA = A->Rotation.Inverse() * (PinPoint - A->Position);
 	PinPointLocalToB = B->Rotation.Inverse() * (PinPoint - B->Position);
 
 	XOrig = B->RotationOrig * FVector(1, 0, 0);
 	YOrig = B->RotationOrig * FVector(0, 1, 0);
 	ZOrig = B->RotationOrig * FVector(0, 0, 1);
-
-	AngleX = AngleY = AngleZ = 0;
 }
 	
 void FJointConstraint::Solve(bool bMoveSubRoots)
@@ -29,33 +29,34 @@ void FJointConstraint::Solve(bool bMoveSubRoots)
 	FVector OffsetA;
 	FVector OffsetB;
 	FVector Correction = GetPositionCorrection(OffsetA, OffsetB);
+	//Correction = Correction * OneOverInvMassSum;
 
 	// apply rotation from correction 
 	// at pin point to both bodies
-	A->ApplyPushToRotateBody(Correction, OffsetA);
-	B->ApplyPushToRotateBody(-Correction, OffsetB);
+	A->ApplyPushToRotateBody(Correction, OffsetA);//* AInvMass, OffsetA);
+	B->ApplyPushToRotateBody(-Correction, OffsetB); //* BInvMass, OffsetB);
 
 	// enforce joint limits
 	UpdateJointLimits();
 
 	// calc inv mass of body A
 	float AInvMass = 1.0f;
-	AInvMass -= (A->Pin && A->Pin->bEnabled) ? A->Pin->Alpha : 0.0f;
+	AInvMass -= A->AttachedEffector ? A->AttachedEffector->StrengthAlpha : 0.0f;
 	AInvMass -= !bMoveSubRoots && A->Bone->bIsSubRoot ? 1.0f : 0.0f;
 	AInvMass = AInvMass <= 0.0f ? 0.0f : AInvMass;
 
 	// calc inv mass of body B
 	float BInvMass = 1.0f;
-	BInvMass -= (B->Pin && B->Pin->bEnabled) ? B->Pin->Alpha : 0.0f;
+	BInvMass -= B->AttachedEffector ? B->AttachedEffector->StrengthAlpha : 0.0f;
 	BInvMass -= !bMoveSubRoots && B->Bone->bIsSubRoot ? 1.0f : 0.0f;
 	BInvMass = BInvMass <= 0.0f ? 0.0f : BInvMass;
 
-	const float InvMassSum = AInvMass + BInvMass;
+	float InvMassSum = AInvMass + BInvMass;
 	if (FMath::IsNearlyZero(InvMassSum))
 	{
 		return; // no correction can be applied on full locked configuration
 	}
-	const float OneOverInvMassSum = 1.0f / InvMassSum;
+	float OneOverInvMassSum = 1.0f / InvMassSum;
 
 	// apply positional correction to align pin point on both Bodies
 	// NOTE: applying position correction AFTER rotation takes into
@@ -73,23 +74,45 @@ void FJointConstraint::RemoveStretch()
 	// apply position correction, keeping parent body fixed
 	FVector ToA;
 	FVector ToB;
-	const FVector Correction = GetPositionCorrection(ToA, ToB);
+	FVector Correction = GetPositionCorrection(ToA, ToB);
 	B->Position -= Correction;
 }
 
-FVector FJointConstraint::GetPositionCorrection(FVector& OutBodyToA, FVector& OutBodyToB) const
+FVector FJointConstraint::GetPositionCorrection(FVector& OutBodyToA, FVector& OutBodyToB)
 {
 	OutBodyToA = A->Rotation * PinPointLocalToA;
 	OutBodyToB = B->Rotation * PinPointLocalToB;
-	const FVector PinPointOnA = A->Position + OutBodyToA;
-	const FVector PinPointOnB = B->Position + OutBodyToB;
+	FVector PinPointOnA = A->Position + OutBodyToA;
+	FVector PinPointOnB = B->Position + OutBodyToB;
 	return (PinPointOnB - PinPointOnA);
 }
 
-void FJointConstraint::ApplyRotationCorrection(FQuat PureRotA, FQuat PureRotB) const
+void FJointConstraint::ApplyRotationCorrection(FQuat PureRotA, FQuat PureRotB)
 {
-	A->ApplyRotationDelta(PureRotA, false);
-	B->ApplyRotationDelta(PureRotB, true);
+	// https://matthias-research.github.io/pages/publications/PBDBodies.pdf/
+	// Equation 8 and 9 from "Detailed Rigid Body Simulation with Extended Position Based Dynamics"
+
+	PureRotA.X *= 0.5f;
+	PureRotA.Y *= 0.5f;
+	PureRotA.Z *= 0.5f;
+	PureRotB.X *= 0.5f;
+	PureRotB.Y *= 0.5f;
+	PureRotB.Z *= 0.5f;
+	PureRotA = PureRotA * A->Rotation;
+	PureRotB = PureRotB * B->Rotation;
+
+	A->Rotation.X = A->Rotation.X + PureRotA.X;
+	A->Rotation.Y = A->Rotation.Y + PureRotA.Y;
+	A->Rotation.Z = A->Rotation.Z + PureRotA.Z;
+	A->Rotation.W = A->Rotation.W + PureRotA.W;
+
+	B->Rotation.X = B->Rotation.X - PureRotB.X;
+	B->Rotation.Y = B->Rotation.Y - PureRotB.Y;
+	B->Rotation.Z = B->Rotation.Z - PureRotB.Z;
+	B->Rotation.W = B->Rotation.W - PureRotB.W;
+
+	A->Rotation.Normalize();
+	B->Rotation.Normalize();
 }
 
 void FJointConstraint::UpdateJointLimits()
@@ -110,36 +133,62 @@ void FJointConstraint::UpdateJointLimits()
 	J.MaxZ = J.MaxZ < J.MinZ ? J.MinZ + 1 : J.MaxZ;
 
 	// determine which axes are explicitly or implicitly locked (limited with very small allowable angle)
-	const bool bLockX = (J.X == ELimitType::Locked) || (J.X == ELimitType::Limited && ((J.MaxX - J.MinX) < 2.0f));
-	const bool bLockY = (J.Y == ELimitType::Locked) || (J.Y == ELimitType::Limited && ((J.MaxY - J.MinY) < 2.0f));
-	const bool bLockZ = (J.Z == ELimitType::Locked) || (J.Z == ELimitType::Limited && ((J.MaxZ - J.MinZ) < 2.0f));
+	bool bLockX = (J.X == ELimitType::Locked) || (J.X == ELimitType::Limited && ((J.MaxX - J.MinX) < 2.0f));
+	bool bLockY = (J.Y == ELimitType::Locked) || (J.Y == ELimitType::Limited && ((J.MaxY - J.MinY) < 2.0f));
+	bool bLockZ = (J.Z == ELimitType::Locked) || (J.Z == ELimitType::Limited && ((J.MaxZ - J.MinZ) < 2.0f));
 
 	// determine which axes should be treated as a hinge (mutually exclusive)
-	const bool bXHinge = !bLockX && bLockY && bLockZ;
-	const bool bYHinge = bLockX && !bLockY && bLockZ;
-	const bool bZHinge = bLockX && bLockY && !bLockZ;
+	bool bXHinge = !bLockX && bLockY && bLockZ;
+	bool bYHinge = bLockX && !bLockY && bLockZ;
+	bool bZHinge = bLockX && bLockY && !bLockZ;
 
 	// apply hinge corrections
 	if (bXHinge)
 	{
 		UpdateLocalRotateAxes(true, false, false);
-		RotateToAlignAxes(XA, XB);
+		FVector CrossProd = FVector::CrossProduct(XA, XB);
+		FQuat PureRotA = FQuat(CrossProd.X, CrossProd.Y, CrossProd.Z, 0.0f);
+		ApplyRotationCorrection(PureRotA, PureRotA);
 	}
 	else if (bYHinge)
 	{
 		UpdateLocalRotateAxes(false, true, false);
-		RotateToAlignAxes(YA, YB);
+		FVector CrossProd = FVector::CrossProduct(YA, YB);
+		FQuat PureRotA = FQuat(CrossProd.X, CrossProd.Y, CrossProd.Z, 0.0f);
+		ApplyRotationCorrection(PureRotA, PureRotA);
 	}
 	else if (bZHinge)
 	{
 		UpdateLocalRotateAxes(false, false, true);
-		RotateToAlignAxes(ZA, ZB);
+		FVector CrossProd = FVector::CrossProduct(ZA, ZB);
+		FQuat PureRotA = FQuat(CrossProd.X, CrossProd.Y, CrossProd.Z, 0.0f);
+		ApplyRotationCorrection(PureRotA, PureRotA);
+	}
+
+	if (bLockX || bLockY || bLockZ)
+	{
+		DecomposeRotationAngles(); // TODO don't strictly need to update everything in here
+	}
+
+	if (bLockX)
+	{
+		RotateWithinLimits(0, 0, AngleX, XA, ZBProjOnX, ZA);
+	}
+
+	if (bLockY)
+	{
+		RotateWithinLimits(0, 0, AngleY, YA, ZBProjOnY, ZA);
+	}
+
+	if (bLockZ)
+	{
+		RotateWithinLimits(0, 0, AngleZ, ZA, YBProjOnZ, YA);
 	}
 
 	// enforce min/max angles
-	const bool bLimitX = J.X == ELimitType::Limited && !bLockX;
-	const bool bLimitY = J.Y == ELimitType::Limited && !bLockY;
-	const bool bLimitZ = J.Z == ELimitType::Limited && !bLockZ;
+	bool bLimitX = J.X == ELimitType::Limited && !bLockX;
+	bool bLimitY = J.Y == ELimitType::Limited && !bLockY;
+	bool bLimitZ = J.Z == ELimitType::Limited && !bLockZ;
 	if (bLimitX || bLimitY || bLimitZ)
 	{
 		DecomposeRotationAngles();
@@ -161,47 +210,31 @@ void FJointConstraint::UpdateJointLimits()
 	}
 }
 
-void FJointConstraint::RotateToAlignAxes(const FVector& AxisA, const FVector& AxisB) const
-{
-	const FVector ACrossB = FVector::CrossProduct(AxisA, AxisB);
-	FVector Axis;
-	float Magnitude;
-	ACrossB.ToDirectionAndLength(Axis, Magnitude);
-	const float EffectiveInvMass = FVector::DotProduct(Axis, Axis);
-	if (EffectiveInvMass < KINDA_SMALL_NUMBER)
-	{
-		return;
-	}
-	const float DeltaLambda = Magnitude / EffectiveInvMass;
-	const FVector Push = Axis * DeltaLambda;
-	const FQuat PureRotA = FQuat(Push.X, Push.Y, Push.Z, 0.0f);
-	ApplyRotationCorrection(PureRotA, PureRotA);
-}
-
 void FJointConstraint::RotateWithinLimits(
 	float MinAngle,
 	float MaxAngle,
 	float CurrentAngle,
 	FVector RotAxis,
 	FVector CurVec,
-	FVector RefVec) const
+	FVector RefVec)
 {
-	const bool bBeyondMin = CurrentAngle < MinAngle;
-	const bool bBeyondMax = CurrentAngle > MaxAngle;
-	if (!(bBeyondMin || bBeyondMax))
+	bool bBeyondMin = CurrentAngle < MinAngle;
+	bool bBeyondMax = CurrentAngle > MaxAngle;
+	if (bBeyondMin || bBeyondMax)
 	{
-		return;
+		float TgtAngle = bBeyondMin ? MinAngle : MaxAngle;
+		FQuat TgtRot = FQuat(RotAxis, FMath::DegreesToRadians(TgtAngle));
+		FVector TgtVec = TgtRot * RefVec;
+		FVector TgtCross = FVector::CrossProduct(TgtVec, CurVec);
+		FQuat PureRot = FQuat(TgtCross.X, TgtCross.Y, TgtCross.Z, 0.0f);
+		ApplyRotationCorrection(PureRot, PureRot);
 	}
-	const float TgtAngle = bBeyondMin ? MinAngle : MaxAngle;
-	const FQuat TgtRot = FQuat(RotAxis, FMath::DegreesToRadians(TgtAngle));
-	const FVector TgtVec = TgtRot * RefVec;
-	RotateToAlignAxes(TgtVec, CurVec);
 }
 
 void FJointConstraint::UpdateLocalRotateAxes(bool bX, bool bY, bool bZ)
 {
-	const FQuat ARot = A->Rotation * A->RotationOrig.Inverse();
-	const FQuat BRot = B->Rotation * B->RotationOrig.Inverse();
+	FQuat ARot = A->Rotation * A->RotationOrig.Inverse();
+	FQuat BRot = B->Rotation * B->RotationOrig.Inverse();
 
 	if (bX)
 	{
@@ -224,8 +257,8 @@ void FJointConstraint::UpdateLocalRotateAxes(bool bX, bool bY, bool bZ)
 
 void FJointConstraint::DecomposeRotationAngles()
 {
-	const FQuat ARot = A->Rotation * A->RotationOrig.Inverse();
-	const FQuat BRot = B->Rotation * B->RotationOrig.Inverse();
+	FQuat ARot = A->Rotation * A->RotationOrig.Inverse();
+	FQuat BRot = B->Rotation * B->RotationOrig.Inverse();
 
 	XA = ARot * XOrig;
 	YA = ARot * YOrig;
@@ -248,27 +281,18 @@ float FJointConstraint::SignedAngleBetweenNormals(
 	const FVector& To, 
 	const FVector& Axis) const
 {
-	const float FromDotTo = FVector::DotProduct(From, To);
-	const float Angle = FMath::RadiansToDegrees(FMath::Acos(FromDotTo));
-	const FVector Cross = FVector::CrossProduct(From, To); // TODO may be backwards?
-	const float Dot = FVector::DotProduct(Cross, Axis);
+	float FromDotTo = FVector::DotProduct(From, To);
+	float Angle = FMath::RadiansToDegrees(FMath::Acos(FromDotTo));
+	FVector Cross = FVector::CrossProduct(From, To); // TODO may be backwards?
+	float Dot = FVector::DotProduct(Cross, Axis);
 	return Dot >= 0 ? Angle : -Angle;
 }
 	
-FPinConstraint::FPinConstraint(
-	FRigidBody* InBody,
-	const FVector& InPinPositionOrig,
-	const FQuat& InPinRotationOrig,
-	const bool bInPinRotation)
+FPinConstraint::FPinConstraint(FRigidBody* InBody, const FVector& InPinPoint)
 {
-	GoalPosition = InPinPositionOrig;
-	GoalRotation = InPinRotationOrig;
-	
 	A = InBody;
-	PinPointLocalToA = A->Rotation.Inverse() * (GoalPosition - A->Position);
-
-	ARotLocalToPin = A->Rotation * GoalRotation.Inverse();
-	bPinRotation = bInPinRotation;
+	PinPointLocalToA = A->Rotation.Inverse() * (InPinPoint - A->Position);
+	GoalPoint = InPinPoint;
 }
 
 void FPinConstraint::Solve(bool bMoveSubRoots)
@@ -287,37 +311,21 @@ void FPinConstraint::Solve(bool bMoveSubRoots)
 	FVector AToPinPoint;
 	FVector Correction = GetPositionCorrection(AToPinPoint);
 
-	if (bPinRotation)
-	{
-		// move body to pin location
-		A->Position += Correction;
-		// keep body at fixed rotation relative to the pin goal rotation
-		A->Rotation = ARotLocalToPin * GoalRotation;
-	}else
-	{
-		// rotate body from alignment of pin points
-		A->ApplyPushToRotateBody(Correction, AToPinPoint);
+	// rotate body from alignment of pin points
+	A->ApplyPushToRotateBody(Correction, AToPinPoint);
 
-		// apply positional correction to Body to align with target (after rotation)
-		// (applying directly without considering PositionStiffness because PinConstraints need
-		// to precisely pull the attached body to achieve convergence)
-		Correction = GetPositionCorrection(AToPinPoint);
-		A->Position += Correction; 
-	}
-}
-
-void FPinConstraint::SetGoal(const FVector& InGoalPosition, const FQuat& InGoalRotation, const float InAlpha)
-{
-	GoalPosition = InGoalPosition;
-	GoalRotation = InGoalRotation;
-	Alpha = InAlpha;
+	// apply positional correction to Body to align with target (after rotation)
+	// (applying directly without considering PositionStiffness because PinConstraints need
+	// to precisely pull the attached body to achieve convergence)
+	Correction = GetPositionCorrection(AToPinPoint);
+	A->Position += Correction; 
 }
 
 FVector FPinConstraint::GetPositionCorrection(FVector& OutBodyToPinPoint) const
 {
 	OutBodyToPinPoint = A->Rotation * PinPointLocalToA;
-	const FVector PinPoint = A->Position + OutBodyToPinPoint;
-	return (GoalPosition - PinPoint) * Alpha;
+	FVector PinPoint = A->Position + OutBodyToPinPoint;
+	return (GoalPoint - PinPoint) * Alpha;
 }
 
 } // namespace

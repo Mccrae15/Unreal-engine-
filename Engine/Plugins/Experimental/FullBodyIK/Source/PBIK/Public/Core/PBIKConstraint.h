@@ -57,9 +57,9 @@ public:
 
 private:
 
-	FVector GetPositionCorrection(FVector& OutBodyToA, FVector& OutBodyToB) const;
+	FVector GetPositionCorrection(FVector& OutBodyToA, FVector& OutBodyToB);
 
-	void ApplyRotationCorrection(FQuat PureRotA, FQuat PureRotB) const;
+	void ApplyRotationCorrection(FQuat PureRotA, FQuat PureRotB);
 
 	void UpdateJointLimits();
 
@@ -69,9 +69,7 @@ private:
 		float CurrentAngle,
 		FVector RotAxis,
 		FVector CurVec,
-		FVector RefVec) const;
-
-	void RotateToAlignAxes(const FVector& AxisA, const FVector& AxisB) const;
+		FVector RefVec);
 
 	void UpdateLocalRotateAxes(bool bX, bool bY, bool bZ);
 
@@ -85,37 +83,22 @@ private:
 
 struct FPinConstraint : public FConstraint
 {
-private:
-	
-	FVector GoalPosition;
-	FQuat GoalRotation;
-	
+	FVector GoalPoint;
 	FRigidBody* A;
 	FVector PinPointLocalToA;
 	float Alpha = 1.0;
-	FQuat ARotLocalToPin;
-	bool bPinRotation = false;
 
 public:
-	
-	FPinConstraint(
-		FRigidBody* InBody,
-		const FVector& InPinPositionOrig,
-		const FQuat& InPinRotationOrig,
-		const bool bInPinRotation);
+
+	FPinConstraint(FRigidBody* InBody, const FVector& InPinPoint);
 
 	virtual ~FPinConstraint() {};
 
 	virtual void Solve(bool bMoveSubRoots) override;
 
-	void SetGoal(const FVector& InGoalPosition, const FQuat& InGoalRotation, const float InAlpha);
-
 private:
 
 	FVector GetPositionCorrection(FVector& OutBodyToPinPoint) const;
-
-	friend FRigidBody;
-	friend FJointConstraint;
 };
 
 } // namespace

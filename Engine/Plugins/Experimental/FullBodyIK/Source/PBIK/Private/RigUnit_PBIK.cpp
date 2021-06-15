@@ -3,6 +3,7 @@
 #include "RigUnit_PBIK.h"
 #include "Units/RigUnitContext.h"
 
+//#pragma optimize("", off)
 
 FRigUnit_PBIK_Execute()
 {
@@ -14,15 +15,15 @@ FRigUnit_PBIK_Execute()
 		return;
 	}
 
+	FRigBoneHierarchy& Bones = Hierarchy->BoneHierarchy;
+
 	if (Context.State == EControlRigState::Init)
 	{
-		BoneSettingToSolverBoneIndex.Reset();
-		
 		// check how many effectors are assigned to a bone
 		int NumEffectors = 0;
 		for (const FPBIKEffector& Effector : Effectors)
 		{
-			if (Hierarchy->GetIndex(FRigElementKey(Effector.Bone, ERigElementType::Bone)) != INDEX_NONE)
+			if (Bones.GetIndex(Effector.Bone) != INDEX_NONE)
 			{
 				++NumEffectors; // bone is set and exists!
 			}
@@ -40,14 +41,14 @@ FRigUnit_PBIK_Execute()
 		Solver.Reset();
 
 		// create bones
-		for (int B = 0; B < Hierarchy->BoneHierarchy.Num(); ++B)
+		for (int B = 0; B < Bones.Num(); ++B)
 		{
-			const FRigBone& Bone = Hierarchy->BoneHierarchy[B];
-			const FTransform OrigTransform = Bone.InitialTransform;
-			const FVector InOrigPosition = OrigTransform.GetLocation();
-			const FQuat InOrigRotation = OrigTransform.GetRotation();
-			bool bIsRoot = Bone.Name == Root;
-			Solver.AddBone(Bone.Name, Bone.ParentIndex, InOrigPosition, InOrigRotation, bIsRoot);
+			FName Name = Bones[B].Name;
+			int ParentIndex = Bones[B].ParentIndex;
+			FVector InOrigPosition = Bones[B].InitialTransform.GetLocation();
+			FQuat InOrigRotation = Bones[B].InitialTransform.GetRotation();
+			bool bIsRoot = Bones[B].Name == Root;
+			Solver.AddBone(Name, ParentIndex, InOrigPosition, InOrigRotation, bIsRoot);
 		}
 		
 		// create effectors
@@ -70,37 +71,20 @@ FRigUnit_PBIK_Execute()
 	}
 
 	// set bones to input pose
-	for(int32 BoneIndex = 0; BoneIndex < Solver.GetNumBones(); BoneIndex++)
+	for (int B = 0; B < Bones.Num(); ++B)
 	{
-		const FTransform GlobalTransform = Hierarchy->BoneHierarchy[BoneIndex].GlobalTransform;
-		Solver.SetBoneTransform(BoneIndex, GlobalTransform);
-	}
-
-	// invalidate the name lookup for the settings
-	if(BoneSettingToSolverBoneIndex.Num() != BoneSettings.Num())
-	{
-		BoneSettingToSolverBoneIndex.Reset();
-		while(BoneSettingToSolverBoneIndex.Num() < BoneSettings.Num())
-		{
-			BoneSettingToSolverBoneIndex.Add(INDEX_NONE);
-		}
+		Solver.SetBoneTransform(B, Bones[B].GlobalTransform);
 	}
 
 	// update bone settings
-	for (int32 BoneSettingIndex = 0; BoneSettingIndex < BoneSettings.Num(); BoneSettingIndex++)
+	for (const FPBIKBoneSetting& BoneSetting : BoneSettings)
 	{
-		const FPBIKBoneSetting& BoneSetting = BoneSettings[BoneSettingIndex];
-
-		if(BoneSettingToSolverBoneIndex[BoneSettingIndex] == INDEX_NONE)
+		int32 BoneIndex = Bones.GetIndex(BoneSetting.Bone);
+		if (BoneIndex == -1)
 		{
-			BoneSettingToSolverBoneIndex[BoneSettingIndex] = Solver.GetBoneIndex(BoneSetting.Bone);
-			if(BoneSettingToSolverBoneIndex[BoneSettingIndex] == INDEX_NONE)
-			{
-				continue;
-			}
+			continue; // no bones to apply it to
 		}
 
-		int32 BoneIndex = BoneSettingToSolverBoneIndex[BoneSettingIndex];
 		if (PBIK::FBoneSettings* InternalSettings = Solver.GetBoneSettings(BoneIndex))
 		{
 			BoneSetting.CopyToCoreStruct(*InternalSettings);
@@ -125,12 +109,12 @@ FRigUnit_PBIK_Execute()
 	Solver.Solve(Settings);
 
 	// copy transforms back
-	const bool bPropagateTransform = false;
-	for(int32 BoneIndex = 0; BoneIndex < Solver.GetNumBones(); BoneIndex++)
+	bool bPropagateTransform = false;
+	for (int BoneIndex = 0; BoneIndex < Bones.Num(); ++BoneIndex)
 	{
 		FTransform NewTransform;
 		Solver.GetBoneGlobalTransform(BoneIndex, NewTransform);
-		Hierarchy->BoneHierarchy.SetGlobalTransform(BoneIndex, NewTransform, bPropagateTransform);
+		Bones.SetGlobalTransform(BoneIndex, NewTransform, bPropagateTransform);
 	}
 
 	// do all debug drawing

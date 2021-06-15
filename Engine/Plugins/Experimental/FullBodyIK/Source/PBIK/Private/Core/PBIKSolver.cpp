@@ -4,7 +4,8 @@
 #include "Core/PBIKBody.h"
 #include "Core/PBIKConstraint.h"
 #include "Core/PBIKDebug.h"
-#include "PBIK.h"
+
+//#pragma optimize("", off)
 
 namespace PBIK
 {
@@ -16,7 +17,7 @@ namespace PBIK
 	}
 
 	void FEffector::SetGoal(
-		const FVector& InPositionGoal,
+		const FVector InPositionGoal,
 		const FQuat& InRotationGoal,
 		float InTransformAlpha,
 		float InStrengthAlpha)
@@ -35,53 +36,37 @@ namespace PBIK
 	{
 		Position = FMath::Lerp(PositionOrig, PositionGoal, TransformAlpha);
 		Rotation = FMath::Lerp(RotationOrig, RotationGoal, TransformAlpha);
-		Pin.Pin()->SetGoal(Position, Rotation, StrengthAlpha);
-
-		// update length of chain this effector controls in the input pose
-		if (ParentSubRoot)
-		{
-			FEffector* ParentEffector = ParentSubRoot->Effector;
-			const FVector ParentSubRootPosition = ParentEffector ? ParentEffector->PositionOrig : ParentSubRoot->Bone->Position;
-			LengthOfChainInInputPose = (ParentSubRootPosition - Bone->Position).Size();
-		}
+		Pin.Pin()->GoalPoint = Position;
+		Pin.Pin()->Alpha = StrengthAlpha;
 	}
 
-	void FEffector::ApplyPreferredAngles()
+	void FEffector::SquashSubRoots()
 	{
 		// optionally apply a preferred angle to give solver a hint which direction to favor
 		// apply amount of preferred angle proportional to the amount this sub-limb is squashed
-
-		// can't squash root chain
-		if (!ParentSubRoot)
-		{
-			return; 
-		}
-
-		// can't squash chain with zero length already
-		if (LengthOfChainInInputPose <= SMALL_NUMBER)
+		if (!ParentSubRoot || DistToSubRootOrig <= SMALL_NUMBER)
 		{
 			return;
 		}
 
 		// we have to be careful here when calculating the distance to the parent sub-root.
-		// if the parent sub-root is attached to an effector, use the effector's position
+		// if the the parent sub-root is attached to an effector, use the effector's position
 		// otherwise use the current position of the FRigidBody
-		FEffector* ParentEffector = ParentSubRoot->Effector;
-		const FVector ParentSubRootPosition = ParentEffector ? ParentEffector->Position : ParentSubRoot->Position;
-		const float DistToParentSubRoot = (ParentSubRootPosition - Position).Size();
-		if (DistToParentSubRoot >= LengthOfChainInInputPose)
+		FEffector* ParentEffector = ParentSubRoot->AttachedEffector;
+		FVector ParentSubRootPosition = ParentEffector ? ParentEffector->Position : ParentSubRoot->Position;
+		float DistToNearestSubRoot = (ParentSubRootPosition - Position).Size();
+		if (DistToNearestSubRoot >= DistToSubRootOrig)
 		{
 			return; // limb is stretched
 		}
 
 		// shrink distance to reach full blend to preferred angle
-		const float ScaledDistOrig = LengthOfChainInInputPose;// * 0.3f;
+		float ScaledDistOrig = DistToSubRootOrig * 0.3f;
 		// amount squashed (clamped to scaled original length)
-		float DeltaSquash = LengthOfChainInInputPose - DistToParentSubRoot;
+		float DeltaSquash = DistToSubRootOrig - DistToNearestSubRoot;
 		DeltaSquash = DeltaSquash > ScaledDistOrig ? ScaledDistOrig : DeltaSquash;
 		float SquashPercent = DeltaSquash / ScaledDistOrig;
-		PBIK::QuarticEaseOut(SquashPercent);
-		if (SquashPercent < 0.0001f)
+		if (SquashPercent < 0.01f)
 		{
 			return; // limb not squashed enough
 		}
@@ -91,6 +76,7 @@ namespace PBIK
 		{
 			if (Parent->Body->J.bUsePreferredAngles)
 			{
+				FRotator Clamped = Parent->Body->J.PreferredAngles;
 				FQuat PartialRotation = FQuat::FastLerp(FQuat::Identity, FQuat(Parent->Body->J.PreferredAngles), SquashPercent);
 				Parent->Body->Rotation = Parent->Body->Rotation * PartialRotation;
 				Parent->Body->Rotation.Normalize();
@@ -124,7 +110,7 @@ void FPBIKSolver::Solve(const FPBIKSolverSettings& Settings)
 
 	// initialize local bone transforms
 	// this has to be done every tick because incoming animation can modify these
-	// even the LocalPosition has to be updated in case translation is animated
+	// even the LocalPosition has to be updated incase translation is animated
 	for (FBone& Bone : Bones)
 	{
 		FBone* Parent = Bone.Parent;
@@ -154,31 +140,23 @@ void FPBIKSolver::Solve(const FPBIKSolverSettings& Settings)
 	{
 		Effector.UpdateFromInputs();
 	}
-	
+
 	// squash sub-roots to apply preferred angles
 	for (FEffector& Effector : Effectors)
 	{
-		Effector.ApplyPreferredAngles();
+		Effector.SquashSubRoots();
 	}
 
 	// run constraint iterations while allowing stretch, just to get reaching pose
 	for (int32  I = 0; I < Settings.Iterations; ++I)
 	{
-		// gradually ramp down mass of bodies
-		float IterPercent = Settings.Iterations == 1 ? 0 : (static_cast<float>(I) / static_cast<float>(Settings.Iterations - 1));
-		PBIK::SquaredEaseOut(IterPercent);
-		for (FRigidBody& Body : Bodies)
-		{
-			Body.InvMass = FMath::Lerp(Body.MaxInvMass, Body.MinInvMass, IterPercent);
-		}
-		
-		const bool bMoveSubRoots = true;
+		bool bMoveSubRoots = true;
 		for (auto Constraint : Constraints)
 		{
 			Constraint->Solve(bMoveSubRoots);
 		}
 	}
-	
+
 	if (!Settings.bAllowStretch)
 	{
 		for (int32 C = Constraints.Num() - 1; C >= 0; --C)
@@ -188,20 +166,12 @@ void FPBIKSolver::Solve(const FPBIKSolverSettings& Settings)
 
 		for (FEffector& Effector : Effectors)
 		{
-			Effector.ApplyPreferredAngles(); // update squashing once again
+			Effector.SquashSubRoots(); // update squashing once again
 		}
 
 		for (int32  I = 0; I < Settings.Iterations; ++I)
 		{
-			// gradually ramp down mass of bodies
-			float IterPercent = Settings.Iterations == 1 ? 0 : (static_cast<float>(I) / static_cast<float>(Settings.Iterations - 1));
-			PBIK::SquaredEaseOut(IterPercent);
-			for (FRigidBody& Body : Bodies)
-			{
-				Body.InvMass = FMath::Lerp(Body.MaxInvMass, Body.MinInvMass, IterPercent);
-			}
-			
-			const bool bMoveSubRoots = false;
+			bool bMoveSubRoots = false;
 			for (auto Constraint : Constraints)
 			{
 				Constraint->Solve(bMoveSubRoots);
@@ -265,10 +235,7 @@ bool FPBIKSolver::Initialize()
 		return false;
 	}
 
-	if (!InitConstraints())
-	{
-		return false;
-	}
+	InitConstraints();
 
 	bReadyToSimulate = true;
 
@@ -280,15 +247,13 @@ bool FPBIKSolver::InitBones()
 	using PBIK::FEffector;
 	using PBIK::FBone;
 
-	if (Bones.IsEmpty())
+	if (!ensureMsgf(Bones.Num() > 0, TEXT("PBIK: no bones added to solver. Cannot initialize.")))
 	{
-		UE_LOG(LogPBIKSolver, Warning, TEXT("PBIK: no bones added to solver. Cannot initialize."));
 		return false;
 	}
 
-	if (Effectors.IsEmpty())
+	if (!ensureMsgf(Effectors.Num() > 0, TEXT("PBIK: no effectors added to solver. Cannot initialize.")))
 	{
-		UE_LOG(LogPBIKSolver, Warning, TEXT("PBIK: no effectors added to solver. Cannot initialize."));
 		return false;
 	}
 
@@ -303,15 +268,13 @@ bool FPBIKSolver::InitBones()
 		}
 	}
 
-	if (!SolverRoot)
+	if (!ensureMsgf(SolverRoot, TEXT("PBIK: root bone not set. Cannot initialize.")))
 	{
-		UE_LOG(LogPBIKSolver, Warning, TEXT("PBIK: root bone not set or not found. Cannot initialize."));
 		return false;
 	}
 
-	if (NumSolverRoots > 1)
+	if (!ensureMsgf(NumSolverRoots == 1, TEXT("PBIK: more than 1 bone was marked as solver root. Cannot initialize.")))
 	{
-		UE_LOG(LogPBIKSolver, Warning, TEXT("PBIK: more than 1 bone was marked as solver root. Cannot initialize."));
 		return false;
 	}
 
@@ -325,10 +288,10 @@ bool FPBIKSolver::InitBones()
 		}
 
 		// validate parent
-		const bool bIndexInRange = Bone.ParentIndex >= 0 && Bone.ParentIndex < Bones.Num();
-		if (!bIndexInRange)
+		bool bIndexInRange = Bone.ParentIndex >= 0 && Bone.ParentIndex < Bones.Num();
+		if (!ensureMsgf(bIndexInRange,
+			TEXT("PBIK: bone found with invalid parent index. Cannot initialize.")))
 		{
-			UE_LOG(LogPBIKSolver, Warning, TEXT("PBIK: bone found with invalid parent index. Cannot initialize."));
 			return false;
 		}
 
@@ -388,9 +351,8 @@ bool FPBIKSolver::InitBodies()
 		while (true)
 		{
 			FBone* BodyBone = NextBone->bIsSolverRoot ? NextBone : NextBone->Parent;
-			if (!BodyBone)
+			if (!ensureMsgf(BodyBone, TEXT("PBIK: effector is on bone that is not on or below root bone.")))
 			{
-				UE_LOG(LogPBIKSolver, Warning, TEXT("PBIK: effector is on bone that is not on or below root bone."));
 				return false;
 			}
 
@@ -435,6 +397,7 @@ bool FPBIKSolver::InitBodies()
 			if (Parent->bIsSubRoot || Parent->bIsSolverRoot)
 			{
 				Effector.ParentSubRoot = Parent->Body;
+				Effector.DistToSubRootOrig = (Parent->Body->Position - Effector.Bone->Position).Size();
 				break;
 			}
 
@@ -457,7 +420,7 @@ void FPBIKSolver::AddBodyForBone(PBIK::FBone* Bone)
 	Bodies.Emplace(Bone);
 }
 
-bool FPBIKSolver::InitConstraints()
+void FPBIKSolver::InitConstraints()
 {
 	using PBIK::FEffector;
 	using PBIK::FBone;
@@ -471,28 +434,25 @@ bool FPBIKSolver::InitConstraints()
 	for (FEffector& Effector : Effectors)
 	{
 		FBone* BodyBone = Effector.Bone->bIsSolverRoot ? Effector.Bone : Effector.Bone->Parent;
-		if (!BodyBone)
+		if (!ensureMsgf(BodyBone, TEXT("PBIK: effector is on bone that does not have a parent.")))
 		{
-			UE_LOG(LogPBIKSolver, Warning, TEXT("PBIK: effector is on bone that does not have a parent."));
-			return false;
+			return;
 		}
 
 		FRigidBody* Body = BodyBone->Body;
-		TSharedPtr<FPinConstraint> Constraint = MakeShared<FPinConstraint>(Body, Effector.Position, Effector.Rotation, false);
+		TSharedPtr<FPinConstraint> Constraint = MakeShared<FPinConstraint>(Body, Effector.Position);
 		Effector.Pin = Constraint;
-		Body->Effector = &Effector;
-		Body->Pin = Constraint.Get();
+		Body->AttachedEffector = &Effector;
 		Constraints.Add(Constraint);
 	}
 
 	// pin root body to animated location 
 	// this constraint is by default off in solver settings
-	if (!SolverRoot->Body->Effector) // only add if user hasn't added their own root effector
+	if (!SolverRoot->Body->AttachedEffector) // only add if user hasn't added their own root effector
 	{
-		const TSharedPtr<FPinConstraint> RootConstraint = MakeShared<FPinConstraint>(SolverRoot->Body, SolverRoot->Position, SolverRoot->Rotation, true);
+		TSharedPtr<FPinConstraint> RootConstraint = MakeShared<FPinConstraint>(SolverRoot->Body, SolverRoot->Position);
 		Constraints.Add(RootConstraint);
 		RootPin = RootConstraint;
-		SolverRoot->Body->Pin = RootConstraint.Get();
 	}
 
 	// constrain all bodies together (child to parent)
@@ -507,8 +467,6 @@ bool FPBIKSolver::InitConstraints()
 		TSharedPtr<FJointConstraint> Constraint = MakeShared<FJointConstraint>(ParentBody, &Body);
 		Constraints.Add(Constraint);
 	}
-
-	return true;
 }
 
 PBIK::FDebugDraw* FPBIKSolver::GetDebugDraw()
@@ -528,7 +486,7 @@ void FPBIKSolver::Reset()
 	Effectors.Empty();
 }
 
-bool FPBIKSolver::IsReadyToSimulate() const
+bool FPBIKSolver::IsReadyToSimulate()
 {
 	return bReadyToSimulate;
 }
@@ -581,7 +539,7 @@ PBIK::FBoneSettings* FPBIKSolver::GetBoneSettings(const int32 Index)
 
 	if (!Bones[Index].Body)
 	{
-		UE_LOG(LogPBIKSolver, Warning, TEXT("PBIK: trying to apply Bone Settings to bone that is not simulated (not between root and effector)."));
+		UE_LOG(LogTemp, Warning, TEXT("PBIK: trying to apply Bone Settings to bone that is not simulated (not between root and effector)."));
 		return nullptr;
 	}
 
@@ -594,11 +552,6 @@ void FPBIKSolver::GetBoneGlobalTransform(const int32 Index, FTransform& OutTrans
 	PBIK::FBone& Bone = Bones[Index];
 	OutTransform.SetLocation(Bone.Position);
 	OutTransform.SetRotation(Bone.Rotation);
-}
-
-int32 FPBIKSolver::GetBoneIndex(FName BoneName) const
-{
-	return Bones.IndexOfByPredicate([&BoneName](const PBIK::FBone& Bone) { return Bone.Name == BoneName; });
 }
 
 void FPBIKSolver::SetEffectorGoal(

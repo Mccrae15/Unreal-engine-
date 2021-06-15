@@ -10,15 +10,15 @@ struct FPBIKSolverSettings;
 
 namespace PBIK
 {
-	struct FPinConstraint;
-	struct FJointConstraint;
-	struct FRigidBody;
-	struct FEffector;
+
+struct FJointConstraint;
+struct FRigidBody;
+struct FEffector;
 
 struct FBone
 {
 	FName Name;
-	int32 ParentIndex = -2; // -2 is unset, -1 for root, or 0...n otherwise
+	int ParentIndex = -2; // -2 is unset, -1 for root, or 0...n otherwise
 	bool bIsSolverRoot = false;
 	bool bIsSolved = false;
 	bool bIsSubRoot = false;
@@ -35,7 +35,7 @@ struct FBone
 
 	FBone(
 		const FName InName,
-		const int32& InParentIndex,		// must pass -1 for root of whole skeleton
+		const int& InParentIndex,		// must pass -1 for root of whole skeleton
 		const FVector& InOrigPosition,
 		const FQuat& InOrigRotation,
 		bool bInIsSolverRoot);
@@ -75,8 +75,6 @@ struct FRigidBody
 {
 	FBone* Bone = nullptr;
 	FBoneSettings J;
-	FPinConstraint* Pin = nullptr;
-	FEffector* Effector = nullptr;
 
 	FVector Position;
 	FQuat Rotation;
@@ -85,13 +83,12 @@ struct FRigidBody
 	TArray<FVector> ChildLocalPositions;
 
 	float InvMass = 0.0f;
-	float MaxInvMass = 0.0f;
-	float MinInvMass = 0.0f;
+	FEffector* AttachedEffector = nullptr;
 	float Length;
 	
 private:
 
-	int32 NumBonesToRoot = 0;
+	int NumBonesToRoot = 0;
 
 public:
 
@@ -103,13 +100,11 @@ public:
 
 	int GetNumBonesToRoot() const;
 
-	FRigidBody* GetParentBody() const;
+	FRigidBody* GetParentBody();
 
 	void ApplyPushToRotateBody(const FVector& Push, const FVector& Offset);
 	
 	void ApplyPushToPosition(const FVector& Push);
-
-	void ApplyRotationDelta(const FQuat& InDelta, const bool bNegated);
 };
 
 // for sorting Bodies hierarchically (root to leaf order)
