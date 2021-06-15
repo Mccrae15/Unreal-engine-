@@ -693,11 +693,13 @@ public:
 			}
 			}
 			
-			// Set previous velocities if we can
+			// Set positions and previous velocities if we can
 			// Note: At present kininematics are in fact rigid bodies
 			auto* Rigid = Particle.CastToRigidParticle();
 			if (Rigid)
 			{
+				Rigid->P() = Rigid->X();
+				Rigid->Q() = Rigid->R();
 				Rigid->PreV() = Rigid->V();
 				Rigid->PreW() = Rigid->W();
 
