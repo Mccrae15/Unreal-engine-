@@ -489,7 +489,14 @@ public:
 		return CommandListData->TrackedResourceState.GetResourceState(pResource);
 	}
 
-	D3D12RHI_API void AddPendingResourceBarrier(FD3D12Resource* Resource, D3D12_RESOURCE_STATES State, uint32 SubResource);
+	void AddPendingResourceBarrier(FD3D12Resource* Resource, D3D12_RESOURCE_STATES State, uint32 SubResource)
+	{
+		check(CommandListData);
+
+		FD3D12PendingResourceBarrier PRB = { Resource, State, SubResource };
+
+		CommandListData->PendingResourceBarriers.Add(PRB);
+	}
 
 	TArray<FD3D12PendingResourceBarrier>& PendingResourceBarriers()
 	{
