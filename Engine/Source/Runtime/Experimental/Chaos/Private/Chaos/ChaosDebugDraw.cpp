@@ -76,7 +76,15 @@ namespace Chaos
 			/* DrawPriority =				*/ 10.0f,
 			/* bShowSimple =				*/ true,
 			/* bShowComplex =				*/ false,
-			/* bInShowLevelSetCollision =	*/ false
+			/* bInShowLevelSetCollision =	*/ false,
+			/* InDynamicShapesColor =		*/ FColor(255, 255, 0),
+			/* InSleepingShapesColor =		*/ FColor(128, 128, 128),
+			/* InKinematicShapesColor =		*/ FColor(0, 128, 255),
+			/* InStaticShapesColor =		*/ FColor(255, 0, 0),
+			/* InDynamicBoundsColor =		*/ FColor(128, 128, 0),
+			/* InSleepingBoundsColor =		*/ FColor(64, 64, 64),
+			/* InKinematicBoundsColor =		*/ FColor(0, 64, 128),
+			/* InStaticBoundsColor =		*/ FColor(128, 0, 0)
 		);
 
 		const FChaosDebugDrawSettings& GetChaosDebugDrawSettings(const FChaosDebugDrawSettings* InSettings)
@@ -86,6 +94,18 @@ namespace Chaos
 				return *InSettings;
 			}
 			return ChaosDefaultDebugDebugDrawSettings;
+		}
+
+		FColor FChaosDebugDrawColorsByState::GetColorFromState(EObjectStateType State) const
+		{
+			switch (State)
+			{
+			case EObjectStateType::Sleeping:	return SleepingColor;
+			case EObjectStateType::Kinematic:	return KinematicColor;
+			case EObjectStateType::Static:		return StaticColor;
+			case EObjectStateType::Dynamic:		return DynamicColor;
+			default:							return FColor::Purple; // nice visible color :)
+			}
 		}
 
 		//
@@ -488,14 +508,7 @@ namespace Chaos
 			FVec3 P = SpaceTransform.TransformPosition(Particle->ObjectState() == EObjectStateType::Dynamic ? Particle->CastToRigidParticle()->P() : Particle->X());
 			FRotation3 Q = SpaceTransform.GetRotation() * (Particle->ObjectState() == EObjectStateType::Dynamic ? Particle->CastToRigidParticle()->Q() : Particle->R());
 
-			// @todo(choas): move debug draw colors into debug draw settings
-			FColor Color = InColor;
-			if (Particle->ObjectState() == EObjectStateType::Sleeping)
-			{
-				Color = FColor(InColor.R / 2, InColor.G / 2, InColor.B / 2, InColor.A);
-			}
-
-			DrawShapesImpl(Particle, FRigidTransform3(P, Q), Particle->Geometry().Get(), 0.0f, Color, Settings);
+			DrawShapesImpl(Particle, FRigidTransform3(P, Q), Particle->Geometry().Get(), 0.0f, InColor, Settings);
 		}
 
 		void DrawParticleShapesImpl(const FRigidTransform3& SpaceTransform, const TGeometryParticle<FReal, 3>* Particle, const FColor& InColor, const FChaosDebugDrawSettings& Settings)
@@ -503,14 +516,7 @@ namespace Chaos
 			FVec3 P = SpaceTransform.TransformPosition(Particle->X());
 			FRotation3 Q = SpaceTransform.GetRotation() * (Particle->R());
 
-			// @todo(choas): move debug draw colors into debug draw settings
-			FColor Color = InColor;
-			if (Particle->ObjectState() == EObjectStateType::Sleeping)
-			{
-				Color = FColor(InColor.R / 2, InColor.G / 2, InColor.B / 2, InColor.A);
-			}
-
-			DrawShapesImpl(Particle->Handle(), FRigidTransform3(P, Q), Particle->Geometry().Get(), 0.0f, Color, Settings);
+			DrawShapesImpl(Particle->Handle(), FRigidTransform3(P, Q), Particle->Geometry().Get(), 0.0f, InColor, Settings);
 		}
 
 		void DrawParticleBoundsImpl(const FRigidTransform3& SpaceTransform, const TGeometryParticleHandle<FReal, 3>* InParticle, const FReal Dt, const FReal BoundsThickness, const FReal BoundsThicknessVelocityInflation, const FChaosDebugDrawSettings& Settings)
@@ -524,20 +530,7 @@ namespace Chaos
 			const FVec3 P = SpaceTransform.TransformPosition(Box.GetCenter());
 			const FRotation3 Q = SpaceTransform.GetRotation();
 			const FMatrix33 Qm = Q.ToMatrix();
-			FColor Color = FColor::Black;
-			if (InParticle->ObjectState() == EObjectStateType::Dynamic)
-			{
-				Color = FColor::White;
-			}
-			else if (InParticle->ObjectState() == EObjectStateType::Sleeping)
-			{
-				Color = FColor(128, 128, 128);
-			}
-			else if (InParticle->ObjectState() == EObjectStateType::Kinematic)
-			{
-				Color = FColor(64, 64, 64);
-			}
-
+			FColor Color = Settings.BoundsColors.GetColorFromState(InParticle->ObjectState());
 			FDebugDrawQueue::GetInstance().DrawDebugBox(P, 0.5f * Box.Extents(), Q, Color, false, KINDA_SMALL_NUMBER, Settings.DrawPriority, Settings.LineThickness);
 		}
 
@@ -989,35 +982,41 @@ namespace Chaos
 		}
 
 
-		void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<TGeometryParticles<float, 3>>& ParticlesView, const FColor& Color, const FChaosDebugDrawSettings* Settings)
+		void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<TGeometryParticles<float, 3>>& ParticlesView, FReal ColorScale, const FChaosDebugDrawSettings* Settings)
 		{
 			if (FDebugDrawQueue::IsDebugDrawingEnabled())
 			{
+				const FChaosDebugDrawSettings& DebugDrawSettings = GetChaosDebugDrawSettings(Settings);
 				for (auto& Particle : ParticlesView)
-				{
-					DrawParticleShapesImpl(SpaceTransform, GetHandleHelper(&Particle), Color, GetChaosDebugDrawSettings(Settings));
+				{				
+					FColor Color = (ColorScale * DebugDrawSettings.ShapeColors.GetColorFromState(Particle.ObjectState())).ToFColor(false);
+					DrawParticleShapesImpl(SpaceTransform, GetHandleHelper(&Particle), Color, DebugDrawSettings);
 				}
 			}
 		}
 
-		void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<TKinematicGeometryParticles<float, 3>>& ParticlesView, const FColor& Color, const FChaosDebugDrawSettings* Settings)
+		void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<TKinematicGeometryParticles<float, 3>>& ParticlesView, FReal ColorScale, const FChaosDebugDrawSettings* Settings)
 		{
 			if (FDebugDrawQueue::IsDebugDrawingEnabled())
 			{
+				const FChaosDebugDrawSettings& DebugDrawSettings = GetChaosDebugDrawSettings(Settings);
 				for (auto& Particle : ParticlesView)
 				{
-					DrawParticleShapesImpl(SpaceTransform, GetHandleHelper(&Particle), Color, GetChaosDebugDrawSettings(Settings));
+					FColor Color = (ColorScale * DebugDrawSettings.ShapeColors.GetColorFromState(Particle.ObjectState())).ToFColor(false);
+					DrawParticleShapesImpl(SpaceTransform, GetHandleHelper(&Particle), Color, DebugDrawSettings);
 				}
 			}
 		}
 
-		void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<TPBDRigidParticles<float, 3>>& ParticlesView, const FColor& Color, const FChaosDebugDrawSettings* Settings)
+		void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<TPBDRigidParticles<float, 3>>& ParticlesView, FReal ColorScale, const FChaosDebugDrawSettings* Settings)
 		{
 			if (FDebugDrawQueue::IsDebugDrawingEnabled())
 			{
+				const FChaosDebugDrawSettings& DebugDrawSettings = GetChaosDebugDrawSettings(Settings);
 				for (auto& Particle : ParticlesView)
 				{
-					DrawParticleShapesImpl(SpaceTransform, GetHandleHelper(&Particle), Color, GetChaosDebugDrawSettings(Settings));
+					FColor Color = (ColorScale * DebugDrawSettings.ShapeColors.GetColorFromState(Particle.ObjectState())).ToFColor(false);
+					DrawParticleShapesImpl(SpaceTransform, GetHandleHelper(&Particle), Color, DebugDrawSettings);
 				}
 			}
 		}
