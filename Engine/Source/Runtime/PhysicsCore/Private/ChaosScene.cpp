@@ -386,6 +386,7 @@ void FChaosScene::SyncBodies(TSolver* Solver)
 {
 #if WITH_CHAOS
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("SyncBodies"),STAT_SyncBodies,STATGROUP_Physics);
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(SyncBodies);
 	const int32 SolverSyncTimestamp = Solver->GetMarshallingManager().GetExternalTimestampConsumed_External();
 	Chaos::FPBDRigidDirtyParticlesBufferAccessor Accessor(Solver->GetDirtyParticlesBuffer());
 	OnSyncBodies(SolverSyncTimestamp, Accessor);
