@@ -39,6 +39,12 @@ namespace Chaos
 		bool bChaosDebugDebugDrawInactiveContacts = true;
 		FAutoConsoleVariableRef CVarChaosDebugDrawInactiveContacts(TEXT("p.Chaos.DebugDraw.ShowInactiveContacts"), bChaosDebugDebugDrawInactiveContacts, TEXT("Whether to show inactive contacts (ones that contributed no impulses or pushout)"));
 
+		bool bChaosDebugDebugDrawColorShapesByShapeType = false;
+		FAutoConsoleVariableRef CVarChaosDebugDebugDrawColorShapesByShapeType(TEXT("p.Chaos.DebugDraw.ColorShapesByShapeType"), bChaosDebugDebugDrawColorShapesByShapeType, TEXT("Whether to use shape type to define the color of the shapes instead of using the particle state "));
+
+		bool bChaosDebugDebugDrawColorBoundsByShapeType = false;
+		FAutoConsoleVariableRef CVarbChaosDebugDebugDrawColorBoundsByShapeType(TEXT("p.Chaos.DebugDraw.ColorBoundsByShapeType"), bChaosDebugDebugDrawColorBoundsByShapeType, TEXT("Whether to use shape type to define the color of the bounds instead of using the particle state (if multiple shapes , will use the first one)"));
+
 		bool bChaosDebugDebugDrawConvexVertices = false;
 		bool bChaosDebugDebugDrawCoreShapes = false;
 		bool bChaosDebugDebugDrawExactCoreShapes = false;
@@ -77,14 +83,10 @@ namespace Chaos
 			/* bShowSimple =				*/ true,
 			/* bShowComplex =				*/ false,
 			/* bInShowLevelSetCollision =	*/ false,
-			/* InDynamicShapesColor =		*/ FColor(255, 255, 0),
-			/* InSleepingShapesColor =		*/ FColor(128, 128, 128),
-			/* InKinematicShapesColor =		*/ FColor(0, 128, 255),
-			/* InStaticShapesColor =		*/ FColor(255, 0, 0),
-			/* InDynamicBoundsColor =		*/ FColor(128, 128, 0),
-			/* InSleepingBoundsColor =		*/ FColor(64, 64, 64),
-			/* InKinematicBoundsColor =		*/ FColor(0, 64, 128),
-			/* InStaticBoundsColor =		*/ FColor(128, 0, 0)
+			/* InShapesColorsPerState =     */ GetDefaultShapesColorsByState(),
+			/* InShapesColorsPerShaepType=  */ GetDefaultShapesColorsByShapeType(),
+			/* InBoundsColorsPerState =     */ GetDefaultBoundsColorsByState(),
+			/* InBoundsColorsPerShapeType=  */ GetDefaultBoundsColorsByShapeType()
 		);
 
 		const FChaosDebugDrawSettings& GetChaosDebugDrawSettings(const FChaosDebugDrawSettings* InSettings)
@@ -96,6 +98,20 @@ namespace Chaos
 			return ChaosDefaultDebugDebugDrawSettings;
 		}
 
+		//-------------------------------------------------------------------------------------------------
+
+		FChaosDebugDrawColorsByState::FChaosDebugDrawColorsByState(
+			FColor InDynamicColor,
+			FColor InSleepingColor,
+			FColor InKinematicColor,
+			FColor InStaticColor
+		)
+			: DynamicColor(InDynamicColor)
+			, SleepingColor(InSleepingColor)
+			, KinematicColor(InKinematicColor)
+			, StaticColor(InStaticColor)
+		{}
+
 		FColor FChaosDebugDrawColorsByState::GetColorFromState(EObjectStateType State) const
 		{
 			switch (State)
@@ -106,6 +122,94 @@ namespace Chaos
 			case EObjectStateType::Dynamic:		return DynamicColor;
 			default:							return FColor::Purple; // nice visible color :)
 			}
+		}
+
+		// default colors by state for shapes
+		FChaosDebugDrawColorsByState ChaosDefaultShapesColorsByState(
+			/* InDynamicColor =	  */ FColor(255, 255, 0),
+			/* InSleepingColor =  */ FColor(128, 128, 128),
+			/* InKinematicColor = */ FColor(0, 128, 255),
+			/* InStaticColor =	  */ FColor(255, 0, 0)
+		);
+
+		const FChaosDebugDrawColorsByState& GetDefaultShapesColorsByState()
+		{
+			return ChaosDefaultShapesColorsByState;
+		}
+
+		// default colors by state for bounds ( darker version of the shapes colors - see above )
+		FChaosDebugDrawColorsByState ChaosDefaultBoundsColorsByState(
+			/* InDynamicColor =	  */ FColor(128, 128, 0),
+			/* InSleepingColor =  */ FColor(64, 64, 64),
+			/* InKinematicColor = */ FColor(0, 64, 128),
+			/* InStaticColor =	  */ FColor(128, 0, 0)
+		);
+
+		const FChaosDebugDrawColorsByState& GetDefaultBoundsColorsByState()
+		{
+			return ChaosDefaultBoundsColorsByState;
+		}
+
+		//-------------------------------------------------------------------------------------------------
+
+		FChaosDebugDrawColorsByShapeType::FChaosDebugDrawColorsByShapeType(
+			FColor InSimpleTypeColor,
+			FColor InConvexColor,
+			FColor InHeightFieldColor,
+			FColor InTriangleMeshColor,
+			FColor InLevelSetColor
+		)
+			: SimpleTypeColor(InSimpleTypeColor)
+			, ConvexColor(InConvexColor)
+			, HeightFieldColor(InHeightFieldColor)
+			, TriangleMeshColor(InTriangleMeshColor)
+			, LevelSetColor(InLevelSetColor)
+		{}
+
+		FColor FChaosDebugDrawColorsByShapeType::GetColorFromShapeType(EImplicitObjectType ShapeType) const
+		{
+			switch(ShapeType)
+			{
+			case ImplicitObjectType::Sphere:			return SimpleTypeColor;
+			case ImplicitObjectType::Box:				return SimpleTypeColor;
+			case ImplicitObjectType::Plane:				return SimpleTypeColor;
+			case ImplicitObjectType::Capsule:			return SimpleTypeColor;
+			case ImplicitObjectType::TaperedCylinder:	return SimpleTypeColor;
+			case ImplicitObjectType::Cylinder:			return SimpleTypeColor;
+			case ImplicitObjectType::Convex:			return ConvexColor;
+			case ImplicitObjectType::HeightField:		return HeightFieldColor;
+			case ImplicitObjectType::TriangleMesh:		return TriangleMeshColor;
+			case ImplicitObjectType::LevelSet:			return LevelSetColor;			
+			default:									return FColor::Purple; // nice visible color :)
+			};
+		}
+
+		// default colors by shaep type for shapes
+		FChaosDebugDrawColorsByShapeType ChaosDefaultShapesColorsByShapeType(
+			/* InSimpleTypeColor,   */ FColor(0, 255, 0),
+			/* InConvexColor,		*/ FColor(0, 255, 255),
+			/* InHeightFieldColor,	*/ FColor(0, 0, 255),
+			/* InTriangleMeshColor,	*/ FColor(255, 0, 0),
+			/* InLevelSetColor		*/ FColor(255, 0, 128)
+		);
+
+		CHAOS_API const FChaosDebugDrawColorsByShapeType& GetDefaultShapesColorsByShapeType()
+		{
+			return ChaosDefaultShapesColorsByShapeType;
+		}
+
+		// default colors by shape type for bounds ( darker version of the shapes colors - see above )
+		FChaosDebugDrawColorsByShapeType ChaosDefaultBoundsColorsByShapeType(
+			/* InSimpleTypeColor,   */ FColor(0, 128, 0),
+			/* InConvexColor,		*/ FColor(0, 128, 128),
+			/* InHeightFieldColor,	*/ FColor(0, 0, 128),
+			/* InTriangleMeshColor,	*/ FColor(128, 0, 0),
+			/* InLevelSetColor		*/ FColor(128, 0, 64)
+		);
+
+		CHAOS_API const FChaosDebugDrawColorsByShapeType& GetDefaultBoundsColorsByShapeType()
+		{
+			return ChaosDefaultBoundsColorsByShapeType;
 		}
 
 		//
@@ -401,6 +505,12 @@ namespace Chaos
 				return;
 			}
 
+			FColor ShapeColor = Color;
+			if (bChaosDebugDebugDrawColorShapesByShapeType)
+			{
+				ShapeColor = Settings.ShapesColorsPerShapeType.GetColorFromShapeType(InnerType);
+			}
+
 			// If we get here, we have an actual shape to render
 			switch (InnerType)
 			{
@@ -408,14 +518,14 @@ namespace Chaos
 			{
 				const TSphere<FReal, 3>* Sphere = Shape->template GetObject<TSphere<FReal, 3>>();
 				const FVec3 P = ShapeTransform.TransformPosition(Sphere->GetCenter());
-				FDebugDrawQueue::GetInstance().DrawDebugSphere(P, Sphere->GetRadius(), 8, Color, false, KINDA_SMALL_NUMBER, Settings.DrawPriority, Settings.ShapeThicknesScale * Settings.LineThickness);
+				FDebugDrawQueue::GetInstance().DrawDebugSphere(P, Sphere->GetRadius(), 8, ShapeColor, false, KINDA_SMALL_NUMBER, Settings.DrawPriority, Settings.ShapeThicknesScale * Settings.LineThickness);
 				break;
 			}
 			case ImplicitObjectType::Box:
 			{
 				const TBox<FReal, 3>* Box = Shape->template GetObject<TBox<FReal, 3>>();
 				const FVec3 P = ShapeTransform.TransformPosition(Box->GetCenter());
-				FDebugDrawQueue::GetInstance().DrawDebugBox(P, (FReal)0.5 * Box->Extents(), ShapeTransform.GetRotation(), Color, false, KINDA_SMALL_NUMBER, Settings.DrawPriority, Settings.ShapeThicknesScale * Settings.LineThickness);
+				FDebugDrawQueue::GetInstance().DrawDebugBox(P, (FReal)0.5 * Box->Extents(), ShapeTransform.GetRotation(), ShapeColor, false, KINDA_SMALL_NUMBER, Settings.DrawPriority, Settings.ShapeThicknesScale * Settings.LineThickness);
 				break;
 			}
 			case ImplicitObjectType::Plane:
@@ -425,13 +535,13 @@ namespace Chaos
 				const FCapsule* Capsule = Shape->template GetObject<FCapsule>();
 				const FVec3 P = ShapeTransform.TransformPosition(Capsule->GetCenter());
 				const FRotation3 Q = ShapeTransform.GetRotation() * FRotationMatrix::MakeFromZ(Capsule->GetAxis());
-				FDebugDrawQueue::GetInstance().DrawDebugCapsule(P, (FReal)0.5 * Capsule->GetHeight() + Capsule->GetRadius(), Capsule->GetRadius(), Q, Color, false, KINDA_SMALL_NUMBER, Settings.DrawPriority, Settings.ShapeThicknesScale * Settings.LineThickness);
+				FDebugDrawQueue::GetInstance().DrawDebugCapsule(P, (FReal)0.5 * Capsule->GetHeight() + Capsule->GetRadius(), Capsule->GetRadius(), Q, ShapeColor, false, KINDA_SMALL_NUMBER, Settings.DrawPriority, Settings.ShapeThicknesScale * Settings.LineThickness);
 				break;
 			}
 			case ImplicitObjectType::LevelSet:
 			{
 				const FLevelSet* LevelSet = Shape->template GetObject<FLevelSet>();
-				DrawShapesLevelSetImpl(Particle, ShapeTransform, LevelSet, Color, Settings);
+				DrawShapesLevelSetImpl(Particle, ShapeTransform, LevelSet, ShapeColor, Settings);
 				break;
 			}
 			break;
@@ -440,7 +550,7 @@ namespace Chaos
 				const FConvex* Convex = Shape->template GetObject<FConvex>();
 
 				const FReal NetMargin = bChaosDebugDebugDrawCoreShapes ? Margin + Convex->GetMargin() : 0.0f;
-				DrawShapesConvexImpl(Particle, ShapeTransform, Convex, NetMargin, Color, Settings);
+				DrawShapesConvexImpl(Particle, ShapeTransform, Convex, NetMargin, ShapeColor, Settings);
 
 				// Generate the exact marging-reduced convex for comparison with the runtime approximation
 				// Warning: extremely expensive!
@@ -465,13 +575,13 @@ namespace Chaos
 			case ImplicitObjectType::TriangleMesh:
 			{
 				const FTriangleMeshImplicitObject* TriangleMesh = Shape->template GetObject<FTriangleMeshImplicitObject>();
-				DrawShapesTriangleMeshImpl(Particle, ShapeTransform, TriangleMesh, Color, Settings);
+				DrawShapesTriangleMeshImpl(Particle, ShapeTransform, TriangleMesh, ShapeColor, Settings);
 				break;
 			}
 			case ImplicitObjectType::HeightField:
 			{
 				const FHeightField* HeightField = Shape->template GetObject<FHeightField>();
-				DrawShapesHeightFieldImpl(Particle, ShapeTransform, HeightField, Color, Settings);
+				DrawShapesHeightFieldImpl(Particle, ShapeTransform, HeightField, ShapeColor, Settings);
 				break;
 			}
 			default:
@@ -488,7 +598,7 @@ namespace Chaos
 						for (int32 ParticleIndex = 0; ParticleIndex < (int32)Particles->Size(); ++ParticleIndex)
 						{
 							FVec3 P = ShapeTransform.TransformPosition(Particles->X(ParticleIndex));
-							FDebugDrawQueue::GetInstance().DrawDebugPoint(P, Color, false, KINDA_SMALL_NUMBER, Settings.DrawPriority, Settings.PointSize);
+							FDebugDrawQueue::GetInstance().DrawDebugPoint(P, ShapeColor, false, KINDA_SMALL_NUMBER, Settings.DrawPriority, Settings.PointSize);
 						}
 					}
 				}
@@ -519,6 +629,35 @@ namespace Chaos
 			DrawShapesImpl(Particle->Handle(), FRigidTransform3(P, Q), Particle->Geometry().Get(), 0.0f, InColor, Settings);
 		}
 
+		static EImplicitObjectType GetFirstConcreteShapeType(const FImplicitObject* Shape)
+		{
+			EImplicitObjectType InnerType = GetInnerType(Shape->GetType());
+			if (InnerType == ImplicitObjectType::Union)
+			{
+				const FImplicitObjectUnion* Union = Shape->template GetObject<FImplicitObjectUnion>();
+				for (auto& UnionShape : Union->GetObjects())
+				{
+					// use the first as reference as we can only display one color for the bounds
+					return GetFirstConcreteShapeType(UnionShape.Get());
+				}
+			}
+			else if (InnerType == ImplicitObjectType::Transformed)
+			{
+				const TImplicitObjectTransformed<FReal, 3>* Transformed = Shape->template GetObject<TImplicitObjectTransformed<FReal, 3>>();
+				return GetFirstConcreteShapeType(Transformed->GetTransformedObject());
+			}
+			else if (InnerType == ImplicitObjectType::UnionClustered)
+			{
+				const FImplicitObjectUnionClustered* Union = Shape->template GetObject<FImplicitObjectUnionClustered>();
+				for (auto& UnionShape : Union->GetObjects())
+				{
+					// use the first as reference as we can only display one color for the bounds
+					return GetFirstConcreteShapeType(UnionShape.Get());
+				}
+			}
+			return InnerType;
+		}
+
 		void DrawParticleBoundsImpl(const FRigidTransform3& SpaceTransform, const FGeometryParticleHandle* InParticle, const FReal Dt, const FReal BoundsThickness, const FReal BoundsThicknessVelocityInflation, const FChaosDebugDrawSettings& Settings)
 		{
 			FConstGenericParticleHandle Particle = InParticle;
@@ -530,7 +669,16 @@ namespace Chaos
 			const FVec3 P = SpaceTransform.TransformPosition(Box.GetCenter());
 			const FRotation3 Q = SpaceTransform.GetRotation();
 			const FMatrix33 Qm = Q.ToMatrix();
-			FColor Color = Settings.BoundsColors.GetColorFromState(InParticle->ObjectState());
+			FColor Color = Settings.BoundsColorsPerState.GetColorFromState(InParticle->ObjectState());
+
+			if (bChaosDebugDebugDrawColorBoundsByShapeType)
+			{
+				if (const FImplicitObject* Shape = Particle->Geometry().Get())
+				{
+					Color = Settings.BoundsColorsPerShapeType.GetColorFromShapeType(GetFirstConcreteShapeType(Shape));
+				}
+			}
+
 			FDebugDrawQueue::GetInstance().DrawDebugBox(P, 0.5f * Box.Extents(), Q, Color, false, KINDA_SMALL_NUMBER, Settings.DrawPriority, Settings.LineThickness);
 		}
 
@@ -984,7 +1132,7 @@ namespace Chaos
 				const FChaosDebugDrawSettings& DebugDrawSettings = GetChaosDebugDrawSettings(Settings);
 				for (auto& Particle : ParticlesView)
 				{				
-					FColor Color = (ColorScale * DebugDrawSettings.ShapeColors.GetColorFromState(Particle.ObjectState())).ToFColor(false);
+					FColor Color = (ColorScale * DebugDrawSettings.ShapesColorsPerState.GetColorFromState(Particle.ObjectState())).ToFColor(false);
 					DrawParticleShapesImpl(SpaceTransform, GetHandleHelper(&Particle), Color, DebugDrawSettings);
 				}
 			}
@@ -997,7 +1145,7 @@ namespace Chaos
 				const FChaosDebugDrawSettings& DebugDrawSettings = GetChaosDebugDrawSettings(Settings);
 				for (auto& Particle : ParticlesView)
 				{
-					FColor Color = (ColorScale * DebugDrawSettings.ShapeColors.GetColorFromState(Particle.ObjectState())).ToFColor(false);
+					FColor Color = (ColorScale * DebugDrawSettings.ShapesColorsPerState.GetColorFromState(Particle.ObjectState())).ToFColor(false);
 					DrawParticleShapesImpl(SpaceTransform, GetHandleHelper(&Particle), Color, DebugDrawSettings);
 				}
 			}
@@ -1010,7 +1158,7 @@ namespace Chaos
 				const FChaosDebugDrawSettings& DebugDrawSettings = GetChaosDebugDrawSettings(Settings);
 				for (auto& Particle : ParticlesView)
 				{
-					FColor Color = (ColorScale * DebugDrawSettings.ShapeColors.GetColorFromState(Particle.ObjectState())).ToFColor(false);
+					FColor Color = (ColorScale * DebugDrawSettings.ShapesColorsPerState.GetColorFromState(Particle.ObjectState())).ToFColor(false);
 					DrawParticleShapesImpl(SpaceTransform, GetHandleHelper(&Particle), Color, DebugDrawSettings);
 				}
 			}
