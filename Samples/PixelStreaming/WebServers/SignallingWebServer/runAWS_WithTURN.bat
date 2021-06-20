@@ -9,7 +9,7 @@ title Cirrus
 
 ::Run node server
 
-Powershell.exe -executionpolicy unrestricted -File Start_AWS_WithTURN_SignallingServer.ps1
+Powershell.exe -executionpolicy unrestricted -File Start_AWS_WithTURN_SignallingServer.ps1 %*
 
 popd
 pause
