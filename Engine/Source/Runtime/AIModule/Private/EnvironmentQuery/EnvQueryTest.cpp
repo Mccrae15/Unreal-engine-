@@ -170,16 +170,36 @@ bool UEnvQueryTest::IsContextPerItem(TSubclassOf<UEnvQueryContext> CheckContext)
 
 FVector UEnvQueryTest::GetItemLocation(FEnvQueryInstance& QueryInstance, int32 ItemIndex) const
 {
-	return QueryInstance.ItemTypeVectorCDO ?
-		QueryInstance.ItemTypeVectorCDO->GetItemLocation(QueryInstance.RawData.GetData() + QueryInstance.Items[ItemIndex].DataOffset) :
-		FVector::ZeroVector;
+	if (QueryInstance.ItemTypeVectorCDO)
+	{
+		return QueryInstance.ItemTypeVectorCDO->GetItemLocation(QueryInstance.RawData.GetData() + QueryInstance.Items[ItemIndex].DataOffset);
+	}
+	else if (QueryInstance.ItemTypeActorCDO)
+	{
+		AActor* Item = GetItemActor(QueryInstance, ItemIndex);
+		if (Item)
+		{
+			return Item->GetActorLocation();
+		}
+	}
+	return FVector::ZeroVector;
 }
 
 FRotator UEnvQueryTest::GetItemRotation(FEnvQueryInstance& QueryInstance, int32 ItemIndex) const
 {
-	return QueryInstance.ItemTypeVectorCDO ?
-		QueryInstance.ItemTypeVectorCDO->GetItemRotation(QueryInstance.RawData.GetData() + QueryInstance.Items[ItemIndex].DataOffset) :
-		FRotator::ZeroRotator;
+	if (QueryInstance.ItemTypeVectorCDO)
+	{
+		return QueryInstance.ItemTypeVectorCDO->GetItemRotation(QueryInstance.RawData.GetData() + QueryInstance.Items[ItemIndex].DataOffset);
+	}
+	else if (QueryInstance.ItemTypeActorCDO)
+	{
+		AActor* Item = GetItemActor(QueryInstance, ItemIndex);
+		if (Item)
+		{
+			return Item->GetActorRotation();
+		}
+	}
+	return FRotator::ZeroRotator;
 }
 
 AActor* UEnvQueryTest::GetItemActor(FEnvQueryInstance& QueryInstance, int32 ItemIndex) const
