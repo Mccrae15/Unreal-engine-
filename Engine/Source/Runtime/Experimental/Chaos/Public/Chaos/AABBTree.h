@@ -602,6 +602,7 @@ public:
 			// Remove this element from the Grid
 			DoForOverlappedCells(DirtyElements[DeleteDirtyParticleIdx].Bounds, DirtyElementGridCellSize, DirtyElementGridCellSizeInv, [&](int32 Hash) {
 				ensure(DeleteDirtyParticleIndexFromGridCell(Hash, DeleteDirtyParticleIdx));
+				return true;
 				});
 		}
 		else
@@ -630,6 +631,7 @@ public:
 				DoForOverlappedCells(DirtyElements.Last().Bounds, DirtyElementGridCellSize, DirtyElementGridCellSizeInv, [&](int32 Hash) {
 					ensure(DeleteDirtyParticleIndexFromGridCell(Hash, LastDirtyElementIndex));
 					ensure(AddNewDirtyParticleIndexToGridCell(Hash, DeleteDirtyParticleIdx));
+					return true;
 					});
 			}
 			else
@@ -654,7 +656,9 @@ public:
 				if (!EnoughSpaceInGridCell(Hash))
 				{
 					bAddToGrid = false;
+					return false; // early exit to avoid going through all the cells
 				}
+				return true;
 				});
 		}
 
@@ -662,6 +666,7 @@ public:
 		{
 			DoForOverlappedCells(NewBounds, DirtyElementGridCellSize, DirtyElementGridCellSizeInv, [&](int32 Hash) {
 				ensure(AddNewDirtyParticleIndexToGridCell(Hash, NewDirtyElement));
+				return true;
 				});
 		}
 		else
@@ -693,6 +698,7 @@ public:
 				// Was not able to add it to the grid , so delete element from grid
 				DoForOverlappedCells(NewBounds, DirtyElementGridCellSize, DirtyElementGridCellSizeInv, [&](int32 Hash) {
 						DeleteDirtyParticleIndexFromGridCell(Hash, DirtyElementIndex);
+						return true;
 					});
 				// Add to overflow
 				int32 NewOverflowIndex = DirtyElementsGridOverflow.Add(DirtyElementIndex);
@@ -1129,6 +1135,7 @@ private:
 					{
 						HashEntryForOverlappedCells.Add(*HashEntry);
 					}
+					return true;
 				};
 
 				if (Query == EAABBQueryType::Overlap)
