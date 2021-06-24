@@ -3,6 +3,11 @@
 
 #include "ParticleHandle.h"
 
+namespace ChaosTest
+{
+	class ConstraintGraphValidation;
+}
+
 namespace Chaos
 {
 	template<typename T, int d>
@@ -36,6 +41,9 @@ namespace Chaos
 	{
 	public:
 		friend class FPBDConstraintColor;
+
+		//Make friend with unit test code so we can verify some behavior
+		friend class ChaosTest::ConstraintGraphValidation;
 
 		/** Information required to map a graph edge back to its constraint */
 		struct FConstraintData
@@ -189,6 +197,11 @@ namespace Chaos
 		 */
 		void DisableParticles(const TSet<FGeometryParticleHandle*>& Particles);
 
+#if !UE_BUILD_SHIPPING
+		// For debugging onlue: run some (slow) validation checks on the graph and log any errors. Return false if there were errors.
+		bool DebugCheckGraph() const;
+#endif
+
 	private:
 		struct FGraphNode
 		{
@@ -230,7 +243,6 @@ namespace Chaos
 
 		void ComputeIslands(const TParticleView<FPBDRigidParticles>& PBDRigids, FPBDRigidsSOAs& Particles);
 		bool ComputeIsland(const int32 Node, const int32 Island, TSet<FGeometryParticleHandle*>& ParticlesInIsland);
-		bool CheckIslands(const TArray<FGeometryParticleHandle*>& Particles);
 		
 		void ParticleAdd(FGeometryParticleHandle* AddedParticle);
 		void ParticleRemove(FGeometryParticleHandle* RemovedParticle);

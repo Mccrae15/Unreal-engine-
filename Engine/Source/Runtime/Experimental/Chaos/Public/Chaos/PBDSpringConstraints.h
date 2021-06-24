@@ -18,7 +18,7 @@ class TRigidParticles;
 template<class T, int d>
 class TPBDRigidParticles;
 
-class CHAOS_API FPBDSpringConstraints : public FPBDSpringConstraintsBase, public FPBDConstraintContainer
+class CHAOS_API FPBDSpringConstraints : public FPBDSpringConstraintsBase
 {
 	typedef FPBDSpringConstraintsBase Base;
 	using Base::MConstraints;

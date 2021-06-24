@@ -5,29 +5,29 @@
 namespace Chaos
 {
 	FPBDSuspensionConstraintHandle::FPBDSuspensionConstraintHandle(FConstraintContainer* InConstraintContainer, int32 InConstraintIndex) : 
-		TContainerConstraintHandle<FPBDSuspensionConstraints>(StaticType(), InConstraintContainer, InConstraintIndex)
+		TContainerConstraintHandle<FPBDSuspensionConstraints>(InConstraintContainer, InConstraintIndex)
 	{
 	}
 
 	const FPBDSuspensionSettings& FPBDSuspensionConstraintHandle::GetSettings() const
 	{
-		return ConstraintContainer->GetSettings(ConstraintIndex);
+		return ConcreteContainer()->GetSettings(ConstraintIndex);
 	}
 
 	FPBDSuspensionSettings& FPBDSuspensionConstraintHandle::GetSettings()
 	{
-		return ConstraintContainer->GetSettings(ConstraintIndex);
+		return ConcreteContainer()->GetSettings(ConstraintIndex);
 	}
 
 	void FPBDSuspensionConstraintHandle::SetSettings(const FPBDSuspensionSettings& Settings)
 	{
-		ConstraintContainer->SetSettings(ConstraintIndex, Settings);
+		ConcreteContainer()->SetSettings(ConstraintIndex, Settings);
 	}
 
 
 	TVec2<FGeometryParticleHandle*> FPBDSuspensionConstraintHandle::GetConstrainedParticles() const
 	{
-		return ConstraintContainer->GetConstrainedParticles(ConstraintIndex);
+		return ConcreteContainer()->GetConstrainedParticles(ConstraintIndex);
 	}
 
 
@@ -49,6 +49,7 @@ namespace Chaos
 		ConstrainedParticles.Add(Particle);
 		SuspensionLocalOffset.Add(InSuspensionLocalOffset);
 		ConstraintSettings.Add(InConstraintSettings);
+		ConstraintEnabledStates.Add(true); // Note: assumes always enabled on creation
 		Handles.Add(HandleAllocator.AllocHandle(this, NewIndex));
 		return Handles[NewIndex];
 	}
@@ -59,6 +60,11 @@ namespace Chaos
 		FConstraintContainerHandle* ConstraintHandle = Handles[ConstraintIndex];
 		if (ConstraintHandle != nullptr)
 		{
+			if (ConstraintEnabledStates[ConstraintIndex] && ConstrainedParticles[ConstraintIndex])
+			{
+				ConstrainedParticles[ConstraintIndex]->RemoveConstraintHandle(ConstraintHandle);
+			}
+
 			// Release the handle for the freed constraint
 			HandleAllocator.FreeHandle(ConstraintHandle);
 			Handles[ConstraintIndex] = nullptr;
@@ -68,6 +74,7 @@ namespace Chaos
 		ConstrainedParticles.RemoveAtSwap(ConstraintIndex);
 		SuspensionLocalOffset.RemoveAtSwap(ConstraintIndex);
 		ConstraintSettings.RemoveAtSwap(ConstraintIndex);
+		ConstraintEnabledStates.RemoveAtSwap(ConstraintIndex);
 		Handles.RemoveAtSwap(ConstraintIndex);
 
 		// Update the handle for the constraint that was moved

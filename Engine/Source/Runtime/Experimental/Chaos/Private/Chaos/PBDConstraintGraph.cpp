@@ -8,6 +8,7 @@
 #include "Chaos/PBDRigidParticles.h"
 #include "Containers/Queue.h"
 #include "Chaos/ParticleHandle.h"
+#include "Chaos/ConstraintHandle.h"
 #include "Chaos/PBDRigidsSOAs.h"
 #include "ChaosLog.h"
 
@@ -61,10 +62,6 @@ int32 FPBDConstraintGraph::ReserveParticles(const int32 Num)
 	return NumToAdd;
 }
 
-/**
- * Bill added this.
- * Adds new Node to Nodes array when a new particle is created
- */
 
 void FPBDConstraintGraph::ParticleAdd(FGeometryParticleHandle* AddedParticle)
 {
@@ -89,10 +86,6 @@ void FPBDConstraintGraph::ParticleAdd(FGeometryParticleHandle* AddedParticle)
 	}
 }
 
-/**
- * Bill added this
- * Removes Node from Nodes array - marking it an unused, also clears ParticleToNodeIndex
- */
 
 void FPBDConstraintGraph::ParticleRemove(FGeometryParticleHandle* RemovedParticle)
 {
@@ -102,6 +95,30 @@ void FPBDConstraintGraph::ParticleRemove(FGeometryParticleHandle* RemovedParticl
 		FreeIndexList.Push(NodeIdx);
 
 		FGraphNode& NodeRemoved = Nodes[NodeIdx];
+
+		// remove associated edges
+		for (int32 EdgeIndex : NodeRemoved.Edges)
+		{
+			// go to other particle and remove its edge reference
+			FGraphEdge& Edge = Edges[EdgeIndex];
+			if (Edge.FirstNode != Edge.SecondNode)
+			{
+				if (Edge.FirstNode == NodeIdx && Edge.SecondNode != INDEX_NONE)
+				{
+					FGraphNode& OtherNode = Nodes[Edge.SecondNode];
+					OtherNode.Edges.Remove(EdgeIndex);
+				}
+				else if (Edge.SecondNode == NodeIdx && Edge.FirstNode != INDEX_NONE)
+				{
+					FGraphNode& OtherNode = Nodes[Edge.FirstNode];
+					OtherNode.Edges.Remove(EdgeIndex);
+				}
+			}
+
+			// do we want to free the edge here also or leave it for later?
+			//Edges[EdgeIndex] = FGraphEdge();
+		}
+
 		NodeRemoved.Edges.Empty();
 		NodeRemoved.Particle = nullptr;
 		NodeRemoved.Island = INDEX_NONE;
@@ -111,7 +128,6 @@ void FPBDConstraintGraph::ParticleRemove(FGeometryParticleHandle* RemovedParticl
 		UpdatedNodes.RemoveSwap(NodeIdx, false);
 	}
 }
-
 
 
 int32 FPBDConstraintGraph::GetNextNodeIndex()
@@ -247,6 +263,9 @@ void FPBDConstraintGraph::AddConstraint(const uint32 InContainerId, FConstraintH
 	check((ConstrainedParticles[0]) || (ConstrainedParticles[1]));
 
 	const int32 NewEdgeIndex = Edges.Num();
+	
+	InConstraintHandle->SetConstraintGraphIndex(NewEdgeIndex);
+
 	FGraphEdge NewEdge;
 	NewEdge.Data = { InContainerId, InConstraintHandle };
 
@@ -287,28 +306,27 @@ void FPBDConstraintGraph::RemoveConstraint(const uint32 InContainerId, FConstrai
 {
 	check(InConstraintHandle);
 
-	int32* PNodeIndex0 = (ConstrainedParticles[0]) ? ParticleToNodeIndex.Find(ConstrainedParticles[0]) : nullptr;
-	int32* PNodeIndex1 = (ConstrainedParticles[1]) ? ParticleToNodeIndex.Find(ConstrainedParticles[1]) : nullptr;
-	if (ensure(PNodeIndex0 || PNodeIndex1) )
+	const int32 EdgeIndex = InConstraintHandle->GetConstraintGraphIndex();
+	if (ensure(EdgeIndex != INDEX_NONE))
 	{
-		if ( InContainerId < (uint32)Edges.Num() )
+		const int32* PNodeIndex0 = (ConstrainedParticles[0]) ? ParticleToNodeIndex.Find(ConstrainedParticles[0]) : nullptr;
+		const int32* PNodeIndex1 = (ConstrainedParticles[1]) ? ParticleToNodeIndex.Find(ConstrainedParticles[1]) : nullptr;
+		if (ensure(PNodeIndex0 || PNodeIndex1))
 		{
-			int32 Index0 = INDEX_NONE, Index1 = INDEX_NONE;
-			if (PNodeIndex0) 
+			// we should have an valid index at this point
+			if (PNodeIndex0)
 			{
-				Nodes[*PNodeIndex0].Edges.Remove(InContainerId);
-				Index0 = *PNodeIndex0;
+				Nodes[*PNodeIndex0].Edges.Remove(EdgeIndex);
 			}
 			if (PNodeIndex1)
 			{
-				Nodes[*PNodeIndex1].Edges.Remove(InContainerId);
-				Index1 = *PNodeIndex1;
-			}
-			if (Edges[InContainerId].FirstNode == Index0 && Edges[InContainerId].SecondNode == Index1)
-			{
-				Edges[InContainerId] = FGraphEdge();
+				Nodes[*PNodeIndex1].Edges.Remove(EdgeIndex);
 			}
 		}
+
+		Edges[EdgeIndex] = FGraphEdge();
+
+		InConstraintHandle->SetConstraintGraphIndex(INDEX_NONE);
 	}
 }
 
@@ -601,7 +619,7 @@ void FPBDConstraintGraph::ComputeIslands(const TParticleView<FPBDRigidParticles>
 	check(IslandToParticles.Num() == IslandToConstraints.Num());
 	check(IslandToParticles.Num() == IslandToData.Num());
 	// @todo(ccaulfield): make a more complex unit test to check island integrity
-	//checkSlow(CheckIslands(InParticles, ActiveIndices));
+	checkSlow(DebugCheckGraph());
 }
 
 
@@ -898,14 +916,13 @@ void FPBDConstraintGraph::DisableParticles(const TSet<FGeometryParticleHandle *>
 	}
 }
 
-
-bool FPBDConstraintGraph::CheckIslands(const TArray<FGeometryParticleHandle *>& Particles)
+#if !UE_BUILD_SHIPPING
+bool FPBDConstraintGraph::DebugCheckGraph() const
 {
 	bool bIsValid = true;
 
 	// Check that no particles are in multiple islands
 	TSet<FGeometryParticleHandle*> IslandParticlesUnionSet;
-	IslandParticlesUnionSet.Reserve(Particles.Num());
 	for (int32 Island = 0; Island < IslandToParticles.Num(); ++Island)
 	{
 		TSet<FGeometryParticleHandle*> IslandParticlesSet = TSet<FGeometryParticleHandle*>(IslandToParticles[Island]);
@@ -926,7 +943,7 @@ bool FPBDConstraintGraph::CheckIslands(const TArray<FGeometryParticleHandle *>& 
 		IslandParticlesUnionSet = IslandParticlesUnionSet.Union(IslandParticlesSet);
 	}
 
-	// Check that no constraints refer in the same island
+	// Check that no constraints are in multiple islands
 	TSet<int32> IslandConstraintDataUnionSet;
 	IslandConstraintDataUnionSet.Reserve(Edges.Num());
 	for (int32 Island = 0; Island < IslandToConstraints.Num(); ++Island)
@@ -942,5 +959,36 @@ bool FPBDConstraintGraph::CheckIslands(const TArray<FGeometryParticleHandle *>& 
 		IslandConstraintDataUnionSet = IslandConstraintDataUnionSet.Union(IslandConstraintDataSet);
 	}
 
+	// Check that no constraints connect dynamic particles in different islands
+	// (non-dynamic particles can be in multiple islands)
+	for (int32 Island = 0; Island < IslandToConstraints.Num(); ++Island)
+	{
+		const TArray<int32> IslandEdges = IslandToConstraints[Island];
+		for (int32 EdgeIndex : IslandEdges)
+		{
+			const FGraphEdge& Edge = Edges[EdgeIndex];
+			const FGraphNode& Node0 = Nodes[Edge.FirstNode];
+			const FGraphNode& Node1 = Nodes[Edge.SecondNode];
+			if ((Node0.Particle != nullptr) && (Node1.Particle != nullptr) && FConstGenericParticleHandle(Node0.Particle)->IsDynamic() && FConstGenericParticleHandle(Node1.Particle)->IsDynamic())
+			{
+				if (Node0.Island != Node1.Island)
+				{
+					UE_LOG(LogChaos, Error, TEXT("Island %d Constraint %d connects particles in different islands %d %d"), Island, EdgeIndex, Node0.Island, Node1.Island);
+					bIsValid = false;
+				}
+			}
+		}
+	}
+
+	for (const FGraphNode& Node : Nodes)
+	{
+		if ((Node.Particle != nullptr) && FConstGenericParticleHandle(Node.Particle)->IsDynamic() && (FConstGenericParticleHandle(Node.Particle)->Island() != Node.Island))
+		{
+			UE_LOG(LogChaos, Error, TEXT("Particle %d island mismatch %d %d"), Node.Particle->ParticleID().LocalID, FConstGenericParticleHandle(Node.Particle)->Island(), Node.Island);
+			bIsValid = false;
+		}
+	}
+
 	return bIsValid;
 }
+#endif
