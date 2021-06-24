@@ -152,8 +152,23 @@ namespace Chaos
 
 		virtual void SetUseContactGraph(const bool InUseContactGraph) {}
 
-		/** Disable all constraints associated with the specified particles */
-		virtual void DisableConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles) { }
+		/** Change enabled state on all constraints associated with the specified particles */
+		virtual void SetConstraintsEnabled(const TSet<TGeometryParticleHandle<FReal, 3>*>& DisabledParticles, bool bInEnabled) 
+		{ 
+			for (TGeometryParticleHandle<FReal, 3>*DisabledParticle : DisabledParticles)
+			{
+				for( FConstraintHandle* Constraint : DisabledParticle->ParticleConstraints() )
+				{
+					if (Constraint->IsEnabled() != bInEnabled)
+					{
+						Constraint->SetEnabled(bInEnabled);
+					}
+				}
+			}
+		}
+
+		/** Disconnect all constraints associated with the specified particles */
+		virtual void DisconnectConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles) {  }
 
 		/** Remove all constraints */
 		virtual void ResetConstraints() {}
@@ -199,15 +214,23 @@ namespace Chaos
 		virtual void UpdatePositionBasedState(const FReal Dt) override;
 
 		virtual void AddToGraph() override;
-		
-		virtual void DisableConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles) override;
+
+		/** Disconnect all constraints associated with the specified particles */
+		virtual void DisconnectConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles)
+		{
+			Constraints.DisconnectConstraints(RemovedParticles);
+		}
 
 		virtual int32 NumConstraints() const override;
+
+		int32 GetContainerId() const
+		{
+			return Constraints.GetContainerId();
+		}
 
 	protected:
 		FConstraints& Constraints;
 		FPBDConstraintGraph* ConstraintGraph;
-		uint32 ContainerId;
 	};
 
 	/**
@@ -222,6 +245,8 @@ namespace Chaos
 		using FConstraints = T_CONSTRAINTS;
 		using FConstraintContainerHandle = typename FConstraints::FConstraintContainerHandle;
 		using FConstraintList = TArray<FConstraintContainerHandle*>;
+
+		using Base::GetContainerId;
 
 		TPBDConstraintIslandRule(FConstraints& InConstraints, int32 InPriority = 0)
 			: TPBDConstraintGraphRuleImpl<T_CONSTRAINTS>(InConstraints, InPriority)
@@ -264,7 +289,7 @@ namespace Chaos
 			for (int32 ConstraintDataIndex : ConstraintDataIndices)
 			{
 				const typename FPBDConstraintGraph::FConstraintData& ConstraintData = ConstraintGraph->GetConstraintData(ConstraintDataIndex);
-				if (ConstraintData.GetContainerId() == ContainerId)
+				if (ConstraintData.GetContainerId() == GetContainerId())
 				{
 					IslandConstraintList.Add(ConstraintData.GetConstraintHandle()->As<FConstraintContainerHandle>());
 				}
@@ -280,7 +305,6 @@ namespace Chaos
 	private:
 		using Base::Constraints;
 		using Base::ConstraintGraph;
-		using Base::ContainerId;
 
 		const TArray<FConstraintContainerHandle*>& GetIslandConstraints(int32 Island) const
 		{
@@ -414,7 +438,7 @@ namespace Chaos
 
 		virtual void UpdateAccelerationStructures(const int32 Island) override
 		{
-			GraphColor.ComputeColor(Island, *ConstraintGraph, ContainerId);
+			GraphColor.ComputeColor(Island, *ConstraintGraph, Constraints.GetContainerId());
 		}
 
 		virtual void SetUseContactGraph(const bool bInUseContactGraph) override
@@ -449,7 +473,6 @@ namespace Chaos
 	private:
 		using Base::Constraints;
 		using Base::ConstraintGraph;
-		using Base::ContainerId;
 
 		const TArray<typename FConstraints::FConstraintContainerHandle*>& GetLevelColorConstraints(const typename FPBDConstraintColor::FLevelToColorToConstraintListMap& LevelToColorToConstraintListMap, int32 Level, int32 Color) const
 		{

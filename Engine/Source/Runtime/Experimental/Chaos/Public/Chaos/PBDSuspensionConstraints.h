@@ -24,7 +24,7 @@ namespace Chaos
 
 		FPBDSuspensionConstraintHandle() {}
 		FPBDSuspensionConstraintHandle(FConstraintContainer* InConstraintContainer, int32 InConstraintIndex);
-		static FConstraintHandle::EType StaticType() { return FConstraintHandle::EType::Suspension; }
+		static EConstraintContainerType StaticType() { return EConstraintContainerType::Suspension; }
 
 		FPBDSuspensionSettings& GetSettings();
 		const FPBDSuspensionSettings& GetSettings() const;
@@ -35,7 +35,7 @@ namespace Chaos
 
 	protected:
 		using Base::ConstraintIndex;
-		using Base::ConstraintContainer;
+		using Base::ConcreteContainer;
 	};
 
 	class CHAOS_API FPBDSuspensionConstraints : public FPBDConstraintContainer
@@ -47,11 +47,13 @@ namespace Chaos
 		using FHandles = TArray<FConstraintContainerHandle*>;
 
 		FPBDSuspensionConstraints(const FPBDSuspensionSolverSettings& InSolverSettings = FPBDSuspensionSolverSettings())
-			: SolverSettings(InSolverSettings)
+			: FPBDConstraintContainer(EConstraintContainerType::Suspension)
+			, SolverSettings(InSolverSettings)
 		{}
 
 		FPBDSuspensionConstraints(TArray<FVec3>&& Locations, TArray<TGeometryParticleHandle<FReal,3>*>&& InConstrainedParticles, TArray<FVec3>&& InLocalOffset, TArray<FPBDSuspensionSettings>&& InConstraintSettings)
-			: ConstrainedParticles(MoveTemp(InConstrainedParticles)), SuspensionLocalOffset(MoveTemp(InLocalOffset)), ConstraintSettings(MoveTemp(InConstraintSettings))
+			: FPBDConstraintContainer(EConstraintContainerType::Suspension)
+			, ConstrainedParticles(MoveTemp(InConstrainedParticles)), SuspensionLocalOffset(MoveTemp(InLocalOffset)), ConstraintSettings(MoveTemp(InConstraintSettings))
 		{
 			if (ConstrainedParticles.Num() > 0)
 			{
@@ -88,18 +90,60 @@ namespace Chaos
 		void RemoveConstraint(int ConstraintIndex);
 
 
-		/**
-		 * Disabled the specified constraint.
-		 */
-		void DisableConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles)
+		/*
+		* Disconnect the constraints from the attached input particles.
+		* This will set the constrained Particle elements to nullptr and
+		* set the Enable flag to false.
+		*
+		* The constraint is unuseable at this point and pending deletion.
+		*/
+
+		void DisconnectConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles)
 		{
-			for (TGeometryParticleHandle<FReal, 3>* RemovedParticle : RemovedParticles)
+			for (FGeometryParticleHandle* RemovedParticle : RemovedParticles)
 			{
 				for (FConstraintHandle* ConstraintHandle : RemovedParticle->ParticleConstraints())
 				{
-					ConstraintHandle->SetEnabled(false); // constraint lifespan is managed by the proxy
+					if (ConstraintHandle->As<FPBDSuspensionConstraintHandle>())
+					{
+						ConstraintHandle->SetEnabled(false); // constraint lifespan is managed by the proxy
+
+						int ConstraintIndex = ConstraintHandle->GetConstraintIndex();
+						if (ConstraintIndex != INDEX_NONE)
+						{
+							if (ConstrainedParticles[ConstraintIndex] == RemovedParticle)
+							{
+								ConstrainedParticles[ConstraintIndex] = nullptr;
+							}
+						}
+					}
 				}
 			}
+		}
+
+		bool IsConstraintEnabled(int32 ConstraintIndex) const
+		{
+			return ConstraintEnabledStates[ConstraintIndex];
+		}
+
+		void SetConstraintEnabled(int32 ConstraintIndex, bool bEnabled)
+		{
+			const FGenericParticleHandle Particle = FGenericParticleHandle(ConstrainedParticles[ConstraintIndex]);
+
+			if (bEnabled)
+			{
+				// only enable constraint if the particle is valid and not disabled
+				if (Particle->Handle() != nullptr && !Particle->Disabled())
+				{
+					ConstraintEnabledStates[ConstraintIndex] = true;
+				}
+			}
+			else
+			{
+				// desirable to allow disabling no matter what state the endpoint
+				ConstraintEnabledStates[ConstraintIndex] = false;
+			}
+
 		}
 
 		//
@@ -197,6 +241,7 @@ namespace Chaos
 		TArray<FGeometryParticleHandle*> ConstrainedParticles;
 		TArray<FVec3> SuspensionLocalOffset;
 		TArray<FPBDSuspensionSettings> ConstraintSettings;
+		TArray<bool> ConstraintEnabledStates;
 
 		FHandles Handles;
 		FConstraintHandleAllocator HandleAllocator;

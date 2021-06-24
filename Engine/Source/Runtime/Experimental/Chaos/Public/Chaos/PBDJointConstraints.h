@@ -30,7 +30,7 @@ namespace Chaos
 
 		FPBDJointConstraintHandle();
 		FPBDJointConstraintHandle(FConstraintContainer* InConstraintContainer, int32 InConstraintIndex);
-		static FConstraintHandle::EType StaticType() { return FConstraintHandle::EType::Joint; }
+		static EConstraintContainerType StaticType() { return EConstraintContainerType::Joint; }
 
 		void SetConstraintEnabled(bool bEnabled);
 
@@ -50,7 +50,7 @@ namespace Chaos
 
 	protected:
 		using Base::ConstraintIndex;
-		using Base::ConstraintContainer;
+		using Base::ConcreteContainer;
 	};
 
 	class CHAOS_API FPBDJointState
@@ -115,9 +115,13 @@ namespace Chaos
 		void RemoveConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles) {}
 
 		/*
-		* Disable the constraints attached to the input particles. 
+		* Disconnect the constraints from the attached input particles. 
+		* This will set the constrained Particle elements to nullptr and 
+		* set the Enable flag to false.
+		* 
+		* The constraint is unuseable at this point and pending deletion. 
 		*/
-		void DisableConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles);
+		void DisconnectConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles);
 
 		/*
 		 * Whether the constraint is enabled
