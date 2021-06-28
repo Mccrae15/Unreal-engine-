@@ -150,10 +150,11 @@ void FOnlineAchievementsOculus::WriteAchievements(const FUniqueNetId& PlayerId, 
 
 void FOnlineAchievementsOculus::QueryAchievements(const FUniqueNetId& PlayerId, const FOnQueryAchievementsCompleteDelegate& Delegate)
 {
+	UE_LOG_ONLINE_ACHIEVEMENTS(Log, TEXT("FOnlineAchievementsOculus::QueryAchievements start"));
 	auto LoggedInPlayerId = OculusSubsystem.GetIdentityInterface()->GetUniquePlayerId(0);
 	if (!(LoggedInPlayerId.IsValid() && PlayerId == *LoggedInPlayerId))
 	{
-		UE_LOG_ONLINE_ACHIEVEMENTS(Error, TEXT("Can only query for logged in player id"));
+		UE_LOG_ONLINE_ACHIEVEMENTS(Log, TEXT("Can only query for logged in player id, Supplied ID = %s"), *PlayerId.ToString());
 		Delegate.ExecuteIfBound(PlayerId, false);
 		return;
 	}
@@ -165,6 +166,11 @@ void FOnlineAchievementsOculus::QueryAchievements(const FUniqueNetId& PlayerId, 
 	{
 		if (bIsError)
 		{
+			ovrErrorHandle E_handle = ovr_Message_GetError(Message);
+			FString Message2 = FString(ovr_Error_GetMessage(E_handle));
+			FString DisplayableMessage = FString(ovr_Error_GetDisplayableMessage(E_handle));
+			int32 ErrorCode = ovr_Error_GetCode(E_handle);
+			UE_LOG_ONLINE_ACHIEVEMENTS(Log, TEXT("ovr_Achievements_GetAllProgress returned Error no %d : %s / %s"), ErrorCode,*Message2,*DisplayableMessage);
 			Delegate.ExecuteIfBound(OculusPlayerId, false);
 			return;
 		}
