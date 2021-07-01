@@ -244,8 +244,12 @@ void UAITask_MoveTo::ResetTimers()
 {
 	if (OwnerController)
 	{
-		// Remove all timers including the ones that might have been set with SetTimerForNextTick 
-		OwnerController->GetWorldTimerManager().ClearAllTimersForObject(this);
+		// There where crashes, where In AActor::GetWorldTimerManager() GetWorld() returned null
+		if (OwnerController->GetWorld())
+		{
+			// Remove all timers including the ones that might have been set with SetTimerForNextTick 
+			OwnerController->GetWorldTimerManager().ClearAllTimersForObject(this);
+		}
 	}
 	MoveRetryTimerHandle.Invalidate();
 	PathRetryTimerHandle.Invalidate();
