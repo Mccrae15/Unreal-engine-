@@ -105,11 +105,15 @@ namespace Chaos
 	class CHAOS_API FPBDJointSettings
 	{
 	public:
+		using FTransformPair = TVector<FRigidTransform3, 2>;
+
 		FPBDJointSettings();
 
 		// Ensure that settings are consistent and within valid ranges. Should be called
 		// whenever settings change.
 		void Sanitize();
+
+		FTransformPair ConnectorTransforms;
 
 		FReal Stiffness;
 		FReal LinearProjection;
