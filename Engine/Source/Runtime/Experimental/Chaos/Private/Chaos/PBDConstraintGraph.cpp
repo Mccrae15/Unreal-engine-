@@ -915,5 +915,42 @@ bool FPBDConstraintGraph::CheckIslands(const TArray<TGeometryParticleHandle<FRea
 		IslandConstraintDataUnionSet = IslandConstraintDataUnionSet.Union(IslandConstraintDataSet);
 	}
 
+	// Check that no constraints connect dynamic particles in different islands
+	// (non-dynamic particles can be in multiple islands)
+	for (int32 Island = 0; Island < IslandToConstraints.Num(); ++Island)
+	{
+		const TArray<int32> IslandEdges = IslandToConstraints[Island];
+		for (int32 EdgeIndex : IslandEdges)
+		{
+			const FGraphEdge& Edge = Edges[EdgeIndex];
+
+			if (Edge.SecondNode == INDEX_NONE)
+			{
+				// We add "edges" for single-particle constraints as well. In this case, they have no second node
+				continue;
+			}
+
+			const FGraphNode& Node0 = Nodes[Edge.FirstNode];
+			const FGraphNode& Node1 = Nodes[Edge.SecondNode];
+			if ((Node0.Particle != nullptr) && (Node1.Particle != nullptr) && FConstGenericParticleHandle(Node0.Particle)->IsDynamic() && FConstGenericParticleHandle(Node1.Particle)->IsDynamic())
+			{
+				if (Node0.Island != Node1.Island)
+				{
+					UE_LOG(LogChaos, Error, TEXT("Island %d Constraint %d connects particles in different islands %d %d"), Island, EdgeIndex, Node0.Island, Node1.Island);
+					bIsValid = false;
+				}
+			}
+		}
+	}
+
+	for (const FGraphNode& Node : Nodes)
+	{
+		if ((Node.Particle != nullptr) && FConstGenericParticleHandle(Node.Particle)->IsDynamic() && (FConstGenericParticleHandle(Node.Particle)->Island() != Node.Island))
+		{
+			UE_LOG(LogChaos, Error, TEXT("Particle %d island mismatch %d %d"), Node.Particle->ParticleID().LocalID, FConstGenericParticleHandle(Node.Particle)->Island(), Node.Island);
+			bIsValid = false;
+		}
+	}
+
 	return bIsValid;
 }
