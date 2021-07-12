@@ -167,6 +167,12 @@ void TJointConstraintProxy<Chaos::FJointConstraint>::PushStateOnGameThread(Chaos
 	{
 		if (Constraint->IsDirty())
 		{
+			if (Constraint->IsDirty(Chaos::EJointConstraintFlags::JointTransforms))
+			{
+				JointSettingsBuffer.ConnectorTransforms = Constraint->GetJointTransforms();
+				DirtyFlagsBuffer.MarkDirty(Chaos::EJointConstraintFlags::JointTransforms);
+			}
+
 			if (Constraint->IsDirty(Chaos::EJointConstraintFlags::CollisionEnabled))
 			{
 				JointSettingsBuffer.bCollisionEnabled = Constraint->GetCollisionEnabled();
@@ -293,6 +299,11 @@ void TJointConstraintProxy<Chaos::FJointConstraint>::PushStateOnPhysicsThread(Ch
 		if (DirtyFlagsBuffer.IsDirty())
 		{
 			FConstraintData ConstraintSettings = Handle->GetSettings();
+
+			if (DirtyFlagsBuffer.IsDirty(Chaos::EJointConstraintFlags::JointTransforms))
+			{
+				ConstraintSettings.ConnectorTransforms = JointSettingsBuffer.ConnectorTransforms;
+			}
 
 			if (DirtyFlagsBuffer.IsDirty(Chaos::EJointConstraintFlags::CollisionEnabled))
 			{

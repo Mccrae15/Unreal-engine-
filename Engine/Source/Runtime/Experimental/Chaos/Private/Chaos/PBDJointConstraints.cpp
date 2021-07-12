@@ -368,33 +368,34 @@ namespace Chaos
 
 	typename FPBDJointConstraints::FConstraintContainerHandle* FPBDJointConstraints::AddConstraint(const FParticlePair& InConstrainedParticles, const FRigidTransform3& WorldConstraintFrame)
 	{
-		FTransformPair JointFrames;
-		JointFrames[0] = FRigidTransform3(
+		FPBDJointSettings JointSettings;
+		JointSettings.ConnectorTransforms[0] = FRigidTransform3(
 			WorldConstraintFrame.GetTranslation() - InConstrainedParticles[0]->X(),
 			WorldConstraintFrame.GetRotation() * InConstrainedParticles[0]->R().Inverse()
 			);
-		JointFrames[1] = FRigidTransform3(
+		JointSettings.ConnectorTransforms[1] = FRigidTransform3(
 			WorldConstraintFrame.GetTranslation() - InConstrainedParticles[1]->X(),
 			WorldConstraintFrame.GetRotation() * InConstrainedParticles[1]->R().Inverse()
 			);
-		return AddConstraint(InConstrainedParticles, JointFrames, FPBDJointSettings());
+		return AddConstraint(InConstrainedParticles, JointSettings);
 	}
 
 	
-	typename FPBDJointConstraints::FConstraintContainerHandle* FPBDJointConstraints::AddConstraint(const FParticlePair& InConstrainedParticles, const FTransformPair& InConstraintFrames)
+	typename FPBDJointConstraints::FConstraintContainerHandle* FPBDJointConstraints::AddConstraint(const FParticlePair& InConstrainedParticles, const FTransformPair& InConnectorTransforms)
 	{
-		return AddConstraint(InConstrainedParticles, InConstraintFrames, FPBDJointSettings());
+		FPBDJointSettings JointSettings;
+		JointSettings.ConnectorTransforms = InConnectorTransforms;
+		return AddConstraint(InConstrainedParticles, JointSettings);
 	}
 
 	
-	typename FPBDJointConstraints::FConstraintContainerHandle* FPBDJointConstraints::AddConstraint(const FParticlePair& InConstrainedParticles, const FTransformPair& InConstraintFrames, const FPBDJointSettings& InConstraintSettings)
+	typename FPBDJointConstraints::FConstraintContainerHandle* FPBDJointConstraints::AddConstraint(const FParticlePair& InConstrainedParticles, const FPBDJointSettings& InConstraintSettings)
 	{
 		bJointsDirty = true;
 
 		int ConstraintIndex = Handles.Num();
 		Handles.Add(HandleAllocator.AllocHandle(this, ConstraintIndex));
 		ConstraintParticles.Add(InConstrainedParticles);
-		ConstraintFrames.Add(InConstraintFrames);
 		ConstraintStates.Add(FPBDJointState());
 
 		ConstraintSettings.AddDefaulted();
@@ -424,7 +425,6 @@ namespace Chaos
 		// Swap the last constraint into the gap to keep the array packed
 		ConstraintParticles.RemoveAtSwap(ConstraintIndex);
 		ConstraintSettings.RemoveAtSwap(ConstraintIndex);
-		ConstraintFrames.RemoveAtSwap(ConstraintIndex);
 		ConstraintStates.RemoveAtSwap(ConstraintIndex);
 		Handles.RemoveAtSwap(ConstraintIndex);
 
@@ -486,11 +486,9 @@ namespace Chaos
 			});
 
 		TArray<FPBDJointSettings> SortedConstraintSettings;
-		TArray<FTransformPair> SortedConstraintFrames;
 		TArray<FParticlePair> SortedConstraintParticles;
 		TArray<FPBDJointState> SortedConstraintStates;
 		SortedConstraintSettings.Reserve(SortedHandles.Num());
-		SortedConstraintFrames.Reserve(SortedHandles.Num());
 		SortedConstraintParticles.Reserve(SortedHandles.Num());
 		SortedConstraintStates.Reserve(SortedHandles.Num());
 
@@ -500,14 +498,12 @@ namespace Chaos
 			int32 UnsortedConstraintIndex = Handle->GetConstraintIndex();
 
 			SortedConstraintSettings.Add(ConstraintSettings[UnsortedConstraintIndex]);
-			SortedConstraintFrames.Add(ConstraintFrames[UnsortedConstraintIndex]);
 			SortedConstraintParticles.Add(ConstraintParticles[UnsortedConstraintIndex]);
 			SortedConstraintStates.Add(ConstraintStates[UnsortedConstraintIndex]);
 			SetConstraintIndex(Handle, SortedConstraintIndex);
 		}
 
 		Swap(ConstraintSettings, SortedConstraintSettings);
-		Swap(ConstraintFrames, SortedConstraintFrames);
 		Swap(ConstraintParticles, SortedConstraintParticles);
 		Swap(ConstraintStates, SortedConstraintStates);
 		Swap(Handles, SortedHandles);
@@ -718,7 +714,7 @@ namespace Chaos
 				FJointSolverJointState& JointState = SolverConstraintStates[JointIndex];
 				const FPBDJointSettings& JointSettings = ConstraintSettings[JointIndex];
 
-				const FTransformPair& JointFrames = ConstraintFrames[JointIndex];
+				const FTransformPair& JointFrames = JointSettings.ConnectorTransforms;
 				int32 Index0, Index1;
 				GetConstrainedParticleIndices(JointIndex, Index0, Index1);
 				TGenericParticleHandle<FReal, 3> Particle0 = TGenericParticleHandle<FReal, 3>(ConstraintParticles[JointIndex][Index0]);
@@ -747,7 +743,7 @@ namespace Chaos
 
 				const FPBDJointSettings& JointSettings = ConstraintSettings[JointIndex];
 
-				const FTransformPair& JointFrames = ConstraintFrames[JointIndex];
+				const FTransformPair& JointFrames = JointSettings.ConnectorTransforms;
 				FJointSolverGaussSeidel& Solver = ConstraintSolvers[JointIndex];
 
 				int32 Index0, Index1;
@@ -822,8 +818,8 @@ namespace Chaos
 		const FRotation3 Q0 = FParticleUtilities::GetCoMWorldRotation(Particle0);
 		const FVec3 P1 = FParticleUtilities::GetCoMWorldPosition(Particle1);
 		const FRotation3 Q1 = FParticleUtilities::GetCoMWorldRotation(Particle1);
-		const FRigidTransform3& XL0 = FParticleUtilities::ParticleLocalToCoMLocal(Particle0, ConstraintFrames[ConstraintIndex][Index0]);
-		const FRigidTransform3& XL1 = FParticleUtilities::ParticleLocalToCoMLocal(Particle1, ConstraintFrames[ConstraintIndex][Index1]);
+		const FRigidTransform3& XL0 = FParticleUtilities::ParticleLocalToCoMLocal(Particle0, ConstraintSettings[ConstraintIndex].ConnectorTransforms[Index0]);
+		const FRigidTransform3& XL1 = FParticleUtilities::ParticleLocalToCoMLocal(Particle1, ConstraintSettings[ConstraintIndex].ConnectorTransforms[Index1]);
 
 		OutX0 = P0 + Q0 * XL0.GetTranslation();
 		OutX1 = P1 + Q1 * XL1.GetTranslation();
@@ -1453,7 +1449,7 @@ namespace Chaos
 	void FPBDJointConstraints::ApplyPlasticityLimits(const FReal Dt, int32 ConstraintIndex, const FVec3& LinearDisplacement, const FRotation3& AngularDisplacement)
 	{
 		FPBDJointSettings& JointSettings = ConstraintSettings[ConstraintIndex];
-		FTransformPair& ConstraintFrame = ConstraintFrames[ConstraintIndex];
+		FTransformPair& ConstraintFrame = ConstraintSettings[ConstraintIndex].ConnectorTransforms;
 
 		if (!FMath::IsNearlyEqual(JointSettings.LinearPlasticityLimit,FLT_MAX))
 		{
