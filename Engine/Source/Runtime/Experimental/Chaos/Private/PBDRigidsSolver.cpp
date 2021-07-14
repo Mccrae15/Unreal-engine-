@@ -408,8 +408,6 @@ namespace Chaos
 					}
 				}
 			});
-		
-		JointConstraints.SetUpdateVelocityInApplyConstraints(true);
 	}
 
 	FReal MaxBoundsForTree = (FReal)10000;
