@@ -175,3 +175,12 @@ private:
 	FReal MTime;
 };
 }
+
+// Support ISPC enable/disable in non-shipping builds
+#if !INTEL_ISPC
+const bool bChaos_PostIterationUpdates_ISPC_Enabled = false;
+#elif UE_BUILD_SHIPPING
+const bool bChaos_PostIterationUpdates_ISPC_Enabled = true;
+#else
+extern CHAOS_API bool bChaos_PostIterationUpdates_ISPC_Enabled;
+#endif
