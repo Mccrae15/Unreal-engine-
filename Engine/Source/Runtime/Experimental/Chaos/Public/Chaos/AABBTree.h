@@ -190,8 +190,13 @@ struct TAABBTreeLeafArray : public TBoundsWrapperHelper<TPayloadType, T, bComput
 	template <typename TSQVisitor>
 	bool OverlapFast(const TAABB<T, 3>& QueryBounds, TSQVisitor& Visitor) const
 	{
+		const void* QueryData = Visitor.GetQueryData();
 		for (const auto& Elem : Elems)
 		{
+			if (PrePreFilterHelper(Elem.Payload, QueryData))
+			{
+				continue;
+			}
 			if (Elem.Bounds.Intersects(QueryBounds))
 			{
 				TSpatialVisitorData<TPayloadType> VisitData(Elem.Payload, true, Elem.Bounds);
@@ -210,8 +215,13 @@ struct TAABBTreeLeafArray : public TBoundsWrapperHelper<TPayloadType, T, bComput
 	{
 		TVector<T, 3> TmpPosition;
 		T TOI;
+		const void* QueryData = Visitor.GetQueryData();
 		for (const auto& Elem : Elems)
 		{
+			if (PrePreFilterHelper(Elem.Payload, QueryData))
+			{
+				continue;
+			}
 			const auto& InstanceBounds = Elem.Bounds;
 			if (TAABBTreeIntersectionHelper<T, TQueryFastData, bSweep ? EAABBQueryType::Sweep : EAABBQueryType::Raycast>::Intersects(Start, QueryFastData, TOI, TmpPosition, InstanceBounds, TAABB<T,3>(), QueryHalfExtents))
 			{
