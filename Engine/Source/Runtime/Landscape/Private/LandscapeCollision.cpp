@@ -535,8 +535,11 @@ void ULandscapeHeightfieldCollisionComponent::OnCreatePhysicsState()
 				TArray<FPhysicsActorHandle> Actors;
 				Actors.Add(PhysHandle);
 
-				bool bImmediateAccelStructureInsertion = true;
-				PhysScene->AddActorsToScene_AssumesLocked(Actors, bImmediateAccelStructureInsertion);
+				FPhysicsCommand::ExecuteWrite(PhysScene, [&]()
+				{
+					bool bImmediateAccelStructureInsertion = true;
+					PhysScene->AddActorsToScene_AssumesLocked(Actors, bImmediateAccelStructureInsertion);
+				});
 
 				PhysScene->AddToComponentMaps(this, PhysHandle->GetProxy());
 				if (BodyInstance.bNotifyRigidBodyCollision)
@@ -1671,7 +1674,10 @@ struct FMeshCollisionInitHelper
 		TArray<FPhysicsActorHandle> Actors;
 		Actors.Add(ActorHandle);
 
-		PhysScene->AddActorsToScene_AssumesLocked(Actors, true);
+		FPhysicsCommand::ExecuteWrite(PhysScene, [&]()
+		{
+			PhysScene->AddActorsToScene_AssumesLocked(Actors, true);
+		});
 		PhysScene->AddToComponentMaps(Component, ActorHandle->GetProxy());
 
 		if(TargetInstance->bNotifyRigidBodyCollision)
